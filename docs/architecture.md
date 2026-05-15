@@ -205,7 +205,12 @@ infra → 外部库（DB/Redis/S3 客户端）
 - `plugins` 不依赖 `infra`（IO 能力由 `ExecutionContext` 等注入）
 - ORM 模型与查询仅存在于 `infra`；`domain` 只见领域类型与仓储接口（实现放在 `infra.repositories`）
 
-**横切解耦：** 通知等侧效应通过 `infra.event_bus` 发布领域事件，由订阅方处理，避免 `worker` 硬编码调用通知模块。
+**横切解耦：** 通知有两条路径，职责不同：
+
+1. **Pipeline Stage notify**（可选）：Pipeline 中显式配置的 notify Stage，在流水线内同步执行。适用于"执行完立即发一条消息"的简单场景。notify Stage 默认 `continue_on_error: true`，其失败不影响 Run 终态。
+2. **Event Bus 规则通知**（推荐）：Run 进入终态后发布 `run.completed` / `run.failed` 领域事件，由 `infra.event_bus` 分发给 NotificationRule 订阅方异步处理。适用于条件匹配、多渠道、模板化的通知规则。
+
+两者可共存：Stage notify 做即时轻量通知，Event Bus 做规则驱动的复杂通知。通知发送失败不影响 Run 结果（Stage notify 通过 `continue_on_error: true` 保证，Event Bus 通知天然异步解耦）。
 
 ### 2.3 模块职责边界
 
@@ -343,11 +348,13 @@ class RunStatus(str, Enum):
     PREPARING = "preparing"    # Worker 已认领，准备环境中
     RUNNING = "running"        # 测试执行中
     COLLECTING = "collecting"  # 收集结果和产物中
-    DONE = "done"              # 成功完成
-    FAILED = "failed"          # 执行失败（测试本身的失败不算）
+    DONE = "done"              # 执行完成（测试可能有失败，但流水线正常走完）
+    FAILED = "failed"          # 流水线执行失败（基础设施错误、Stage 异常退出等，非测试断言失败）
     CANCELLED = "cancelled"    # 用户取消
     TIMEOUT = "timeout"        # 超时终止
 ```
+
+> **DONE vs FAILED 语义：** `DONE` 表示流水线正常走完所有 Stage，测试用例的 pass/fail 体现在 `summary.passed / summary.failed` 中，不影响 Run 状态。`FAILED` 仅在基础设施层面出错时使用（容器启动失败、git clone 失败、Stage 插件抛异常等）。PipelineExecutor 中 `result.status == "failed"` 指的是 Stage 插件报告自身执行失败（如 git-sync 网络超时），不是测试断言失败。测试断言失败由 Collector 解析后写入 `test_result` 表，Run 状态仍为 `DONE`。
 
 合法状态转移：
 
@@ -361,7 +368,7 @@ queued → preparing → running → collecting → done
 任何非终态 → cancelled（用户主动取消）
 running / collecting → timeout（pipeline 硬超时；TimeoutGuard 和 ResourceReclaimer 使用条件更新抢占终态）
 
-> **arq job 失败同步：** Worker 任务函数必须注册 `on_job_error` 回调，确保任何未捕获异常都会将对应的 Run 状态更新为 failed。否则 arq job 失败后 Run 可能卡在 preparing/running 中间状态。
+> **arq job 失败同步：** Worker 任务函数使用 try/except 兜底（见 6.5 `execute_run`），确保任何未捕获异常都会将对应的 Run 状态更新为 failed。此外，arq 的 `after_job_end` hook 作为二级保障：在 Worker 启动时注册该 hook，检查 job 是否异常退出且 Run 仍处于非终态，若是则补偿标记为 failed。否则 arq job 失败后 Run 可能卡在 preparing/running 中间状态。
 
 #### 3.4.1 取消协议
 
@@ -1139,7 +1146,7 @@ class PipelineExecutor:
             plugin = self.registry.get_plugin(stage_def.plugin)
 
             try:
-                result = await plugin.execute(self._build_context(run, stage_def))
+                result = await self._dispatch(plugin, run, stage_def)
 
                 if result.status == "failed" and not stage_def.continue_on_error:
                     return RunStatus.FAILED
@@ -1169,6 +1176,37 @@ class PipelineExecutor:
             "notify": "notify",
         }
         return PHASE_MAP.get(plugin, "execute")
+
+    async def _dispatch(self, plugin, run: Run, stage_def) -> StageResult:
+        """
+        按插件协议类型分发调用。各插件协议方法名不同：
+        - RunnerPlugin.execute(ctx)
+        - CollectorPlugin.collect(results_dir)
+        - ReporterPlugin.generate(ctx, results)
+        - NotifierPlugin.send(notification)
+        - SourcePlugin.fetch(ctx)
+        PipelineExecutor 通过 isinstance 检查分发到正确方法。
+        """
+        ctx = self._build_context(run, stage_def)
+        if isinstance(plugin, RunnerPlugin):
+            return await plugin.execute(ctx)
+        elif isinstance(plugin, CollectorPlugin):
+            results = await plugin.collect(ctx.results_dir)
+            await self._store_results(run.id, results)
+            return StageResult(status="passed")
+        elif isinstance(plugin, ReporterPlugin):
+            artifacts = await plugin.generate(ctx, self._get_results(run.id))
+            await self._store_artifacts(run.id, artifacts)
+            return StageResult(status="passed")
+        elif isinstance(plugin, NotifierPlugin):
+            await plugin.send(self._build_notification(run))
+            return StageResult(status="passed")
+        elif isinstance(plugin, SourcePlugin):
+            revision = await plugin.fetch(self._build_source_context(run))
+            await self._update_git_sha(run.id, revision.sha)
+            return StageResult(status="passed")
+        else:
+            raise ValueError(f"Unknown plugin type: {type(plugin)}")
 ```
 
 Worker 收尾写终态时必须使用条件更新，不能用无条件 `update_status` 覆盖并发协程已经写入的终态。例如：`DONE` 使用 `complete_if_current(run_id, expected_in={RUNNING, COLLECTING})`，`FAILED` 使用 `fail_if_current(...)`，`CANCELLED` 使用 `cancel_if_current(...)`。若条件更新返回 0 行，说明 TimeoutGuard / 取消路径 / ResourceReclaimer 已经写入终态，Worker 只做资源清理和事件补偿，不再覆盖状态。
@@ -2323,7 +2361,7 @@ class Settings(BaseSettings):
     s3_endpoint: str
     s3_access_key: str
     s3_secret_key: str
-    s3_bucket: str = "qaplatform"
+    s3_bucket: str = "qa-platform"
     s3_region: str = "us-east-1"
 
     # 安全
@@ -2556,6 +2594,7 @@ frontend/
 ```python
 # 集成测试使用 testcontainers
 import pytest
+from httpx import ASGITransport, AsyncClient
 from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
@@ -2572,7 +2611,8 @@ def redis():
 @pytest.fixture
 async def client(postgres, redis):
     app = create_app(Settings(database_url=postgres, redis_url=redis))
-    async with AsyncClient(app=app, base_url="http://test") as c:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 ```
 
