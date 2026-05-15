@@ -1,7 +1,7 @@
 ---
 # QA 自动化执行平台 — 架构设计文档
 
-> 基于 PRD v3；**后端源码采用 domain / api / engine / infra / plugins / worker 严格分层**（见第 2 章）。
+> 基于 PRD；**后端源码采用 domain / api / engine / infra / plugins / worker 严格分层**（见第 2 章）。
 
 ---
 
