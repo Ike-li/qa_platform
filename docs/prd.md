@@ -64,7 +64,7 @@
 | API 框架 | FastAPI | async 原生、自动 OpenAPI、Pydantic 校验、生态活跃 |
 | 任务引擎 | arq (Redis-based) | 轻量、async 原生、比 Celery 更简单的 API |
 | 数据库 | PostgreSQL 16 | JSONB、事务一致性、行级安全预留、后期分区演进 |
-| 缓存/队列 | Redis 7 (Valkey) | arq broker + 缓存 + 实时状态 |
+| 缓存/队列 | Redis 7 | arq broker + 缓存 + 实时状态（Valkey 作为可替换项，见架构文档 15.2） |
 | 对象存储 | S3 协议 (MinIO 开发/S3 生产) | 报告和产物存储，天然支持多节点 |
 | 执行隔离 | Docker (开发) / Kubernetes Job (生产) | 统一容器接口，后端可切换 |
 | 实时通信 | SSE (Server-Sent Events) | 比 WebSocket 简单、HTTP/2 友好、足够满足单向推送 |
@@ -174,7 +174,7 @@ class TestSelector:
     regex: str | None              # 可选用例名正则
     on_empty: "fail" | "skip" | "warn"  # 默认 fail
 
-选择器先应用 include/exclude 路径，再应用 tags/expression/regex。若最终没有发现用例，按 on_empty 处理：fail 产生 status=failed 的 Run，skip 产生 status=done 的 Run（summary 中 total=0 且标记 skipped_reason="no_tests_discovered"），warn 继续执行但在 Run summary 中记录告警。
+选择器先应用 include/exclude 路径，再应用 tags/expression/regex。若最终没有发现用例，按 on_empty 处理：fail 产生 status=`failed` 的 Run（属于配置错误，视为基础设施级失败，与测试断言失败语义一致），skip 产生 status=`done` 的 Run（summary 中 total=0 且标记 skipped_reason="no_tests_discovered"），warn 继续执行但在 Run summary 中记录告警。
 
 class RetryPolicy:
     max_attempts: int              # 默认 1，即不重试
@@ -539,9 +539,15 @@ Webhook 触发必须校验来源签名：GitHub 使用 `X-Hub-Signature-256`，G
 ### 5.6 通知系统
 
 #### 设计原则
-- 通知是事件驱动的（不是轮询）
-- 通知规则可组合（条件 + 渠道 + 模板）
 - 通知幂等（同一事件不重复发送）
+- 通知规则可组合（条件 + 渠道 + 模板）
+
+#### 通知双路径
+
+通知有两条路径，职责不同，可共存：
+
+1. **Pipeline Stage notify**（可选，同步）：Pipeline 中显式配置的 `notify` Stage，在流水线内执行。适用于"执行完立即发一条消息"的简单场景。必须设置 `continue_on_error: true`，发送失败不影响 Run 终态。
+2. **NotificationRule 事件驱动**（推荐，异步）：Run 进入终态后发布领域事件，由规则引擎按条件匹配后异步发送。适用于条件匹配、多渠道、模板化的复杂通知。
 
 #### 通知规则
 
@@ -593,7 +599,7 @@ class NotificationRule:
 #### 认证
 - 本地账户（用户名 + 密码）+ JWT（access + refresh token）— MVP
 - API Token（Bearer Token，格式 qap_{token_id}_{secret}）— MVP
-- OIDC/OAuth2 SSO — v1.1
+- OIDC/OAuth2 SSO — Phase 4
 
 #### 多租户策略
 - MVP：单租户，`tenant/project/user/credential/run` 等租户关键表保留 `tenant_id` 字段；测试结果、产物等明细表通过 `run_id` 继承租户归属
@@ -683,6 +689,7 @@ GET    /api/v1/runs                    # 列表（支持筛选）
 GET    /api/v1/runs/{id}               # 详情
 POST   /api/v1/runs/{id}/cancel        # 取消
 GET    /api/v1/runs/{id}/logs          # 日志（SSE 流）
+GET    /api/v1/runs/{id}/events        # 状态变更事件（SSE 流）
 GET    /api/v1/runs/{id}/results       # 测试结果
 GET    /api/v1/runs/{id}/artifacts     # 产物列表
 
