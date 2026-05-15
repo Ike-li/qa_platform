@@ -2183,7 +2183,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - workspace:/workspace
-    environment: &worker-env
+    environment:
       - QAP_DATABASE_URL=postgresql+asyncpg://qap:qap@postgres:5432/qaplatform
       - QAP_REDIS_URL=redis://redis:6379/0
       - QAP_S3_ENDPOINT=http://minio:9000
@@ -2206,7 +2206,13 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - workspace:/workspace
     environment:
-      <<: *worker-env
+      - QAP_DATABASE_URL=postgresql+asyncpg://qap:qap@postgres:5432/qaplatform
+      - QAP_REDIS_URL=redis://redis:6379/0
+      - QAP_S3_ENDPOINT=http://minio:9000
+      - QAP_S3_ACCESS_KEY=minioadmin
+      - QAP_S3_SECRET_KEY=minioadmin
+      - QAP_ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - QAP_DOCKER_HOST=unix:///var/run/docker.sock
       - QAP_WORKER_QUEUE=queue:medium
     depends_on: *worker-deps
 
@@ -2218,7 +2224,13 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - workspace:/workspace
     environment:
-      <<: *worker-env
+      - QAP_DATABASE_URL=postgresql+asyncpg://qap:qap@postgres:5432/qaplatform
+      - QAP_REDIS_URL=redis://redis:6379/0
+      - QAP_S3_ENDPOINT=http://minio:9000
+      - QAP_S3_ACCESS_KEY=minioadmin
+      - QAP_S3_SECRET_KEY=minioadmin
+      - QAP_ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - QAP_DOCKER_HOST=unix:///var/run/docker.sock
       - QAP_WORKER_QUEUE=queue:low
     depends_on: *worker-deps
 
