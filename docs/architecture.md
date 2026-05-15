@@ -370,7 +370,7 @@ queued → preparing → running → collecting → done
 任何非终态 → cancelled（用户主动取消）
 running / collecting → timeout（pipeline 硬超时；TimeoutGuard 和 ResourceReclaimer 使用条件更新抢占终态）
 
-> **arq job 失败同步：** Worker 任务函数使用 try/except 兜底（见 6.5 `execute_run`），确保任何未捕获异常都会将对应的 Run 状态更新为 failed。此外，arq 的 `after_job_end` hook 作为二级保障：在 Worker 启动时注册该 hook，检查 job 是否异常退出且 Run 仍处于非终态，若是则补偿标记为 failed。否则 arq job 失败后 Run 可能卡在 preparing/running 中间状态。
+> **arq job 失败同步：** Worker 任务函数使用 try/except 兜底（见 6.5 `execute_run`），确保任何未捕获异常都会将对应的 Run 状态更新为 failed，且不 re-raise（避免触发 arq 内置重试）。此外，arq 的 `after_job_end` hook 作为二级保障：在 Worker 启动时注册该 hook，检查 job 是否异常退出且 Run 仍处于非终态，若是则补偿标记为 failed。
 
 #### 3.4.1 取消协议
 
@@ -418,7 +418,7 @@ Container stdout/stderr
     Redis Stream → 归档为 JSONL → 上传 S3 → 删除 Stream
 ```
 
-日志归档由 `execute_run` 的 Worker 收尾流程触发：Run 进入终态并发布终态 status Hash 后，Worker 调用 `archive_log_stream(run_id)` 把 `run:{id}:logs` 从 Redis Stream 顺序导出为 JSONL，上传到 `logs/{run_id}.jsonl`，再设置短 TTL（默认 1h）而不是立即删除 Stream，保证已连接的 SSE 客户端完成排空。归档失败按 arq 重试策略重试；多次失败时保留 Stream 到 24h TTL，并写入 `run_event(type="log.archive_failed")` 供后台补偿任务扫描。
+日志归档由 `execute_run` 的 Worker 收尾流程触发：Run 进入终态并发布终态 status Hash 后，Worker 调用 `archive_log_stream(run_id)` 把 `run:{id}:logs` 从 Redis Stream 顺序导出为 JSONL，上传到 `logs/{run_id}.jsonl`，再设置短 TTL（默认 1h）而不是立即删除 Stream，保证已连接的 SSE 客户端完成排空。归档失败时保留 Stream 到 24h TTL，并写入 `run_event(type="log.archive_failed")` 供后台补偿任务（arq cron job `retry_failed_archives`）定期扫描重试。
 
 ### 3.6 并发调度
 
@@ -1215,7 +1215,7 @@ class PipelineExecutor:
             raise ValueError(f"Unknown plugin type: {type(plugin)}")
 ```
 
-Worker 收尾写终态时必须使用条件更新，不能用无条件 `update_status` 覆盖并发协程已经写入的终态。例如：`DONE` 使用 `complete_if_current(run_id, expected_in={RUNNING, COLLECTING})`，`FAILED` 使用 `fail_if_current(...)`，`CANCELLED` 使用 `cancel_if_current(...)`。若条件更新返回 0 行，说明 TimeoutGuard / 取消路径 / ResourceReclaimer 已经写入终态，Worker 只做资源清理和事件补偿，不再覆盖状态。
+Worker 收尾写终态时必须使用条件更新，不能用无条件 `update_status` 覆盖并发协程已经写入的终态。例如：`DONE` 使用 `finish_if_current(run_id, expected_in={PREPARING, RUNNING, COLLECTING})`，`FAILED` 使用 `fail_if_current(..., expected_in={PREPARING, RUNNING, COLLECTING})`，`CANCELLED` 使用 `cancel_if_current(...)`。若条件更新返回 0 行，说明 TimeoutGuard / 取消路径 / ResourceReclaimer 已经写入终态，Worker 只做资源清理和事件补偿，不再覆盖状态。
 
 ---
 
@@ -1492,6 +1492,7 @@ async def dequeue_waiting(ctx):
 
 
 class WorkerSettings:
+    functions = [func(execute_run, name="execute_run", max_tries=1)]
     cron_jobs = [
         # 每分钟执行一次；不在 cron job 内部自循环。
         cron(reclaim_resources, second=0),
@@ -1754,7 +1755,7 @@ async def stream_events(run_id: UUID, last_event_id: str | None = Header(None)):
 │                    认证层                                 │
 │                                                         │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────────────┐ │
-│  │ JWT Auth │  │API Token │  │ OIDC (v1.1)           │ │
+│  │ JWT Auth │  │API Token │  │ OIDC (Phase 4)         │ │
 │  │(Web 用户)│  │(机器调用)│  │(企业 SSO)             │ │
 │  └─────┬────┘  └─────┬────┘  └───────────┬───────────┘ │
 │        └──────────────┼───────────────────┘             │
