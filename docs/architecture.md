@@ -91,7 +91,9 @@ scheduler.py（定时轮询）
     │               → 写入 Redis 队列（queue:low）
     │               → 若配额不足，Run 保持 queued 状态等待后续重试
     │
-    └── 3. 等待下一轮（默认 30s 间隔）
+    ├── 3. 写入心跳：SET scheduler:heartbeat <timestamp> EX 90
+    │
+    └── 4. 等待下一轮（默认 30s 间隔）
 ```
 
 > **注意：** Scheduler 不直接调用 `worker/tasks/` 中的函数。`worker/tasks/` 中的 arq task 函数仅由 Worker 从 Redis 队列消费时调用。Scheduler 的职责是"创建 Run 记录 + 入队"，不涉及执行逻辑。
@@ -631,6 +633,7 @@ API Token 流程（机器对机器）：
 
 > MVP 使用普通表，先保证主键、外键、迁移和查询语义简单可靠。`run`、`test_result`、`audit.event` 在 Phase 4+ 根据真实数据量迁移到按时间分区；不要在初始 DDL 中把 `PRIMARY KEY(id)` 直接放到按 `created_at/run_id` 分区的表上，否则 PostgreSQL 会因唯一约束未包含分区键而拒绝建表。
 
+```sql
 CREATE EXTENSION IF NOT EXISTS pgcrypto; -- gen_random_uuid()
 CREATE SCHEMA IF NOT EXISTS audit;
 CREATE SCHEMA IF NOT EXISTS analytics;
@@ -935,9 +938,11 @@ CREATE TABLE analytics.daily_metrics (
     flaky_count INT NOT NULL DEFAULT 0,
     UNIQUE (project_id, date)
 );
+```
 
 ### 4.3 索引策略
 
+```sql
 -- 高频查询覆盖索引
 CREATE INDEX idx_run_project_status ON run(project_id, status, created_at DESC);
 CREATE INDEX idx_run_project_created ON run(project_id, created_at DESC);
@@ -962,6 +967,7 @@ CREATE INDEX idx_test_result_flaky ON test_result(suite, name, status);
 -- idx_run_stale 只覆盖 preparing/collecting 的“阶段卡死”阈值扫描。
 CREATE INDEX idx_run_stale ON run(status, status_updated_at) WHERE status IN ('preparing', 'collecting');
 CREATE INDEX idx_run_waiting ON run(priority, created_at) WHERE status = 'queued' AND enqueued_at IS NULL;
+```
 
 ### 4.4 数据生命周期
 
@@ -1415,6 +1421,7 @@ class ResourceReclaimer:
     """
 
     async def reclaim_once(self):
+        await self._detect_dead_workers()
         await self._reclaim_orphan_containers()
         await self._timeout_stale_runs()
         await self._cleanup_expired_streams()
@@ -1490,21 +1497,39 @@ class WorkerSettings:
         cron(reclaim_resources, second=0),
         # 每分钟执行一次，和资源回收错开 30s，回补因配额限制而等待的 Run。
         cron(dequeue_waiting, second=30),
-        # Worker 心跳上报
-        cron(worker_heartbeat, second=15),
     ]
 ```
 
 ### 6.4.1 Worker 心跳
 
-Worker 进程通过 arq cron job 定期上报心跳到 Redis，用于检测 Worker 卡死（非崩溃）：
+arq cron job 在 Worker 执行长任务时无法抢占运行（arq 单 Worker 进程同时只处理一个 job），因此心跳不能依赖 cron job。改为在 `execute_run` 内部通过 `asyncio` 后台任务定期上报：
 
 ```python
-async def worker_heartbeat(ctx):
-    worker_id = ctx["worker_id"]
-    await redis.set(f"worker:{worker_id}:heartbeat", utcnow().isoformat(), ex=90)
+async def _heartbeat_loop(worker_id: str, redis, interval: int = 30):
+    """在 execute_run 协程内作为后台 task 运行，每 interval 秒刷新心跳。"""
+    try:
+        while True:
+            await redis.set(f"worker:{worker_id}:heartbeat", utcnow().isoformat(), ex=90)
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        pass
 
-# ResourceReclaimer 扫描时检查：
+async def execute_run(ctx, run_id: str):
+    # ... claim_for_worker 等前置逻辑 ...
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_loop(ctx["worker_id"], ctx["redis"])
+    )
+    try:
+        # ... 执行逻辑 ...
+    finally:
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
+        # ... 日志归档、release_worker ...
+```
+
+ResourceReclaimer 扫描时调用 `_detect_dead_workers()`：
+
+```python
 async def _detect_dead_workers(self):
     """检测心跳超时的 Worker，标记其持有的 Run 为 failed。"""
     active_runs = await self.run_repo.find_active_with_worker()
@@ -1525,6 +1550,8 @@ async def _detect_dead_workers(self):
 
 ### 6.5 arq Worker 任务入口
 
+> **arq 重试禁用：** `execute_run` 必须在 `WorkerSettings.functions` 中声明 `max_tries=1`，禁止 arq 内置重试（arq 默认 `max_tries=5`）。平台级重试由 `domain.services.execution` 根据 `RetryPolicy` 创建新的 Run attempt，两套重试模型不能并存。
+
 ```python
 async def execute_run(ctx, run_id: str):
     run_repo: RunRepository = ctx["run_repo"]
@@ -1537,7 +1564,7 @@ async def execute_run(ctx, run_id: str):
         return
 
     if run.cancel_requested_at:
-        if await run_repo.cancel_if_current(run.id, expected=RunStatus.QUEUED):
+        if await run_repo.cancel_if_current(run.id, expected=RunStatus.PREPARING):
             await publish_status_change(run.id, "cancelled", None)
         return
 
@@ -1547,20 +1574,21 @@ async def execute_run(ctx, run_id: str):
         # 在测试执行完成、进入结果收集前调用 mark_collecting(run.id)。
         status = await executor.execute(run, run.pipeline)
 
-        updated = await run_repo.finish_if_current(
+        await run_repo.finish_if_current(
             run.id,
             status=status,
-            expected_in={RunStatus.RUNNING, RunStatus.COLLECTING},
+            expected_in={RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.COLLECTING},
         )
-        if updated:
-            await publish_status_change(run.id, status.value, run.summary)
+        await publish_status_change(run.id, status.value, run.summary)
     except Exception as exc:
-        if await run_repo.fail_if_current(
+        await run_repo.fail_if_current(
             run.id,
             expected_in={RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.COLLECTING},
-        ):
-            await publish_status_change(run.id, "failed", {"error": str(exc)})
-        raise
+            message=str(exc),
+        )
+        await publish_status_change(run.id, "failed", {"error": str(exc)})
+        # 不 re-raise：arq job 视为正常完成，避免触发 arq 内置重试。
+        # 平台级重试由 domain.services.execution 根据 RetryPolicy 创建新 Run attempt。
     finally:
         # 无论终态是否由本 Worker 写入，都 best-effort 归档日志
         await log_archive.archive_log_stream(run.id, best_effort=True)
