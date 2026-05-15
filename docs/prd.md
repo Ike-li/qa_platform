@@ -733,6 +733,13 @@ GET    /api/v1/health
 GET    /api/v1/system/config           # 系统配置（admin）
 ```
 
+> **非核心端点（架构文档定义，不在上述 CRUD 列表中）：**
+> - `POST /api/v1/runs/{id}/logs/token` — SSE 签名 URL 生成（备选认证方案）
+> - `GET /metrics` — Prometheus 指标端点
+> - `GET /health` / `GET /ready` — 健康检查与就绪检查
+> - `/r/{run_id}/` — 报告静态托管（通过 presigned URL 或 CDN 分发，非 API 路由）
+> - 历史日志分页查询 — Phase 2 补充，MVP 通过 SSE + S3 降级覆盖
+
 ### 6.3 通用约定
 
 ```text

@@ -1416,6 +1416,7 @@ class TimeoutGuard:
 
 ```python
 from arq import cron
+from arq.worker import func
 
 class ResourceReclaimer:
     """
@@ -1502,20 +1503,24 @@ async def retry_failed_archives(ctx):
 
 
 async def after_job_end(ctx):
-    """arq after_job_end hook：二级保障，补偿异常退出但 Run 未落终态的情况。"""
-    job = ctx.get("job")
-    if not job or job.success:
+    """
+    arq after_job_end hook：二级保障。
+    arq 传入 ctx 包含 job_id, job_try, result, start_ms, finish_ms, success 等字段。
+    若 job 异常退出且 Run 未落终态，补偿标记为 failed。
+    """
+    if ctx.get("success"):
         return
-    run_id = job.args[0] if job.args else None
-    if not run_id:
+    job_id = ctx.get("job_id", "")
+    if not job_id.startswith("run:"):
         return
+    run_id = job_id.removeprefix("run:")
     run_repo: RunRepository = ctx["run_repo"]
     run = await run_repo.get(run_id)
     if run and run.status not in TERMINAL_STATUSES:
         await run_repo.fail_if_current(
             run.id,
             expected_in={RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.COLLECTING},
-            message=f"arq job failed unexpectedly: {job.result}",
+            message=f"arq job failed: {ctx.get('result', 'unknown error')}",
         )
 
 
@@ -1611,22 +1616,24 @@ async def execute_run(ctx, run_id: str):
         # 在测试执行完成、进入结果收集前调用 mark_collecting(run.id)。
         status = await executor.execute(run, run.pipeline)
 
-        await run_repo.finish_if_current(
+        updated = await run_repo.finish_if_current(
             run.id,
             status=status,
             expected_in={RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.COLLECTING},
         )
-        await publish_status_change(run.id, status.value, run.summary)
-        # 发布领域事件，触发 NotificationRule 异步通知
-        await ctx["event_bus"].publish(RunCompletedEvent(run_id=run.id, status=status))
+        if updated:
+            await publish_status_change(run.id, status.value, run.summary)
+            await ctx["event_bus"].publish(RunCompletedEvent(run_id=run.id, status=status))
+        # else: TimeoutGuard/取消/ResourceReclaimer 已写终态，不重复发布
     except Exception as exc:
-        await run_repo.fail_if_current(
+        updated = await run_repo.fail_if_current(
             run.id,
             expected_in={RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.COLLECTING},
             message=str(exc),
         )
-        await publish_status_change(run.id, "failed", {"error": str(exc)})
-        await ctx["event_bus"].publish(RunCompletedEvent(run_id=run.id, status=RunStatus.FAILED))
+        if updated:
+            await publish_status_change(run.id, "failed", {"error": str(exc)})
+            await ctx["event_bus"].publish(RunCompletedEvent(run_id=run.id, status=RunStatus.FAILED))
         # 不 re-raise：arq job 视为正常完成，避免触发 arq 内置重试。
         # 平台级重试由 domain.services.execution 根据 RetryPolicy 创建新 Run attempt。
     finally:
@@ -2169,16 +2176,14 @@ services:
       redis:
         condition: service_healthy
 
-  worker:
+  worker-high:
     build:
       context: .
       dockerfile: deploy/docker/Dockerfile.worker
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock  # Docker socket 挂载（不是 DinD）
-      # 安全提示：生产环境建议使用 Docker Socket Proxy（tecnativa/docker-socket-proxy）
-      # 限制 Worker 只能调用 containers/create、containers/start 等必要 API
+      - /var/run/docker.sock:/var/run/docker.sock
       - workspace:/workspace
-    environment:
+    environment: &worker-env
       - QAP_DATABASE_URL=postgresql+asyncpg://qap:qap@postgres:5432/qaplatform
       - QAP_REDIS_URL=redis://redis:6379/0
       - QAP_S3_ENDPOINT=http://minio:9000
@@ -2186,12 +2191,36 @@ services:
       - QAP_S3_SECRET_KEY=minioadmin
       - QAP_ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - QAP_DOCKER_HOST=unix:///var/run/docker.sock
-      - QAP_WORKER_QUEUE=queue:medium
-    depends_on:
+      - QAP_WORKER_QUEUE=queue:high
+    depends_on: &worker-deps
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  worker-medium:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.worker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - workspace:/workspace
+    environment:
+      <<: *worker-env
+      - QAP_WORKER_QUEUE=queue:medium
+    depends_on: *worker-deps
+
+  worker-low:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.worker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - workspace:/workspace
+    environment:
+      <<: *worker-env
+      - QAP_WORKER_QUEUE=queue:low
+    depends_on: *worker-deps
 
   scheduler:
     build:
