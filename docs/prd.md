@@ -174,7 +174,7 @@ class TestSelector:
     regex: str | None              # 可选用例名正则
     on_empty: "fail" | "skip" | "warn"  # 默认 fail
 
-选择器先应用 include/exclude 路径，再应用 tags/expression/regex。若最终没有发现用例，按 on_empty 处理：fail 产生 status=`failed` 的 Run（属于配置错误，视为基础设施级失败，与测试断言失败语义一致），skip 产生 status=`done` 的 Run（summary 中 total=0 且标记 skipped_reason="no_tests_discovered"），warn 继续执行但在 Run summary 中记录告警。
+选择器先应用 include/exclude 路径，再应用 tags/expression/regex。若最终没有发现用例，按 on_empty 处理：fail 产生 status=`failed` 的 Run（属于配置错误，与 RunStatus.FAILED 语义一致，区别于测试断言失败），skip 产生 status=`done` 的 Run（summary 中 total=0 且标记 skipped_reason="no_tests_discovered"），warn 继续执行但在 Run summary 中记录告警。
 
 class RetryPolicy:
     max_attempts: int              # 默认 1，即不重试
@@ -776,7 +776,7 @@ GET /api/v1/runs?page=1&per_page=20&sort=-created_at&status=failed
 
 ### 7.2 可靠性
 
-- Worker 崩溃后由 arq 重试策略 + Run 状态恢复任务兜底，避免 Run 长期卡在中间状态
+- Worker 崩溃后由 ResourceReclaimer 定期扫描 + Worker 心跳超时检测兜底，避免 Run 长期卡在中间状态
 - 执行超时自动终止 + 状态标记
 - 数据备份：每日全量 + WAL 连续归档
 - 服务可用性目标：99.9%（不含计划维护）
