@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qaplatform"
+version = "0.1.0"
+description = "QA automation execution platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg",
+    "arq>=0.26",
+    "redis>=5.0",
+    "aiobotocore>=2.0",
+    "aiodocker>=0.22",
+    "pydantic-settings>=2.0",
+    "structlog>=24.0",
+    "prometheus-client",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-instrumentation-fastapi",
+    "opentelemetry-instrumentation-sqlalchemy",
+    "opentelemetry-instrumentation-redis",
+    "argon2-cffi>=23.0",
+    "PyJWT>=2.8",
+    "alembic>=1.13",
+    "cryptography>=42.0",
+    "tenacity",
+    "sse-starlette",
+    "httpx",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "testcontainers",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qaplatform"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
