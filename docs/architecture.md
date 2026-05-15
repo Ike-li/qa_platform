@@ -1149,12 +1149,17 @@ class PipelineExecutor:
                 await publish_status_change(run.id, "collecting", None)
                 current_phase = "collect"
 
+            # notify 阶段强制 continue_on_error，通知失败不影响 Run 终态
+            effective_continue_on_error = stage_def.continue_on_error
+            if stage_phase == "notify":
+                effective_continue_on_error = True
+
             plugin = self.registry.get_plugin(stage_def.plugin)
 
             try:
                 result = await self._dispatch(plugin, run, stage_def)
 
-                if result.status == "failed" and not stage_def.continue_on_error:
+                if result.status == "failed" and not effective_continue_on_error:
                     return RunStatus.FAILED
 
             except Exception as e:
@@ -1165,7 +1170,7 @@ class PipelineExecutor:
                 if fresh_run.status in TERMINAL_STATUSES:
                     return fresh_run.status
                 await self._log(run.id, f"Stage '{stage_def.name}' error: {e}")
-                if not stage_def.continue_on_error:
+                if not effective_continue_on_error:
                     return RunStatus.FAILED
 
         return RunStatus.DONE
@@ -1491,13 +1496,44 @@ async def dequeue_waiting(ctx):
     await scheduler.try_dequeue_waiting()
 
 
+async def retry_failed_archives(ctx):
+    log_archive: LogArchiveService = ctx["log_archive"]
+    await log_archive.retry_failed()
+
+
+async def after_job_end(ctx):
+    """arq after_job_end hook：二级保障，补偿异常退出但 Run 未落终态的情况。"""
+    job = ctx.get("job")
+    if not job or job.success:
+        return
+    run_id = job.args[0] if job.args else None
+    if not run_id:
+        return
+    run_repo: RunRepository = ctx["run_repo"]
+    run = await run_repo.get(run_id)
+    if run and run.status not in TERMINAL_STATUSES:
+        await run_repo.fail_if_current(
+            run.id,
+            expected_in={RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.COLLECTING},
+            message=f"arq job failed unexpectedly: {job.result}",
+        )
+
+
 class WorkerSettings:
+    """
+    每个 Worker 进程通过环境变量 QAP_WORKER_QUEUE 指定监听的队列。
+    部署时按优先级启动多个 Worker 实例：
+    - worker-high:   QAP_WORKER_QUEUE=queue:high   (replicas=2)
+    - worker-medium: QAP_WORKER_QUEUE=queue:medium  (replicas=2)
+    - worker-low:    QAP_WORKER_QUEUE=queue:low     (replicas=1)
+    """
+    queue_name = os.environ.get("QAP_WORKER_QUEUE", "queue:medium")
     functions = [func(execute_run, name="execute_run", max_tries=1)]
+    after_job_end = after_job_end
     cron_jobs = [
-        # 每分钟执行一次；不在 cron job 内部自循环。
         cron(reclaim_resources, second=0),
-        # 每分钟执行一次，和资源回收错开 30s，回补因配额限制而等待的 Run。
         cron(dequeue_waiting, second=30),
+        cron(retry_failed_archives, second=45),
     ]
 ```
 
@@ -1581,6 +1617,8 @@ async def execute_run(ctx, run_id: str):
             expected_in={RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.COLLECTING},
         )
         await publish_status_change(run.id, status.value, run.summary)
+        # 发布领域事件，触发 NotificationRule 异步通知
+        await ctx["event_bus"].publish(RunCompletedEvent(run_id=run.id, status=status))
     except Exception as exc:
         await run_repo.fail_if_current(
             run.id,
@@ -1588,6 +1626,7 @@ async def execute_run(ctx, run_id: str):
             message=str(exc),
         )
         await publish_status_change(run.id, "failed", {"error": str(exc)})
+        await ctx["event_bus"].publish(RunCompletedEvent(run_id=run.id, status=RunStatus.FAILED))
         # 不 re-raise：arq job 视为正常完成，避免触发 arq 内置重试。
         # 平台级重试由 domain.services.execution 根据 RetryPolicy 创建新 Run attempt。
     finally:
@@ -2117,13 +2156,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://qap:qap@postgres:5432/qaplatform
-      - REDIS_URL=redis://redis:6379/0
-      - S3_ENDPOINT=http://minio:9000
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - JWT_SECRET=${JWT_SECRET}
+      - QAP_DATABASE_URL=postgresql+asyncpg://qap:qap@postgres:5432/qaplatform
+      - QAP_REDIS_URL=redis://redis:6379/0
+      - QAP_S3_ENDPOINT=http://minio:9000
+      - QAP_S3_ACCESS_KEY=minioadmin
+      - QAP_S3_SECRET_KEY=minioadmin
+      - QAP_ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - QAP_JWT_SECRET=${JWT_SECRET}
     depends_on:
       postgres:
         condition: service_healthy
@@ -2140,10 +2179,14 @@ services:
       # 限制 Worker 只能调用 containers/create、containers/start 等必要 API
       - workspace:/workspace
     environment:
-      - DATABASE_URL=postgresql+asyncpg://qap:qap@postgres:5432/qaplatform
-      - REDIS_URL=redis://redis:6379/0
-      - S3_ENDPOINT=http://minio:9000
-      - DOCKER_HOST=unix:///var/run/docker.sock
+      - QAP_DATABASE_URL=postgresql+asyncpg://qap:qap@postgres:5432/qaplatform
+      - QAP_REDIS_URL=redis://redis:6379/0
+      - QAP_S3_ENDPOINT=http://minio:9000
+      - QAP_S3_ACCESS_KEY=minioadmin
+      - QAP_S3_SECRET_KEY=minioadmin
+      - QAP_ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - QAP_DOCKER_HOST=unix:///var/run/docker.sock
+      - QAP_WORKER_QUEUE=queue:medium
     depends_on:
       postgres:
         condition: service_healthy
@@ -2156,8 +2199,8 @@ services:
       dockerfile: deploy/docker/Dockerfile.worker
     command: ["python", "-m", "qaplatform.worker.scheduler"]
     environment:
-      - DATABASE_URL=postgresql+asyncpg://qap:qap@postgres:5432/qaplatform
-      - REDIS_URL=redis://redis:6379/0
+      - QAP_DATABASE_URL=postgresql+asyncpg://qap:qap@postgres:5432/qaplatform
+      - QAP_REDIS_URL=redis://redis:6379/0
     healthcheck:
       test: ["CMD", "python", "-c", "import redis; r=redis.from_url('redis://redis:6379/0'); assert r.exists('scheduler:heartbeat')"]
       interval: 30s
@@ -2253,7 +2296,7 @@ services:
     volumes:
       - workspace:/workspace
     environment:
-      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      - QAP_DOCKER_HOST=tcp://docker-socket-proxy:2375
     depends_on:
       docker-socket-proxy:
         condition: service_started
