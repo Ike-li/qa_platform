@@ -103,14 +103,39 @@ class TestArtifactDownloadHelpers:
 
         from qaplatform.api.v1.artifacts import _get_artifact_or_404
 
+        tenant_id = uuid4()
+        run_id = uuid4()
+
         mock_repos = MagicMock()
         mock_repos.artifact = AsyncMock()
-        artifact = MagicMock(tenant_id=uuid4())
+        artifact = MagicMock(run_id=run_id)
         mock_repos.artifact.get_by_id.return_value = artifact
 
-        different_tenant = uuid4()
+        mock_repos.run = AsyncMock()
+        run = MagicMock(tenant_id=uuid4())  # different tenant
+        mock_repos.run.get_by_id.return_value = run
+
         with pytest.raises(HTTPException) as exc_info:
-            await _get_artifact_or_404(mock_repos, uuid4(), different_tenant)
+            await _get_artifact_or_404(mock_repos, uuid4(), tenant_id)
+
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_artifact_or_404_run_not_found(self):
+        from fastapi import HTTPException
+
+        from qaplatform.api.v1.artifacts import _get_artifact_or_404
+
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+        artifact = MagicMock(run_id=uuid4())
+        mock_repos.artifact.get_by_id.return_value = artifact
+
+        mock_repos.run = AsyncMock()
+        mock_repos.run.get_by_id.return_value = None
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _get_artifact_or_404(mock_repos, uuid4(), uuid4())
 
         assert exc_info.value.status_code == 404
 
@@ -119,10 +144,16 @@ class TestArtifactDownloadHelpers:
         from qaplatform.api.v1.artifacts import _get_artifact_or_404
 
         tenant_id = uuid4()
+        run_id = uuid4()
+
         mock_repos = MagicMock()
         mock_repos.artifact = AsyncMock()
-        artifact = MagicMock(tenant_id=tenant_id)
+        artifact = MagicMock(run_id=run_id)
         mock_repos.artifact.get_by_id.return_value = artifact
+
+        mock_repos.run = AsyncMock()
+        run = MagicMock(tenant_id=tenant_id)
+        mock_repos.run.get_by_id.return_value = run
 
         result = await _get_artifact_or_404(mock_repos, uuid4(), tenant_id)
 

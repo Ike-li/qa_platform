@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -120,7 +121,7 @@ async def client(app):
 
 
 @pytest.mark.asyncio
-async def test_trigger_run(client, mock_pipeline_repo, mock_project_repo, mock_environment_repo, mock_run_repo, tenant_id):
+async def test_trigger_run(client, mock_pipeline_repo, mock_project_repo, mock_environment_repo, mock_run_repo, tenant_id, app):
     project_id = uuid.uuid4()
     pipeline_id = uuid.uuid4()
     env_id = uuid.uuid4()
@@ -139,6 +140,20 @@ async def test_trigger_run(client, mock_pipeline_repo, mock_project_repo, mock_e
     mock_project_repo.get_by_id.return_value = proj
     mock_run_repo.create.return_value = run
 
+    # Mock arq_pool on container
+    mock_arq = AsyncMock()
+    mock_arq.enqueue_job.return_value = MagicMock(job_id=f"run:{run.id}")
+    app.state.container.arq_pool = mock_arq
+    app.state.container.settings = MagicMock(max_concurrent_runs=5, max_concurrent_per_project=3)
+    mock_run_repo.count_active_or_enqueued.return_value = 0
+    mock_run_repo.count_active_or_enqueued_by_project.return_value = 0
+
+    @asynccontextmanager
+    async def _fake_lock():
+        yield
+
+    mock_run_repo.scheduler_lock = _fake_lock
+
     resp = await client.post(
         "/api/v1/runs",
         json={"pipeline_id": str(pipeline_id)},
@@ -146,6 +161,38 @@ async def test_trigger_run(client, mock_pipeline_repo, mock_project_repo, mock_e
     )
     assert resp.status_code == 201
     assert resp.json()["pipeline_id"] == str(pipeline_id)
+    mock_arq.enqueue_job.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_enqueues_without_arq_pool(client, mock_pipeline_repo, mock_project_repo, mock_environment_repo, mock_run_repo, tenant_id, app):
+    """When arq_pool is None, run stays queued (cron will pick it up)."""
+    project_id = uuid.uuid4()
+    pipeline_id = uuid.uuid4()
+    env_id = uuid.uuid4()
+    run = _make_orm_run(project_id=project_id, pipeline_id=pipeline_id, environment_id=env_id, tenant_id=tenant_id)
+
+    pl = MagicMock()
+    pl.id = pipeline_id
+    pl.project_id = project_id
+    mock_pipeline_repo.get_by_id.return_value = pl
+
+    proj = MagicMock()
+    proj.id = project_id
+    proj.tenant_id = tenant_id
+    proj.default_branch = "main"
+    proj.default_env_id = env_id
+    mock_project_repo.get_by_id.return_value = proj
+    mock_run_repo.create.return_value = run
+
+    app.state.container.arq_pool = None
+
+    resp = await client.post(
+        "/api/v1/runs",
+        json={"pipeline_id": str(pipeline_id)},
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 201
 
 
 @pytest.mark.asyncio
@@ -193,15 +240,18 @@ async def test_get_run_not_found(client, mock_run_repo):
 
 
 @pytest.mark.asyncio
-async def test_cancel_run(client, mock_run_repo, tenant_id):
+async def test_cancel_run(client, mock_run_repo, tenant_id, app):
     from qaplatform.infra.database.models import RunStatusEnum
 
     run = _make_orm_run(status=RunStatusEnum.RUNNING, tenant_id=tenant_id)
     mock_run_repo.get_by_id.side_effect = [run, run]
     mock_run_repo.cancel_if_current.return_value = True
 
+    app.state.container.redis_client = AsyncMock()
+
     resp = await client.post(f"/api/v1/runs/{run.id}/cancel", headers={"Authorization": "Bearer fake"})
     assert resp.status_code == 200
+    app.state.container.redis_client.publish.assert_called_once()
 
 
 @pytest.mark.asyncio
