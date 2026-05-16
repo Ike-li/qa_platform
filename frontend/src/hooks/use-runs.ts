@@ -30,7 +30,7 @@ export function useRun(id: string) {
 export function useTriggerRun() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (runData: { pipeline_id: string; branch?: string; env_overrides?: Record<string, string>; params?: Record<string, any> }) => {
+    mutationFn: async (runData: { pipeline_id: string; branch?: string; env_overrides?: Record<string, string>; params?: Record<string, unknown> }) => {
       const { data } = await api.post<Run>("/runs", runData);
       return data;
     },

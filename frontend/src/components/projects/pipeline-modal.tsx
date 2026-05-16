@@ -156,7 +156,7 @@ export function PipelineModal({
       await deletePipeline();
       toast.success("Pipeline deleted");
       onOpenChange(false);
-    } catch (error: unknown) {
+    } catch {
       toast.error("Failed to delete pipeline");
     }
   };
