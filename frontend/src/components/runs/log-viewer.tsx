@@ -27,17 +27,39 @@ export function LogViewer({ runId }: { runId: string }) {
   const [search, setSearch] = useState('');
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const seenEventIdsRef = useRef<Set<string>>(new Set());
 
-  const { data, status } = useSSE<LogMessage | string>(`/api/v1/runs/${runId}/logs/stream`);
+  const { data, status, lastEventId } = useSSE<LogMessage | string | Record<string, unknown>>(
+    `/api/v1/runs/${runId}/logs`
+  );
+
+  useEffect(() => {
+    setLogs([]);
+    seenEventIdsRef.current.clear();
+  }, [runId]);
 
   useEffect(() => {
     if (data) {
-      const logEntry: LogMessage = typeof data === 'string'
+      if (lastEventId) {
+        if (seenEventIdsRef.current.has(lastEventId)) {
+          return;
+        }
+        seenEventIdsRef.current.add(lastEventId);
+      }
+
+      const logEntry: LogMessage | null = typeof data === 'string'
         ? { message: data }
-        : data;
+        : typeof data.message === 'string'
+          ? {
+              timestamp: typeof data.timestamp === 'string' ? data.timestamp : undefined,
+              level: typeof data.level === 'string' ? data.level : undefined,
+              message: data.message,
+            }
+          : null;
+      if (!logEntry) return;
       setLogs((prev) => [...prev, logEntry]);
     }
-  }, [data]);
+  }, [data, lastEventId]);
 
   const filteredLogs = useMemo(() => {
     if (!search) return logs;

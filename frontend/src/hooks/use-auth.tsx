@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import api, { setAccessToken, setOnAuthFailure } from "../lib/api";
 
 interface AuthContextType {
@@ -17,14 +18,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
 
   const logout = useCallback(async () => {
-    setAccessToken(null);
-    setIsAuthenticated(false);
     try {
       await api.post("/auth/logout");
     } catch {
-      // best-effort
+      toast.error("Logout request failed. Local session was cleared.");
+    } finally {
+      setAccessToken(null);
+      setIsAuthenticated(false);
+      navigate("/login", { replace: true });
     }
-    navigate("/login", { replace: true });
   }, [navigate]);
 
   useEffect(() => {

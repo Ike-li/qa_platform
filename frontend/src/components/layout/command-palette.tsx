@@ -14,6 +14,7 @@ import {
 
 export function CommandPalette() {
   const [open, setOpen] = React.useState(false);
+  const paletteRef = React.useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
   const { data: projects } = useProjects({ per_page: 5 });
@@ -36,8 +37,54 @@ export function CommandPalette() {
     command();
   }, []);
 
+  const trapFocus = React.useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Tab") return;
+
+    const palette = paletteRef.current;
+    if (!palette) return;
+
+    const focusable = Array.from(
+      palette.querySelectorAll<HTMLElement>(
+        [
+          "a[href]",
+          "button:not([disabled])",
+          "input:not([disabled])",
+          "select:not([disabled])",
+          "textarea:not([disabled])",
+          "[tabindex]:not([tabindex='-1'])",
+        ].join(",")
+      )
+    ).filter((element) => !element.hasAttribute("disabled") && element.offsetParent !== null);
+
+    if (focusable.length === 0) {
+      event.preventDefault();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const activeElement = document.activeElement;
+
+    if (event.shiftKey && activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }, []);
+
   return (
-    <CommandDialog open={open} onOpenChange={setOpen}>
+    <CommandDialog
+      open={open}
+      onOpenChange={setOpen}
+      contentProps={{
+        ref: paletteRef,
+        role: "dialog",
+        "aria-label": "Command palette",
+        onKeyDown: trapFocus,
+      }}
+    >
       <CommandInput placeholder="Type a command or search..." />
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>

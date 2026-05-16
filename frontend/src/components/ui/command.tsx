@@ -20,12 +20,19 @@ const Command = React.forwardRef<
 ))
 Command.displayName = CommandPrimitive.displayName
 
-interface CommandDialogProps extends React.ComponentPropsWithoutRef<typeof Dialog> {}
+interface CommandDialogProps extends React.ComponentPropsWithoutRef<typeof Dialog> {
+  contentProps?: React.ComponentPropsWithRef<typeof DialogContent>
+}
 
-const CommandDialog = ({ children, ...props }: CommandDialogProps) => {
+const CommandDialog = ({ children, contentProps, ...props }: CommandDialogProps) => {
+  const { className, ...dialogContentProps } = contentProps ?? {}
+
   return (
     <Dialog {...props}>
-      <DialogContent className="overflow-hidden p-0 shadow-lg">
+      <DialogContent
+        className={cn("overflow-hidden p-0 shadow-lg", className)}
+        {...dialogContentProps}
+      >
         <DialogTitle className="sr-only">Command Palette</DialogTitle>
         <DialogDescription className="sr-only">Search for projects, runs, and settings.</DialogDescription>
         <Command className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-ink-subtle [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-2 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5">
