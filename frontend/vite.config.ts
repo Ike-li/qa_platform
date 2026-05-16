@@ -9,6 +9,37 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) {
+            return
+          }
+
+          if (id.includes("@tanstack/react-query")) {
+            return "query"
+          }
+
+          if (id.includes("recharts")) {
+            return "charts"
+          }
+
+          if (id.includes("@radix-ui")) {
+            return "ui"
+          }
+
+          if (
+            id.includes("react") ||
+            id.includes("react-dom") ||
+            id.includes("react-router-dom")
+          ) {
+            return "vendor"
+          }
+        },
+      },
+    },
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

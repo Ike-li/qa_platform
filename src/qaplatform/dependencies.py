@@ -163,6 +163,8 @@ class DependencyContainer:
             await self.db_engine.dispose()
         if self.redis_client is not None:
             await self.redis_client.aclose()
+        if self.arq_pool is not None:
+            await self.arq_pool.close()
 
 
 class RepositoryBundle:
