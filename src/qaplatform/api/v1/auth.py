@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -37,19 +37,13 @@ class LoginRequest(BaseModel):
 
 class TokenPair(BaseModel):
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
 
 
 class LoginResponse(BaseModel):
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
     user: dict
-
-
-class RefreshRequest(BaseModel):
-    refresh_token: str
 
 
 class CreateTokenRequest(BaseModel):
@@ -78,6 +72,31 @@ class ApiTokenListItem(BaseModel):
 
 
 # --- Helpers ---
+
+
+REFRESH_TOKEN_COOKIE = "refresh_token"
+
+
+def _set_refresh_cookie(response: Response, token: str, max_age: int) -> None:
+    response.set_cookie(
+        key=REFRESH_TOKEN_COOKIE,
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=max_age,
+        path="/api/v1/auth",
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=REFRESH_TOKEN_COOKIE,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/api/v1/auth",
+    )
 
 
 def _get_container() -> DependencyContainer:
@@ -130,7 +149,7 @@ async def _resolve_tenant_id(
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(body: LoginRequest) -> LoginResponse:
+async def login(body: LoginRequest, response: Response) -> LoginResponse:
     async with _new_session() as session:
         user_repo = UserRepository(session)
         tenant_id = await _resolve_tenant_id(session, body.tenant_id)
@@ -166,16 +185,17 @@ async def login(body: LoginRequest) -> LoginResponse:
         await user_repo.update_last_login(user, datetime.now(timezone.utc))
 
     jwt_svc = _get_jwt_service()
+    settings = _get_container().settings
     access_token = jwt_svc.create_access_token(
         user_id=str(user.id),
         role=user.role,
         tenant_id=str(user.tenant_id),
     )
     refresh_token = jwt_svc.create_refresh_token(user_id=str(user.id))
+    _set_refresh_cookie(response, refresh_token, settings.jwt_refresh_token_ttl)
 
     return LoginResponse(
         access_token=access_token,
-        refresh_token=refresh_token,
         user={
             "id": str(user.id),
             "username": user.username,
@@ -187,17 +207,29 @@ async def login(body: LoginRequest) -> LoginResponse:
 
 
 @router.post("/refresh", response_model=TokenPair)
-async def refresh(body: RefreshRequest) -> TokenPair:
+async def refresh(
+    response: Response,
+    refresh_token: str | None = Cookie(None, alias=REFRESH_TOKEN_COOKIE),
+) -> TokenPair:
+    if refresh_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing refresh token",
+        )
+
     jwt_svc = _get_jwt_service()
+    settings = _get_container().settings
     try:
-        payload = jwt_svc.decode_token(body.refresh_token)
+        payload = jwt_svc.decode_token(refresh_token)
     except Exception:
+        _clear_refresh_cookie(response)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
         )
 
     if payload.get("type") != "refresh":
+        _clear_refresh_cookie(response)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token type",
@@ -210,6 +242,7 @@ async def refresh(body: RefreshRequest) -> TokenPair:
         user: AppUser | None = await user_repo.get_by_id(UUID(user_id))
 
         if user is None or not user.is_active:
+            _clear_refresh_cookie(response)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found or deactivated",
@@ -220,12 +253,17 @@ async def refresh(body: RefreshRequest) -> TokenPair:
         role=user.role,
         tenant_id=str(user.tenant_id),
     )
-    refresh_token = jwt_svc.create_refresh_token(user_id=str(user.id))
+    new_refresh_token = jwt_svc.create_refresh_token(user_id=str(user.id))
+    _set_refresh_cookie(response, new_refresh_token, settings.jwt_refresh_token_ttl)
 
     return TokenPair(
         access_token=access_token,
-        refresh_token=refresh_token,
     )
+
+
+@router.post("/logout", status_code=204)
+async def logout(response: Response) -> None:
+    _clear_refresh_cookie(response)
 
 
 @router.post("/tokens", response_model=ApiTokenResponse, status_code=201)
