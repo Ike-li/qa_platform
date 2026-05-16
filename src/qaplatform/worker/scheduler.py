@@ -29,11 +29,11 @@ PRIORITY_QUEUES: dict[Priority, str] = {
 }
 
 TRIGGER_PRIORITY: dict[str, Priority] = {
-    "manual": Priority.HIGH,
+    "manual": Priority.MEDIUM,
     "webhook": Priority.MEDIUM,
     "api": Priority.MEDIUM,
     "event": Priority.MEDIUM,
-    "schedule": Priority.LOW,
+    "schedule": Priority.MEDIUM,
 }
 
 
