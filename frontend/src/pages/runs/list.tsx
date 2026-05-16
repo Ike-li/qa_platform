@@ -1,7 +1,8 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { 
-  GitBranch, 
-  Clock, 
+import {
+  GitBranch,
+  Clock,
   User,
   ArrowRight
 } from "lucide-react";
@@ -16,7 +17,8 @@ import { usePageTitle } from "../../hooks/use-page-title";
 
 export default function Runs() {
   usePageTitle("Runs");
-  const { data, isLoading } = useRuns({ per_page: 20 });
+  const [page, setPage] = useState(1);
+  const { data, isLoading, isError } = useRuns({ per_page: 20, page });
 
   return (
     <div className="space-y-6">
@@ -27,6 +29,14 @@ export default function Runs() {
         </div>
       </div>
 
+      {isError && (
+        <div className="rounded-xl border border-status-failed/20 bg-status-failed/5 p-6 text-center">
+          <p className="text-sm text-status-failed">Failed to load runs.</p>
+          <Button variant="outline" size="sm" className="mt-3" onClick={() => setPage(1)}>Retry</Button>
+        </div>
+      )}
+
+      {!isError && (
       <div className="rounded-xl border border-hairline bg-surface-1 overflow-hidden">
         <table className="w-full text-left text-sm">
           <thead>
@@ -102,13 +112,14 @@ export default function Runs() {
           </tbody>
         </table>
       </div>
-      
+      )}
+
       {data && data.total > data.per_page && (
         <div className="flex items-center justify-between px-2">
           <p className="text-xs text-ink-tertiary">Showing {data.data.length} of {data.total} runs</p>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={data.page === 1}>Previous</Button>
-            <Button variant="outline" size="sm" disabled={data.page * data.per_page >= data.total}>Next</Button>
+            <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(p => p - 1)}>Previous</Button>
+            <Button variant="outline" size="sm" disabled={page * data.per_page >= data.total} onClick={() => setPage(p => p + 1)}>Next</Button>
           </div>
         </div>
       )}

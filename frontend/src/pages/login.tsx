@@ -57,8 +57,9 @@ export default function Login() {
           )}
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-ink-muted">Username</label>
+            <label htmlFor="username" className="text-sm font-medium text-ink-muted">Username</label>
             <input
+              id="username"
               type="text"
               {...register("username")}
               className="w-full rounded-md border border-hairline-strong bg-surface-1 px-3 py-2 text-sm placeholder:text-ink-tertiary focus:border-primary-focus focus:outline-none focus:ring-1 focus:ring-primary-focus"
@@ -68,8 +69,9 @@ export default function Login() {
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-ink-muted">Password</label>
+            <label htmlFor="password" className="text-sm font-medium text-ink-muted">Password</label>
             <input
+              id="password"
               type="password"
               {...register("password")}
               className="w-full rounded-md border border-hairline-strong bg-surface-1 px-3 py-2 text-sm placeholder:text-ink-tertiary focus:border-primary-focus focus:outline-none focus:ring-1 focus:ring-primary-focus"

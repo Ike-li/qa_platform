@@ -27,13 +27,13 @@ const queryClient = new QueryClient();
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <BrowserRouter>
+      <BrowserRouter>
+        <AuthProvider>
           <ErrorBoundary>
             <Suspense fallback={<PageLoader />}>
               <Routes>
                 <Route path="/login" element={<Login />} />
-                
+
                 <Route element={<ProtectedRoute />}>
                   <Route element={<AppLayout />}>
                     <Route path="/" element={<Navigate to="/projects" replace />} />
@@ -42,7 +42,6 @@ export default function App() {
                     <Route path="/runs" element={<Runs />} />
                     <Route path="/runs/:id" element={<RunDetail />} />
                     <Route path="/settings" element={<Settings />} />
-                    {/* 404 Route */}
                     <Route path="*" element={
                       <div className="flex h-[50vh] flex-col items-center justify-center text-center">
                         <h2 className="text-2xl font-semibold">404 - Not Found</h2>
@@ -54,9 +53,9 @@ export default function App() {
               </Routes>
             </Suspense>
           </ErrorBoundary>
-        </BrowserRouter>
-        <Toaster theme="dark" position="bottom-right" closeButton />
-      </AuthProvider>
+          <Toaster theme="dark" position="bottom-right" closeButton />
+        </AuthProvider>
+      </BrowserRouter>
     </QueryClientProvider>
   );
 }
