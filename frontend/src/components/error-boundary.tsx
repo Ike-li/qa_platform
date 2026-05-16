@@ -40,7 +40,7 @@ export class ErrorBoundary extends Component<Props, State> {
             <p className="mt-2 text-sm text-ink-subtle">
               我们遇到了一个意外错误。你可以重试，或稍后再回来查看。
             </p>
-            {this.state.error?.message && (
+            {import.meta.env.DEV && this.state.error?.message && (
               <p className="mt-4 max-w-full truncate rounded-md border border-hairline bg-canvas px-3 py-2 font-mono text-xs text-ink-tertiary">
                 {this.state.error.message}
               </p>

@@ -2,6 +2,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../lib/api";
 import type { Project, PaginatedResponse, Pipeline, Environment } from "../types/api";
 
+function unwrapPaginated<T>(value: T[] | PaginatedResponse<T>): T[] {
+  return Array.isArray(value) ? value : value.data;
+}
+
 export function useProjects(params?: { page?: number; per_page?: number; search?: string; status?: string }) {
   return useQuery({
     queryKey: ["projects", params],
@@ -68,8 +72,8 @@ export function useProjectPipelines(projectId: string) {
   return useQuery({
     queryKey: ["projects", projectId, "pipelines"],
     queryFn: async () => {
-      const { data } = await api.get<Pipeline[]>(`/projects/${projectId}/pipelines`);
-      return data;
+      const { data } = await api.get<Pipeline[] | PaginatedResponse<Pipeline>>(`/projects/${projectId}/pipelines`);
+      return unwrapPaginated(data);
     },
     enabled: !!projectId,
     staleTime: 60_000,
@@ -93,8 +97,8 @@ export function useProjectEnvironments(projectId: string) {
   return useQuery({
     queryKey: ["projects", projectId, "environments"],
     queryFn: async () => {
-      const { data } = await api.get<Environment[]>(`/projects/${projectId}/environments`);
-      return data;
+      const { data } = await api.get<Environment[] | PaginatedResponse<Environment>>(`/projects/${projectId}/environments`);
+      return unwrapPaginated(data);
     },
     enabled: !!projectId,
     staleTime: 60_000,
