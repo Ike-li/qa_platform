@@ -14,7 +14,7 @@ export default function Projects() {
   usePageTitle("Projects");
   const [search, setSearch] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const { data, isLoading } = useProjects({ search });
+  const { data, isLoading, isError } = useProjects({ search });
 
   return (
     <div className="space-y-6">
@@ -41,7 +41,12 @@ export default function Projects() {
         />
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <div className="rounded-xl border border-status-failed/20 bg-status-failed/5 p-6 text-center">
+          <p className="text-sm text-status-failed">Failed to load projects.</p>
+          <Button variant="outline" size="sm" className="mt-3" onClick={() => setSearch("")}>Retry</Button>
+        </div>
+      ) : isLoading ? (
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3].map((i) => (
             <Skeleton key={i} className="h-[180px] rounded-xl border border-hairline bg-surface-1" />

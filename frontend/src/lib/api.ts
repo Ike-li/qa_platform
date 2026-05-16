@@ -19,6 +19,10 @@ export const setOnAuthFailure = (handler: () => void) => {
   onAuthFailure = handler;
 };
 
+let refreshPromise: Promise<string> | null = null;
+
+const AUTH_PATHS = ["/auth/login", "/auth/refresh", "/auth/logout"];
+
 api.interceptors.request.use((config) => {
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`;
@@ -30,17 +34,29 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    const requestPath = originalRequest?.url || "";
+
+    if (
+      error.response?.status === 401 &&
+      !originalRequest._retry &&
+      !AUTH_PATHS.some((p) => requestPath.includes(p))
+    ) {
       originalRequest._retry = true;
       try {
-        const response = await axios.post("/api/v1/auth/refresh", null, {
-          withCredentials: true,
-        });
+        if (!refreshPromise) {
+          refreshPromise = axios
+            .post("/api/v1/auth/refresh", null, { withCredentials: true })
+            .then((res) => {
+              setAccessToken(res.data.access_token);
+              return res.data.access_token;
+            })
+            .finally(() => {
+              refreshPromise = null;
+            });
+        }
 
-        const { access_token } = response.data;
-        setAccessToken(access_token);
-
-        originalRequest.headers.Authorization = `Bearer ${access_token}`;
+        const token = await refreshPromise;
+        originalRequest.headers.Authorization = `Bearer ${token}`;
         return api(originalRequest);
       } catch (refreshError) {
         setAccessToken(null);
