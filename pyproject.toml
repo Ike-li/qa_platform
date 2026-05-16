@@ -17,6 +17,7 @@ dependencies = [
     "aiobotocore>=2.0",
     "aiodocker>=0.22",
     "pydantic-settings>=2.0",
+    "email-validator>=2.0",
     "structlog>=24.0",
     "prometheus-client",
     "opentelemetry-api",
