@@ -221,13 +221,17 @@ async def cancel_run(
     if not cancelled:
         raise HTTPException(status_code=409, detail="Run status changed concurrently")
 
+    previous_status = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
+
     # Notify worker to stop the container
     container = request.app.state.container
     redis = getattr(container, "redis_client", None)
     if redis is not None:
         from qaplatform.engine.cancel import publish_cancel
+        from qaplatform.engine.events import publish_status_event
 
         await publish_cancel(redis, run_id)
+        await publish_status_event(redis, run_id, "cancelled", previous=previous_status)
 
     run = await repos.run.get_by_id(run_id)
     return _to_run_response(run)

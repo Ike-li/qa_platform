@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
 import shutil
 import tempfile
@@ -19,8 +20,18 @@ from qaplatform.engine.docker_backend import (
     ResourceLimits,
     SandboxSecurity,
 )
+from qaplatform.engine.events import publish_status_event
 from qaplatform.engine.log_stream import LogStream
 from qaplatform.plugins.registry import PluginRegistry
+
+_ARTIFACT_TYPE_BY_EXT = {
+    ".xml": "junit",
+    ".html": "report",
+    ".htm": "report",
+    ".json": "json",
+    ".log": "log",
+    ".txt": "log",
+}
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +143,8 @@ class RunExecutor:
         s3_client: Any = None,
         s3_bucket: str = "qa-platform",
         workspace_dir: str = "/workspace",
+        artifact_repo: Any = None,
+        redis: Any = None,
     ) -> None:
         self.backend = backend
         self.log_stream = log_stream
@@ -140,6 +153,11 @@ class RunExecutor:
         self.s3_client = s3_client
         self.s3_bucket = s3_bucket
         self.workspace_dir = workspace_dir
+        self.artifact_repo = artifact_repo
+        self.redis = redis
+
+    async def _publish(self, run_id: str, status: str, previous: str | None = None) -> None:
+        await publish_status_event(self.redis, run_id, status, previous=previous)
 
     async def execute(self, run: Run, pipeline: PipelineConfig) -> RunStatus:
         """Execute a full pipeline run. Returns the terminal RunStatus."""
@@ -157,6 +175,7 @@ class RunExecutor:
 
             # 3. Run all stages
             await self.run_repo.mark_running(run_id)
+            await self._publish(run_id, RunStatus.RUNNING.value, previous=RunStatus.PREPARING.value)
             exit_result = await self._run_stages(run, pipeline, working_dir)
 
             if exit_result.exit_code != 0:
@@ -168,6 +187,7 @@ class RunExecutor:
 
             # 4. Collect results
             await self.run_repo.mark_collecting(run_id)
+            await self._publish(run_id, RunStatus.COLLECTING.value, previous=RunStatus.RUNNING.value)
             await self.log_stream.write_log(run_id, "Collecting test results...")
 
             collector = self.plugin_registry.get_collector("junit")
@@ -205,6 +225,7 @@ class RunExecutor:
                 summary=summary,
             )
             if updated:
+                await self._publish(run_id, status.value, previous=RunStatus.COLLECTING.value)
                 await self.log_stream.write_log(run_id, f"Run completed: {status.value}")
 
             return status
@@ -213,7 +234,9 @@ class RunExecutor:
             raise
         except Exception as exc:
             log.exception("execution failed for run %s", run_id)
-            await self.run_repo.fail_if_current(run_id, message=str(exc))
+            failed = await self.run_repo.fail_if_current(run_id, message=str(exc))
+            if failed:
+                await self._publish(run_id, RunStatus.FAILED.value)
             return RunStatus.FAILED
         finally:
             try:
@@ -326,7 +349,7 @@ class RunExecutor:
             log.debug("log streaming ended for container %s", execution_id)
 
     async def _upload_artifacts(self, run_id: str, working_dir: Path) -> None:
-        """Upload result artifacts from working directory to S3."""
+        """Upload result artifacts from working directory to S3 and record rows."""
         results_dir = working_dir / "results"
         if not results_dir.exists():
             return
@@ -342,9 +365,31 @@ class RunExecutor:
                     Key=s3_key,
                     Body=content,
                 )
-                await self.log_stream.write_log(
-                    run_id,
-                    f"Uploaded artifact: {artifact_path.name}",
-                )
             except Exception:
                 log.warning("failed to upload artifact %s", artifact_path)
+                continue
+
+            if self.artifact_repo is not None:
+                ext = artifact_path.suffix.lower()
+                artifact_type = _ARTIFACT_TYPE_BY_EXT.get(ext, "other")
+                mime_type, _ = mimetypes.guess_type(artifact_path.name)
+                try:
+                    await self.artifact_repo.create(
+                        run_id=UUID(run_id) if isinstance(run_id, str) else run_id,
+                        type=artifact_type,
+                        name=artifact_path.name,
+                        storage_path=s3_key,
+                        size_bytes=len(content),
+                        mime_type=mime_type or "application/octet-stream",
+                    )
+                except Exception:
+                    log.warning(
+                        "failed to record artifact row for %s",
+                        artifact_path,
+                        exc_info=True,
+                    )
+
+            await self.log_stream.write_log(
+                run_id,
+                f"Uploaded artifact: {artifact_path.name}",
+            )

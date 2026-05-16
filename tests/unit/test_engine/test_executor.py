@@ -115,3 +115,92 @@ class TestExecutorUsesSourcePlugin:
         dest = Path("/tmp/test")
         with pytest.raises(RuntimeError, match="git clone failed"):
             await executor._clone_repo(sample_run, dest)
+
+
+class TestUploadArtifacts:
+    """Verify _upload_artifacts uploads to S3 AND writes Artifact rows."""
+
+    @pytest.mark.asyncio
+    async def test_upload_writes_artifact_rows_with_inferred_type_and_mime(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
+    ):
+        s3 = AsyncMock()
+        s3.put_object.return_value = None
+        artifact_repo = AsyncMock()
+
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+            s3_client=s3,
+            s3_bucket="test-bucket",
+            artifact_repo=artifact_repo,
+        )
+
+        results_dir = tmp_path / "results"
+        results_dir.mkdir()
+        (results_dir / "junit.xml").write_bytes(b"<testsuites/>")
+        (results_dir / "report.html").write_bytes(b"<html/>")
+        (results_dir / "extra.bin").write_bytes(b"\x00\x01")
+
+        run_id = "11111111-1111-1111-1111-111111111111"
+        await executor._upload_artifacts(run_id, tmp_path)
+
+        assert s3.put_object.await_count == 3
+        assert artifact_repo.create.await_count == 3
+
+        recorded = {call.kwargs["name"]: call.kwargs for call in artifact_repo.create.call_args_list}
+        assert recorded["junit.xml"]["type"] == "junit"
+        assert recorded["junit.xml"]["mime_type"] in {"application/xml", "text/xml"}
+        assert recorded["junit.xml"]["storage_path"] == f"reports/{run_id}/junit.xml"
+        assert recorded["junit.xml"]["size_bytes"] == len(b"<testsuites/>")
+
+        assert recorded["report.html"]["type"] == "report"
+        assert recorded["report.html"]["mime_type"] == "text/html"
+
+        assert recorded["extra.bin"]["type"] == "other"
+        assert recorded["extra.bin"]["mime_type"] == "application/octet-stream"
+
+    @pytest.mark.asyncio
+    async def test_upload_skips_artifact_row_when_repo_missing(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
+    ):
+        s3 = AsyncMock()
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+            s3_client=s3,
+            artifact_repo=None,
+        )
+        (tmp_path / "results").mkdir()
+        (tmp_path / "results" / "x.xml").write_bytes(b"<x/>")
+
+        # Should not raise — artifact_repo=None is allowed (S3-only mode)
+        await executor._upload_artifacts("rid", tmp_path)
+        s3.put_object.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_upload_skips_artifact_row_when_s3_fails(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
+    ):
+        s3 = AsyncMock()
+        s3.put_object.side_effect = RuntimeError("s3 down")
+        artifact_repo = AsyncMock()
+
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+            s3_client=s3,
+            artifact_repo=artifact_repo,
+        )
+        (tmp_path / "results").mkdir()
+        (tmp_path / "results" / "x.xml").write_bytes(b"<x/>")
+
+        await executor._upload_artifacts("rid", tmp_path)
+        # S3 failed → DB row must NOT be written to avoid dangling reference
+        artifact_repo.create.assert_not_awaited()
