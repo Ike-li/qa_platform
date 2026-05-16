@@ -90,6 +90,6 @@ class SourceProtocol(Protocol):
 
     name: str
 
-    async def clone(self, url: str, ref: str, dest: Path) -> Path:
-        """Clone/fetch source code into dest. Returns the working directory."""
+    async def clone(self, url: str, ref: str, dest: Path) -> SourceRevision:
+        """Clone/fetch source code into dest. Returns SourceRevision with path, sha, ref."""
         ...

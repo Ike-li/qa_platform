@@ -63,6 +63,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     # app.add_middleware(AuthMiddleware)
 
     # ── Routers ──────────────────────────────────────────────────────────
+    from qaplatform.api.v1.artifacts import router as artifact_router
     from qaplatform.api.v1.auth import router as auth_router
     from qaplatform.api.v1.environments import router as env_router
     from qaplatform.api.v1.pipelines import router as pipeline_router
@@ -76,6 +77,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     app.include_router(env_router, prefix=api_prefix)
     app.include_router(pipeline_router, prefix=api_prefix)
     app.include_router(run_router, prefix=api_prefix)
+    app.include_router(artifact_router, prefix=api_prefix)
     app.include_router(sse_router, prefix=api_prefix)
 
     # ── Unified error handling ───────────────────────────────────────────

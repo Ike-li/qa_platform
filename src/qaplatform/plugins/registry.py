@@ -83,11 +83,13 @@ class PluginRegistry:
 
     def register_builtins(self) -> None:
         """Register all built-in plugins."""
+        from qaplatform.plugins.builtin.git_source import GitSource
         from qaplatform.plugins.builtin.junit_collector import JUnitCollector
         from qaplatform.plugins.builtin.pytest_runner import PytestRunner
 
         self.register_runner(PytestRunner())
         self.register_collector(JUnitCollector())
+        self.register_source(GitSource())
 
     @property
     def runner_names(self) -> list[str]:
