@@ -9,6 +9,7 @@ async function fetchSSETicket(): Promise<string> {
 export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<Event | null>(null);
+  const [lastEventId, setLastEventId] = useState<string | null>(null);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const eventSourceRef = useRef<EventSource | null>(null);
   const retryCount = useRef(0);
@@ -63,7 +64,8 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
         retryCount.current = 0;
       };
 
-      es.onmessage = (event) => {
+      const handleMessage = (event: MessageEvent) => {
+        setLastEventId(event.lastEventId || null);
         try {
           const parsed = JSON.parse(event.data) as T;
           setData(parsed);
@@ -71,6 +73,11 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
           setData(event.data as T);
         }
       };
+
+      es.onmessage = handleMessage;
+      es.addEventListener('log', handleMessage);
+      es.addEventListener('status_change', handleMessage);
+      es.addEventListener('done', handleMessage);
 
       es.onerror = (e) => {
         setError(e);
@@ -91,5 +98,5 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
     return cleanup;
   }, [url, enabled, cleanup]);
 
-  return { data, status, error };
+  return { data, status, error, lastEventId };
 }
