@@ -57,7 +57,22 @@ async def main():
         user_row = result.fetchone()
 
         if user_row:
-            print(f"User '{ADMIN_USERNAME}' already exists: {user_row[0]}")
+            await session.execute(
+                text(
+                    """UPDATE app_user
+                    SET email = :email,
+                        password_hash = :password_hash,
+                        role = 'admin',
+                        is_active = true
+                    WHERE id = :user_id"""
+                ),
+                {
+                    "email": ADMIN_EMAIL,
+                    "password_hash": password_hash,
+                    "user_id": user_row[0],
+                },
+            )
+            print(f"Updated admin user '{ADMIN_USERNAME}': {user_row[0]}")
         else:
             result = await session.execute(
                 text(

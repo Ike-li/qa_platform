@@ -59,4 +59,4 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = ["http://localhost:5173"]
 
-    model_config = {"env_file": ".env", "env_prefix": "QAP_"}
+    model_config = {"env_file": ".env", "env_prefix": "QAP_", "extra": "ignore"}
