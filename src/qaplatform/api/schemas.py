@@ -212,6 +212,7 @@ class RunResponse(BaseModel):
     tenant_id: UUID
     project_id: UUID
     pipeline_id: UUID
+    pipeline_name: str
     environment_id: UUID
     status: str
     trigger_type: str

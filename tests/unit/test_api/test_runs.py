@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 
 def _make_orm_run(**overrides):
     from qaplatform.infra.database.models import RunStatusEnum
+    pipeline_name = overrides.pop("pipeline_name", "test-pipeline")
     defaults = dict(
         id=uuid.uuid4(),
         tenant_id=uuid.uuid4(),
@@ -36,6 +37,8 @@ def _make_orm_run(**overrides):
     obj = MagicMock()
     for k, v in defaults.items():
         setattr(obj, k, v)
+    obj.pipeline = MagicMock()
+    obj.pipeline.name = pipeline_name
     return obj
 
 
