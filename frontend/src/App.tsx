@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider } from "./hooks/use-auth";
 import { AppLayout } from "./components/layout/app-layout";
 import { ProtectedRoute } from "./components/layout/protected-route";
-import { ErrorBoundary } from "./components/layout/error-boundary";
+import { ErrorBoundary } from "./components/error-boundary";
 import { Toaster } from "sonner";
 import { Suspense, lazy } from "react";
 
@@ -14,6 +14,7 @@ const ProjectDetail = lazy(() => import("./pages/projects/detail"));
 const Runs = lazy(() => import("./pages/runs/list"));
 const RunDetail = lazy(() => import("./pages/runs/detail"));
 const Settings = lazy(() => import("./pages/settings"));
+const NotFound = lazy(() => import("./pages/not-found"));
 
 // Loading fallback
 const PageLoader = () => (
@@ -26,10 +27,10 @@ const queryClient = new QueryClient();
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AuthProvider>
-          <ErrorBoundary>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <AuthProvider>
             <Suspense fallback={<PageLoader />}>
               <Routes>
                 <Route path="/login" element={<Login />} />
@@ -42,20 +43,15 @@ export default function App() {
                     <Route path="/runs" element={<Runs />} />
                     <Route path="/runs/:id" element={<RunDetail />} />
                     <Route path="/settings" element={<Settings />} />
-                    <Route path="*" element={
-                      <div className="flex h-[50vh] flex-col items-center justify-center text-center">
-                        <h2 className="text-2xl font-semibold">404 - Not Found</h2>
-                        <p className="mt-2 text-ink-subtle">The page you are looking for does not exist.</p>
-                      </div>
-                    } />
+                    <Route path="*" element={<NotFound />} />
                   </Route>
                 </Route>
               </Routes>
             </Suspense>
-          </ErrorBoundary>
-          <Toaster theme="dark" position="bottom-right" closeButton />
-        </AuthProvider>
-      </BrowserRouter>
-    </QueryClientProvider>
+            <Toaster theme="dark" position="bottom-right" closeButton />
+          </AuthProvider>
+        </BrowserRouter>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

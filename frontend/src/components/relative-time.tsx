@@ -13,7 +13,7 @@ function formatRelativeTime(date: Date) {
 }
 
 let tick = 0;
-let listeners: Set<() => void> = new Set();
+const listeners: Set<() => void> = new Set();
 let intervalId: ReturnType<typeof setInterval> | null = null;
 
 function subscribe(listener: () => void) {

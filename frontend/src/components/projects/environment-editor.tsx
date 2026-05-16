@@ -108,7 +108,7 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
       await updateEnv({ ...env, variables });
       toast.success("Environment variables saved");
       setIsEditing(false);
-    } catch (error: unknown) {
+    } catch {
       toast.error("Failed to save variables");
     }
   };
@@ -117,7 +117,7 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
     try {
       await deleteEnv();
       toast.success("Environment deleted");
-    } catch (error: unknown) {
+    } catch {
       toast.error("Failed to delete environment");
     }
   };

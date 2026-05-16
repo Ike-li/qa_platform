@@ -54,7 +54,15 @@ export default function Runs() {
             {isLoading ? (
               [1, 2, 3, 4, 5].map(i => (
                 <tr key={i}>
-                  <td colSpan={7} className="px-6 py-4"><Skeleton className="h-4 w-full" /></td>
+                  <td className="px-6 py-4"><Skeleton className="h-5 w-20 rounded-full" /></td>
+                  <td className="px-6 py-4"><Skeleton className="h-4 w-36" /></td>
+                  <td className="px-6 py-4"><Skeleton className="h-4 w-24" /></td>
+                  <td className="px-6 py-4"><Skeleton className="h-4 w-28" /></td>
+                  <td className="px-6 py-4"><Skeleton className="h-4 w-20" /></td>
+                  <td className="px-6 py-4"><Skeleton className="h-4 w-24" /></td>
+                  <td className="px-6 py-4 text-right">
+                    <Skeleton className="ml-auto h-8 w-20" />
+                  </td>
                 </tr>
               ))
             ) : data?.data.length === 0 ? (

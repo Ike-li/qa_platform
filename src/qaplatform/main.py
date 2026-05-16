@@ -15,6 +15,7 @@ from qaplatform.config import Settings
 from qaplatform.logging import configure_logging
 from qaplatform.api.middleware.request_id import RequestIdMiddleware
 from qaplatform.api.middleware.rate_limit import RateLimitMiddleware
+from qaplatform.api.middleware.security_headers import SecurityHeadersMiddleware
 from qaplatform.api.middleware.cors import setup_cors
 
 logger = structlog.get_logger(__name__)
@@ -58,8 +59,16 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
             await container.close()
 
     app = FastAPI(
-        title="QA Platform",
+        title="QA Platform API",
         version="0.1.0",
+        description="QA 自动化执行平台 API",
+        contact={
+            "name": "QA Platform Team",
+            "url": "https://github.com/qa-platform/qa-platform",
+        },
+        license_info={
+            "name": "MIT",
+        },
         lifespan=lifespan,
         docs_url="/docs",
         redoc_url="/redoc",
@@ -72,6 +81,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     _settings_obj = settings or (container.settings if container else Settings())
 
     # ── Middlewares ──────────────────────────────────────────────────────
+    app.add_middleware(SecurityHeadersMiddleware, settings=_settings_obj)
     app.add_middleware(RequestIdMiddleware)
     
     # Rate limiting middleware needs redis_client from container

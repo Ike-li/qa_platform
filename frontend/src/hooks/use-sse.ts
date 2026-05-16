@@ -30,7 +30,7 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
   useEffect(() => {
     if (!enabled) {
       cleanup();
-      setStatus('disconnected');
+      queueMicrotask(() => setStatus('disconnected'));
       return;
     }
 

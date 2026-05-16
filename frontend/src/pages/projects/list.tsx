@@ -49,7 +49,23 @@ export default function Projects() {
       ) : isLoading ? (
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {[1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-[180px] rounded-xl border border-hairline bg-surface-1" />
+            <div key={i} className="rounded-xl border border-hairline bg-surface-1 p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 flex-1 space-y-3">
+                  <Skeleton className="h-5 w-2/3" />
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-4/5" />
+                </div>
+                <Skeleton className="h-5 w-16 rounded-full" />
+              </div>
+              <div className="mt-8 space-y-4">
+                <Skeleton className="h-4 w-4/5" />
+                <div className="flex items-center justify-between border-t border-hairline pt-3">
+                  <Skeleton className="h-3 w-28" />
+                  <Skeleton className="h-3 w-16" />
+                </div>
+              </div>
+            </div>
           ))}
         </div>
       ) : data?.data.length === 0 ? (

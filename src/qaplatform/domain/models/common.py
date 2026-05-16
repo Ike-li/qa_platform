@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T")
 
@@ -20,8 +20,8 @@ class ResourceLimits(BaseModel):
 class PaginationParams(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    page: int = 1
-    per_page: int = 20
+    page: int = Field(default=1, ge=1)
+    per_page: int = Field(default=20, ge=1, le=100)
 
     @property
     def offset(self) -> int:
