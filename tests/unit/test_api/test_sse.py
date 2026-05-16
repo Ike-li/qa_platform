@@ -11,7 +11,10 @@ from qaplatform.domain.models.run import RunStatus
 
 @pytest.fixture
 def mock_redis():
-    return AsyncMock()
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.delete = AsyncMock()
+    return redis
 
 
 @pytest.fixture
@@ -25,17 +28,22 @@ def mock_user():
 
 @pytest.fixture
 async def app(mock_redis, mock_user):
-    from qaplatform.api.deps import get_current_user_bearer_only
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
+    from qaplatform.api.deps import UserIdentity
     from qaplatform.main import create_app
 
     container = MagicMock()
     container.redis_client = mock_redis
     app = create_app(container=container)
 
-    async def _override_user():
-        return mock_user
+    async def _override_ticket():
+        return UserIdentity(
+            user_id=uuid.UUID(mock_user.user_id),
+            role=mock_user.role,
+            tenant_id=mock_user.tenant_id,
+        )
 
-    app.dependency_overrides[get_current_user_bearer_only] = _override_user
+    app.dependency_overrides[_authenticate_sse_ticket] = _override_ticket
     return app
 
 
@@ -59,8 +67,7 @@ async def test_logs_sse_endpoint_exists(client, mock_redis):
     mock_redis.hget = AsyncMock(return_value=RunStatus.DONE.value)
 
     resp = await client.get(
-        f"/api/v1/runs/{run_id}/logs",
-        headers={"Authorization": "Bearer fake"},
+        f"/api/v1/runs/{run_id}/logs?ticket=test-ticket",
     )
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers.get("content-type", "")
@@ -84,30 +91,29 @@ async def test_events_sse_endpoint_exists(client, mock_redis):
     mock_redis.hget = AsyncMock(return_value=RunStatus.DONE.value)
 
     resp = await client.get(
-        f"/api/v1/runs/{run_id}/events",
-        headers={"Authorization": "Bearer fake"},
+        f"/api/v1/runs/{run_id}/events?ticket=test-ticket",
     )
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers.get("content-type", "")
 
 
 @pytest.mark.asyncio
-async def test_logs_sse_no_auth(app):
-    from qaplatform.api.deps import get_current_user_bearer_only
+async def test_logs_sse_no_ticket(app):
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
 
-    app.dependency_overrides.pop(get_current_user_bearer_only, None)
+    app.dependency_overrides.pop(_authenticate_sse_ticket, None)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.get(f"/api/v1/runs/{uuid.uuid4()}/logs")
-    assert resp.status_code == 401
+    assert resp.status_code in (401, 422)
 
 
 @pytest.mark.asyncio
-async def test_events_sse_no_auth(app):
-    from qaplatform.api.deps import get_current_user_bearer_only
+async def test_events_sse_no_ticket(app):
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
 
-    app.dependency_overrides.pop(get_current_user_bearer_only, None)
+    app.dependency_overrides.pop(_authenticate_sse_ticket, None)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.get(f"/api/v1/runs/{uuid.uuid4()}/events")
-    assert resp.status_code == 401
+    assert resp.status_code in (401, 422)

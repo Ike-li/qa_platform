@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -329,3 +330,26 @@ async def list_tokens(
         )
         for t in tokens
     ]
+
+
+# --- SSE Ticket ---
+
+SSE_TICKET_TTL = 30  # seconds
+
+
+class SSETicketResponse(BaseModel):
+    ticket: str
+
+
+@router.post("/sse-ticket", response_model=SSETicketResponse)
+async def create_sse_ticket(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> SSETicketResponse:
+    """Issue a short-lived, single-use ticket for SSE authentication."""
+    redis = request.app.state.container.redis_client
+    ticket = secrets.token_urlsafe(32)
+    key = f"sse_ticket:{ticket}"
+    payload = f"{current_user.user_id}:{current_user.role}:{current_user.tenant_id}"
+    await redis.setex(key, SSE_TICKET_TTL, payload)
+    return SSETicketResponse(ticket=ticket)
