@@ -13,6 +13,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
+    Float,
     Index,
     Integer,
     PrimaryKeyConstraint,
@@ -89,6 +90,7 @@ class Tenant(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()"), onupdate=_utcnow
     )
@@ -207,6 +209,8 @@ class Environment(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     base_image: Mapped[str] = mapped_column(Text, nullable=False)
     setup_script: Mapped[str | None] = mapped_column(Text, nullable=True)
+    memory_mb: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("512"))
+    cpu_cores: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("1.0"))
     resource_limits: Mapped[dict] = mapped_column(
         JSONB, nullable=False,
         server_default=text("'{}'"),
@@ -416,6 +420,12 @@ class Run(Base):
         primaryjoin="and_(Run.pipeline_id == Pipeline.id, Run.project_id == Pipeline.project_id)",
         foreign_keys=[pipeline_id, project_id],
         back_populates="runs",
+        lazy="joined",
+    )
+    environment: Mapped[Environment] = relationship(
+        "Environment",
+        primaryjoin="Run.environment_id == Environment.id",
+        foreign_keys="[Run.environment_id]",
         lazy="joined",
     )
     test_results: Mapped[list[TestResult]] = relationship("TestResult", back_populates="run", lazy="noload")
@@ -652,4 +662,3 @@ class AuditEvent(AuditBase):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
-

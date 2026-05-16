@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Collection, Protocol
 from uuid import UUID
 
 from qaplatform.domain.models.run import Run, RunStatus
@@ -41,15 +41,22 @@ class RunRepositoryProtocol(Protocol):
         run_id: UUID | str,
         *,
         status: RunStatus,
+        expected_in: Collection[RunStatus] | None = None,
         summary: dict[str, Any] | None = None,
     ) -> bool: ...
     async def fail_if_current(
         self,
         run_id: UUID | str,
         *,
+        expected_in: Collection[RunStatus] | None = None,
         message: str = "",
     ) -> bool: ...
-    async def cancel_if_current(self, run_id: UUID | str) -> bool: ...
+    async def cancel_if_current(
+        self,
+        run_id: UUID | str,
+        *,
+        expected_in: Collection[RunStatus] | None = None,
+    ) -> bool: ...
     async def update_execution_id(self, run_id: UUID | str, execution_id: str) -> None: ...
     async def update_git_sha(self, run_id: UUID | str, sha: str) -> None: ...
 
@@ -138,7 +145,6 @@ class RunExecutor:
         """Execute a full pipeline run. Returns the terminal RunStatus."""
         run_id = str(run.id)
         working_dir = Path(tempfile.mkdtemp(prefix=f"qap-{run_id[:8]}-"))
-        execution_id: str | None = None
 
         try:
             # 1. Clone repository
@@ -149,26 +155,18 @@ class RunExecutor:
             if pipeline.setup_script:
                 await self._run_setup(pipeline.setup_script, working_dir, pipeline.env_vars)
 
-            # 3. Create and start container
-            execution_id = await self._create_container(run, pipeline, working_dir)
-            await self.run_repo.update_execution_id(run_id, execution_id)
-            await self.backend.start(execution_id)
+            # 3. Run all stages
             await self.run_repo.mark_running(run_id)
-
-            # 4. Stream logs from container
-            await self._stream_container_logs(run_id, execution_id)
-
-            # 5. Wait for container exit
-            exit_result = await self.backend.wait(execution_id, pipeline.timeout_seconds)
+            exit_result = await self._run_stages(run, pipeline, working_dir)
 
             if exit_result.exit_code != 0:
                 await self.log_stream.write_log(
                     run_id,
-                    f"Container exited with code {exit_result.exit_code}",
+                    f"Pipeline failed with code {exit_result.exit_code}",
                     stream="stderr",
                 )
 
-            # 6. Collect results
+            # 4. Collect results
             await self.run_repo.mark_collecting(run_id)
             await self.log_stream.write_log(run_id, "Collecting test results...")
 
@@ -190,14 +188,16 @@ class RunExecutor:
                 "pass_rate": passed / total if total > 0 else 0.0,
             }
 
-            # 7. Upload artifacts to S3
+            # 5. Upload artifacts to S3
             if self.s3_client:
                 await self._upload_artifacts(run_id, working_dir)
 
-            # 8. Write terminal state
+            # 6. Write terminal state
             status = RunStatus.DONE
             if exit_result.oom_killed or exit_result.timed_out:
                 status = RunStatus.TIMEOUT
+            elif exit_result.exit_code != 0:
+                status = RunStatus.FAILED
 
             updated = await self.run_repo.finish_if_current(
                 run_id,
@@ -216,13 +216,6 @@ class RunExecutor:
             await self.run_repo.fail_if_current(run_id, message=str(exc))
             return RunStatus.FAILED
         finally:
-            # Best-effort cleanup
-            if execution_id:
-                try:
-                    await self.backend.cleanup(execution_id)
-                except Exception:
-                    log.warning("failed to cleanup container %s", execution_id)
-
             try:
                 shutil.rmtree(working_dir, ignore_errors=True)
             except Exception:
@@ -232,9 +225,63 @@ class RunExecutor:
     # private steps
     # --------------------------------------------------------------------- #
 
+    async def _run_stages(self, run: Run, pipeline: PipelineConfig, working_dir: Path) -> ExitResult:
+        """Run all stages sequentially using Docker containers."""
+        final_exit = ExitResult(exit_code=0)
+        
+        for stage in pipeline.stages:
+            await self.log_stream.write_log(str(run.id), f"Starting stage: {stage.name}")
+            
+            try:
+                runner = self.plugin_registry.get_runner(stage.plugin)
+                if hasattr(runner, 'build_command'):
+                    cmd = runner.build_command(stage.config)
+                else:
+                    cmd = stage.config.get('command', 'echo "missing command"')
+            except Exception as e:
+                log.warning("failed to get runner for %s: %s", stage.plugin, e)
+                cmd = stage.config.get('command', 'echo "missing command"')
+                
+            spec = ExecutionSpec(
+                image=pipeline.image,
+                command=["sh", "-c", cmd],
+                env_vars=pipeline.env_vars,
+                mounts=[
+                    Mount(source=str(working_dir), target="/workspace", read_only=False),
+                ],
+                resource_limits=pipeline.resource_limits,
+                network_policy=pipeline.network_policy,
+                labels={"run_id": str(run.id), "stage": stage.name},
+            )
+            
+            execution_id = await self.backend.create_execution(spec)
+            await self.run_repo.update_execution_id(str(run.id), execution_id)
+            
+            await self.backend.start(execution_id)
+            
+            # Stream logs in background while waiting
+            log_task = asyncio.create_task(self._stream_container_logs(str(run.id), execution_id))
+            
+            try:
+                exit_result = await self.backend.wait(execution_id, pipeline.timeout_seconds)
+            finally:
+                await log_task
+                try:
+                    await self.backend.cleanup(execution_id)
+                except Exception:
+                    log.warning("failed to cleanup container %s", execution_id)
+                    
+            if exit_result.exit_code != 0:
+                final_exit = exit_result
+                if not stage.continue_on_error:
+                    break
+                    
+        return final_exit
+
     async def _clone_repo(self, run: Run, dest: Path) -> None:
         """Clone the repository using the SourceProtocol plugin."""
-        git_url = run.metadata.get("git_url", "")
+        metadata = getattr(run, 'metadata_', None) or getattr(run, 'metadata', None) or {}
+        git_url = metadata.get("git_url", "")
         if not git_url:
             await self.log_stream.write_log(str(run.id), "No git_url in metadata, using workspace")
             return
@@ -269,25 +316,6 @@ class RunExecutor:
             err_msg = stderr.decode(errors="replace").strip()
             raise RuntimeError(f"Setup script failed (exit {process.returncode}): {err_msg}")
 
-    async def _create_container(
-        self,
-        run: Run,
-        pipeline: PipelineConfig,
-        working_dir: Path,
-    ) -> str:
-        """Create a Docker container for the run."""
-        spec = ExecutionSpec(
-            image=pipeline.image,
-            command=["sh", "-c", "cd /workspace && python -m pytest --junitxml=results/junit.xml tests/"],
-            env_vars=pipeline.env_vars,
-            mounts=[
-                Mount(source=str(working_dir), target="/workspace", read_only=False),
-            ],
-            resource_limits=pipeline.resource_limits,
-            network_policy=pipeline.network_policy,
-            labels={"run_id": str(run.id)},
-        )
-        return await self.backend.create_execution(spec)
 
     async def _stream_container_logs(self, run_id: str, execution_id: str) -> None:
         """Stream container logs to Redis. Runs as a background task."""

@@ -59,6 +59,10 @@ class RunnerProtocol(Protocol):
 
     name: str
 
+    def build_command(self, config: dict[str, Any]) -> str:
+        """Return the shell command to execute this runner inside a container."""
+        raise NotImplementedError
+
     async def run_tests(
         self,
         working_dir: Path,
