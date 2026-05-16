@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import desc
 
+from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
 from qaplatform.api.deps import CurrentUser, Repos, require_permission
 from qaplatform.api.schemas import (
@@ -140,7 +141,15 @@ async def trigger_run(
 
         await enqueue_run(arq_pool, repos.run, run, "manual", container.settings)
 
-    return _to_run_response(run)
+    response = _to_run_response(run)
+    await write_audit(
+        repos, user,
+        action="run.trigger",
+        resource_type="run",
+        resource_id=run.id,
+        after=response,
+    )
+    return response
 
 
 @router.get(
@@ -222,6 +231,7 @@ async def cancel_run(
         raise HTTPException(status_code=409, detail="Run status changed concurrently")
 
     previous_status = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
+    before_response = _to_run_response(run)
 
     # Notify worker to stop the container
     container = request.app.state.container
@@ -234,7 +244,16 @@ async def cancel_run(
         await publish_status_event(redis, run_id, "cancelled", previous=previous_status)
 
     run = await repos.run.get_by_id(run_id)
-    return _to_run_response(run)
+    after_response = _to_run_response(run)
+    await write_audit(
+        repos, user,
+        action="run.cancel",
+        resource_type="run",
+        resource_id=run_id,
+        before=before_response,
+        after=after_response,
+    )
+    return after_response
 
 
 @router.get(

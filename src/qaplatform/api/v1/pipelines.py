@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
 
+from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
 from qaplatform.api.deps import CurrentUser, Repos, require_permission
 from qaplatform.api.schemas import (
@@ -102,7 +103,15 @@ async def create_pipeline(
         retry_policy=body.retry_policy.model_dump() if body.retry_policy else None,
         enabled=body.enabled,
     )
-    return _to_response(orm)
+    response = _to_response(orm)
+    await write_audit(
+        repos, user,
+        action="pipeline.create",
+        resource_type="pipeline",
+        resource_id=orm.id,
+        after=response,
+    )
+    return response
 
 
 @router.get(
@@ -145,6 +154,7 @@ async def update_pipeline(
     if pipeline is None or pipeline.project_id != project_id:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
+    before = _to_response(pipeline)
     update_data = body.model_dump(exclude_unset=True)
     if "stages" in update_data and update_data["stages"] is not None:
         update_data["stages"] = [s.model_dump() for s in body.stages]
@@ -156,7 +166,16 @@ async def update_pipeline(
         update_data["retry_policy"] = body.retry_policy.model_dump()
 
     updated = await repos.pipeline.update(pipeline, **update_data)
-    return _to_response(updated)
+    after = _to_response(updated)
+    await write_audit(
+        repos, user,
+        action="pipeline.update",
+        resource_type="pipeline",
+        resource_id=updated.id,
+        before=before,
+        after=after,
+    )
+    return after
 
 
 @router.delete(
@@ -178,4 +197,12 @@ async def delete_pipeline(
     if pipeline is None or pipeline.project_id != project_id:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
+    before = _to_response(pipeline)
     await repos.pipeline.delete(pipeline)
+    await write_audit(
+        repos, user,
+        action="pipeline.delete",
+        resource_type="pipeline",
+        resource_id=pipeline_id,
+        before=before,
+    )
