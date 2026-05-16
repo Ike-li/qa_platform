@@ -219,6 +219,122 @@ class TestLogin:
         assert resp.status_code == 401
 
 
+# --- Register tests ---
+
+
+def _register_session_mock(existing_tenant=None):
+    """Session mock for register: tracks add() and populates IDs on flush()."""
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+
+    def add(obj):
+        if getattr(obj, "id", None) is None:
+            obj.id = uuid4()
+    session.add = add  # sync, like real SQLAlchemy
+
+    session.flush = AsyncMock()
+
+    select_result = MagicMock()
+    select_result.scalar_one_or_none = MagicMock(return_value=existing_tenant)
+    session.execute = AsyncMock(return_value=select_result)
+
+    @asynccontextmanager
+    async def factory():
+        yield session
+
+    return session, factory()
+
+
+class TestRegister:
+    @pytest.mark.asyncio
+    async def test_register_success(self, client: AsyncClient):
+        _, session_cm = _register_session_mock()
+        container = MagicMock()
+        container.settings = _settings()
+        container.db_session_factory = MagicMock(return_value=session_cm)
+
+        with patch("qaplatform.api.v1.auth._get_container", return_value=container):
+            resp = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "username": "alice",
+                    "email": "alice@example.com",
+                    "password": "secure-password-1",
+                },
+            )
+
+        assert resp.status_code == 201, resp.text
+        data = resp.json()
+        assert "access_token" in data
+        assert data["user"]["username"] == "alice"
+        assert data["user"]["email"] == "alice@example.com"
+        assert data["user"]["role"] == "platform_admin"
+        assert "refresh_token" in resp.cookies
+
+    @pytest.mark.asyncio
+    async def test_register_username_conflict(self, client: AsyncClient):
+        existing = MagicMock()
+        existing.name = "alice"
+        _, session_cm = _register_session_mock(existing_tenant=existing)
+        container = MagicMock()
+        container.settings = _settings()
+        container.db_session_factory = MagicMock(return_value=session_cm)
+
+        with patch("qaplatform.api.v1.auth._get_container", return_value=container):
+            resp = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "username": "alice",
+                    "email": "alice@example.com",
+                    "password": "secure-password-1",
+                },
+            )
+
+        assert resp.status_code == 409
+        assert "already taken" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "username",
+        ["ab", "x" * 33, "has space", "with-dash", "umlautü"],
+    )
+    async def test_register_rejects_invalid_username(self, client: AsyncClient, username):
+        resp = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": username,
+                "email": "alice@example.com",
+                "password": "secure-password-1",
+            },
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_register_rejects_short_password(self, client: AsyncClient):
+        resp = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "alice",
+                "email": "alice@example.com",
+                "password": "short",
+            },
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_register_rejects_bad_email(self, client: AsyncClient):
+        resp = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "alice",
+                "email": "not-an-email",
+                "password": "secure-password-1",
+            },
+        )
+        assert resp.status_code == 422
+
+
 # --- Refresh tests ---
 
 

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 
 from qaplatform.api.auth.jwt_service import JWTService
@@ -34,6 +34,12 @@ class LoginRequest(BaseModel):
     username: str
     password: str
     tenant_id: UUID | None = None  # MVP: optional, defaults to first tenant
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_]+$")
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
 
 
 class TokenPair(BaseModel):
@@ -147,6 +153,71 @@ async def _resolve_tenant_id(
 
 
 # --- Routes ---
+
+
+@router.post("/register", response_model=LoginResponse, status_code=201)
+async def register(body: RegisterRequest, response: Response) -> LoginResponse:
+    """Self-service registration: create a new tenant and its first admin user.
+
+    Each registration provisions an isolated workspace (one tenant per user).
+    """
+    # TODO(#1 RBAC): when dual-layer RBAC lands, the default role here should
+    # become "owner" at the tenant level instead of "platform_admin".
+    from argon2 import PasswordHasher
+
+    ph = PasswordHasher()
+    password_hash = ph.hash(body.password)
+
+    async with _new_session() as session:
+        existing_tenant = await session.execute(
+            select(Tenant).where(Tenant.name == body.username)
+        )
+        if existing_tenant.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Username already taken",
+            )
+
+        tenant = Tenant(name=body.username)
+        session.add(tenant)
+        await session.flush()
+
+        user = AppUser(
+            tenant_id=tenant.id,
+            username=body.username,
+            email=body.email,
+            password_hash=password_hash,
+            role="platform_admin",
+        )
+        session.add(user)
+        await session.flush()
+
+        user_id = str(user.id)
+        user_tenant_id = str(user.tenant_id)
+        user_role = user.role
+        user_email = user.email
+        user_username = user.username
+
+    jwt_svc = _get_jwt_service()
+    settings = _get_container().settings
+    access_token = jwt_svc.create_access_token(
+        user_id=user_id,
+        role=user_role,
+        tenant_id=user_tenant_id,
+    )
+    refresh_token = jwt_svc.create_refresh_token(user_id=user_id)
+    _set_refresh_cookie(response, refresh_token, settings.jwt_refresh_token_ttl)
+
+    return LoginResponse(
+        access_token=access_token,
+        user={
+            "id": user_id,
+            "username": user_username,
+            "email": user_email,
+            "role": user_role,
+            "tenant_id": user_tenant_id,
+        },
+    )
 
 
 @router.post("/login", response_model=LoginResponse)
