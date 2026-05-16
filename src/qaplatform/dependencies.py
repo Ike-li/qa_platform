@@ -72,6 +72,7 @@ class DependencyContainer:
         self.crypto_service: CryptoService | None = None
         self.event_bus = None
         self.plugin_registry = None
+        self.arq_pool = None
 
     async def init_db(self) -> None:
         self.db_engine = create_async_engine(
@@ -93,6 +94,13 @@ class DependencyContainer:
             self.settings.redis_url,
             max_connections=self.settings.redis_max_connections,
             decode_responses=True,
+        )
+
+    async def init_arq(self) -> None:
+        from arq.connections import RedisSettings, create_pool
+
+        self.arq_pool = await create_pool(
+            RedisSettings.from_dsn(self.settings.redis_url)
         )
 
     async def init_s3(self) -> None:

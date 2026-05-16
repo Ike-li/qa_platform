@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.auth.middleware import (
@@ -96,3 +96,20 @@ Container = Annotated[Any, Depends(lambda r: r.app.state.container)]
 Repos = Annotated[RepositoryBundle, Depends(_get_repos)]
 RedisClient = Annotated[object, Depends(get_redis)]
 CurrentUser = Annotated[UserIdentity, Depends(get_current_user)]
+
+
+def require_permission(action: "Action"):
+    """FastAPI dependency factory that enforces RBAC for a given action."""
+    from qaplatform.api.auth.permissions import Action, PermissionContext, check_permission
+
+    def _check(user: CurrentUser):
+        ctx = PermissionContext(
+            user_id=str(user.user_id),
+            role=user.role,
+            tenant_id=str(user.tenant_id),
+        )
+        if not check_permission(ctx, action):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        return user
+
+    return Depends(_check)

@@ -31,68 +31,75 @@ async def execute_run(ctx: dict, run_id: str) -> None:
     3. On exception: fail_if_current
     4. Finally: archive logs, release worker
     """
-    run_repo = ctx["run_repo"]
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+
     executor = ctx["executor"]
     log_stream = ctx["log_stream"]
     worker_id = ctx["worker_id"]
     redis = ctx["redis"]
+    session_factory = ctx["db_session_factory"]
 
-    # 1. Claim the run
-    run = await run_repo.claim_for_worker(run_id, worker_id=worker_id)
-    if not run:
-        log.warning("could not claim run %s (not in queued state or not found)", run_id)
-        return
+    async with session_factory() as session:
+        run_repo = RunRepository(session)
+        executor.run_repo = run_repo
 
-    # Check if cancellation was requested before we started
-    if run.cancel_requested_at:
-        if await run_repo.cancel_if_current(run.id):
-            log.info("run %s cancelled before execution started", run_id)
-        return
+        # 1. Claim the run
+        run = await run_repo.claim_for_worker(run_id, worker_id=worker_id)
+        if not run:
+            log.warning("could not claim run %s (not in queued state or not found)", run_id)
+            return
 
-    # Start heartbeat
-    heartbeat_task = asyncio.create_task(
-        _heartbeat_loop(worker_id, redis)
-    )
+        # Check if cancellation was requested before we started
+        if run.cancel_requested_at:
+            if await run_repo.cancel_if_current(run.id):
+                log.info("run %s cancelled before execution started", run_id)
+            await session.commit()
+            return
 
-    try:
-        # 2. Execute the pipeline
-        status = await executor.execute(run, run.pipeline)
-
-        # 3. Write terminal state (conditional update)
-        updated = await run_repo.finish_if_current(
-            run.id,
-            status=status,
+        # Start heartbeat
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_loop(worker_id, redis)
         )
-        if updated:
-            log.info("run %s completed with status: %s", run_id, status.value)
 
-    except Exception as exc:
-        log.exception("execute_run failed for run %s", run_id)
-        updated = await run_repo.fail_if_current(
-            run.id,
-            message=str(exc),
-        )
-        if updated:
-            log.info("run %s marked as failed: %s", run_id, exc)
-        # Do NOT re-raise: arq job is considered complete to avoid built-in retry.
-        # Platform-level retry creates a new Run attempt via domain service.
-
-    finally:
-        # Cancel heartbeat
-        heartbeat_task.cancel()
-        await asyncio.gather(heartbeat_task, return_exceptions=True)
-
-        # Best-effort log archival
         try:
-            if ctx.get("s3_client"):
-                await log_stream.archive_logs(
-                    run_id, ctx["s3_client"], ctx.get("s3_bucket", "qa-platform")
-                )
-        except Exception:
-            log.warning("failed to archive logs for run %s", run_id)
+            # 2. Execute the pipeline
+            status = await executor.execute(run, run.pipeline)
 
-        # Release worker association
-        try:
-            await run_repo.release_worker(run_id, worker_id=worker_id)
-        except Exception:
-            log.warning("failed to release worker for run %s", run_id)
+            # 3. Write terminal state (conditional update)
+            updated = await run_repo.finish_if_current(
+                run.id,
+                status=status,
+            )
+            if updated:
+                log.info("run %s completed with status: %s", run_id, status.value)
+
+        except Exception as exc:
+            log.exception("execute_run failed for run %s", run_id)
+            updated = await run_repo.fail_if_current(
+                run.id,
+                message=str(exc),
+            )
+            if updated:
+                log.info("run %s marked as failed: %s", run_id, exc)
+
+        finally:
+            # Cancel heartbeat
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+            # Best-effort log archival
+            try:
+                if ctx.get("s3_client"):
+                    await log_stream.archive_logs(
+                        run_id, ctx["s3_client"], ctx.get("s3_bucket", "qa-platform")
+                    )
+            except Exception:
+                log.warning("failed to archive logs for run %s", run_id)
+
+            # Release worker association
+            try:
+                await run_repo.release_worker(run_id, worker_id=worker_id)
+            except Exception:
+                log.warning("failed to release worker for run %s", run_id)
+
+            await session.commit()

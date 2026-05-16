@@ -56,7 +56,7 @@ def tenant_id():
 def mock_user(tenant_id):
     user = MagicMock()
     user.user_id = str(uuid.uuid4())
-    user.role = "admin"
+    user.role = "platform_admin"
     user.tenant_id = tenant_id
     return user
 

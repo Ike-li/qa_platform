@@ -4,7 +4,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
 
-from qaplatform.api.deps import CurrentUser, Repos
+from qaplatform.api.auth.permissions import Action
+from qaplatform.api.deps import CurrentUser, Repos, require_permission
 from qaplatform.api.schemas import (
     ErrorResponse,
     PaginatedResponse,
@@ -87,6 +88,7 @@ async def create_pipeline(
     body: PipelineCreate,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_permission(Action.PIPELINE_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
 
@@ -135,6 +137,7 @@ async def update_pipeline(
     body: PipelineUpdate,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_permission(Action.PIPELINE_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
 
@@ -167,6 +170,7 @@ async def delete_pipeline(
     pipeline_id: UUID,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_permission(Action.PIPELINE_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
 

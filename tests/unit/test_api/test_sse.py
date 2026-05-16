@@ -18,7 +18,7 @@ def mock_redis():
 def mock_user():
     user = MagicMock()
     user.user_id = str(uuid.uuid4())
-    user.role = "admin"
+    user.role = "platform_admin"
     user.tenant_id = uuid.uuid4()
     return user
 
