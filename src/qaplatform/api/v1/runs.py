@@ -116,7 +116,7 @@ async def trigger_run(
         pipeline_id=pipeline.id,
         environment_id=environment_id,
         git_ref=git_ref,
-        triggered_by=user.id,
+        triggered_by=user.user_id,
         trigger_type="manual",
     )
     return _to_run_response(run)
