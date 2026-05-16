@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sse_starlette.sse import EventSourceResponse
 
-from qaplatform.api.deps import get_current_user_bearer_only, get_redis
+from qaplatform.api.deps import UserIdentity, get_redis
 from qaplatform.domain.models.run import TERMINAL_STATUSES
 
 router = APIRouter(prefix="/runs", tags=["sse"])
@@ -17,16 +17,38 @@ def _decode(val: bytes | str) -> str:
     return val.decode() if isinstance(val, bytes) else val
 
 
+async def _authenticate_sse_ticket(
+    request: Request,
+    ticket: str = Query(...),
+) -> UserIdentity:
+    """Authenticate SSE connection via single-use ticket from Redis."""
+    redis = request.app.state.container.redis_client
+    key = f"sse_ticket:{ticket}"
+    payload = await redis.get(key)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired SSE ticket",
+        )
+    await redis.delete(key)
+    user_id, role, tenant_id = payload.split(":", 2)
+    return UserIdentity(
+        user_id=UUID(user_id),
+        role=role,
+        tenant_id=UUID(tenant_id),
+    )
+
+
 @router.get(
     "/{run_id}/logs",
     summary="SSE 实时日志流",
-    description="从 Redis Stream 读取执行日志，仅接受 Bearer Token 认证",
+    description="从 Redis Stream 读取执行日志，使用一次性 ticket 认证",
 )
 async def stream_logs(
     run_id: UUID,
     request: Request,
     redis=Depends(get_redis),
-    _user=Depends(get_current_user_bearer_only),
+    _user=Depends(_authenticate_sse_ticket),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
 ):
     stream_key = f"run:{run_id}:logs"
@@ -79,13 +101,13 @@ async def stream_logs(
 @router.get(
     "/{run_id}/events",
     summary="SSE 状态变更事件",
-    description="Run 状态变更的实时推送，仅接受 Bearer Token 认证",
+    description="Run 状态变更的实时推送，使用一次性 ticket 认证",
 )
 async def stream_events(
     run_id: UUID,
     request: Request,
     redis=Depends(get_redis),
-    _user=Depends(get_current_user_bearer_only),
+    _user=Depends(_authenticate_sse_ticket),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
 ):
     stream_key = f"run:{run_id}:events"
