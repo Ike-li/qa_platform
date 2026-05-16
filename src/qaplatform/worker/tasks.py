@@ -31,38 +31,50 @@ async def execute_run(ctx: dict, run_id: str) -> None:
     3. On exception: fail_if_current
     4. Finally: archive logs, release worker
     """
-    from qaplatform.infra.database.repositories.run_repo import RunRepository
+    from qaplatform.infra.database.repositories.run_repo import (
+        ArtifactRepository,
+        RunRepository,
+    )
+    from qaplatform.engine.events import publish_status_event
     from qaplatform.engine.executor import RunExecutor
 
     log_stream = ctx["log_stream"]
     worker_id = ctx["worker_id"]
     redis = ctx["redis"]
     session_factory = ctx["db_session_factory"]
-    
+
     # We create a new executor instance per task to avoid concurrent DB session issues
     executor = RunExecutor(
         backend=ctx["docker_backend"],
         log_stream=ctx["log_stream"],
         run_repo=None,  # will be set below
         plugin_registry=ctx["plugin_registry"],
+        s3_client=ctx.get("s3_client"),
+        s3_bucket=ctx.get("s3_bucket", "qa-platform"),
+        redis=redis,
     )
 
     async with session_factory() as session:
         run_repo = RunRepository(session)
+        artifact_repo = ArtifactRepository(session)
         executor.run_repo = run_repo
+        executor.artifact_repo = artifact_repo
 
         # 1. Claim the run
         run = await run_repo.claim_for_worker(run_id, worker_id=worker_id)
         if not run:
             log.warning("could not claim run %s (not in queued state or not found)", run_id)
             return
-            
+
+        await publish_status_event(redis, run_id, "preparing", previous="queued")
+
         await session.refresh(run, ['pipeline', 'environment'])
 
         # Check if cancellation was requested before we started
         if run.cancel_requested_at:
             if await run_repo.cancel_if_current(run.id):
                 log.info("run %s cancelled before execution started", run_id)
+                await publish_status_event(redis, run_id, "cancelled", previous="preparing")
             await session.commit()
             return
 
