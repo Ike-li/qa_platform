@@ -134,7 +134,9 @@ class TestLogin:
         assert resp.status_code == 200
         data = resp.json()
         assert "access_token" in data
+        assert "refresh_token" not in data
         assert data["user"]["username"] == "alice"
+        assert "refresh_token" in resp.cookies
 
     @pytest.mark.asyncio
     async def test_login_wrong_password(self, client: AsyncClient):
@@ -244,12 +246,19 @@ class TestRefresh:
         ):
             resp = await client.post(
                 "/api/v1/auth/refresh",
-                json={"refresh_token": refresh_token},
+                cookies={"refresh_token": refresh_token},
             )
 
         assert resp.status_code == 200
         data = resp.json()
         assert "access_token" in data
+        assert "refresh_token" not in data
+        assert "refresh_token" in resp.cookies
+
+    @pytest.mark.asyncio
+    async def test_refresh_missing_cookie(self, client: AsyncClient):
+        resp = await client.post("/api/v1/auth/refresh")
+        assert resp.status_code == 401
 
     @pytest.mark.asyncio
     async def test_refresh_with_access_token_rejected(self, client: AsyncClient):
@@ -263,7 +272,7 @@ class TestRefresh:
         with patch("qaplatform.api.v1.auth._get_container", return_value=container):
             resp = await client.post(
                 "/api/v1/auth/refresh",
-                json={"refresh_token": access_token},
+                cookies={"refresh_token": access_token},
             )
 
         assert resp.status_code == 401
@@ -284,7 +293,7 @@ class TestRefresh:
         with patch("qaplatform.api.v1.auth._get_container", return_value=container):
             resp = await client.post(
                 "/api/v1/auth/refresh",
-                json={"refresh_token": refresh_token},
+                cookies={"refresh_token": refresh_token},
             )
 
         assert resp.status_code == 401
