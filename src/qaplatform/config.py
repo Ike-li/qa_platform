@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     docker_host: str = "unix:///var/run/docker.sock"
 
     # Rate limiting
-    rate_limit_requests: int = 100
+    rate_limit_per_minute: int = 100
     rate_limit_window_seconds: int = 60
     rate_limit_auth_failure: int = 5
     rate_limit_auth_failure_window: int = 60

@@ -1,60 +1,25 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from qaplatform.api.schemas import ErrorDetail, ErrorResponse
 from qaplatform.config import Settings
+from qaplatform.logging import configure_logging
+from qaplatform.api.middleware.request_id import RequestIdMiddleware
+from qaplatform.api.middleware.rate_limit import RateLimitMiddleware
+from qaplatform.api.middleware.cors import setup_cors
 
 logger = structlog.get_logger(__name__)
 
-
-def configure_logging(settings: Settings) -> None:
-    """Configure structlog with JSON or console output."""
-    shared_processors = [
-        structlog.contextvars.merge_contextvars,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-    ]
-
-    if settings.log_format == "json":
-        renderer = structlog.processors.JSONRenderer()
-    else:
-        renderer = structlog.dev.ConsoleRenderer()
-
-    structlog.configure(
-        processors=[
-            *shared_processors,
-            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
-        ],
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
-    )
-
-    formatter = structlog.stdlib.ProcessorFormatter(
-        processors=[
-            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            renderer,
-        ],
-    )
-
-    handler = logging.StreamHandler()
-    handler.setFormatter(formatter)
-
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(handler)
-    root.setLevel(settings.log_level.upper())
+START_TIME = time.time()
 
 
 def create_app(container: Any | None = None, settings: Settings | None = None) -> FastAPI:
@@ -74,8 +39,21 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
             await container.init_redis()
             await container.init_arq()
             app.state.container = container
+        
+        logger.info("application_started", version="0.1.0")
         yield
         # Shutdown
+        logger.info("application_shutting_down")
+        
+        # Cancel all pending tasks
+        import asyncio
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if tasks:
+            logger.info("cancelling_pending_tasks", count=len(tasks))
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
         if hasattr(container, "close"):
             await container.close()
 
@@ -91,15 +69,29 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     if container is not None:
         app.state.container = container
 
-    # ── CORS ──────────────────────────────────────────────────────────────
     _settings_obj = settings or (container.settings if container else Settings())
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_settings_obj.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+
+    # ── Middlewares ──────────────────────────────────────────────────────
+    app.add_middleware(RequestIdMiddleware)
+    
+    # Rate limiting middleware needs redis_client from container
+    # Since container might not be fully initialized here (it is in lifespan),
+    # we might need to access it lazily if possible, or ensure it's available.
+    # In create_app, if container is passed, we use it. 
+    # Otherwise it's initialized in lifespan. 
+    # For BaseHTTPMiddleware, it's added during app creation.
+    
+    if container and container.redis_client:
+        app.add_middleware(RateLimitMiddleware, settings=_settings_obj, redis_client=container.redis_client)
+    else:
+        # If container is not yet available, we can't easily add RateLimitMiddleware here 
+        # if it strictly requires redis_client at init time.
+        # However, we can make RateLimitMiddleware fetch it from app.state.container at request time.
+        # Let's adjust RateLimitMiddleware to be more flexible.
+        app.add_middleware(RateLimitMiddleware, settings=_settings_obj, redis_client=None)
+
+    # ── CORS ──────────────────────────────────────────────────────────────
+    setup_cors(app, _settings_obj)
 
     # ── Auth middleware ───────────────────────────────────────────────────
     # Placeholder: worker-2 will provide the actual middleware.
@@ -128,29 +120,46 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     # ── Health checks ────────────────────────────────────────────────────
     @app.get("/health", tags=["ops"])
     async def health():
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "version": app.version,
+            "uptime": f"{time.time() - START_TIME:.2f}s",
+        }
 
     @app.get("/ready", tags=["ops"])
     async def ready():
-        c = app.state.container
+        container = getattr(app.state, "container", None)
+        if not container:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "initializing", "version": app.version},
+            )
+
         checks: dict = {}
         try:
-            async with c.db_session_factory() as session:
+            async with container.db_session_factory() as session:
                 await session.execute(text("SELECT 1"))
             checks["db"] = "ok"
         except Exception as e:
-            checks["db"] = str(e)
+            logger.error("health_check_db_failed", error=str(e))
+            checks["db"] = "error"
 
         try:
-            await c.redis_client.ping()
+            await container.redis_client.ping()
             checks["redis"] = "ok"
         except Exception as e:
-            checks["redis"] = str(e)
+            logger.error("health_check_redis_failed", error=str(e))
+            checks["redis"] = "error"
 
         all_ok = all(v == "ok" for v in checks.values())
         return JSONResponse(
             status_code=200 if all_ok else 503,
-            content={"status": "ok" if all_ok else "degraded", "checks": checks},
+            content={
+                "status": "ok" if all_ok else "degraded",
+                "version": app.version,
+                "uptime": f"{time.time() - START_TIME:.2f}s",
+                "checks": checks,
+            },
         )
 
     # ── Unified error handling ───────────────────────────────────────────

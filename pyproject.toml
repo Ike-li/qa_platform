@@ -37,6 +37,14 @@ dependencies = [
 test = [
     "pytest",
     "pytest-asyncio",
+    "pytest-cov",
+    "httpx",
+    "testcontainers",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
     "httpx",
     "testcontainers",
 ]
