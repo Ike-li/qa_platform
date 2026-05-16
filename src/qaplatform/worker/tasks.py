@@ -43,6 +43,7 @@ async def execute_run(ctx: dict, run_id: str) -> None:
     executor = RunExecutor(
         backend=ctx["docker_backend"],
         log_stream=ctx["log_stream"],
+        run_repo=None,  # will be set below
         plugin_registry=ctx["plugin_registry"],
     )
 

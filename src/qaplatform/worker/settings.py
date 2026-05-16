@@ -40,6 +40,8 @@ async def on_startup(ctx: dict) -> None:
         plugin_registry=plugin_registry,
     )
 
+    ctx["docker_backend"] = backend
+    ctx["plugin_registry"] = plugin_registry
     ctx["container"] = container
     ctx["settings"] = settings
     ctx["worker_id"] = worker_id

@@ -61,3 +61,26 @@ make test
 ```
 
 集成测试位于 `tests/integration/`，单元测试位于 `tests/unit/`。
+
+### 运行集成测试
+
+运行集成测试需要 Docker daemon 以及数据库等基础设施服务，且需要手动启动 API 和 Worker，默认情况下执行 `pytest` 会跳过集成测试。
+
+```bash
+# 1. 启动基础设施
+docker compose up -d postgres redis minio
+
+# 2. 数据库迁移和 Seed
+.venv/bin/python -m alembic upgrade head
+.venv/bin/python scripts/seed_admin.py
+
+# 3. 后台启动后端 API 和 Worker
+.venv/bin/python -m uvicorn qaplatform.main:create_app --factory --port 8000 --app-dir src &
+.venv/bin/python -m arq qaplatform.worker.settings.WorkerSettings &
+
+# 4. 执行集成测试
+RUN_INTEGRATION_TESTS=1 .venv/bin/python -m pytest tests/integration/ -v -s
+
+# 5. 完成后清理后台进程 (可用 jobs 命令查看然后 kill，或关闭终端)
+kill %1 %2
+```
