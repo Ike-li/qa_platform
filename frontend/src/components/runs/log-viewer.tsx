@@ -1,0 +1,174 @@
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import { Terminal, Search, Pause, Play, ChevronDown } from 'lucide-react';
+import AnsiToReact from 'ansi-to-react';
+import DOMPurify from 'dompurify';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { useSSE } from '../../hooks/use-sse';
+import { Button } from '../ui/button';
+import { Input } from '../ui/input';
+import { cn } from '../../lib/utils';
+
+interface LogMessage {
+  timestamp?: string;
+  level?: string;
+  message: string;
+}
+
+function sanitizeLogMessage(message: string): string {
+  return DOMPurify.sanitize(message, {
+    ALLOWED_TAGS: [],
+    ALLOWED_ATTR: [],
+  });
+}
+
+export function LogViewer({ runId }: { runId: string }) {
+  const [logs, setLogs] = useState<LogMessage[]>([]);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [search, setSearch] = useState('');
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const { data, status } = useSSE<LogMessage | string>(`/api/v1/runs/${runId}/logs/stream`);
+
+  useEffect(() => {
+    if (data) {
+      const logEntry: LogMessage = typeof data === 'string'
+        ? { message: data }
+        : data;
+      setLogs((prev) => [...prev, logEntry]);
+    }
+  }, [data]);
+
+  const filteredLogs = useMemo(() => {
+    if (!search) return logs;
+    const lowerSearch = search.toLowerCase();
+    return logs.filter(log => log.message.toLowerCase().includes(lowerSearch));
+  }, [logs, search]);
+
+  const virtualizer = useVirtualizer({
+    count: filteredLogs.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 24,
+    overscan: 20,
+  });
+
+  useEffect(() => {
+    if (autoScroll && filteredLogs.length > 0) {
+      virtualizer.scrollToIndex(filteredLogs.length - 1, { align: 'end' });
+    }
+  }, [filteredLogs.length, autoScroll, virtualizer]);
+
+  const handleScroll = useCallback(() => {
+    if (!scrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
+    setAutoScroll(isAtBottom);
+  }, []);
+
+  return (
+    <div className="relative flex flex-col h-[600px] rounded-lg border border-hairline bg-surface-1 overflow-hidden">
+      {/* Log Header */}
+      <div className="flex items-center justify-between px-4 py-2 border-b border-hairline bg-surface-2/50">
+        <div className="flex items-center gap-3">
+          <Terminal className="h-4 w-4 text-ink-subtle" />
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-ink">Execution Logs</span>
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-3">
+              <span className={cn(
+                "h-2 w-2 rounded-full",
+                status === 'connected' ? "bg-status-passed" :
+                status === 'connecting' ? "bg-status-running animate-pulse" :
+                "bg-status-failed"
+              )} />
+              <span className="text-xs text-ink-muted capitalize">{status}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="relative w-48">
+            <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-tertiary" />
+            <Input
+              placeholder="Search logs..."
+              value={search}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
+              className="h-8 pl-8 text-xs bg-surface-3 border-hairline"
+            />
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2 text-ink-subtle hover:text-ink"
+            onClick={() => setAutoScroll(!autoScroll)}
+            aria-label={autoScroll ? "Pause auto-scroll" : "Resume auto-scroll"}
+            title={autoScroll ? "Pause auto-scroll" : "Resume auto-scroll"}
+          >
+            {autoScroll ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+          </Button>
+        </div>
+      </div>
+
+      {/* Log Body - Virtualized */}
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto p-4 font-mono text-[13px] leading-relaxed text-ink-muted bg-surface-1"
+      >
+        {filteredLogs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-ink-tertiary space-y-2">
+            <Terminal className="h-8 w-8 opacity-20" />
+            <p>Waiting for logs...</p>
+          </div>
+        ) : (
+          <div
+            style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}
+          >
+            {virtualizer.getVirtualItems().map((virtualItem) => {
+              const log = filteredLogs[virtualItem.index];
+              return (
+                <div
+                  key={virtualItem.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualItem.start}px)`,
+                  }}
+                  className="flex hover:bg-surface-2/30 px-1 -mx-1 rounded"
+                >
+                  {log.timestamp && (
+                    <span className="text-ink-tertiary mr-3 shrink-0 select-none">
+                      [{new Date(log.timestamp).toLocaleTimeString()}]
+                    </span>
+                  )}
+                  <span className="whitespace-pre-wrap break-all">
+                    <AnsiToReact>{sanitizeLogMessage(log.message)}</AnsiToReact>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Auto-scroll resume overlay */}
+      {!autoScroll && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2">
+          <Button
+            variant="secondary"
+            size="sm"
+            className="shadow-lg border-hairline-strong rounded-full"
+            onClick={() => {
+              setAutoScroll(true);
+              virtualizer.scrollToIndex(filteredLogs.length - 1, { align: 'end' });
+            }}
+          >
+            <ChevronDown className="mr-1.5 h-4 w-4" />
+            Resume auto-scroll
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
