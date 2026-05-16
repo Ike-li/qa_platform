@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import desc
 
 from qaplatform.api.deps import CurrentUser, Repos
@@ -89,6 +89,7 @@ def _to_artifact_response(orm: ArtifactORM) -> ArtifactResponse:
 )
 async def trigger_run(
     body: RunTrigger,
+    request: Request,
     repos: Repos,
     user: CurrentUser,
 ):
@@ -119,6 +120,14 @@ async def trigger_run(
         triggered_by=user.user_id,
         trigger_type="manual",
     )
+
+    container = request.app.state.container
+    arq_pool = getattr(container, "arq_pool", None)
+    if arq_pool is not None:
+        from qaplatform.worker.scheduler import enqueue_run
+
+        await enqueue_run(arq_pool, repos.run, run, "manual", container.settings)
+
     return _to_run_response(run)
 
 
@@ -183,6 +192,7 @@ async def get_run(
 )
 async def cancel_run(
     run_id: UUID,
+    request: Request,
     repos: Repos,
     user: CurrentUser,
     body: RunCancel | None = None,
@@ -197,6 +207,14 @@ async def cancel_run(
     cancelled = await repos.run.cancel_if_current(run_id, expected_in=_CANCELABLE)
     if not cancelled:
         raise HTTPException(status_code=409, detail="Run status changed concurrently")
+
+    # Notify worker to stop the container
+    container = request.app.state.container
+    redis = getattr(container, "redis_client", None)
+    if redis is not None:
+        from qaplatform.engine.cancel import publish_cancel
+
+        await publish_cancel(redis, run_id)
 
     run = await repos.run.get_by_id(run_id)
     return _to_run_response(run)

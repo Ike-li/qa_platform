@@ -20,8 +20,7 @@ from qaplatform.engine.docker_backend import (
     SandboxSecurity,
 )
 from qaplatform.engine.log_stream import LogStream
-from qaplatform.plugins.builtin.junit_collector import JUnitCollector
-from qaplatform.plugins.builtin.pytest_runner import PytestRunner
+from qaplatform.plugins.registry import PluginRegistry
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +51,7 @@ class RunRepositoryProtocol(Protocol):
     ) -> bool: ...
     async def cancel_if_current(self, run_id: UUID | str) -> bool: ...
     async def update_execution_id(self, run_id: UUID | str, execution_id: str) -> None: ...
+    async def update_git_sha(self, run_id: UUID | str, sha: str) -> None: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -121,6 +121,7 @@ class RunExecutor:
         backend: DockerBackend,
         log_stream: LogStream,
         run_repo: RunRepositoryProtocol,
+        plugin_registry: PluginRegistry | None = None,
         s3_client: Any = None,
         s3_bucket: str = "qa-platform",
         workspace_dir: str = "/workspace",
@@ -128,6 +129,7 @@ class RunExecutor:
         self.backend = backend
         self.log_stream = log_stream
         self.run_repo = run_repo
+        self.plugin_registry = plugin_registry
         self.s3_client = s3_client
         self.s3_bucket = s3_bucket
         self.workspace_dir = workspace_dir
@@ -170,8 +172,7 @@ class RunExecutor:
             await self.run_repo.mark_collecting(run_id)
             await self.log_stream.write_log(run_id, "Collecting test results...")
 
-            test_runner = PytestRunner()
-            collector = JUnitCollector()
+            collector = self.plugin_registry.get_collector("junit")
 
             results = await collector.collect(run.id, working_dir)
             passed = sum(1 for r in results if r.status == "passed")
@@ -232,24 +233,17 @@ class RunExecutor:
     # --------------------------------------------------------------------- #
 
     async def _clone_repo(self, run: Run, dest: Path) -> None:
-        """Clone the repository at the specified git ref."""
-        # For MVP, assume git_url is available from run metadata
+        """Clone the repository using the SourceProtocol plugin."""
         git_url = run.metadata.get("git_url", "")
         if not git_url:
             await self.log_stream.write_log(str(run.id), "No git_url in metadata, using workspace")
             return
 
-        cmd = ["git", "clone", "--depth", "1", "--branch", run.git_ref, git_url, str(dest)]
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
+        source = self.plugin_registry.get_source("git")
+        revision = await source.clone(git_url, run.git_ref, dest)
 
-        if process.returncode != 0:
-            err_msg = stderr.decode(errors="replace").strip()
-            raise RuntimeError(f"git clone failed (exit {process.returncode}): {err_msg}")
+        if revision.sha:
+            await self.run_repo.update_git_sha(run.id, revision.sha)
 
     async def _run_setup(
         self,

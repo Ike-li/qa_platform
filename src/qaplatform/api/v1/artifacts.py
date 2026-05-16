@@ -12,7 +12,10 @@ router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
 async def _get_artifact_or_404(repos, artifact_id: UUID, tenant_id: UUID):
     artifact = await repos.artifact.get_by_id(artifact_id)
-    if artifact is None or artifact.tenant_id != tenant_id:
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    run = await repos.run.get_by_id(artifact.run_id)
+    if run is None or run.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Artifact not found")
     return artifact
 
