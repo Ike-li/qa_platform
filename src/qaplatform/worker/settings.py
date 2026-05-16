@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 
+import aiodocker
 from arq import cron, func
 from arq.connections import RedisSettings
 
@@ -22,12 +23,16 @@ async def on_startup(ctx: dict) -> None:
     container = DependencyContainer(settings)
     await container.init_db()
     await container.init_redis()
+    await container.init_arq()
 
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
 
     log_stream = LogStream(container.redis_client)
     plugin_registry = PluginRegistry()
-    backend = DockerBackend()
+    plugin_registry.register_builtins()
+    docker_client = aiodocker.Docker()
+    ctx["docker_client"] = docker_client
+    backend = DockerBackend(docker_client)
     executor = RunExecutor(
         backend=backend,
         log_stream=log_stream,
@@ -39,6 +44,7 @@ async def on_startup(ctx: dict) -> None:
     ctx["settings"] = settings
     ctx["worker_id"] = worker_id
     ctx["redis"] = container.redis_client
+    ctx["arq_pool"] = container.arq_pool
     ctx["log_stream"] = log_stream
     ctx["executor"] = executor
     ctx["s3_client"] = container.s3_client
@@ -49,8 +55,13 @@ async def on_startup(ctx: dict) -> None:
 async def on_shutdown(ctx: dict) -> None:
     """arq on_shutdown hook: clean up resources."""
     container = ctx.get("container")
-    if container and hasattr(container, "close"):
-        await container.close()
+    try:
+        if container and hasattr(container, "close"):
+            await container.close()
+    finally:
+        docker_client = ctx.get("docker_client")
+        if docker_client is not None:
+            await docker_client.close()
 
 
 async def reclaim_resources(ctx: dict) -> None:
@@ -69,7 +80,7 @@ async def dequeue_waiting(ctx: dict) -> None:
     async with session_factory() as session:
         run_repo = RunRepository(session)
         scheduler = FairScheduler(
-            arq_pool=ctx["redis"],
+            arq=ctx["arq_pool"],
             run_repo=run_repo,
             settings=ctx["settings"],
         )
