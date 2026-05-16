@@ -86,7 +86,7 @@ async def admin_user(db_session: AsyncSession):
     user = User(
         username="admin",
         email="admin@test.local",
-        role="admin",
+        role="platform_admin",
         is_active=True,
     )
     db_session.add(user)

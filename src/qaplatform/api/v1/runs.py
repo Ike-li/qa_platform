@@ -5,7 +5,8 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import desc
 
-from qaplatform.api.deps import CurrentUser, Repos
+from qaplatform.api.auth.permissions import Action
+from qaplatform.api.deps import CurrentUser, Repos, require_permission
 from qaplatform.api.schemas import (
     ArtifactResponse,
     ErrorResponse,
@@ -92,6 +93,7 @@ async def trigger_run(
     request: Request,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_permission(Action.RUN_TRIGGER),
 ):
     pipeline = await repos.pipeline.get_by_id(body.pipeline_id)
     if pipeline is None:
@@ -196,6 +198,7 @@ async def cancel_run(
     repos: Repos,
     user: CurrentUser,
     body: RunCancel | None = None,
+    _perm=require_permission(Action.RUN_CANCEL),
 ):
     run = await repos.run.get_by_id(run_id)
     if run is None or run.tenant_id != user.tenant_id:

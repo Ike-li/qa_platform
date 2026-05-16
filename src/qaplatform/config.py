@@ -55,4 +55,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "json"  # json / console
 
+    # CORS
+    cors_origins: list[str] = ["http://localhost:5173"]
+
     model_config = {"env_file": ".env", "env_prefix": "QAP_"}

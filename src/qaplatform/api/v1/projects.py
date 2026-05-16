@@ -5,7 +5,8 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import or_
 
-from qaplatform.api.deps import CurrentUser, Repos
+from qaplatform.api.auth.permissions import Action
+from qaplatform.api.deps import CurrentUser, Repos, require_permission
 from qaplatform.api.schemas import (
     ErrorResponse,
     PaginatedResponse,
@@ -86,6 +87,7 @@ async def create_project(
     body: ProjectCreate,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_permission(Action.PROJECT_CREATE),
 ):
     existing = await repos.project.get_by_slug(user.tenant_id, body.slug)
     if existing is not None:
@@ -127,6 +129,7 @@ async def update_project(
     body: ProjectUpdate,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_permission(Action.PROJECT_EDIT),
 ):
     project = await repos.project.get_by_id(project_id)
     if project is None or project.tenant_id != user.tenant_id:
@@ -147,6 +150,7 @@ async def delete_project(
     project_id: UUID,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_permission(Action.PROJECT_DELETE),
 ):
     project = await repos.project.get_by_id(project_id)
     if project is None or project.tenant_id != user.tenant_id:

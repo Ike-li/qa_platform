@@ -8,11 +8,53 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from qaplatform.api.schemas import ErrorDetail, ErrorResponse
 from qaplatform.config import Settings
 
 logger = structlog.get_logger(__name__)
+
+
+def configure_logging(settings: Settings) -> None:
+    """Configure structlog with JSON or console output."""
+    shared_processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+    ]
+
+    if settings.log_format == "json":
+        renderer = structlog.processors.JSONRenderer()
+    else:
+        renderer = structlog.dev.ConsoleRenderer()
+
+    structlog.configure(
+        processors=[
+            *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            renderer,
+        ],
+    )
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(settings.log_level.upper())
 
 
 def create_app(container: Any | None = None, settings: Settings | None = None) -> FastAPI:
@@ -26,9 +68,11 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
             from qaplatform.dependencies import init_container
 
             _settings = settings or Settings()
+            configure_logging(_settings)
             container = init_container(_settings)
             await container.init_db()
             await container.init_redis()
+            await container.init_arq()
             app.state.container = container
         yield
         # Shutdown
@@ -48,9 +92,10 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
         app.state.container = container
 
     # ── CORS ──────────────────────────────────────────────────────────────
+    _settings_obj = settings or (container.settings if container else Settings())
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_settings_obj.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -79,6 +124,34 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     app.include_router(run_router, prefix=api_prefix)
     app.include_router(artifact_router, prefix=api_prefix)
     app.include_router(sse_router, prefix=api_prefix)
+
+    # ── Health checks ────────────────────────────────────────────────────
+    @app.get("/health", tags=["ops"])
+    async def health():
+        return {"status": "ok"}
+
+    @app.get("/ready", tags=["ops"])
+    async def ready():
+        c = app.state.container
+        checks: dict = {}
+        try:
+            async with c.db_session_factory() as session:
+                await session.execute(text("SELECT 1"))
+            checks["db"] = "ok"
+        except Exception as e:
+            checks["db"] = str(e)
+
+        try:
+            await c.redis_client.ping()
+            checks["redis"] = "ok"
+        except Exception as e:
+            checks["redis"] = str(e)
+
+        all_ok = all(v == "ok" for v in checks.values())
+        return JSONResponse(
+            status_code=200 if all_ok else 503,
+            content={"status": "ok" if all_ok else "degraded", "checks": checks},
+        )
 
     # ── Unified error handling ───────────────────────────────────────────
     _register_error_handlers(app)

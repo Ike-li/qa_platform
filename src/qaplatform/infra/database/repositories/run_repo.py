@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import AsyncIterator
 from uuid import UUID
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.infra.database.models import (
@@ -269,6 +271,60 @@ class RunRepository(BaseRepository[Run]):
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    # --- Scheduler support ---
+
+    _ACTIVE_STATUSES = {
+        RunStatusEnum.PREPARING,
+        RunStatusEnum.RUNNING,
+        RunStatusEnum.COLLECTING,
+    }
+
+    async def count_active_or_enqueued(self) -> int:
+        """Count globally active or enqueued runs."""
+        stmt = select(func.count()).select_from(Run).where(
+            (Run.status.in_(self._ACTIVE_STATUSES))
+            | ((Run.status == RunStatusEnum.QUEUED) & (Run.enqueued_at.isnot(None)))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
+    async def count_active_or_enqueued_by_project(self, project_id: UUID) -> int:
+        """Count active or enqueued runs for a specific project."""
+        stmt = select(func.count()).select_from(Run).where(
+            Run.project_id == project_id,
+            (Run.status.in_(self._ACTIVE_STATUSES))
+            | ((Run.status == RunStatusEnum.QUEUED) & (Run.enqueued_at.isnot(None)))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
+    @asynccontextmanager
+    async def scheduler_lock(self) -> AsyncIterator[None]:
+        """Acquire a PostgreSQL advisory lock for the scheduler."""
+        lock_id = 8675309  # arbitrary fixed ID for scheduler
+        await self.session.execute(text(f"SELECT pg_advisory_xact_lock({lock_id})"))
+        yield
+
+    async def update_git_sha(self, run_id: UUID, sha: str) -> None:
+        """Write the resolved git commit SHA back to the run record."""
+        stmt = (
+            update(Run)
+            .where(Run.id == run_id)
+            .values(git_sha=sha, updated_at=_utcnow())
+        )
+        await self.session.execute(stmt)
+        await self.session.flush()
+
+    async def update_execution_id(self, run_id: UUID, execution_id: str) -> None:
+        """Write the container execution ID to the run record."""
+        stmt = (
+            update(Run)
+            .where(Run.id == run_id)
+            .values(execution_id=execution_id, updated_at=_utcnow())
+        )
+        await self.session.execute(stmt)
+        await self.session.flush()
 
 
 class TestResultRepository(BaseRepository[TestResult]):
