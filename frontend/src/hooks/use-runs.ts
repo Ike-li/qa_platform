@@ -5,6 +5,7 @@ import type { Run, PaginatedResponse, TestResult, Artifact } from "../types/api"
 type BackendRun = Omit<Run, "pipeline_name" | "branch" | "duration_seconds" | "total_tests" | "passed_tests" | "failed_tests" | "skipped_tests" | "env_overrides" | "params"> & {
   tenant_id?: string;
   environment_id?: string;
+  pipeline_name?: string;
   git_ref?: string;
   duration_ms?: number | null;
   summary?: {
@@ -32,7 +33,7 @@ function normalizeRun(run: Run | BackendRun): Run {
   return {
     ...run,
     status: status as Run["status"],
-    pipeline_name: (run as Run).pipeline_name ?? `Pipeline ${run.pipeline_id.slice(0, 8)}`,
+    pipeline_name: (run as Run).pipeline_name ?? backendRun.pipeline_name ?? `Pipeline ${run.pipeline_id.slice(0, 8)}`,
     branch: (run as Run).branch ?? backendRun.git_ref ?? "-",
     env_overrides: (run as Run).env_overrides ?? {},
     params: (run as Run).params ?? {},

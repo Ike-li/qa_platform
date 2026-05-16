@@ -34,6 +34,7 @@ def _to_run_response(orm: RunORM) -> RunResponse:
         tenant_id=orm.tenant_id,
         project_id=orm.project_id,
         pipeline_id=orm.pipeline_id,
+        pipeline_name=orm.pipeline.name if orm.pipeline is not None else "",
         environment_id=orm.environment_id,
         status=orm.status.value if isinstance(orm.status, RunStatusEnum) else orm.status,
         trigger_type=orm.trigger_type,
