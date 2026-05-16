@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import AsyncIterator
+from enum import Enum as PyEnum
+from typing import AsyncIterator, Collection
 from uuid import UUID
 
 from sqlalchemy import func, select, text, update
@@ -25,9 +26,40 @@ def _utcnow() -> datetime:
 
 class RunRepository(BaseRepository[Run]):
     model = Run
+    _FINISH_EXPECTED = frozenset({RunStatusEnum.RUNNING, RunStatusEnum.COLLECTING})
+    _FAIL_EXPECTED = frozenset({
+        RunStatusEnum.QUEUED,
+        RunStatusEnum.PREPARING,
+        RunStatusEnum.RUNNING,
+        RunStatusEnum.COLLECTING,
+    })
+    _CANCEL_EXPECTED = frozenset({
+        RunStatusEnum.QUEUED,
+        RunStatusEnum.PREPARING,
+        RunStatusEnum.RUNNING,
+        RunStatusEnum.COLLECTING,
+    })
 
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
+
+    @staticmethod
+    def _coerce_status(status: RunStatusEnum | str | PyEnum) -> RunStatusEnum:
+        if isinstance(status, RunStatusEnum):
+            return status
+        if isinstance(status, PyEnum):
+            return RunStatusEnum(status.value)
+        return RunStatusEnum(status)
+
+    @classmethod
+    def _expected_statuses(
+        cls,
+        expected_in: Collection[RunStatusEnum | str | PyEnum] | None,
+        default: frozenset[RunStatusEnum],
+    ) -> frozenset[RunStatusEnum]:
+        if expected_in is None:
+            return default
+        return frozenset(cls._coerce_status(status) for status in expected_in)
 
     async def list_by_project(
         self, project_id: UUID, *, offset: int = 0, limit: int = 20
@@ -76,26 +108,39 @@ class RunRepository(BaseRepository[Run]):
         return run
 
     async def finish_if_current(
-        self, run_id: UUID, *, status: RunStatusEnum, expected_in: set[RunStatusEnum]
+        self,
+        run_id: UUID,
+        *,
+        status: RunStatusEnum | str | PyEnum,
+        expected_in: Collection[RunStatusEnum | str | PyEnum] | None = None,
+        summary: dict | None = None,
     ) -> bool:
         """Set terminal status only if current status matches expected set. Returns True if updated."""
         now = _utcnow()
+        values: dict = {
+            "status": self._coerce_status(status),
+            "finished_at": now,
+            "status_updated_at": now,
+            "updated_at": now,
+        }
+        if summary is not None:
+            values["summary"] = summary
+        expected = self._expected_statuses(expected_in, self._FINISH_EXPECTED)
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.status.in_(expected_in))
-            .values(
-                status=status,
-                finished_at=now,
-                status_updated_at=now,
-                updated_at=now,
-            )
+            .where(Run.id == run_id, Run.status.in_(expected))
+            .values(**values)
         )
         result = await self.session.execute(stmt)
         await self.session.flush()
         return result.rowcount > 0
 
     async def fail_if_current(
-        self, run_id: UUID, *, expected_in: set[RunStatusEnum], message: str | None = None
+        self,
+        run_id: UUID,
+        *,
+        expected_in: Collection[RunStatusEnum | str | PyEnum] | None = None,
+        message: str | None = None,
     ) -> bool:
         """Mark run as failed only if current status matches. Returns True if updated."""
         now = _utcnow()
@@ -106,9 +151,10 @@ class RunRepository(BaseRepository[Run]):
             "status_updated_at": now,
             "updated_at": now,
         }
+        expected = self._expected_statuses(expected_in, self._FAIL_EXPECTED)
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.status.in_(expected_in))
+            .where(Run.id == run_id, Run.status.in_(expected))
             .values(**values)
         )
         result = await self.session.execute(stmt)
@@ -116,13 +162,17 @@ class RunRepository(BaseRepository[Run]):
         return result.rowcount > 0
 
     async def cancel_if_current(
-        self, run_id: UUID, *, expected_in: set[RunStatusEnum]
+        self,
+        run_id: UUID,
+        *,
+        expected_in: Collection[RunStatusEnum | str | PyEnum] | None = None,
     ) -> bool:
         """Cancel run only if current status matches. Returns True if updated."""
         now = _utcnow()
+        expected = self._expected_statuses(expected_in, self._CANCEL_EXPECTED)
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.status.in_(expected_in))
+            .where(Run.id == run_id, Run.status.in_(expected))
             .values(
                 status=RunStatusEnum.CANCELLED,
                 finished_at=now,

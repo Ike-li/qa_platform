@@ -27,8 +27,8 @@ def _to_response(orm) -> EnvironmentResponse:
         name=orm.name,
         base_image=orm.base_image,
         setup_script=orm.setup_script,
-        memory_mb=rl.get("memory_mb", 512),
-        cpu_cores=rl.get("cpu_cores", 1.0),
+        memory_mb=orm.memory_mb,
+        cpu_cores=orm.cpu_cores,
         max_artifact_size_mb=rl.get("max_artifact_size_mb", 100),
         max_artifacts_count=rl.get("max_artifacts_count", 50),
         network_policy=orm.network_policy,
@@ -86,8 +86,6 @@ async def create_environment(
     await _verify_project_access(project_id, repos, user)
 
     resource_limits = {
-        "memory_mb": body.memory_mb,
-        "cpu_cores": body.cpu_cores,
         "max_artifact_size_mb": body.max_artifact_size_mb,
         "max_artifacts_count": body.max_artifacts_count,
     }
@@ -96,6 +94,8 @@ async def create_environment(
         name=body.name,
         base_image=body.base_image,
         setup_script=body.setup_script,
+        memory_mb=body.memory_mb,
+        cpu_cores=body.cpu_cores,
         resource_limits=resource_limits,
         network_policy=body.network_policy,
         env_vars=body.env_vars,
@@ -144,7 +144,7 @@ async def update_environment(
         raise HTTPException(status_code=404, detail="Environment not found")
 
     update_data = body.model_dump(exclude_unset=True)
-    limits_fields = {"memory_mb", "cpu_cores", "max_artifact_size_mb", "max_artifacts_count"}
+    limits_fields = {"max_artifact_size_mb", "max_artifacts_count"}
     limits_update = {k: update_data.pop(k) for k in list(update_data) if k in limits_fields}
     if limits_update:
         current_rl = dict(env.resource_limits or {})

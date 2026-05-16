@@ -21,6 +21,13 @@ class PytestRunner:
 
     name = "pytest"
 
+    def build_command(self, config: dict[str, Any]) -> str:
+        """Return the shell command to execute this runner inside a container."""
+        test_path = config.get('test_path', 'tests/')
+        args = config.get('args', [])
+        extras = ' '.join(args) if args else ''
+        return f"cd /workspace && python -m pytest --junitxml=results/junit.xml {extras} {test_path}"
+
     async def run_tests(
         self,
         working_dir: Path,

@@ -32,12 +32,19 @@ async def execute_run(ctx: dict, run_id: str) -> None:
     4. Finally: archive logs, release worker
     """
     from qaplatform.infra.database.repositories.run_repo import RunRepository
+    from qaplatform.engine.executor import RunExecutor
 
-    executor = ctx["executor"]
     log_stream = ctx["log_stream"]
     worker_id = ctx["worker_id"]
     redis = ctx["redis"]
     session_factory = ctx["db_session_factory"]
+    
+    # We create a new executor instance per task to avoid concurrent DB session issues
+    executor = RunExecutor(
+        backend=ctx["docker_backend"],
+        log_stream=ctx["log_stream"],
+        plugin_registry=ctx["plugin_registry"],
+    )
 
     async with session_factory() as session:
         run_repo = RunRepository(session)
@@ -48,6 +55,8 @@ async def execute_run(ctx: dict, run_id: str) -> None:
         if not run:
             log.warning("could not claim run %s (not in queued state or not found)", run_id)
             return
+            
+        await session.refresh(run, ['pipeline', 'environment'])
 
         # Check if cancellation was requested before we started
         if run.cancel_requested_at:
@@ -63,7 +72,8 @@ async def execute_run(ctx: dict, run_id: str) -> None:
 
         try:
             # 2. Execute the pipeline
-            status = await executor.execute(run, run.pipeline)
+            config = _build_pipeline_config(run, run.pipeline, run.environment)
+            status = await executor.execute(run, config)
 
             # 3. Write terminal state (conditional update)
             updated = await run_repo.finish_if_current(
@@ -103,3 +113,30 @@ async def execute_run(ctx: dict, run_id: str) -> None:
                 log.warning("failed to release worker for run %s", run_id)
 
             await session.commit()
+
+def _build_pipeline_config(run, pipeline_orm, environment_orm):
+    from qaplatform.engine.executor import PipelineConfig, StageDefinition
+    from qaplatform.engine.docker_backend import ResourceLimits
+    
+    stages = []
+    for stage_dict in pipeline_orm.stages:
+        stages.append(StageDefinition(
+            name=stage_dict.get('name', 'stage'),
+            plugin=stage_dict.get('plugin', 'pytest'),
+            phase=stage_dict.get('phase', 'execute'),
+            config=stage_dict.get('config', {}),
+            continue_on_error=stage_dict.get('continue_on_error', False),
+        ))
+    
+    return PipelineConfig(
+        image=environment_orm.base_image,
+        stages=stages,
+        env_vars=dict(environment_orm.env_vars or {}),
+        resource_limits=ResourceLimits(
+            memory_bytes=environment_orm.memory_mb * 1024 * 1024,
+            cpu_cores=environment_orm.cpu_cores,
+        ),
+        network_policy=environment_orm.network_policy,
+        timeout_seconds=pipeline_orm.timeout_seconds or 1800,
+        setup_script=environment_orm.setup_script,
+    )

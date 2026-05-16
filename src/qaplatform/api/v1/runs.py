@@ -112,6 +112,14 @@ async def trigger_run(
             environment_id = envs[0].id
         else:
             raise HTTPException(status_code=409, detail="No environment configured for project")
+            
+    metadata = {'git_url': project.git_url}
+    if project.git_auth_method != 'none' and project.credential_id:
+        metadata['credential_id'] = str(project.credential_id)
+    if project.shallow_clone:
+        metadata['shallow_clone'] = True
+    if project.default_branch:
+        metadata['default_branch'] = project.default_branch
 
     run = await repos.run.create(
         tenant_id=user.tenant_id,
@@ -121,6 +129,7 @@ async def trigger_run(
         git_ref=git_ref,
         triggered_by=user.user_id,
         trigger_type="manual",
+        metadata_=metadata,
     )
 
     container = request.app.state.container
