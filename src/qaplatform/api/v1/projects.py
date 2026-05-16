@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import or_
 
+from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
 from qaplatform.api.deps import CurrentUser, Repos, require_permission
 from qaplatform.api.schemas import (
@@ -98,7 +99,15 @@ async def create_project(
         created_by=user.user_id,
         **body.model_dump(),
     )
-    return _to_response(orm)
+    response = _to_response(orm)
+    await write_audit(
+        repos, user,
+        action="project.create",
+        resource_type="project",
+        resource_id=orm.id,
+        after=response,
+    )
+    return response
 
 
 @router.get(
@@ -135,9 +144,19 @@ async def update_project(
     if project is None or project.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    before = _to_response(project)
     update_data = body.model_dump(exclude_unset=True)
     updated = await repos.project.update(project, **update_data)
-    return _to_response(updated)
+    after = _to_response(updated)
+    await write_audit(
+        repos, user,
+        action="project.update",
+        resource_type="project",
+        resource_id=updated.id,
+        before=before,
+        after=after,
+    )
+    return after
 
 
 @router.delete(
@@ -156,4 +175,12 @@ async def delete_project(
     if project is None or project.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    before = _to_response(project)
     await repos.project.delete(project)
+    await write_audit(
+        repos, user,
+        action="project.delete",
+        resource_type="project",
+        resource_id=project_id,
+        before=before,
+    )

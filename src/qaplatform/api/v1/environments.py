@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
 
+from qaplatform.api.audit import write_audit
 from qaplatform.api.deps import CurrentUser, Repos
 from qaplatform.api.schemas import (
     EnvironmentCreate,
@@ -101,7 +102,15 @@ async def create_environment(
         env_vars=body.env_vars,
         cache_key=body.cache_key,
     )
-    return _to_response(orm)
+    response = _to_response(orm)
+    await write_audit(
+        repos, user,
+        action="environment.create",
+        resource_type="environment",
+        resource_id=orm.id,
+        after=response,
+    )
+    return response
 
 
 @router.get(
@@ -143,6 +152,7 @@ async def update_environment(
     if env is None or env.project_id != project_id:
         raise HTTPException(status_code=404, detail="Environment not found")
 
+    before = _to_response(env)
     update_data = body.model_dump(exclude_unset=True)
     limits_fields = {"max_artifact_size_mb", "max_artifacts_count"}
     limits_update = {k: update_data.pop(k) for k in list(update_data) if k in limits_fields}
@@ -152,7 +162,16 @@ async def update_environment(
         update_data["resource_limits"] = current_rl
 
     updated = await repos.environment.update(env, **update_data)
-    return _to_response(updated)
+    after = _to_response(updated)
+    await write_audit(
+        repos, user,
+        action="environment.update",
+        resource_type="environment",
+        resource_id=updated.id,
+        before=before,
+        after=after,
+    )
+    return after
 
 
 @router.delete(
@@ -173,4 +192,12 @@ async def delete_environment(
     if env is None or env.project_id != project_id:
         raise HTTPException(status_code=404, detail="Environment not found")
 
+    before = _to_response(env)
     await repos.environment.delete(env)
+    await write_audit(
+        repos, user,
+        action="environment.delete",
+        resource_type="environment",
+        resource_id=env_id,
+        before=before,
+    )
