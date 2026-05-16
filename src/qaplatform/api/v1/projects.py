@@ -93,7 +93,7 @@ async def create_project(
 
     orm = await repos.project.create(
         tenant_id=user.tenant_id,
-        created_by=user.id,
+        created_by=user.user_id,
         **body.model_dump(),
     )
     return _to_response(orm)

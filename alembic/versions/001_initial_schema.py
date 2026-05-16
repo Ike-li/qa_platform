@@ -43,6 +43,7 @@ def upgrade() -> None:
         sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.text("true")),
         sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.UniqueConstraint("tenant_id", "id", name="uq_app_user_tenant_id"),
         sa.UniqueConstraint("tenant_id", "username", name="uq_app_user_tenant_username"),
         sa.UniqueConstraint("tenant_id", "email", name="uq_app_user_tenant_email"),
     )

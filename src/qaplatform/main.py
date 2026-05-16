@@ -27,6 +27,8 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
 
             _settings = settings or Settings()
             container = init_container(_settings)
+            await container.init_db()
+            await container.init_redis()
             app.state.container = container
         yield
         # Shutdown

@@ -97,6 +97,7 @@ class Tenant(Base):
 class AppUser(Base):
     __tablename__ = "app_user"
     __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_app_user_tenant_id"),
         UniqueConstraint("tenant_id", "username", name="uq_app_user_tenant_username"),
         UniqueConstraint("tenant_id", "email", name="uq_app_user_tenant_email"),
     )
@@ -258,6 +259,11 @@ class Credential(Base):
         UniqueConstraint("project_id", "name", name="uq_credential_project_name"),
         UniqueConstraint("project_id", "id", name="uq_credential_project_id"),
         ForeignKeyConstraint(
+            ["tenant_id", "project_id"],
+            ["project.tenant_id", "project.id"],
+            name="fk_credential_project",
+        ),
+        ForeignKeyConstraint(
             ["tenant_id", "created_by"],
             ["app_user.tenant_id", "app_user.id"],
             name="fk_credential_created_by",
@@ -281,13 +287,7 @@ class Credential(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
-    project: Mapped[Project] = relationship(
-        "Project",
-        primaryjoin="and_(Credential.project_id == Project.id, Credential.tenant_id == Project.tenant_id)",
-        foreign_keys=[project_id, tenant_id],
-        back_populates="credentials",
-        lazy="joined",
-    )
+    project: Mapped[Project] = relationship("Project", back_populates="credentials", lazy="joined")
 
 
 class Run(Base):
