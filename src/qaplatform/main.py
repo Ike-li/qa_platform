@@ -23,6 +23,15 @@ logger = structlog.get_logger(__name__)
 START_TIME = time.time()
 
 
+def _ensure_plugin_registry(container: Any) -> None:
+    if getattr(container, "plugin_registry", None) is None:
+        from qaplatform.plugins.registry import PluginRegistry
+
+        plugin_registry = PluginRegistry()
+        plugin_registry.register_builtins()
+        container.plugin_registry = plugin_registry
+
+
 def create_app(container: Any | None = None, settings: Settings | None = None) -> FastAPI:
     """FastAPI application factory."""
 
@@ -39,6 +48,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
             await container.init_db()
             await container.init_redis()
             await container.init_arq()
+            _ensure_plugin_registry(container)
             app.state.container = container
         
         logger.info("application_started", version="0.1.0")
@@ -76,6 +86,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
 
     # Store container on app state
     if container is not None:
+        _ensure_plugin_registry(container)
         app.state.container = container
 
     _settings_obj = settings or (container.settings if container else Settings())
