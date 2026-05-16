@@ -62,7 +62,7 @@ async def main():
                     """UPDATE app_user
                     SET email = :email,
                         password_hash = :password_hash,
-                        role = 'admin',
+                        role = 'platform_admin',
                         is_active = true
                     WHERE id = :user_id"""
                 ),
@@ -77,7 +77,7 @@ async def main():
             result = await session.execute(
                 text(
                     """INSERT INTO app_user (tenant_id, username, email, password_hash, role)
-                    VALUES (:tid, :username, :email, :password_hash, 'admin')
+                    VALUES (:tid, :username, :email, :password_hash, 'platform_admin')
                     RETURNING id"""
                 ),
                 {

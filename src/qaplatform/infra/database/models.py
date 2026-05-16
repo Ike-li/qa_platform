@@ -364,7 +364,7 @@ class Run(Base):
     pipeline_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     environment_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     status: Mapped[RunStatusEnum] = mapped_column(
-        Enum(RunStatusEnum, name="run_status_enum", create_constraint=False),
+        Enum(RunStatusEnum, name="run_status_enum", native_enum=False, create_constraint=False, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         server_default=text("'queued'"),
     )
@@ -441,7 +441,7 @@ class TestResult(Base):
     suite: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[TestResultStatusEnum] = mapped_column(
-        Enum(TestResultStatusEnum, name="test_result_status_enum", create_constraint=False),
+        Enum(TestResultStatusEnum, name="test_result_status_enum", native_enum=False, create_constraint=False, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
     )
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
