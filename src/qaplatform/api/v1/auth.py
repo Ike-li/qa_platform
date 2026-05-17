@@ -157,12 +157,12 @@ async def _resolve_tenant_id(
 
 @router.post("/register", response_model=LoginResponse, status_code=201)
 async def register(body: RegisterRequest, response: Response) -> LoginResponse:
-    """Self-service registration: create a new tenant and its first admin user.
+    """Self-service registration: create a new tenant and its first owner.
 
     Each registration provisions an isolated workspace (one tenant per user).
+    The registrant becomes that tenant's Owner; cross-tenant super-user
+    privileges are gated separately via ``app_user.is_platform_admin``.
     """
-    # TODO(#1 RBAC): when dual-layer RBAC lands, the default role here should
-    # become "owner" at the tenant level instead of "platform_admin".
     from argon2 import PasswordHasher
 
     ph = PasswordHasher()
@@ -187,7 +187,7 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
             username=body.username,
             email=body.email,
             password_hash=password_hash,
-            role="platform_admin",
+            role="owner",
         )
         session.add(user)
         await session.flush()

@@ -269,7 +269,7 @@ class TestRegister:
         assert "access_token" in data
         assert data["user"]["username"] == "alice"
         assert data["user"]["email"] == "alice@example.com"
-        assert data["user"]["role"] == "platform_admin"
+        assert data["user"]["role"] == "owner"
         assert "refresh_token" in resp.cookies
 
     @pytest.mark.asyncio
