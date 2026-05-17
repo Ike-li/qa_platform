@@ -51,14 +51,16 @@ def integration_db_schema(pg_container, test_settings):
     )
 
     env = os.environ.copy()
-    env["DATABASE_URL"] = asyncpg_url
-    env["REDIS_URL"] = "redis://localhost:6379"
-    env["S3_ENDPOINT"] = "http://localhost:9000"
-    env["S3_ACCESS_KEY"] = "minioadmin"
-    env["S3_SECRET_KEY"] = "minioadmin"
-    env["S3_BUCKET"] = "qa-platform-test"
-    env["JWT_SECRET"] = "test-secret"
-    env["ENCRYPTION_KEY"] = "0" * 64
+    # Settings() 走 env_prefix="QAP_"；不带前缀的变量会被 .env 的 QAP_DATABASE_URL
+    # 默默覆盖，alembic 就跑去本地 dev DB 而不是 testcontainers PG。
+    env["QAP_DATABASE_URL"] = asyncpg_url
+    env["QAP_REDIS_URL"] = "redis://localhost:6379"
+    env["QAP_S3_ENDPOINT"] = "http://localhost:9000"
+    env["QAP_S3_ACCESS_KEY"] = "minioadmin"
+    env["QAP_S3_SECRET_KEY"] = "minioadmin"
+    env["QAP_S3_BUCKET"] = "qa-platform-test"
+    env["QAP_JWT_SECRET"] = "test-secret"
+    env["QAP_ENCRYPTION_KEY"] = "0" * 64
 
     repo_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..")
