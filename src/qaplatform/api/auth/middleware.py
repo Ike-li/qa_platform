@@ -8,7 +8,6 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from qaplatform.api.auth.jwt_service import JWTService
-from qaplatform.api.auth.permissions import Action, PermissionContext, check_permission
 from qaplatform.api.auth.token_service import TokenService
 
 if TYPE_CHECKING:
@@ -136,41 +135,3 @@ def _get_container():
     from qaplatform.dependencies import get_container
 
     return get_container()
-
-
-def require_roles(*roles: str):
-    """FastAPI dependency factory: reject if current user's role is not in the allowed set."""
-
-    async def _check(
-        current_user: CurrentUser = Depends(get_current_user),
-    ) -> CurrentUser:
-        if current_user.role not in roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{current_user.role}' is not allowed",
-            )
-        return current_user
-
-    return _check
-
-
-def require_permission(action: Action, is_own_resource: bool = False):
-    """FastAPI dependency factory: check RBAC permission."""
-
-    async def _check(
-        current_user: CurrentUser = Depends(get_current_user),
-    ) -> CurrentUser:
-        ctx = PermissionContext(
-            user_id=current_user.user_id,
-            role=current_user.role,
-            tenant_id=current_user.tenant_id,
-            is_own_resource=is_own_resource,
-        )
-        if not check_permission(ctx, action):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Permission denied",
-            )
-        return current_user
-
-    return _check
