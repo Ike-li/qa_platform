@@ -3,8 +3,15 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from qaplatform.api.deps import CurrentUser, Repos
+from qaplatform.api.auth.permissions import Action
+from qaplatform.api.deps import (
+    CurrentUser,
+    Repos,
+    _get_db_session,
+    enforce_project_action,
+)
 from qaplatform.api.schemas import ErrorResponse
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
@@ -17,7 +24,7 @@ async def _get_artifact_or_404(repos, artifact_id: UUID, tenant_id: UUID):
     run = await repos.run.get_by_id(artifact.run_id)
     if run is None or run.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    return artifact
+    return artifact, run
 
 
 async def _generate_download_url(s3_client, bucket: str, storage_path: str) -> str:
@@ -31,7 +38,10 @@ async def _generate_download_url(s3_client, bucket: str, storage_path: str) -> s
 
 @router.get(
     "/{artifact_id}/download",
-    responses={404: {"model": ErrorResponse}},
+    responses={
+        403: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+    },
     summary="获取产物下载链接",
 )
 async def download_artifact(
@@ -39,8 +49,10 @@ async def download_artifact(
     request: Request,
     repos: Repos,
     user: CurrentUser,
+    session: AsyncSession = Depends(_get_db_session),
 ):
-    artifact = await _get_artifact_or_404(repos, artifact_id, user.tenant_id)
+    artifact, run = await _get_artifact_or_404(repos, artifact_id, user.tenant_id)
+    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
 
     container = request.app.state.container
     url = await _generate_download_url(
