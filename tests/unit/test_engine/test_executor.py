@@ -596,3 +596,38 @@ class TestExecutorCommitsAfterStateTransitions:
         is type-correct under method-A (Protocol extension)."""
         from qaplatform.engine.executor import RunRepositoryProtocol
         assert hasattr(RunRepositoryProtocol, "commit")
+
+    @pytest.mark.asyncio
+    async def test_commit_called_after_update_execution_id(
+        self, happy_executor, sample_run, mock_run_repo
+    ):
+        """update_execution_id must be followed by run_repo.commit() so the
+        run row write lock is released before backend.wait blocks for the
+        stage timeout — otherwise cancel API's UPDATE on the same row stalls
+        for the full stage duration (P0-B follow-up, 60s blocking incident).
+        """
+        call_log: list[str] = []
+
+        async def _update_execution_id(*a, **kw):
+            call_log.append("update_execution_id")
+
+        async def _wait(*a, **kw):
+            call_log.append("backend.wait")
+            return happy_executor.backend.wait.return_value
+
+        async def _commit():
+            call_log.append("commit")
+
+        mock_run_repo.update_execution_id.side_effect = _update_execution_id
+        mock_run_repo.commit.side_effect = _commit
+        happy_executor.backend.wait.side_effect = _wait
+
+        sample_run.metadata = {}
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        update_idx = call_log.index("update_execution_id")
+        wait_idx = call_log.index("backend.wait")
+        between = call_log[update_idx + 1:wait_idx]
+        assert "commit" in between, (
+            f"expected commit between update_execution_id and backend.wait, log={call_log}"
+        )
