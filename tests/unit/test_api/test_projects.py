@@ -138,6 +138,56 @@ async def test_create_project_duplicate_slug(client, mock_project_repo):
 
 
 @pytest.mark.asyncio
+async def test_create_project_adds_creator_as_project_admin(
+    app, mock_project_repo, tenant_id, mock_user
+):
+    """Regression test for P0-2: a tenant Member who creates a project must
+    be auto-added as ProjectMember(role=admin); otherwise they 403 on every
+    subsequent project-scoped action.
+    """
+    from qaplatform.api.deps import _get_db_session
+    from qaplatform.infra.database.models import ProjectMember as ProjectMemberORM
+
+    project = _make_orm_project(tenant_id=tenant_id)
+    mock_project_repo.get_by_slug.return_value = None
+    mock_project_repo.create.return_value = project
+
+    captured_added = []
+
+    class _RecordingSession:
+        def add(self, instance):
+            captured_added.append(instance)
+
+        async def flush(self):
+            pass
+
+    async def _override_session():
+        yield _RecordingSession()
+
+    app.dependency_overrides[_get_db_session] = _override_session
+
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/v1/projects",
+                json={"name": "p", "slug": "p", "git_url": "https://example.com/x.git"},
+                headers={"Authorization": "Bearer fake"},
+            )
+        assert resp.status_code == 201
+
+        members = [x for x in captured_added if isinstance(x, ProjectMemberORM)]
+        assert len(members) == 1, f"expected exactly one ProjectMember added, got: {captured_added}"
+        m = members[0]
+        assert str(m.role) == "admin"
+        assert m.user_id == mock_user.user_id
+        assert m.project_id == project.id
+        assert m.tenant_id == tenant_id
+    finally:
+        app.dependency_overrides.pop(_get_db_session, None)
+
+
+@pytest.mark.asyncio
 async def test_get_project(client, mock_project_repo, tenant_id):
     project = _make_orm_project(tenant_id=tenant_id)
     mock_project_repo.get_by_id.return_value = project

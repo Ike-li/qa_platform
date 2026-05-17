@@ -72,6 +72,158 @@ def sample_run():
     return run
 
 
+class TestRunSetupContainerised:
+    """Regression tests for the P0 fix that moved setup_script execution
+    from `asyncio.create_subprocess_shell` (worker host) into the same
+    sandbox backend as stages.
+    """
+
+    @pytest.fixture
+    def setup_pipeline(self):
+        from qaplatform.engine.executor import PipelineConfig
+        return PipelineConfig(
+            image="python:3.12-alpine",
+            stages=[],
+            env_vars={"FOO": "bar"},
+            timeout_seconds=300,
+            setup_script="pip install -r requirements.txt",
+        )
+
+    @pytest.mark.asyncio
+    async def test_setup_runs_via_backend_not_subprocess(
+        self, executor, mock_backend, sample_run, setup_pipeline, tmp_path
+    ):
+        """The setup script must be dispatched as an ExecutionSpec to the
+        backend; under no circumstance should the executor shell out on
+        the host (which is what the old code path did)."""
+        from qaplatform.engine.executor import ExecutionSpec
+
+        mock_backend.create_execution = AsyncMock(return_value="setup-container-1")
+        mock_backend.start = AsyncMock()
+        mock_backend.wait = AsyncMock(
+            return_value=MagicMock(exit_code=0, timed_out=False)
+        )
+        mock_backend.cleanup = AsyncMock()
+
+        async def _empty_logs(_id):
+            if False:
+                yield
+        mock_backend.stream_logs = _empty_logs
+
+        with patch("asyncio.create_subprocess_shell") as shell_patch:
+            await executor._run_setup(sample_run, setup_pipeline, tmp_path)
+            shell_patch.assert_not_called()
+
+        # backend.create_execution must receive an ExecutionSpec carrying the
+        # script as ["sh", "-c", <script>] and the workspace mount.
+        mock_backend.create_execution.assert_called_once()
+        spec = mock_backend.create_execution.call_args.args[0]
+        assert isinstance(spec, ExecutionSpec)
+        assert spec.image == "python:3.12-alpine"
+        assert spec.command[:2] == ["sh", "-c"]
+        assert spec.command[2] == "pip install -r requirements.txt"
+        assert any(m.target == "/workspace" for m in spec.mounts)
+        # Setup container is labeled distinctly so an operator inspecting
+        # docker ps can tell setup containers from stage containers.
+        assert spec.labels.get("phase") == "setup"
+
+    @pytest.mark.asyncio
+    async def test_setup_timeout_capped_at_600s(
+        self, executor, mock_backend, sample_run, tmp_path
+    ):
+        from qaplatform.engine.executor import PipelineConfig
+        pipeline = PipelineConfig(
+            image="python:3.12-alpine",
+            stages=[],
+            timeout_seconds=3600,  # well over 600
+            setup_script="echo hi",
+        )
+
+        mock_backend.create_execution = AsyncMock(return_value="c")
+        mock_backend.start = AsyncMock()
+        mock_backend.wait = AsyncMock(
+            return_value=MagicMock(exit_code=0, timed_out=False)
+        )
+        mock_backend.cleanup = AsyncMock()
+
+        async def _empty_logs(_id):
+            if False:
+                yield
+        mock_backend.stream_logs = _empty_logs
+
+        await executor._run_setup(sample_run, pipeline, tmp_path)
+
+        # The wait timeout is the second positional arg to backend.wait().
+        wait_args = mock_backend.wait.call_args
+        timeout_passed = wait_args.args[1]
+        assert timeout_passed == 600, f"expected 600s cap, got {timeout_passed}"
+
+    @pytest.mark.asyncio
+    async def test_setup_uses_pipeline_timeout_when_below_cap(
+        self, executor, mock_backend, sample_run, tmp_path
+    ):
+        from qaplatform.engine.executor import PipelineConfig
+        pipeline = PipelineConfig(
+            image="python:3.12-alpine",
+            stages=[],
+            timeout_seconds=120,
+            setup_script="echo hi",
+        )
+
+        mock_backend.create_execution = AsyncMock(return_value="c")
+        mock_backend.start = AsyncMock()
+        mock_backend.wait = AsyncMock(
+            return_value=MagicMock(exit_code=0, timed_out=False)
+        )
+        mock_backend.cleanup = AsyncMock()
+
+        async def _empty_logs(_id):
+            if False:
+                yield
+        mock_backend.stream_logs = _empty_logs
+
+        await executor._run_setup(sample_run, pipeline, tmp_path)
+        assert mock_backend.wait.call_args.args[1] == 120
+
+    @pytest.mark.asyncio
+    async def test_setup_nonzero_exit_raises(
+        self, executor, mock_backend, sample_run, setup_pipeline, tmp_path
+    ):
+        mock_backend.create_execution = AsyncMock(return_value="c")
+        mock_backend.start = AsyncMock()
+        mock_backend.wait = AsyncMock(
+            return_value=MagicMock(exit_code=1, timed_out=False)
+        )
+        mock_backend.cleanup = AsyncMock()
+
+        async def _empty_logs(_id):
+            if False:
+                yield
+        mock_backend.stream_logs = _empty_logs
+
+        with pytest.raises(RuntimeError, match="Setup script failed"):
+            await executor._run_setup(sample_run, setup_pipeline, tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_setup_timeout_raises(
+        self, executor, mock_backend, sample_run, setup_pipeline, tmp_path
+    ):
+        mock_backend.create_execution = AsyncMock(return_value="c")
+        mock_backend.start = AsyncMock()
+        mock_backend.wait = AsyncMock(
+            return_value=MagicMock(exit_code=None, timed_out=True)
+        )
+        mock_backend.cleanup = AsyncMock()
+
+        async def _empty_logs(_id):
+            if False:
+                yield
+        mock_backend.stream_logs = _empty_logs
+
+        with pytest.raises(RuntimeError, match="timed out"):
+            await executor._run_setup(sample_run, setup_pipeline, tmp_path)
+
+
 class TestExecutorUsesSourcePlugin:
     """Verify executor delegates to SourceProtocol plugin."""
 
