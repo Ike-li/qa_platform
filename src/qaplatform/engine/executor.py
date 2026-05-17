@@ -384,6 +384,10 @@ class RunExecutor:
             
             execution_id = await self.backend.create_execution(spec)
             await self.run_repo.update_execution_id(str(run.id), execution_id)
+            # Commit so the execution_id row update releases the run row lock
+            # before backend.wait() blocks for the stage timeout — otherwise
+            # cancel API's UPDATE on the same row stalls until the stage ends.
+            await self.run_repo.commit()
             self._active_execution_id = execution_id
 
             await self.backend.start(execution_id)
@@ -449,6 +453,9 @@ class RunExecutor:
 
         if revision.sha:
             await self.run_repo.update_git_sha(run.id, revision.sha)
+            # Release the row lock immediately so cancel API isn't blocked
+            # by the long preparing/clone window before mark_running commits.
+            await self.run_repo.commit()
 
     async def _run_setup(
         self,
