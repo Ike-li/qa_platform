@@ -35,6 +35,12 @@ _ARTIFACT_TYPE_BY_EXT = {
 
 log = logging.getLogger(__name__)
 
+# F-PL-03 mandates a 30 s grace window between SIGTERM and SIGKILL when
+# tearing down a stuck or cancelled container. This is the *upper bound*
+# on how long ``_graceful_stop`` will wait — it returns as soon as the
+# container exits, matching ``docker stop --time=30`` semantics.
+GRACE_PERIOD_SECONDS = 30
+
 
 # --------------------------------------------------------------------------- #
 # Repository protocol (dependency injection, avoids ORM coupling)
@@ -263,11 +269,15 @@ class RunExecutor:
                 pass
 
     async def _graceful_stop(self, execution_id: str, *, reason: str) -> None:
-        """SIGTERM → 30 s grace → SIGKILL teardown.
+        """SIGTERM → bounded wait (≤30 s) → SIGKILL teardown.
 
         Shared by the cancel signal path (F-EX-06) and the stage timeout
-        path (F-PL-03). Each step swallows backend errors so a hiccup
-        mid-teardown cannot leave the run in a half-cancelled state.
+        path (F-PL-03). The 30 s grace window is an *upper bound* — the
+        same semantics as ``docker stop --time=30``. We return as soon as
+        the container exits and only escalate to SIGKILL if it ignores
+        SIGTERM for the full grace period. Each step swallows backend
+        errors so a hiccup mid-teardown cannot leave the run in a
+        half-cancelled state.
         """
         log.info(
             "graceful stop for container %s (reason=%s) -> SIGTERM",
@@ -279,11 +289,33 @@ class RunExecutor:
         except Exception:
             log.warning("cancel(SIGTERM) failed for %s", execution_id, exc_info=True)
 
-        await asyncio.sleep(30)
+        # Bounded wait: containers usually exit immediately on SIGTERM, so
+        # a short-circuit here keeps cancel propagation under the F-EX-06
+        # < 10 s budget. Only escalate when the container ignores SIGTERM
+        # for the full F-PL-03 grace window.
+        try:
+            await asyncio.wait_for(
+                self.backend.wait(execution_id, GRACE_PERIOD_SECONDS),
+                timeout=GRACE_PERIOD_SECONDS,
+            )
+            log.info(
+                "container %s exited within grace period", execution_id[:12]
+            )
+            return
+        except asyncio.TimeoutError:
+            log.warning(
+                "container %s ignored SIGTERM, escalating to SIGKILL",
+                execution_id[:12],
+            )
+        except Exception:
+            # backend.wait may raise other errors (already-removed,
+            # daemon hiccup); don't block the SIGKILL path.
+            log.warning(
+                "wait after SIGTERM failed for %s",
+                execution_id,
+                exc_info=True,
+            )
 
-        # Force-kill if still running. backend.force_kill is a no-op on
-        # already-stopped containers (it logs and returns), so this is safe
-        # even when the container exited gracefully on SIGTERM.
         try:
             await self.backend.force_kill(execution_id)
             log.info("force-killed container %s after grace period", execution_id[:12])

@@ -411,23 +411,20 @@ class TestRunStagesTimeoutGracePeriod:
     async def test_timeout_triggers_graceful_stop_and_marks_timed_out(
         self, timeout_executor, sample_run, tmp_path
     ):
-        """Stage timeout drives backend.cancel → 30 s sleep → backend.force_kill
-        and yields an ExitResult with timed_out=True so the executor can map
-        it to RunStatus.TIMEOUT."""
+        """Stage timeout drives backend.cancel → bounded grace wait →
+        backend.force_kill and yields an ExitResult with timed_out=True
+        so the executor can map it to RunStatus.TIMEOUT.
+
+        The fixture's ``backend.wait`` raises ``asyncio.TimeoutError`` on
+        every call, which models a stuck container that ignores SIGTERM
+        — so we expect to fall through to force_kill.
+        """
         pipeline = self._make_pipeline(timeout_seconds=60)
 
-        sleep_calls: list[float] = []
-
-        async def fake_sleep(seconds):
-            sleep_calls.append(seconds)
-
-        with patch("qaplatform.engine.executor.asyncio.sleep", fake_sleep):
-            exit_result = await timeout_executor._run_stages(sample_run, pipeline, tmp_path)
+        exit_result = await timeout_executor._run_stages(sample_run, pipeline, tmp_path)
 
         timeout_executor.backend.cancel.assert_awaited_once_with("container-xyz")
         timeout_executor.backend.force_kill.assert_awaited_once_with("container-xyz")
-        # 30 s grace window from F-PL-03; if this drifts the contract is broken.
-        assert 30 in sleep_calls
         assert exit_result.timed_out is True
         assert exit_result.exit_code == -1
 
@@ -438,8 +435,7 @@ class TestRunStagesTimeoutGracePeriod:
         """Operators need to see why a stage was killed in the run log."""
         pipeline = self._make_pipeline(timeout_seconds=42)
 
-        with patch("qaplatform.engine.executor.asyncio.sleep", AsyncMock()):
-            await timeout_executor._run_stages(sample_run, pipeline, tmp_path)
+        await timeout_executor._run_stages(sample_run, pipeline, tmp_path)
 
         messages = [
             call.args[1]
@@ -476,8 +472,7 @@ class TestRunStagesTimeoutGracePeriod:
 
         pipeline = self._make_pipeline(timeout_seconds=10)
 
-        with patch("qaplatform.engine.executor.asyncio.sleep", AsyncMock()):
-            status = await timeout_executor.execute(sample_run, pipeline)
+        status = await timeout_executor.execute(sample_run, pipeline)
 
         assert status == RunStatus.TIMEOUT
         finish_call = timeout_executor.run_repo.finish_if_current.await_args
