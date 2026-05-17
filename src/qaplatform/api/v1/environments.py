@@ -5,7 +5,8 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query
 
 from qaplatform.api.audit import write_audit
-from qaplatform.api.deps import CurrentUser, Repos
+from qaplatform.api.auth.permissions import Action
+from qaplatform.api.deps import CurrentUser, Repos, require_project_permission
 from qaplatform.api.schemas import (
     EnvironmentCreate,
     EnvironmentResponse,
@@ -83,6 +84,7 @@ async def create_environment(
     body: EnvironmentCreate,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_project_permission(Action.CONFIG_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
 
@@ -145,6 +147,7 @@ async def update_environment(
     body: EnvironmentUpdate,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_project_permission(Action.CONFIG_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
 
@@ -185,6 +188,7 @@ async def delete_environment(
     env_id: UUID,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_project_permission(Action.CONFIG_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
 

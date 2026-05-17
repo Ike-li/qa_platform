@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
-from qaplatform.api.deps import CurrentUser, Repos, require_permission
+from qaplatform.api.deps import (
+    CurrentUser,
+    Repos,
+    _get_db_session,
+    enforce_project_action,
+)
 from qaplatform.api.schemas import (
     ArtifactResponse,
     ErrorResponse,
@@ -95,7 +101,7 @@ async def trigger_run(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    _perm=require_permission(Action.RUN_TRIGGER),
+    session: AsyncSession = Depends(_get_db_session),
 ):
     pipeline = await repos.pipeline.get_by_id(body.pipeline_id)
     if pipeline is None:
@@ -104,6 +110,8 @@ async def trigger_run(
     project = await repos.project.get_by_id(pipeline.project_id)
     if project is None or project.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    await enforce_project_action(session, user, project.id, Action.RUN_TRIGGER)
 
     git_ref = body.git_ref or project.default_branch
 
@@ -217,11 +225,16 @@ async def cancel_run(
     repos: Repos,
     user: CurrentUser,
     body: RunCancel | None = None,
-    _perm=require_permission(Action.RUN_CANCEL),
+    session: AsyncSession = Depends(_get_db_session),
 ):
     run = await repos.run.get_by_id(run_id)
     if run is None or run.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Run not found")
+
+    is_own = str(run.triggered_by) == str(user.user_id)
+    await enforce_project_action(
+        session, user, run.project_id, Action.RUN_CANCEL, is_own_resource=is_own,
+    )
 
     if run.status not in _CANCELABLE:
         raise HTTPException(status_code=409, detail=f"Run already in terminal status: {run.status}")

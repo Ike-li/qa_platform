@@ -7,7 +7,7 @@ from sqlalchemy import or_
 
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
-from qaplatform.api.deps import CurrentUser, Repos, require_permission
+from qaplatform.api.deps import CurrentUser, Repos, require_permission, require_project_permission
 from qaplatform.api.schemas import (
     ErrorResponse,
     PaginatedResponse,
@@ -138,7 +138,7 @@ async def update_project(
     body: ProjectUpdate,
     repos: Repos,
     user: CurrentUser,
-    _perm=require_permission(Action.PROJECT_EDIT),
+    _perm=require_project_permission(Action.PROJECT_EDIT),
 ):
     project = await repos.project.get_by_id(project_id)
     if project is None or project.tenant_id != user.tenant_id:
@@ -169,7 +169,7 @@ async def delete_project(
     project_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    _perm=require_permission(Action.PROJECT_DELETE),
+    _perm=require_project_permission(Action.PROJECT_DELETE),
 ):
     project = await repos.project.get_by_id(project_id)
     if project is None or project.tenant_id != user.tenant_id:
