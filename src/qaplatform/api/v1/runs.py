@@ -114,6 +114,12 @@ async def trigger_run(
     if project is None or project.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
+    if project.status == "archived":
+        raise HTTPException(
+            status_code=409,
+            detail="Project is archived; new runs cannot be triggered",
+        )
+
     await enforce_project_action(session, user, project.id, Action.RUN_TRIGGER)
 
     git_ref = body.git_ref or project.default_branch
@@ -173,14 +179,23 @@ async def list_runs(
     user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    status: str | None = Query(None, description="按状态筛选"),
+    status: str | None = Query(
+        None,
+        description="按状态筛选；支持多值，逗号分隔（如 'queued,running'）",
+    ),
     sort: str = Query("-created_at", description="排序字段"),
     project_id: UUID | None = Query(None, description="按项目筛选"),
     session: AsyncSession = Depends(_get_db_session),
 ):
     filters = [RunORM.tenant_id == user.tenant_id]
     if status:
-        filters.append(RunORM.status == status)
+        # F-LS-01: support comma-separated multi-status filtering
+        # (e.g. 'queued,running' to show in-flight runs).
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+        if len(statuses) == 1:
+            filters.append(RunORM.status == statuses[0])
+        elif statuses:
+            filters.append(RunORM.status.in_(statuses))
 
     if project_id is not None:
         # Single-project listing: enforce project-level read.
