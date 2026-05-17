@@ -11,6 +11,7 @@ from typing import Any, Collection, Protocol
 from uuid import UUID
 
 from qaplatform.domain.models.run import Run, RunStatus
+from qaplatform.engine.cancel import watch_for_cancel
 from qaplatform.engine.docker_backend import (
     DockerBackend,
     ExecutionSpec,
@@ -163,6 +164,17 @@ class RunExecutor:
         run_id = str(run.id)
         working_dir = Path(tempfile.mkdtemp(prefix=f"qap-{run_id[:8]}-"))
 
+        self._active_execution_id: str | None = None
+        cancel_stop = asyncio.Event()
+        cancel_task = asyncio.create_task(
+            watch_for_cancel(
+                self.redis,
+                run_id,
+                lambda: self._handle_cancel_signal(run_id),
+                cancel_stop,
+            )
+        )
+
         try:
             # 1. Clone repository
             await self._clone_repo(run, working_dir)
@@ -238,10 +250,47 @@ class RunExecutor:
                 await self._publish(run_id, RunStatus.FAILED.value)
             return RunStatus.FAILED
         finally:
+            cancel_stop.set()
+            if not cancel_task.done():
+                cancel_task.cancel()
+            try:
+                await cancel_task
+            except (asyncio.CancelledError, Exception):
+                pass
             try:
                 shutil.rmtree(working_dir, ignore_errors=True)
             except Exception:
                 pass
+
+    async def _handle_cancel_signal(self, run_id: str) -> None:
+        """Cancel callback wired to the redis cancel channel.
+
+        Sends SIGTERM to the active container, waits 30 s for graceful
+        shutdown, then SIGKILL if the container is still running. The 30 s
+        grace window matches F-PL-03's contract for OOM/timeout teardown
+        so cancel and resource-limit terminations behave the same way.
+        """
+        execution_id = self._active_execution_id
+        if execution_id is None:
+            log.info("cancel signal for run %s but no active container", run_id)
+            return
+
+        log.info("cancel signal received for run %s -> SIGTERM %s", run_id, execution_id[:12])
+        try:
+            await self.backend.cancel(execution_id)
+        except Exception:
+            log.warning("cancel(SIGTERM) failed for %s", execution_id, exc_info=True)
+
+        await asyncio.sleep(30)
+
+        # Force-kill if still running. backend.force_kill is a no-op on
+        # already-stopped containers (it logs and returns), so this is safe
+        # even when the container exited gracefully on SIGTERM.
+        try:
+            await self.backend.force_kill(execution_id)
+            log.info("force-killed container %s after grace period", execution_id[:12])
+        except Exception:
+            log.warning("force_kill failed for %s", execution_id, exc_info=True)
 
     # --------------------------------------------------------------------- #
     # private steps
@@ -278,12 +327,13 @@ class RunExecutor:
             
             execution_id = await self.backend.create_execution(spec)
             await self.run_repo.update_execution_id(str(run.id), execution_id)
-            
+            self._active_execution_id = execution_id
+
             await self.backend.start(execution_id)
-            
+
             # Stream logs in background while waiting
             log_task = asyncio.create_task(self._stream_container_logs(str(run.id), execution_id))
-            
+
             try:
                 exit_result = await self.backend.wait(execution_id, pipeline.timeout_seconds)
             finally:
@@ -292,7 +342,8 @@ class RunExecutor:
                     await self.backend.cleanup(execution_id)
                 except Exception:
                     log.warning("failed to cleanup container %s", execution_id)
-                    
+                self._active_execution_id = None
+
             if exit_result.exit_code != 0:
                 final_exit = exit_result
                 if not stage.continue_on_error:
@@ -346,6 +397,7 @@ class RunExecutor:
 
         execution_id = await self.backend.create_execution(spec)
         await self.backend.start(execution_id)
+        self._active_execution_id = execution_id
 
         log_task = asyncio.create_task(self._stream_container_logs(run_id, execution_id))
         try:
@@ -359,6 +411,7 @@ class RunExecutor:
                 await self.backend.cleanup(execution_id)
             except Exception:
                 log.warning("failed to cleanup setup container %s", execution_id)
+            self._active_execution_id = None
 
         if exit_result.timed_out:
             raise RuntimeError(f"Setup script timed out after {setup_timeout}s")
