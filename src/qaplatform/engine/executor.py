@@ -298,8 +298,12 @@ class RunExecutor:
 
     async def _run_stages(self, run: Run, pipeline: PipelineConfig, working_dir: Path) -> ExitResult:
         """Run all stages sequentially using Docker containers."""
-        final_exit = ExitResult(exit_code=0)
-        
+        # ExitResult requires started_at/finished_at; seed both to "now" so
+        # a no-stage / all-pass pipeline still returns a well-formed result
+        # (the executor calls .timed_out / .oom_killed on this further down).
+        _now = datetime.now(timezone.utc)
+        final_exit = ExitResult(exit_code=0, started_at=_now, finished_at=_now)
+
         for stage in pipeline.stages:
             await self.log_stream.write_log(str(run.id), f"Starting stage: {stage.name}")
             
