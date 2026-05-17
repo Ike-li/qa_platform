@@ -108,8 +108,11 @@ async def trigger_run(
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
     project = await repos.project.get_by_id(pipeline.project_id)
+    # Treat 'pipeline belongs to a different tenant' identically to
+    # 'pipeline does not exist' — otherwise an attacker can enumerate
+    # pipeline_ids across tenants by status-code differential.
     if project is None or project.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="Pipeline not found")
 
     await enforce_project_action(session, user, project.id, Action.RUN_TRIGGER)
 

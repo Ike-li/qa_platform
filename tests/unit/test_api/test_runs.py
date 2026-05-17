@@ -211,6 +211,36 @@ async def test_trigger_run_pipeline_not_found(client, mock_pipeline_repo):
 
 
 @pytest.mark.asyncio
+async def test_trigger_run_cross_tenant_pipeline_returns_same_404(
+    client, mock_pipeline_repo, mock_project_repo, tenant_id
+):
+    """A pipeline belonging to a foreign tenant must look identical to
+    'pipeline does not exist' — otherwise an attacker can enumerate
+    pipeline_ids across tenants by status-code/message differential.
+    """
+    pipeline = MagicMock()
+    pipeline.id = uuid.uuid4()
+    pipeline.project_id = uuid.uuid4()
+    mock_pipeline_repo.get_by_id.return_value = pipeline
+
+    foreign_project = MagicMock()
+    foreign_project.id = pipeline.project_id
+    foreign_project.tenant_id = uuid.uuid4()  # different tenant
+    mock_project_repo.get_by_id.return_value = foreign_project
+
+    resp = await client.post(
+        "/api/v1/runs",
+        json={"pipeline_id": str(pipeline.id)},
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 404
+    # Detail must match the 'not found' case so they are indistinguishable.
+    body = resp.json()
+    detail = body.get("detail") or body.get("error", {}).get("message", "")
+    assert "Pipeline not found" in detail or detail == ""
+
+
+@pytest.mark.asyncio
 async def test_list_runs(client, mock_run_repo):
     run = _make_orm_run()
     mock_run_repo.list.return_value = ([run], 1)

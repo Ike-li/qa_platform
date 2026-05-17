@@ -74,7 +74,7 @@ def mock_repos(project):
     repos = MagicMock()
     repos.project = AsyncMock()
     repos.project.get_by_id.return_value = project
-    repos.audit_event = AsyncMock()
+    repos.audit = AsyncMock()
     return repos
 
 
@@ -186,6 +186,47 @@ async def test_create_credential_encrypts_with_aad(
     # Plaintext must not surface in the response.
     body = resp.json()
     assert "value" not in body
+
+
+@pytest.mark.asyncio
+async def test_create_credential_audit_does_not_leak_plaintext(
+    app, project, tenant_id, mock_crypto, mock_repos
+):
+    """The audit trail must not contain the plaintext value or ciphertext —
+    only metadata (id/name/type). Otherwise an audit reader becomes a
+    secondary credential-disclosure surface."""
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_result(scalar=None))
+
+    def _add(instance):
+        if getattr(instance, "id", None) is None:
+            instance.id = uuid.uuid4()
+        if getattr(instance, "created_at", None) is None:
+            instance.created_at = datetime.now(timezone.utc)
+
+    session.add = MagicMock(side_effect=_add)
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    _override_session(app, session)
+
+    secret_value = "totally-secret-pw-9999"
+    async with await _make_client(app) as ac:
+        resp = await ac.post(
+            f"/api/v1/projects/{project.id}/credentials",
+            json={"name": "k", "type": "password", "value": secret_value},
+            headers={"Authorization": "Bearer fake"},
+        )
+    assert resp.status_code == 201, resp.text
+
+    mock_repos.audit.create.assert_called_once()
+    audit_kwargs = mock_repos.audit.create.call_args.kwargs
+    after_state = audit_kwargs.get("after_state") or {}
+    serialised = repr(after_state) + repr(audit_kwargs.get("before_state"))
+    assert secret_value not in serialised
+    assert "encrypted_value" not in serialised
+    # And positively assert the metadata fields we DO want.
+    assert after_state.get("name") == "k"
+    assert after_state.get("type") == "password"
 
 
 @pytest.mark.asyncio
