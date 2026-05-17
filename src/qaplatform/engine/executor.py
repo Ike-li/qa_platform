@@ -262,20 +262,18 @@ class RunExecutor:
             except Exception:
                 pass
 
-    async def _handle_cancel_signal(self, run_id: str) -> None:
-        """Cancel callback wired to the redis cancel channel.
+    async def _graceful_stop(self, execution_id: str, *, reason: str) -> None:
+        """SIGTERM → 30 s grace → SIGKILL teardown.
 
-        Sends SIGTERM to the active container, waits 30 s for graceful
-        shutdown, then SIGKILL if the container is still running. The 30 s
-        grace window matches F-PL-03's contract for OOM/timeout teardown
-        so cancel and resource-limit terminations behave the same way.
+        Shared by the cancel signal path (F-EX-06) and the stage timeout
+        path (F-PL-03). Each step swallows backend errors so a hiccup
+        mid-teardown cannot leave the run in a half-cancelled state.
         """
-        execution_id = self._active_execution_id
-        if execution_id is None:
-            log.info("cancel signal for run %s but no active container", run_id)
-            return
-
-        log.info("cancel signal received for run %s -> SIGTERM %s", run_id, execution_id[:12])
+        log.info(
+            "graceful stop for container %s (reason=%s) -> SIGTERM",
+            execution_id[:12],
+            reason,
+        )
         try:
             await self.backend.cancel(execution_id)
         except Exception:
@@ -292,6 +290,24 @@ class RunExecutor:
         except Exception:
             log.warning("force_kill failed for %s", execution_id, exc_info=True)
 
+    async def _handle_cancel_signal(self, run_id: str) -> None:
+        """Cancel callback wired to the redis cancel channel.
+
+        Sends SIGTERM to the active container, waits 30 s for graceful
+        shutdown, then SIGKILL if the container is still running. The 30 s
+        grace window matches F-PL-03's contract for OOM/timeout teardown
+        so cancel and resource-limit terminations behave the same way.
+        """
+        execution_id = self._active_execution_id
+        if execution_id is None:
+            log.info("cancel signal for run %s but no active container", run_id)
+            return
+
+        await self._graceful_stop(
+            execution_id,
+            reason=f"cancel signal received for run {run_id}",
+        )
+
     # --------------------------------------------------------------------- #
     # private steps
     # --------------------------------------------------------------------- #
@@ -303,7 +319,7 @@ class RunExecutor:
         # (the executor calls .timed_out / .oom_killed on this further down).
         _now = datetime.now(timezone.utc)
         final_exit = ExitResult(exit_code=0, started_at=_now, finished_at=_now)
-
+        
         for stage in pipeline.stages:
             await self.log_stream.write_log(str(run.id), f"Starting stage: {stage.name}")
             
@@ -338,8 +354,36 @@ class RunExecutor:
             # Stream logs in background while waiting
             log_task = asyncio.create_task(self._stream_container_logs(str(run.id), execution_id))
 
+            stage_started_at = datetime.now(timezone.utc)
             try:
-                exit_result = await self.backend.wait(execution_id, pipeline.timeout_seconds)
+                # Outer guard so an unresponsive container (e.g. ignoring
+                # the wait() timeout in the backend) cannot stall this
+                # coroutine indefinitely. We then run the SIGTERM → 30 s →
+                # SIGKILL teardown that F-PL-03 mandates and synthesise a
+                # timed-out ExitResult so downstream status mapping
+                # (RunStatus.TIMEOUT at executor.py around line 228) fires.
+                try:
+                    exit_result = await asyncio.wait_for(
+                        self.backend.wait(execution_id, pipeline.timeout_seconds),
+                        timeout=pipeline.timeout_seconds + 5,
+                    )
+                except asyncio.TimeoutError:
+                    await self.log_stream.write_log(
+                        str(run.id),
+                        f"Stage '{stage.name}' exceeded timeout "
+                        f"{pipeline.timeout_seconds}s, sending SIGTERM",
+                        stream="stderr",
+                    )
+                    await self._graceful_stop(
+                        execution_id,
+                        reason=f"stage '{stage.name}' timeout {pipeline.timeout_seconds}s",
+                    )
+                    exit_result = ExitResult(
+                        exit_code=-1,
+                        started_at=stage_started_at,
+                        finished_at=datetime.now(timezone.utc),
+                        timed_out=True,
+                    )
             finally:
                 await log_task
                 try:

@@ -356,3 +356,129 @@ class TestUploadArtifacts:
         await executor._upload_artifacts("rid", tmp_path)
         # S3 failed → DB row must NOT be written to avoid dangling reference
         artifact_repo.create.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
+# F-PL-03 stage timeout grace-period contract
+# --------------------------------------------------------------------------- #
+
+
+class TestRunStagesTimeoutGracePeriod:
+    """When ``backend.wait`` blocks past the pipeline timeout, _run_stages
+    must drive the SIGTERM → 30 s → SIGKILL teardown contract from PRD
+    F-PL-03 instead of falling through to the generic exception handler
+    (which would force-kill immediately and skip the grace window).
+    """
+
+    def _make_pipeline(self, timeout_seconds: int = 60):
+        from qaplatform.engine.executor import PipelineConfig, StageDefinition
+        return PipelineConfig(
+            image="python:3.12-alpine",
+            stages=[StageDefinition(name="pytest", plugin="pytest")],
+            timeout_seconds=timeout_seconds,
+        )
+
+    @pytest.fixture
+    def timeout_executor(self):
+        backend = AsyncMock()
+        backend.create_execution = AsyncMock(return_value="container-xyz")
+        backend.start = AsyncMock()
+        backend.wait = AsyncMock(side_effect=asyncio.TimeoutError())
+        backend.cancel = AsyncMock()
+        backend.force_kill = AsyncMock()
+        backend.cleanup = AsyncMock()
+
+        async def _empty_logs(_id):
+            if False:
+                yield
+        backend.stream_logs = _empty_logs
+
+        plugin_registry = MagicMock(spec=PluginRegistry)
+        runner = MagicMock()
+        runner.build_command = MagicMock(return_value="pytest -q")
+        plugin_registry.get_runner.return_value = runner
+
+        run_repo = AsyncMock()
+
+        return RunExecutor(
+            backend=backend,
+            log_stream=AsyncMock(),
+            run_repo=run_repo,
+            plugin_registry=plugin_registry,
+        )
+
+    @pytest.mark.asyncio
+    async def test_timeout_triggers_graceful_stop_and_marks_timed_out(
+        self, timeout_executor, sample_run, tmp_path
+    ):
+        """Stage timeout drives backend.cancel → 30 s sleep → backend.force_kill
+        and yields an ExitResult with timed_out=True so the executor can map
+        it to RunStatus.TIMEOUT."""
+        pipeline = self._make_pipeline(timeout_seconds=60)
+
+        sleep_calls: list[float] = []
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        with patch("qaplatform.engine.executor.asyncio.sleep", fake_sleep):
+            exit_result = await timeout_executor._run_stages(sample_run, pipeline, tmp_path)
+
+        timeout_executor.backend.cancel.assert_awaited_once_with("container-xyz")
+        timeout_executor.backend.force_kill.assert_awaited_once_with("container-xyz")
+        # 30 s grace window from F-PL-03; if this drifts the contract is broken.
+        assert 30 in sleep_calls
+        assert exit_result.timed_out is True
+        assert exit_result.exit_code == -1
+
+    @pytest.mark.asyncio
+    async def test_timeout_writes_reason_log(
+        self, timeout_executor, sample_run, tmp_path
+    ):
+        """Operators need to see why a stage was killed in the run log."""
+        pipeline = self._make_pipeline(timeout_seconds=42)
+
+        with patch("qaplatform.engine.executor.asyncio.sleep", AsyncMock()):
+            await timeout_executor._run_stages(sample_run, pipeline, tmp_path)
+
+        messages = [
+            call.args[1]
+            for call in timeout_executor.log_stream.write_log.await_args_list
+        ]
+        assert any(
+            "exceeded timeout" in m and "pytest" in m and "42" in m for m in messages
+        ), f"expected timeout log entry, got: {messages}"
+
+    @pytest.mark.asyncio
+    async def test_timeout_status_maps_to_timeout(
+        self, timeout_executor, sample_run, tmp_path, mock_log_stream
+    ):
+        """End-to-end: a timeout in _run_stages should propagate so execute()
+        writes RunStatus.TIMEOUT (not FAILED) via finish_if_current."""
+        from qaplatform.domain.models.run import RunStatus
+        from qaplatform.engine.docker_backend import ExitResult
+        from datetime import datetime, timezone
+
+        # Skip the clone step and stub setup-related dependencies.
+        timeout_executor.run_repo.finish_if_current = AsyncMock(return_value=True)
+        timeout_executor.run_repo.fail_if_current = AsyncMock(return_value=False)
+        timeout_executor.run_repo.mark_running = AsyncMock()
+        timeout_executor.run_repo.mark_collecting = AsyncMock()
+        timeout_executor.run_repo.update_execution_id = AsyncMock()
+
+        # Skip git/source: no git_url means _clone_repo returns silently.
+        sample_run.metadata = {}
+
+        # No collector configured, so stub registry to return one with no results.
+        collector = AsyncMock()
+        collector.collect = AsyncMock(return_value=[])
+        timeout_executor.plugin_registry.get_collector = MagicMock(return_value=collector)
+
+        pipeline = self._make_pipeline(timeout_seconds=10)
+
+        with patch("qaplatform.engine.executor.asyncio.sleep", AsyncMock()):
+            status = await timeout_executor.execute(sample_run, pipeline)
+
+        assert status == RunStatus.TIMEOUT
+        finish_call = timeout_executor.run_repo.finish_if_current.await_args
+        assert finish_call.kwargs["status"] == RunStatus.TIMEOUT

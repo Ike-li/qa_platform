@@ -117,6 +117,37 @@ class TestDockerBackend:
         assert config["Labels"]["run_id"] == "run-123"
         assert config["HostConfig"]["Tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=256m"}
 
+    @pytest.mark.asyncio
+    async def test_create_execution_disables_swap_to_enforce_memory_cap(self):
+        """F-PL-03: the memory cap must be a hard ceiling. Docker defaults
+        MemorySwap to 2× Memory if unset, which would let workloads use
+        twice the configured limit via swap. Setting MemorySwap == Memory
+        disables swap entirely so the cap is real.
+        """
+        mock_container = MagicMock()
+        mock_container.id = "swap-test"
+        mock_containers = MagicMock()
+        mock_containers.create_or_replace = AsyncMock(return_value=mock_container)
+        self.docker_client.containers = mock_containers
+
+        spec = ExecutionSpec(
+            image="busybox",
+            command=["true"],
+            env_vars={},
+            resource_limits=ResourceLimits(memory_bytes=128 * 1024 * 1024),
+            labels={"run_id": "r"},
+        )
+
+        await self.backend.create_execution(spec)
+        config = mock_containers.create_or_replace.call_args.kwargs["config"]
+        memory = config["HostConfig"]["Memory"]
+        memory_swap = config["HostConfig"]["MemorySwap"]
+        assert memory == 128 * 1024 * 1024
+        assert memory_swap == memory, (
+            "MemorySwap must equal Memory; otherwise Docker grants 2× "
+            "memory_bytes via swap and the F-PL-03 limit can be exceeded."
+        )
+
     # -- start ---------------------------------------------------------------
 
     @pytest.mark.asyncio
