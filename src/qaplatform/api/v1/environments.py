@@ -58,6 +58,7 @@ async def list_environments(
     user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
+    _perm=require_project_permission(Action.CONFIG_READ),
 ):
     await _verify_project_access(project_id, repos, user)
 
@@ -126,6 +127,7 @@ async def get_environment(
     env_id: UUID,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_project_permission(Action.CONFIG_READ),
 ):
     await _verify_project_access(project_id, repos, user)
 

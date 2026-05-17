@@ -20,12 +20,14 @@ class JWTService:
         user_id: str,
         role: str,
         tenant_id: str,
+        is_platform_admin: bool = False,
     ) -> str:
         now = datetime.now(timezone.utc)
         payload = {
             "sub": user_id,
             "role": role,
             "tenant_id": tenant_id,
+            "is_platform_admin": is_platform_admin,
             "exp": now + self._access_ttl,
             "iat": now,
             "jti": uuid4().hex,

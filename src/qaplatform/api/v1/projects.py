@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
-from qaplatform.api.deps import CurrentUser, Repos, require_permission, require_project_permission
+from qaplatform.api.deps import CurrentUser, Repos, _get_db_session, require_permission, require_project_permission
 from qaplatform.api.schemas import (
     ErrorResponse,
     PaginatedResponse,
@@ -88,6 +89,7 @@ async def create_project(
     body: ProjectCreate,
     repos: Repos,
     user: CurrentUser,
+    session: AsyncSession = Depends(_get_db_session),
     _perm=require_permission(Action.PROJECT_CREATE),
 ):
     existing = await repos.project.get_by_slug(user.tenant_id, body.slug)
@@ -99,6 +101,22 @@ async def create_project(
         created_by=user.user_id,
         **body.model_dump(),
     )
+
+    # Auto-add the creator as a project admin so a tenant Member who creates
+    # a project can immediately operate on it without needing a tenant
+    # Owner/Admin to grant them access.
+    from qaplatform.infra.database.models import ProjectMember as ProjectMemberORM
+
+    session.add(
+        ProjectMemberORM(
+            tenant_id=user.tenant_id,
+            project_id=orm.id,
+            user_id=user.user_id,
+            role="admin",
+        )
+    )
+    await session.flush()
+
     response = _to_response(orm)
     await write_audit(
         repos, user,

@@ -195,6 +195,7 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
         user_id = str(user.id)
         user_tenant_id = str(user.tenant_id)
         user_role = user.role
+        user_is_platform_admin = bool(getattr(user, "is_platform_admin", False))
         user_email = user.email
         user_username = user.username
 
@@ -204,6 +205,7 @@ async def register(body: RegisterRequest, response: Response) -> LoginResponse:
         user_id=user_id,
         role=user_role,
         tenant_id=user_tenant_id,
+        is_platform_admin=user_is_platform_admin,
     )
     refresh_token = jwt_svc.create_refresh_token(user_id=user_id)
     _set_refresh_cookie(response, refresh_token, settings.jwt_refresh_token_ttl)
@@ -262,6 +264,7 @@ async def login(body: LoginRequest, response: Response) -> LoginResponse:
         user_id=str(user.id),
         role=user.role,
         tenant_id=str(user.tenant_id),
+        is_platform_admin=bool(getattr(user, "is_platform_admin", False)),
     )
     refresh_token = jwt_svc.create_refresh_token(user_id=str(user.id))
     _set_refresh_cookie(response, refresh_token, settings.jwt_refresh_token_ttl)
@@ -324,6 +327,7 @@ async def refresh(
         user_id=str(user.id),
         role=user.role,
         tenant_id=str(user.tenant_id),
+        is_platform_admin=bool(getattr(user, "is_platform_admin", False)),
     )
     new_refresh_token = jwt_svc.create_refresh_token(user_id=str(user.id))
     _set_refresh_cookie(response, new_refresh_token, settings.jwt_refresh_token_ttl)
