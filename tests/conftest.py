@@ -34,11 +34,13 @@ def redis_container():
 
 @pytest.fixture(scope="session")
 def test_settings(pg_container, redis_container) -> Settings:
+    redis_host = redis_container.get_container_host_ip()
+    redis_port = redis_container.get_exposed_port(6379)
     return Settings(
         database_url=pg_container.get_connection_url().replace(
             "psycopg2", "asyncpg"
         ),
-        redis_url=redis_container.get_connection_url(),
+        redis_url=f"redis://{redis_host}:{redis_port}/0",
         s3_endpoint="http://localhost:9000",
         s3_access_key="minioadmin",
         s3_secret_key="minioadmin",
