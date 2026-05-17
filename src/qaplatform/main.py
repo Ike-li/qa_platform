@@ -48,6 +48,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
             await container.init_db()
             await container.init_redis()
             await container.init_arq()
+            container.init_crypto()
             _ensure_plugin_registry(container)
             app.state.container = container
         
@@ -123,6 +124,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     # ── Routers ──────────────────────────────────────────────────────────
     from qaplatform.api.v1.artifacts import router as artifact_router
     from qaplatform.api.v1.auth import router as auth_router
+    from qaplatform.api.v1.credentials import router as credential_router
     from qaplatform.api.v1.environments import router as env_router
     from qaplatform.api.v1.pipelines import router as pipeline_router
     from qaplatform.api.v1.project_members import router as project_member_router
@@ -134,6 +136,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     app.include_router(auth_router, prefix=api_prefix)
     app.include_router(project_router, prefix=api_prefix)
     app.include_router(project_member_router, prefix=api_prefix)
+    app.include_router(credential_router, prefix=api_prefix)
     app.include_router(env_router, prefix=api_prefix)
     app.include_router(pipeline_router, prefix=api_prefix)
     app.include_router(run_router, prefix=api_prefix)
