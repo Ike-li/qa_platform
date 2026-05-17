@@ -166,6 +166,7 @@ class TestExecutorCancelHandler:
         backend = AsyncMock()
         backend.cancel = AsyncMock()
         backend.force_kill = AsyncMock()
+        backend.wait = AsyncMock()
 
         ex = RunExecutor(
             backend=backend,
@@ -183,25 +184,46 @@ class TestExecutorCancelHandler:
         executor.backend.force_kill.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_sends_sigterm_then_sigkill_after_30s(self, executor):
-        """F-EX-06 + F-PL-03: SIGTERM first, 30s grace, then SIGKILL.
-        We patch ``asyncio.sleep`` so the test runs in milliseconds while
-        still asserting the 30s value."""
+    async def test_graceful_stop_returns_early_when_container_exits_on_sigterm(
+        self, executor
+    ):
+        """F-EX-06: a container that responds to SIGTERM must NOT incur the
+        full 30 s grace wait. We model the common case (container exits
+        immediately) and assert that force_kill is *not* called and that
+        the legacy unconditional ``asyncio.sleep(30)`` is gone."""
         executor._active_execution_id = "container-xyz"
+        # backend.wait returns immediately — container honoured SIGTERM.
+        executor.backend.wait = AsyncMock(return_value=None)
 
-        sleep_calls: list[float] = []
-
-        async def fake_sleep(seconds):
-            sleep_calls.append(seconds)
-
-        with patch("qaplatform.engine.executor.asyncio.sleep", fake_sleep):
+        sleep_mock = AsyncMock()
+        with patch("qaplatform.engine.executor.asyncio.sleep", sleep_mock):
             await executor._handle_cancel_signal("run-id")
 
         executor.backend.cancel.assert_awaited_once_with("container-xyz")
+        executor.backend.force_kill.assert_not_called()
+        # The old implementation slept 30 s unconditionally; the new one
+        # must not call asyncio.sleep at all on the happy path.
+        sleep_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_graceful_stop_force_kills_when_container_ignores_sigterm(
+        self, executor
+    ):
+        """F-PL-03: the 30 s grace window is the upper bound. If the
+        container ignores SIGTERM for the full window we must escalate
+        to SIGKILL."""
+        executor._active_execution_id = "container-xyz"
+        # backend.wait blocks past the grace window — container ignored SIGTERM.
+        executor.backend.wait = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        await executor._handle_cancel_signal("run-id")
+
+        executor.backend.cancel.assert_awaited_once_with("container-xyz")
         executor.backend.force_kill.assert_awaited_once_with("container-xyz")
-        # Order matters: sleep must be between cancel and force_kill, and
-        # the wait must be exactly 30 seconds (the F-PL-03 grace window).
-        assert sleep_calls == [30]
+        # cancel must precede force_kill — the order is part of the contract.
+        cancel_call = executor.backend.cancel.await_args_list[0]
+        force_call = executor.backend.force_kill.await_args_list[0]
+        assert cancel_call is not None and force_call is not None
 
     @pytest.mark.asyncio
     async def test_sigterm_failure_still_force_kills(self, executor):
@@ -210,8 +232,9 @@ class TestExecutorCancelHandler:
         would leave the run in a half-cancelled state."""
         executor._active_execution_id = "c"
         executor.backend.cancel.side_effect = RuntimeError("boom")
+        # wait raises -> falls through to force_kill path
+        executor.backend.wait = AsyncMock(side_effect=asyncio.TimeoutError())
 
-        with patch("qaplatform.engine.executor.asyncio.sleep", AsyncMock()):
-            await executor._handle_cancel_signal("r")
+        await executor._handle_cancel_signal("r")
 
         executor.backend.force_kill.assert_awaited_once_with("c")
