@@ -66,6 +66,9 @@ async def execute_run(ctx: dict, run_id: str) -> None:
             log.warning("could not claim run %s (not in queued state or not found)", run_id)
             return
 
+        # Release the PREPARING row lock immediately so cancel API / status reads aren't blocked.
+        await session.commit()
+
         await publish_status_event(redis, run_id, "preparing", previous="queued")
 
         await session.refresh(run, ['pipeline', 'environment'])
