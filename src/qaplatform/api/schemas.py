@@ -289,3 +289,29 @@ class ProjectMemberResponse(BaseModel):
     email: str
     role: str
     created_at: datetime
+
+
+# ── Credential schemas ──────────────────────────────────────────────────────
+
+
+class CredentialCreate(BaseModel):
+    name: str = Field(..., max_length=100)
+    type: Literal["token", "ssh_key", "password"]
+    value: str = Field(..., min_length=1, max_length=65536)
+
+
+class CredentialUpdate(BaseModel):
+    value: str = Field(..., min_length=1, max_length=65536)
+
+
+class CredentialResponse(BaseModel):
+    """Credential metadata. The plaintext ``value`` is never returned by the API."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    project_id: UUID
+    name: str
+    type: str
+    created_by: UUID
+    created_at: datetime
