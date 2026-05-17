@@ -206,3 +206,39 @@ def require_project_permission(action: Action, *, project_id_param: str = "proje
         return user
 
     return Depends(_check)
+
+
+async def enforce_project_action(
+    session: AsyncSession,
+    user: "UserIdentity",
+    project_id: UUID,
+    action: Action,
+    *,
+    is_own_resource: bool = False,
+) -> None:
+    """Enforce a project-scoped action when ``project_id`` is only known
+    after a body/path lookup (e.g. trigger_run -> pipeline -> project).
+
+    Tenant Owner/Admin bypass project-membership lookup. All other roles
+    require a matching :class:`ProjectMember` row to authorise the action.
+    """
+    if action not in PROJECT_SCOPED_ACTIONS:
+        raise ValueError(
+            f"enforce_project_action used for non-project-scoped action: {action}"
+        )
+
+    tenant_role = normalize_tenant_role(user.role)
+    project_role: ProjectRole | None = None
+    if tenant_role not in (Role.OWNER, Role.ADMIN):
+        project_role = await _resolve_project_role(session, user, project_id)
+
+    ctx = PermissionContext(
+        user_id=str(user.user_id),
+        role=user.role,
+        tenant_id=str(user.tenant_id),
+        project_id=str(project_id),
+        project_role=project_role,
+        is_own_resource=is_own_resource,
+    )
+    if not check_permission(ctx, action):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
