@@ -72,3 +72,7 @@ class BaseRepository(Generic[ModelT]):
     async def delete(self, instance: ModelT) -> None:
         await self.session.delete(instance)
         await self.session.flush()
+
+    async def commit(self) -> None:
+        """Commit the current transaction. Use to release row locks mid-task."""
+        await self.session.commit()

@@ -76,6 +76,7 @@ class RunRepositoryProtocol(Protocol):
     ) -> bool: ...
     async def update_execution_id(self, run_id: UUID | str, execution_id: str) -> None: ...
     async def update_git_sha(self, run_id: UUID | str, sha: str) -> None: ...
+    async def commit(self) -> None: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -192,6 +193,8 @@ class RunExecutor:
 
             # 3. Run all stages
             await self.run_repo.mark_running(run_id)
+            # Commit so the RUNNING transition is visible to other connections (cancel API, SSE).
+            await self.run_repo.commit()
             await self._publish(run_id, RunStatus.RUNNING.value, previous=RunStatus.PREPARING.value)
             exit_result = await self._run_stages(run, pipeline, working_dir)
 
@@ -204,6 +207,8 @@ class RunExecutor:
 
             # 4. Collect results
             await self.run_repo.mark_collecting(run_id)
+            # Commit so the COLLECTING transition is visible to other connections.
+            await self.run_repo.commit()
             await self._publish(run_id, RunStatus.COLLECTING.value, previous=RunStatus.RUNNING.value)
             await self.log_stream.write_log(run_id, "Collecting test results...")
 
