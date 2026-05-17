@@ -112,9 +112,12 @@ async def after_job_end(ctx: dict) -> None:
 
     run = await run_repo.get(run_id)
     if run and run.status not in TERMINAL_STATUSES:
+        from qaplatform.worker._redact import redact_url_userinfo
         await run_repo.fail_if_current(
             run.id,
-            message=f"arq job failed: {ctx.get('result', 'unknown error')}",
+            message=redact_url_userinfo(
+                f"arq job failed: {ctx.get('result', 'unknown error')}"
+            ),
         )
 
 
