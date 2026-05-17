@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-import os
 import shutil
 import tempfile
 from datetime import datetime, timezone
@@ -171,7 +170,7 @@ class RunExecutor:
 
             # 2. Run setup script
             if pipeline.setup_script:
-                await self._run_setup(pipeline.setup_script, working_dir, pipeline.env_vars)
+                await self._run_setup(run, pipeline, working_dir)
 
             # 3. Run all stages
             await self.run_repo.mark_running(run_id)
@@ -317,27 +316,54 @@ class RunExecutor:
 
     async def _run_setup(
         self,
-        script: str,
+        run: Run,
+        pipeline: PipelineConfig,
         working_dir: Path,
-        env_vars: dict[str, str],
     ) -> None:
-        """Run the environment setup script inside the working directory."""
-        await self.log_stream.write_log(
-            str(working_dir.name),
-            "Running setup script...",
-        )
-        process = await asyncio.create_subprocess_shell(
-            script,
-            cwd=str(working_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, **env_vars},
-        )
-        stdout, stderr = await process.communicate()
+        """Run the environment setup script inside the same sandbox image as
+        the stages.
 
-        if process.returncode != 0:
-            err_msg = stderr.decode(errors="replace").strip()
-            raise RuntimeError(f"Setup script failed (exit {process.returncode}): {err_msg}")
+        Setup scripts come from user-controlled environment configuration. We
+        execute them in a Docker container with the same isolation profile as
+        regular stages (read-write workspace mount, configured network policy,
+        resource limits) — never on the worker host. A non-zero exit aborts
+        the run.
+        """
+        run_id = str(run.id)
+        await self.log_stream.write_log(run_id, "Running setup script...")
+
+        spec = ExecutionSpec(
+            image=pipeline.image,
+            command=["sh", "-c", pipeline.setup_script or ""],
+            env_vars=pipeline.env_vars,
+            mounts=[
+                Mount(source=str(working_dir), target="/workspace", read_only=False),
+            ],
+            resource_limits=pipeline.resource_limits,
+            network_policy=pipeline.network_policy,
+            labels={"run_id": run_id, "phase": "setup"},
+        )
+
+        execution_id = await self.backend.create_execution(spec)
+        await self.backend.start(execution_id)
+
+        log_task = asyncio.create_task(self._stream_container_logs(run_id, execution_id))
+        try:
+            # Setup gets a tighter cap than stage timeout to keep slow scripts
+            # from eating into stage time. Cap at min(pipeline_timeout, 600s).
+            setup_timeout = min(pipeline.timeout_seconds, 600)
+            exit_result = await self.backend.wait(execution_id, setup_timeout)
+        finally:
+            await log_task
+            try:
+                await self.backend.cleanup(execution_id)
+            except Exception:
+                log.warning("failed to cleanup setup container %s", execution_id)
+
+        if exit_result.timed_out:
+            raise RuntimeError(f"Setup script timed out after {setup_timeout}s")
+        if exit_result.exit_code != 0:
+            raise RuntimeError(f"Setup script failed (exit {exit_result.exit_code})")
 
 
     async def _stream_container_logs(self, run_id: str, execution_id: str) -> None:
