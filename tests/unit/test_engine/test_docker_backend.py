@@ -182,6 +182,51 @@ class TestDockerBackend:
         await self.backend.start("container-id")
         mock_container.start.assert_awaited_once()
 
+    # -- wait -----------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_wait_reads_oom_killed_from_show(self):
+        """OOMKilled lives on /containers/{id}/json State, not on /wait response."""
+        mock_container = MagicMock()
+        mock_container.wait = AsyncMock(return_value={"StatusCode": 137})
+        mock_container.show = AsyncMock(
+            return_value={"State": {"OOMKilled": True, "ExitCode": 137}}
+        )
+        self.docker_client.containers.container = MagicMock(return_value=mock_container)
+
+        result = await self.backend.wait("container-id", timeout=10)
+
+        assert result.oom_killed is True
+        assert result.exit_code == 137
+        mock_container.show.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_wait_oom_killed_false_on_normal_exit(self):
+        mock_container = MagicMock()
+        mock_container.wait = AsyncMock(return_value={"StatusCode": 0})
+        mock_container.show = AsyncMock(
+            return_value={"State": {"OOMKilled": False, "ExitCode": 0}}
+        )
+        self.docker_client.containers.container = MagicMock(return_value=mock_container)
+
+        result = await self.backend.wait("container-id", timeout=10)
+
+        assert result.oom_killed is False
+        assert result.exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_wait_oom_killed_defaults_false_on_show_error(self):
+        """show() failure must not propagate; degrade to oom_killed=False."""
+        mock_container = MagicMock()
+        mock_container.wait = AsyncMock(return_value={"StatusCode": 0})
+        mock_container.show = AsyncMock(side_effect=Exception("inspect failed"))
+        self.docker_client.containers.container = MagicMock(return_value=mock_container)
+
+        result = await self.backend.wait("container-id", timeout=10)
+
+        assert result.oom_killed is False
+        assert result.exit_code == 0
+
     # -- cancel ---------------------------------------------------------------
 
     @pytest.mark.asyncio
