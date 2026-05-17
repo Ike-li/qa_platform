@@ -155,7 +155,7 @@ async def test_cancel_api_not_blocked_by_worker(
 
         # 3. cancel API must return quickly (worker holds no row lock)
         start = time.monotonic()
-        response = await integration_client.post(f"/runs/{run_id}/cancel")
+        response = await integration_client.post(f"/api/v1/runs/{run_id}/cancel")
         api_latency = time.monotonic() - start
 
         assert response.status_code == 200, response.text

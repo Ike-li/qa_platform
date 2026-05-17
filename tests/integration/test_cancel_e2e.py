@@ -158,7 +158,7 @@ async def test_cancel_via_http_terminates_within_10s(
 
         # F-EX-06: HTTP POST cancel 触发的全链路完成 < 10s
         t_cancel = time.monotonic()
-        response = await integration_client.post(f"/runs/{run_id}/cancel")
+        response = await integration_client.post(f"/api/v1/runs/{run_id}/cancel")
         assert response.status_code == 200, response.text
 
         try:
