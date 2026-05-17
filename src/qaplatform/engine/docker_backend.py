@@ -107,6 +107,11 @@ class DockerBackend:
             "User": spec.user,
             "HostConfig": {
                 "Memory": spec.resource_limits.memory_bytes,
+                # Match MemorySwap to Memory so Docker doesn't silently
+                # grant 2× memory_bytes via swap (the default), which would
+                # let workloads exceed the F-PL-03 memory cap. Equal values
+                # disable swap entirely — the limit is a hard ceiling.
+                "MemorySwap": spec.resource_limits.memory_bytes,
                 "NanoCpus": int(spec.resource_limits.cpu_cores * 1e9),
                 "ReadonlyRootfs": spec.security.readonly_rootfs,
                 "SecurityOpt": self._security_opt(spec.security),
