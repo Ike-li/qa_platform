@@ -155,6 +155,115 @@ class TestArtifactDownloadHelpers:
         run = MagicMock(tenant_id=tenant_id)
         mock_repos.run.get_by_id.return_value = run
 
-        result = await _get_artifact_or_404(mock_repos, uuid4(), tenant_id)
+        result_artifact, result_run = await _get_artifact_or_404(
+            mock_repos, uuid4(), tenant_id
+        )
 
-        assert result is artifact
+        assert result_artifact is artifact
+        assert result_run is run
+
+
+class TestDownloadArtifactRBAC:
+    """P1-E: download_artifact must double-check project-scope RBAC,
+    not just tenant. A user lacking RUN_READ on the project owning the
+    run should hit 403, even if the artifact is in their tenant.
+    """
+
+    @pytest.mark.asyncio
+    async def test_download_artifact_403_when_project_action_denied(self):
+        from fastapi import HTTPException
+
+        from qaplatform.api.v1.artifacts import download_artifact
+
+        tenant_id = uuid4()
+        project_id = uuid4()
+        run_id = uuid4()
+
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+        artifact = MagicMock(
+            run_id=run_id, storage_path="artifacts/abc/report.html"
+        )
+        mock_repos.artifact.get_by_id.return_value = artifact
+        mock_repos.run = AsyncMock()
+        run = MagicMock(tenant_id=tenant_id, project_id=project_id)
+        mock_repos.run.get_by_id.return_value = run
+
+        user = MagicMock(tenant_id=tenant_id, user_id=uuid4(), role="reader")
+        request = MagicMock()
+        session = MagicMock()
+
+        async def _deny(_session, _user, _project_id, _action, **_kw):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        with patch(
+            "qaplatform.api.v1.artifacts.enforce_project_action", new=_deny
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await download_artifact(
+                    artifact_id=uuid4(),
+                    request=request,
+                    repos=mock_repos,
+                    user=user,
+                    session=session,
+                )
+
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_download_artifact_passes_project_id_to_rbac(self):
+        from qaplatform.api.v1.artifacts import download_artifact
+
+        tenant_id = uuid4()
+        project_id = uuid4()
+        run_id = uuid4()
+
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+        artifact = MagicMock(
+            run_id=run_id, storage_path="artifacts/abc/report.html"
+        )
+        mock_repos.artifact.get_by_id.return_value = artifact
+        mock_repos.run = AsyncMock()
+        run = MagicMock(tenant_id=tenant_id, project_id=project_id)
+        mock_repos.run.get_by_id.return_value = run
+
+        user = MagicMock(tenant_id=tenant_id, user_id=uuid4(), role="reader")
+
+        request = MagicMock()
+        request.app.state.container.s3_client = AsyncMock()
+        request.app.state.container.s3_client.generate_presigned_url.return_value = (
+            "http://s3/signed"
+        )
+        request.app.state.container.settings.s3_bucket = "qa-platform"
+        session = MagicMock()
+
+        captured = {}
+
+        async def _capture(_session, _user, _project_id, _action, **_kw):
+            captured["session"] = _session
+            captured["user"] = _user
+            captured["project_id"] = _project_id
+            captured["action"] = _action
+
+        with patch(
+            "qaplatform.api.v1.artifacts.enforce_project_action", new=_capture
+        ):
+            result = await download_artifact(
+                artifact_id=uuid4(),
+                request=request,
+                repos=mock_repos,
+                user=user,
+                session=session,
+            )
+
+        from qaplatform.api.auth.permissions import Action
+
+        assert captured["project_id"] == project_id
+        assert captured["action"] == Action.RUN_READ
+        assert captured["user"] is user
+        assert captured["session"] is session
+        assert result == {
+            "download_url": "http://s3/signed",
+            "expires_in": 3600,
+        }
