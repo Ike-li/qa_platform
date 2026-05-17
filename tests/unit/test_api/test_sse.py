@@ -18,18 +18,44 @@ def mock_redis():
 
 
 @pytest.fixture
-def mock_user():
+def tenant_id():
+    return uuid.uuid4()
+
+
+@pytest.fixture
+def other_tenant_id():
+    return uuid.uuid4()
+
+
+@pytest.fixture
+def mock_user(tenant_id):
     user = MagicMock()
-    user.user_id = str(uuid.uuid4())
+    user.user_id = uuid.uuid4()
     user.role = "platform_admin"
-    user.tenant_id = uuid.uuid4()
+    user.tenant_id = tenant_id
     return user
 
 
 @pytest.fixture
-async def app(mock_redis, mock_user):
+def mock_run_repo():
+    return AsyncMock()
+
+
+@pytest.fixture
+def mock_repos(mock_run_repo):
+    repos = MagicMock()
+    repos.run = mock_run_repo
+    return repos
+
+
+@pytest.fixture
+async def app(mock_redis, mock_user, mock_repos):
+    from qaplatform.api.deps import (
+        UserIdentity,
+        _get_db_session,
+        _get_repos,
+    )
     from qaplatform.api.v1.sse import _authenticate_sse_ticket
-    from qaplatform.api.deps import UserIdentity
     from qaplatform.main import create_app
 
     container = MagicMock()
@@ -38,12 +64,22 @@ async def app(mock_redis, mock_user):
 
     async def _override_ticket():
         return UserIdentity(
-            user_id=uuid.UUID(mock_user.user_id),
+            user_id=mock_user.user_id,
             role=mock_user.role,
             tenant_id=mock_user.tenant_id,
         )
 
+    async def _override_repos():
+        return mock_repos
+
+    async def _override_session():
+        # tests don't touch the session; enforce_project_action is patched
+        # via tenant role short-circuit (platform_admin / OWNER bypass).
+        yield MagicMock()
+
     app.dependency_overrides[_authenticate_sse_ticket] = _override_ticket
+    app.dependency_overrides[_get_repos] = _override_repos
+    app.dependency_overrides[_get_db_session] = _override_session
     return app
 
 
@@ -54,9 +90,18 @@ async def client(app):
         yield ac
 
 
+def _make_run(*, run_id, tenant_id, project_id=None):
+    run = MagicMock()
+    run.id = run_id
+    run.tenant_id = tenant_id
+    run.project_id = project_id or uuid.uuid4()
+    return run
+
+
 @pytest.mark.asyncio
-async def test_logs_sse_endpoint_exists(client, mock_redis):
+async def test_logs_sse_endpoint_exists(client, mock_redis, mock_run_repo, tenant_id):
     run_id = uuid.uuid4()
+    mock_run_repo.get_by_id.return_value = _make_run(run_id=run_id, tenant_id=tenant_id)
 
     mock_redis.xread = AsyncMock(
         side_effect=[
@@ -74,8 +119,9 @@ async def test_logs_sse_endpoint_exists(client, mock_redis):
 
 
 @pytest.mark.asyncio
-async def test_events_sse_endpoint_exists(client, mock_redis):
+async def test_events_sse_endpoint_exists(client, mock_redis, mock_run_repo, tenant_id):
     run_id = uuid.uuid4()
+    mock_run_repo.get_by_id.return_value = _make_run(run_id=run_id, tenant_id=tenant_id)
 
     mock_redis.xread = AsyncMock(
         side_effect=[
@@ -117,3 +163,212 @@ async def test_events_sse_no_ticket(app):
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.get(f"/api/v1/runs/{uuid.uuid4()}/events")
     assert resp.status_code in (401, 422)
+
+
+# ── P0-A regression: SSE cross-tenant log leak (F-AU-03) ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_stream_logs_cross_tenant_returns_404(
+    client, mock_redis, mock_run_repo, other_tenant_id
+):
+    """A user holding a valid ticket for tenant_A must not be able to
+    subscribe to a run owned by tenant_B by tampering the path run_id.
+
+    Expected: HTTP 404 ("Run not found"), and redis.xread is never called
+    (i.e. the request is rejected before entering the stream loop).
+    """
+    run_id = uuid.uuid4()
+    # run lives in a *different* tenant than the authenticated user
+    mock_run_repo.get_by_id.return_value = _make_run(
+        run_id=run_id, tenant_id=other_tenant_id
+    )
+    mock_redis.xread = AsyncMock()
+
+    resp = await client.get(f"/api/v1/runs/{run_id}/logs?ticket=test-ticket")
+
+    assert resp.status_code == 404
+    body = resp.json()
+    message = body.get("detail") or body.get("error", {}).get("message", "")
+    assert message == "Run not found"
+    mock_redis.xread.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stream_events_cross_tenant_returns_404(
+    client, mock_redis, mock_run_repo, other_tenant_id
+):
+    """Same cross-tenant guard for the events endpoint."""
+    run_id = uuid.uuid4()
+    mock_run_repo.get_by_id.return_value = _make_run(
+        run_id=run_id, tenant_id=other_tenant_id
+    )
+    mock_redis.xread = AsyncMock()
+
+    resp = await client.get(f"/api/v1/runs/{run_id}/events?ticket=test-ticket")
+
+    assert resp.status_code == 404
+    body = resp.json()
+    message = body.get("detail") or body.get("error", {}).get("message", "")
+    assert message == "Run not found"
+    mock_redis.xread.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stream_logs_run_not_found_returns_404(
+    client, mock_redis, mock_run_repo
+):
+    """Non-existent run_id must yield 404 just like cross-tenant access."""
+    run_id = uuid.uuid4()
+    mock_run_repo.get_by_id.return_value = None
+    mock_redis.xread = AsyncMock()
+
+    resp = await client.get(f"/api/v1/runs/{run_id}/logs?ticket=test-ticket")
+
+    assert resp.status_code == 404
+    mock_redis.xread.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stream_logs_same_tenant_no_project_perm_returns_403(
+    mock_redis, mock_repos, mock_run_repo, tenant_id
+):
+    """User belongs to the same tenant but has no ProjectMember row for
+    the project owning the run. enforce_project_action must reject with 403.
+    """
+    from qaplatform.api.deps import (
+        UserIdentity,
+        _get_db_session,
+        _get_repos,
+    )
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
+    from qaplatform.main import create_app
+
+    container = MagicMock()
+    container.redis_client = mock_redis
+    app = create_app(container=container)
+
+    # Use a non-admin role so enforce_project_action falls through to
+    # ProjectMember lookup.
+    member_user_id = uuid.uuid4()
+
+    async def _override_ticket():
+        return UserIdentity(
+            user_id=member_user_id,
+            role="member",
+            tenant_id=tenant_id,
+        )
+
+    async def _override_repos():
+        return mock_repos
+
+    async def _override_session():
+        yield MagicMock()
+
+    app.dependency_overrides[_authenticate_sse_ticket] = _override_ticket
+    app.dependency_overrides[_get_repos] = _override_repos
+    app.dependency_overrides[_get_db_session] = _override_session
+
+    run_id = uuid.uuid4()
+    mock_run_repo.get_by_id.return_value = _make_run(
+        run_id=run_id, tenant_id=tenant_id
+    )
+    mock_redis.xread = AsyncMock()
+
+    # Patch the project-role resolver to simulate "no membership".
+    import qaplatform.api.deps as deps_mod
+    from unittest.mock import patch
+
+    async def _no_project_role(session, user, project_id):
+        return None
+
+    with patch.object(deps_mod, "_resolve_project_role", _no_project_role):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get(f"/api/v1/runs/{run_id}/logs?ticket=test-ticket")
+
+    assert resp.status_code == 403
+    mock_redis.xread.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stream_events_same_tenant_no_project_perm_returns_403(
+    mock_redis, mock_repos, mock_run_repo, tenant_id
+):
+    """Mirror of the logs 403 case for the events endpoint."""
+    from qaplatform.api.deps import (
+        UserIdentity,
+        _get_db_session,
+        _get_repos,
+    )
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
+    from qaplatform.main import create_app
+
+    container = MagicMock()
+    container.redis_client = mock_redis
+    app = create_app(container=container)
+
+    member_user_id = uuid.uuid4()
+
+    async def _override_ticket():
+        return UserIdentity(
+            user_id=member_user_id,
+            role="member",
+            tenant_id=tenant_id,
+        )
+
+    async def _override_repos():
+        return mock_repos
+
+    async def _override_session():
+        yield MagicMock()
+
+    app.dependency_overrides[_authenticate_sse_ticket] = _override_ticket
+    app.dependency_overrides[_get_repos] = _override_repos
+    app.dependency_overrides[_get_db_session] = _override_session
+
+    run_id = uuid.uuid4()
+    mock_run_repo.get_by_id.return_value = _make_run(
+        run_id=run_id, tenant_id=tenant_id
+    )
+    mock_redis.xread = AsyncMock()
+
+    import qaplatform.api.deps as deps_mod
+    from unittest.mock import patch
+
+    async def _no_project_role(session, user, project_id):
+        return None
+
+    with patch.object(deps_mod, "_resolve_project_role", _no_project_role):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get(f"/api/v1/runs/{run_id}/events?ticket=test-ticket")
+
+    assert resp.status_code == 403
+    mock_redis.xread.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stream_logs_same_project_returns_200_event_stream(
+    client, mock_redis, mock_run_repo, tenant_id
+):
+    """Happy path: user authorised for the run's project sees the stream."""
+    run_id = uuid.uuid4()
+    mock_run_repo.get_by_id.return_value = _make_run(
+        run_id=run_id, tenant_id=tenant_id
+    )
+
+    log_payload = {"level": "info", "message": "expected-log-line"}
+    mock_redis.xread = AsyncMock(
+        side_effect=[
+            [(f"run:{run_id}:logs".encode(), [(b"1234-0", log_payload)])],
+            [],
+        ]
+    )
+    mock_redis.hget = AsyncMock(return_value=RunStatus.DONE.value)
+
+    resp = await client.get(f"/api/v1/runs/{run_id}/logs?ticket=test-ticket")
+
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers.get("content-type", "")
+    assert "expected-log-line" in resp.text
