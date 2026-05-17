@@ -189,6 +189,7 @@ class PermissionContext:
     is_own_resource: bool = False
     project_id: str | None = None
     project_role: ProjectRole | None = None
+    is_platform_admin: bool = False
 
 
 def check_permission(
@@ -202,7 +203,14 @@ def check_permission(
     and project-level matrices must allow the action (intersection).
     Tenant Owner/Admin keep their cross-project authority and bypass the
     project-level check inside their own tenant.
+
+    A user with ``is_platform_admin=True`` bypasses both layers (still scoped
+    to their resolved ``tenant_id`` — cross-tenant access is enforced at the
+    request boundary, not here).
     """
+    if ctx.is_platform_admin:
+        return True
+
     role = normalize_tenant_role(ctx.role)
     if role is None:
         return False

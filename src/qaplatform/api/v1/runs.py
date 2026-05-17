@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import desc
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.audit import write_audit
@@ -173,12 +173,36 @@ async def list_runs(
     status: str | None = Query(None, description="按状态筛选"),
     sort: str = Query("-created_at", description="排序字段"),
     project_id: UUID | None = Query(None, description="按项目筛选"),
+    session: AsyncSession = Depends(_get_db_session),
 ):
     filters = [RunORM.tenant_id == user.tenant_id]
     if status:
         filters.append(RunORM.status == status)
-    if project_id:
+
+    if project_id is not None:
+        # Single-project listing: enforce project-level read.
+        await enforce_project_action(session, user, project_id, Action.RUN_READ)
         filters.append(RunORM.project_id == project_id)
+    else:
+        # Cross-project listing: tenant Owner/Admin (and platform admin) see
+        # all runs in the tenant; everyone else is restricted to projects
+        # they're a member of.
+        from qaplatform.api.auth.permissions import Role, normalize_tenant_role
+        from qaplatform.infra.database.models import ProjectMember
+
+        tenant_role = normalize_tenant_role(user.role)
+        if not getattr(user, "is_platform_admin", False) and tenant_role not in (Role.OWNER, Role.ADMIN):
+            member_projects = (
+                await session.execute(
+                    select(ProjectMember.project_id).where(
+                        ProjectMember.user_id == user.user_id,
+                        ProjectMember.tenant_id == user.tenant_id,
+                    )
+                )
+            ).scalars().all()
+            if not member_projects:
+                return PaginatedResponse(data=[], page=page, per_page=per_page, total=0)
+            filters.append(RunORM.project_id.in_(member_projects))
 
     order_by = desc(RunORM.created_at) if sort == "-created_at" else RunORM.created_at
 
@@ -206,10 +230,12 @@ async def get_run(
     run_id: UUID,
     repos: Repos,
     user: CurrentUser,
+    session: AsyncSession = Depends(_get_db_session),
 ):
     run = await repos.run.get_by_id(run_id)
     if run is None or run.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Run not found")
+    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
     return _to_run_response(run)
 
 
@@ -282,10 +308,12 @@ async def get_run_results(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     status: str | None = Query(None, description="passed / failed / error / skipped / xfail"),
+    session: AsyncSession = Depends(_get_db_session),
 ):
     run = await repos.run.get_by_id(run_id)
     if run is None or run.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Run not found")
+    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
 
     filters = [TestResultORM.run_id == run_id]
     if status:
@@ -316,10 +344,12 @@ async def get_run_artifacts(
     user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(_get_db_session),
 ):
     run = await repos.run.get_by_id(run_id)
     if run is None or run.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Run not found")
+    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
 
     items, total = await repos.artifact.list_by_run(
         run_id, offset=(page - 1) * per_page, limit=per_page,

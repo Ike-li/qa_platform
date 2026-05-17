@@ -21,6 +21,7 @@ class CurrentUser:
     user_id: str
     role: str
     tenant_id: str
+    is_platform_admin: bool = False
 
 
 async def get_current_user(
@@ -68,6 +69,7 @@ def _authenticate_jwt(token: str, container: DependencyContainer) -> CurrentUser
         user_id=payload["sub"],
         role=payload.get("role", "viewer"),
         tenant_id=payload["tenant_id"],
+        is_platform_admin=bool(payload.get("is_platform_admin", False)),
     )
 
 
@@ -128,6 +130,7 @@ async def _authenticate_api_token(
         user_id=str(token.user_id),
         role=token.user.role,
         tenant_id=str(token.user.tenant_id),
+        is_platform_admin=bool(getattr(token.user, "is_platform_admin", False)),
     )
 
 

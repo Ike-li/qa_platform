@@ -65,6 +65,7 @@ class UserIdentity:
     user_id: UUID
     role: str
     tenant_id: UUID
+    is_platform_admin: bool = False
 
 
 def get_container(request: Request):
@@ -83,6 +84,7 @@ async def get_current_user(
         user_id=UUID(str(mw_user.user_id)),
         role=mw_user.role,
         tenant_id=UUID(str(mw_user.tenant_id)),
+        is_platform_admin=getattr(mw_user, "is_platform_admin", False),
     )
 
 
@@ -97,6 +99,7 @@ async def get_current_user_bearer_only(
         user_id=UUID(str(mw_user.user_id)),
         role=mw_user.role,
         tenant_id=UUID(str(mw_user.tenant_id)),
+        is_platform_admin=getattr(mw_user, "is_platform_admin", False),
     )
 
 
@@ -123,6 +126,7 @@ def require_permission(action: "Action"):
             user_id=str(user.user_id),
             role=user.role,
             tenant_id=str(user.tenant_id),
+            is_platform_admin=getattr(user, "is_platform_admin", False),
         )
         if not check_permission(ctx, action):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -191,7 +195,7 @@ def require_project_permission(action: Action, *, project_id_param: str = "proje
 
         tenant_role = normalize_tenant_role(user.role)
         project_role: ProjectRole | None = None
-        if tenant_role not in (Role.OWNER, Role.ADMIN):
+        if not getattr(user, "is_platform_admin", False) and tenant_role not in (Role.OWNER, Role.ADMIN):
             project_role = await _resolve_project_role(session, user, project_id)
 
         ctx = PermissionContext(
@@ -200,6 +204,7 @@ def require_project_permission(action: Action, *, project_id_param: str = "proje
             tenant_id=str(user.tenant_id),
             project_id=str(project_id),
             project_role=project_role,
+            is_platform_admin=getattr(user, "is_platform_admin", False),
         )
         if not check_permission(ctx, action):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -229,7 +234,7 @@ async def enforce_project_action(
 
     tenant_role = normalize_tenant_role(user.role)
     project_role: ProjectRole | None = None
-    if tenant_role not in (Role.OWNER, Role.ADMIN):
+    if not getattr(user, "is_platform_admin", False) and tenant_role not in (Role.OWNER, Role.ADMIN):
         project_role = await _resolve_project_role(session, user, project_id)
 
     ctx = PermissionContext(
@@ -239,6 +244,7 @@ async def enforce_project_action(
         project_id=str(project_id),
         project_role=project_role,
         is_own_resource=is_own_resource,
+        is_platform_admin=getattr(user, "is_platform_admin", False),
     )
     if not check_permission(ctx, action):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
