@@ -322,3 +322,73 @@ async def test_get_run_artifacts(client, mock_run_repo, mock_artifact_repo, tena
     )
     assert resp.status_code == 200
     assert resp.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_archived_project_returns_409(
+    client, mock_pipeline_repo, mock_project_repo, tenant_id
+):
+    """F-PM-03: archived projects must reject new runs."""
+    pipeline = MagicMock()
+    pipeline.id = uuid.uuid4()
+    pipeline.project_id = uuid.uuid4()
+    mock_pipeline_repo.get_by_id.return_value = pipeline
+
+    project = MagicMock()
+    project.id = pipeline.project_id
+    project.tenant_id = tenant_id
+    project.status = "archived"
+    mock_project_repo.get_by_id.return_value = project
+
+    resp = await client.post(
+        "/api/v1/runs",
+        json={"pipeline_id": str(pipeline.id)},
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    detail = body.get("detail") or body.get("error", {}).get("message", "")
+    assert "archived" in detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_list_runs_multi_status_filter(client, mock_run_repo):
+    """F-LS-01: comma-separated status values must produce an IN clause
+    so the caller can fetch e.g. 'queued,running' (in-flight) in one
+    call instead of polling each status separately.
+    """
+    mock_run_repo.list.return_value = ([], 0)
+
+    resp = await client.get(
+        "/api/v1/runs?status=queued,running",
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 200
+
+    mock_run_repo.list.assert_called_once()
+    filters = mock_run_repo.list.call_args.kwargs["filters"]
+    rendered = [
+        str(f.compile(compile_kwargs={"literal_binds": True})) for f in filters
+    ]
+    assert any(
+        "IN" in r and "queued" in r and "running" in r for r in rendered
+    ), f"expected IN-clause with both statuses, got: {rendered}"
+
+
+@pytest.mark.asyncio
+async def test_list_runs_single_status_uses_equality(client, mock_run_repo):
+    """When the caller supplies one status, keep an equality predicate."""
+    mock_run_repo.list.return_value = ([], 0)
+
+    resp = await client.get(
+        "/api/v1/runs?status=queued",
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 200
+
+    filters = mock_run_repo.list.call_args.kwargs["filters"]
+    rendered = [
+        str(f.compile(compile_kwargs={"literal_binds": True})) for f in filters
+    ]
+    assert any("= 'queued'" in r for r in rendered), rendered
+    assert not any("IN" in r and "queued" in r for r in rendered), rendered
