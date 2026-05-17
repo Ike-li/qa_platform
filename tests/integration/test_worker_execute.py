@@ -33,7 +33,7 @@ def fixture_git_repo(tmp_path_factory):
     (repo / "tests" / "test_smoke.py").write_text(
         "def test_pass():\n    assert True\n"
     )
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "e2e@test"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "E2E"], cwd=repo, check=True)
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
@@ -72,7 +72,7 @@ async def test_trigger_run_completes_terminal_state(
             "name": "Integration Test Project",
             "slug": f"integration-test-{os.urandom(4).hex()}",
             "git_url": f"file://{fixture_git_repo}",
-            "default_branch": "master",
+            "default_branch": "main",
             "shallow_clone": False,  # local file repo doesn't support shallow
         },
     )
@@ -91,7 +91,7 @@ async def test_trigger_run_completes_terminal_state(
             "cpu_cores": 1.0,
             "network_policy": "allow",  # 测试容器需要安装 pytest
             "env_vars": {},
-            "setup_script": "pip install pytest"
+            "setup_script": "python -m pip install pytest"
         },
     )
     assert env_resp.status_code in (200, 201), env_resp.text
@@ -119,7 +119,7 @@ async def test_trigger_run_completes_terminal_state(
     trigger_resp = await api_client.post(
         "/api/v1/runs",
         headers=headers,
-        json={"pipeline_id": pipeline["id"], "git_ref": "master"},
+        json={"pipeline_id": pipeline["id"], "git_ref": "main"},
     )
     assert trigger_resp.status_code in (200, 201), trigger_resp.text
     run = trigger_resp.json()
