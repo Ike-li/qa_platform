@@ -266,3 +266,26 @@ class ArtifactResponse(BaseModel):
     mime_type: str
     expires_at: datetime | None = None
     created_at: datetime
+
+
+# ── Project member schemas ───────────────────────────────────────────────────
+
+
+class ProjectMemberCreate(BaseModel):
+    user_id: UUID
+    role: Literal["admin", "developer", "viewer"]
+
+
+class ProjectMemberUpdate(BaseModel):
+    role: Literal["admin", "developer", "viewer"]
+
+
+class ProjectMemberResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    project_id: UUID
+    user_id: UUID
+    username: str
+    email: str
+    role: str
+    created_at: datetime
