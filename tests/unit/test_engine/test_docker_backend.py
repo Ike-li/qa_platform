@@ -148,6 +148,29 @@ class TestDockerBackend:
             "memory_bytes via swap and the F-PL-03 limit can be exceeded."
         )
 
+    @pytest.mark.asyncio
+    async def test_create_execution_enables_init_for_signal_forwarding(self):
+        """Init=True ensures tini is PID 1, forwarding SIGTERM to user processes
+        (without it, sh/python/etc. as PID 1 ignore non-SIGKILL signals,
+        breaking F-EX-06 cancel timing)."""
+        mock_container = MagicMock()
+        mock_container.id = "init-test"
+        mock_containers = MagicMock()
+        mock_containers.create_or_replace = AsyncMock(return_value=mock_container)
+        self.docker_client.containers = mock_containers
+
+        spec = ExecutionSpec(
+            image="busybox",
+            command=["true"],
+            env_vars={},
+            resource_limits=ResourceLimits(memory_bytes=128 * 1024 * 1024),
+            labels={"run_id": "r"},
+        )
+
+        await self.backend.create_execution(spec)
+        config = mock_containers.create_or_replace.call_args.kwargs["config"]
+        assert config["HostConfig"]["Init"] is True
+
     # -- start ---------------------------------------------------------------
 
     @pytest.mark.asyncio
