@@ -120,6 +120,9 @@ class DockerBackend:
                 "PidsLimit": spec.security.pids_limit,
                 "Devices": spec.security.devices,
                 "NetworkMode": self._network_mode(spec.network_policy),
+                # Init=True runs tini as PID 1; without it, sh/python/etc. as PID 1 ignore
+                # non-SIGKILL signals per Linux kernel rules, breaking F-EX-06 cancel timing.
+                "Init": True,
                 "Binds": self._build_binds(spec.mounts),
                 "Tmpfs": {"/tmp": "rw,noexec,nosuid,size=256m"},
             },
