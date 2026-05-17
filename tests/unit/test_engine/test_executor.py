@@ -37,6 +37,7 @@ def mock_run_repo():
     repo.update_git_sha.return_value = None
     repo.finish_if_current.return_value = True
     repo.fail_if_current.return_value = True
+    repo.commit.return_value = None
     return repo
 
 
@@ -477,3 +478,121 @@ class TestRunStagesTimeoutGracePeriod:
         assert status == RunStatus.TIMEOUT
         finish_call = timeout_executor.run_repo.finish_if_current.await_args
         assert finish_call.kwargs["status"] == RunStatus.TIMEOUT
+
+
+# --------------------------------------------------------------------------- #
+# P0-B: long-transaction split — commit after mark_running / mark_collecting
+# --------------------------------------------------------------------------- #
+
+
+class TestExecutorCommitsAfterStateTransitions:
+    """P0-B step 2: executor must commit through the run_repo immediately
+    after mark_running and mark_collecting so the new state is visible to
+    other connections (cancel API polling, SSE status reads) instead of
+    being held inside the long-lived worker transaction.
+    """
+
+    def _make_pipeline(self):
+        from qaplatform.engine.executor import PipelineConfig, StageDefinition
+        return PipelineConfig(
+            image="python:3.12-alpine",
+            stages=[StageDefinition(name="pytest", plugin="pytest")],
+            timeout_seconds=60,
+        )
+
+    @pytest.fixture
+    def happy_executor(self, mock_log_stream, mock_run_repo, mock_plugin_registry):
+        backend = AsyncMock()
+        backend.create_execution = AsyncMock(return_value="container-abc")
+        backend.start = AsyncMock()
+        exit_result = MagicMock()
+        exit_result.exit_code = 0
+        exit_result.oom_killed = False
+        exit_result.timed_out = False
+        backend.wait = AsyncMock(return_value=exit_result)
+        backend.cleanup = AsyncMock()
+
+        async def _empty_logs(_id):
+            if False:
+                yield
+        backend.stream_logs = _empty_logs
+
+        runner = MagicMock()
+        runner.build_command = MagicMock(return_value="pytest -q")
+        mock_plugin_registry.get_runner = MagicMock(return_value=runner)
+        collector = AsyncMock()
+        collector.collect = AsyncMock(return_value=[])
+        mock_plugin_registry.get_collector = MagicMock(return_value=collector)
+
+        return RunExecutor(
+            backend=backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+        )
+
+    @pytest.mark.asyncio
+    async def test_commit_called_after_mark_running(
+        self, happy_executor, sample_run, mock_run_repo
+    ):
+        """mark_running must be followed by run_repo.commit()."""
+        sample_run.metadata = {}  # skip _clone_repo
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        mock_run_repo.mark_running.assert_awaited_once()
+        # commit was invoked at least twice (after mark_running + mark_collecting)
+        assert mock_run_repo.commit.await_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_commit_called_after_mark_collecting(
+        self, happy_executor, sample_run, mock_run_repo
+    ):
+        """mark_collecting must be followed by run_repo.commit()."""
+        sample_run.metadata = {}
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        mock_run_repo.mark_collecting.assert_awaited_once()
+        assert mock_run_repo.commit.await_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_commit_ordering_running_then_collecting(
+        self, happy_executor, sample_run, mock_run_repo
+    ):
+        """Order: mark_running -> commit -> mark_collecting -> commit."""
+        call_log: list[str] = []
+
+        async def _mark_running(*a, **kw):
+            call_log.append("mark_running")
+
+        async def _mark_collecting(*a, **kw):
+            call_log.append("mark_collecting")
+
+        async def _commit():
+            call_log.append("commit")
+
+        mock_run_repo.mark_running.side_effect = _mark_running
+        mock_run_repo.mark_collecting.side_effect = _mark_collecting
+        mock_run_repo.commit.side_effect = _commit
+
+        sample_run.metadata = {}
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        # Find indices and assert ordering.
+        running_idx = call_log.index("mark_running")
+        collecting_idx = call_log.index("mark_collecting")
+        # First commit comes between mark_running and mark_collecting.
+        between = call_log[running_idx + 1:collecting_idx]
+        assert "commit" in between, (
+            f"expected commit between mark_running and mark_collecting, log={call_log}"
+        )
+        # A second commit comes after mark_collecting.
+        after = call_log[collecting_idx + 1:]
+        assert "commit" in after, (
+            f"expected commit after mark_collecting, log={call_log}"
+        )
+
+    def test_protocol_declares_commit(self):
+        """RunRepositoryProtocol must expose commit() so executor.run_repo
+        is type-correct under method-A (Protocol extension)."""
+        from qaplatform.engine.executor import RunRepositoryProtocol
+        assert hasattr(RunRepositoryProtocol, "commit")
