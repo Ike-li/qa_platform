@@ -164,7 +164,15 @@ class DockerBackend:
         finished_at = datetime.now(timezone.utc)
 
         exit_code = result.get("StatusCode", -1)
-        oom_killed = result.get("OOMKilled", False)
+
+        # Docker /containers/{id}/wait only returns {StatusCode, Error}; OOMKilled
+        # lives on the container State, so inspect via /containers/{id}/json.
+        try:
+            info = await container.show()
+            oom_killed = bool(info.get("State", {}).get("OOMKilled", False))
+        except Exception:
+            log.warning("failed to inspect OOMKilled for execution %s", execution_id[:12])
+            oom_killed = False
 
         return ExitResult(
             exit_code=exit_code,
