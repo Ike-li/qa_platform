@@ -197,19 +197,35 @@ def check_permission(
 ) -> bool:
     """Check whether a user is allowed to perform ``action``.
 
-    Tenant-only check (kept for actions outside :data:`PROJECT_SCOPED_ACTIONS`).
-    Project-level intersection enforcement is layered on top in a later commit.
+    Tenant-only check by default. When ``ctx.project_role`` is provided and
+    ``action`` is in :data:`PROJECT_SCOPED_ACTIONS`, both the tenant-level
+    and project-level matrices must allow the action (intersection).
+    Tenant Owner/Admin keep their cross-project authority and bypass the
+    project-level check inside their own tenant.
     """
     role = normalize_tenant_role(ctx.role)
     if role is None:
         return False
 
-    allowed = TENANT_ROLE_PERMISSIONS.get(role, set())
-    if action in allowed:
+    tenant_allowed = TENANT_ROLE_PERMISSIONS.get(role, set())
+    tenant_ok = action in tenant_allowed
+    if not tenant_ok and action == Action.RUN_CANCEL and Action.RUN_CANCEL_OWN in tenant_allowed:
+        tenant_ok = ctx.is_own_resource
+    if not tenant_ok:
+        return False
+
+    if action not in PROJECT_SCOPED_ACTIONS:
         return True
 
-    # run.cancel falls back to run.cancel.own when the resource is owned.
-    if action == Action.RUN_CANCEL and Action.RUN_CANCEL_OWN in allowed:
-        return ctx.is_own_resource
+    if role in (Role.OWNER, Role.ADMIN):
+        return True
 
+    if ctx.project_role is None:
+        return False
+
+    project_allowed = PROJECT_ROLE_PERMISSIONS.get(ctx.project_role, set())
+    if action in project_allowed:
+        return True
+    if action == Action.RUN_CANCEL and Action.RUN_CANCEL_OWN in project_allowed:
+        return ctx.is_own_resource
     return False

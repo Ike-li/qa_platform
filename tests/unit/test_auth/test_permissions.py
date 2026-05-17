@@ -111,33 +111,83 @@ class TestCheckPermission:
             assert check_permission(ctx, action) is True
 
     def test_viewer_allowed_for_read(self):
-        ctx = PermissionContext(user_id="u1", role="viewer", tenant_id="t1")
-        assert check_permission(ctx, Action.PROJECT_READ) is True
-        assert check_permission(ctx, Action.RUN_READ) is True
+        # PROJECT_READ is tenant-scoped (project list); RUN_READ is project-scoped
+        # so it requires a project_role for non-Owner/Admin tenants.
+        ctx_tenant = PermissionContext(user_id="u1", role="viewer", tenant_id="t1")
+        assert check_permission(ctx_tenant, Action.PROJECT_READ) is True
+
+        ctx_project = PermissionContext(
+            user_id="u1", role="viewer", tenant_id="t1",
+            project_id="p1", project_role=ProjectRole.VIEWER,
+        )
+        assert check_permission(ctx_project, Action.RUN_READ) is True
 
     def test_viewer_denied_for_trigger(self):
-        ctx = PermissionContext(user_id="u1", role="viewer", tenant_id="t1")
+        ctx = PermissionContext(
+            user_id="u1", role="viewer", tenant_id="t1",
+            project_id="p1", project_role=ProjectRole.ADMIN,  # intersection: still no
+        )
         assert check_permission(ctx, Action.RUN_TRIGGER) is False
 
-    def test_member_allowed_for_trigger(self):
-        ctx = PermissionContext(user_id="u1", role="member", tenant_id="t1")
+    def test_member_allowed_for_trigger_with_developer_project_role(self):
+        ctx = PermissionContext(
+            user_id="u1", role="member", tenant_id="t1",
+            project_id="p1", project_role=ProjectRole.DEVELOPER,
+        )
         assert check_permission(ctx, Action.RUN_TRIGGER) is True
 
-    def test_legacy_developer_string_allowed_for_trigger(self):
-        ctx = PermissionContext(user_id="u1", role="developer", tenant_id="t1")
+    def test_member_denied_for_trigger_without_project_role(self):
+        ctx = PermissionContext(user_id="u1", role="member", tenant_id="t1")
+        assert check_permission(ctx, Action.RUN_TRIGGER) is False
+
+    def test_legacy_developer_string_allowed_for_trigger_with_project_role(self):
+        ctx = PermissionContext(
+            user_id="u1", role="developer", tenant_id="t1",
+            project_id="p1", project_role=ProjectRole.DEVELOPER,
+        )
         assert check_permission(ctx, Action.RUN_TRIGGER) is True
 
     def test_member_cancel_own_allowed(self):
         ctx = PermissionContext(
-            user_id="u1", role="member", tenant_id="t1", is_own_resource=True
+            user_id="u1", role="member", tenant_id="t1", is_own_resource=True,
+            project_id="p1", project_role=ProjectRole.DEVELOPER,
         )
         assert check_permission(ctx, Action.RUN_CANCEL) is True
 
     def test_member_cancel_others_denied(self):
         ctx = PermissionContext(
-            user_id="u1", role="member", tenant_id="t1", is_own_resource=False
+            user_id="u1", role="member", tenant_id="t1", is_own_resource=False,
+            project_id="p1", project_role=ProjectRole.DEVELOPER,
         )
         assert check_permission(ctx, Action.RUN_CANCEL) is False
+
+    def test_owner_bypasses_missing_project_role(self):
+        ctx = PermissionContext(user_id="u1", role="owner", tenant_id="t1")
+        assert check_permission(ctx, Action.RUN_TRIGGER) is True
+        assert check_permission(ctx, Action.PIPELINE_EDIT) is True
+
+    def test_admin_bypasses_missing_project_role(self):
+        ctx = PermissionContext(user_id="u1", role="admin", tenant_id="t1")
+        assert check_permission(ctx, Action.RUN_TRIGGER) is True
+
+    def test_intersection_tenant_viewer_blocks_project_admin_writes(self):
+        # PRD intersection: tenant Viewer + project Admin still cannot write.
+        ctx = PermissionContext(
+            user_id="u1", role="viewer", tenant_id="t1",
+            project_id="p1", project_role=ProjectRole.ADMIN,
+        )
+        assert check_permission(ctx, Action.RUN_TRIGGER) is False
+        assert check_permission(ctx, Action.PIPELINE_EDIT) is False
+
+    def test_intersection_project_viewer_blocks_tenant_member_writes(self):
+        # tenant Member can trigger runs in general, but if their project_role
+        # is Viewer the intersection allows only reads.
+        ctx = PermissionContext(
+            user_id="u1", role="member", tenant_id="t1",
+            project_id="p1", project_role=ProjectRole.VIEWER,
+        )
+        assert check_permission(ctx, Action.RUN_TRIGGER) is False
+        assert check_permission(ctx, Action.RUN_READ) is True
 
     def test_viewer_cancel_any_denied(self):
         ctx = PermissionContext(user_id="u1", role="viewer", tenant_id="t1")
