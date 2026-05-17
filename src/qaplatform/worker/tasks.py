@@ -101,9 +101,10 @@ async def execute_run(ctx: dict, run_id: str) -> None:
 
         except Exception as exc:
             log.exception("execute_run failed for run %s", run_id)
+            from qaplatform.worker._redact import redact_url_userinfo
             updated = await run_repo.fail_if_current(
                 run.id,
-                message=str(exc),
+                message=redact_url_userinfo(str(exc)),
             )
             if updated:
                 log.info("run %s marked as failed: %s", run_id, exc)
