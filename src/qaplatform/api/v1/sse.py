@@ -4,9 +4,18 @@ import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from qaplatform.api.deps import UserIdentity, get_redis
+from qaplatform.api.auth.permissions import Action
+from qaplatform.api.deps import (
+    UserIdentity,
+    _get_db_session,
+    _get_repos,
+    enforce_project_action,
+    get_redis,
+)
+from qaplatform.dependencies import RepositoryBundle
 from qaplatform.domain.models.run import TERMINAL_STATUSES
 
 router = APIRouter(prefix="/runs", tags=["sse"])
@@ -48,9 +57,16 @@ async def stream_logs(
     run_id: UUID,
     request: Request,
     redis=Depends(get_redis),
-    _user=Depends(_authenticate_sse_ticket),
+    user: UserIdentity = Depends(_authenticate_sse_ticket),
+    repos: RepositoryBundle = Depends(_get_repos),
+    session: AsyncSession = Depends(_get_db_session),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
 ):
+    run = await repos.run.get_by_id(run_id)
+    if run is None or run.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="Run not found")
+    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
+
     stream_key = f"run:{run_id}:logs"
     status_key = f"run:{run_id}:status"
 
@@ -107,9 +123,16 @@ async def stream_events(
     run_id: UUID,
     request: Request,
     redis=Depends(get_redis),
-    _user=Depends(_authenticate_sse_ticket),
+    user: UserIdentity = Depends(_authenticate_sse_ticket),
+    repos: RepositoryBundle = Depends(_get_repos),
+    session: AsyncSession = Depends(_get_db_session),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
 ):
+    run = await repos.run.get_by_id(run_id)
+    if run is None or run.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="Run not found")
+    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
+
     stream_key = f"run:{run_id}:events"
     status_key = f"run:{run_id}:status"
 
