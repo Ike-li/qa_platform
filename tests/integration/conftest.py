@@ -291,3 +291,205 @@ async def integration_client(integration_app) -> AsyncIterator[AsyncClient]:
         transport=transport, base_url="http://test"
     ) as client:
         yield client
+
+
+# --------------------------------------------------------------------------- #
+# Second-tenant seed: tenant_B with full chain + credential + artifact
+# --------------------------------------------------------------------------- #
+
+
+@pytest_asyncio.fixture
+async def seed_second_tenant(integration_db_session, seed_run) -> dict:
+    """Seed a completely independent tenant_B alongside the existing seed_run.
+
+    Returns a dict with the same keys as ``seed_run`` plus ``"credential"``
+    and ``"artifact"``.  All slug/email/username values use a random suffix so
+    they never collide with tenant_A rows even when the session is reused.
+    """
+    from qaplatform.infra.database.models import (
+        AppUser,
+        Artifact,
+        Credential,
+        Environment,
+        Pipeline,
+        Project,
+        Run,
+        RunStatusEnum,
+        Tenant,
+    )
+
+    session = integration_db_session
+    sfx = uuid4().hex[:8]
+
+    tenant = Tenant(name=f"tenant-b-{sfx}")
+    session.add(tenant)
+    await session.flush()
+
+    user = AppUser(
+        tenant_id=tenant.id,
+        username=f"u-b-{sfx}",
+        email=f"u-b-{sfx}@test.local",
+        password_hash="argon2:placeholder",
+        role="owner",
+        is_platform_admin=False,
+        is_active=True,
+    )
+    session.add(user)
+    await session.flush()
+
+    project = Project(
+        tenant_id=tenant.id,
+        name=f"proj-b-{sfx}",
+        slug=f"proj-b-{sfx}",
+        git_url="file:///tmp/none",
+        default_branch="main",
+        root_path=".",
+        shallow_clone=True,
+        created_by=user.id,
+    )
+    session.add(project)
+    await session.flush()
+
+    environment = Environment(
+        project_id=project.id,
+        name="default",
+        base_image="alpine:3.19",
+        memory_mb=128,
+        cpu_cores=0.5,
+        network_policy="allow",
+        env_vars={},
+    )
+    session.add(environment)
+    await session.flush()
+
+    pipeline = Pipeline(
+        project_id=project.id,
+        name="smoke-b",
+        stages=[
+            {
+                "name": "exec",
+                "plugin": "pytest",
+                "phase": "execute",
+                "config": {},
+            }
+        ],
+        selector={},
+        trigger_config={"type": "manual"},
+        timeout_seconds=120,
+        enabled=True,
+    )
+    session.add(pipeline)
+    await session.flush()
+
+    run = Run(
+        tenant_id=tenant.id,
+        project_id=project.id,
+        pipeline_id=pipeline.id,
+        environment_id=environment.id,
+        status=RunStatusEnum.QUEUED,
+        trigger_type="manual",
+        priority=1,
+        triggered_by=user.id,
+        git_ref="main",
+        attempt=1,
+        chain_depth=0,
+        metadata_={},
+    )
+    session.add(run)
+    await session.flush()
+
+    credential = Credential(
+        tenant_id=tenant.id,
+        project_id=project.id,
+        name=f"cred-b-{sfx}",
+        type="ssh_key",
+        # BYTEA placeholder — no real crypto needed for isolation tests
+        encrypted_value=b"\x00" * 32,
+        created_by=user.id,
+    )
+    session.add(credential)
+    await session.flush()
+
+    artifact = Artifact(
+        run_id=run.id,
+        type="report",
+        name="report.html",
+        storage_path="artifacts/x.html",
+        size_bytes=1,
+        mime_type="text/html",
+    )
+    session.add(artifact)
+    await session.commit()
+    await session.refresh(run)
+    await session.refresh(artifact)
+
+    return {
+        "tenant": tenant,
+        "user": user,
+        "project": project,
+        "environment": environment,
+        "pipeline": pipeline,
+        "run": run,
+        "credential": credential,
+        "artifact": artifact,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Factory fixture: build an AsyncClient authenticated as any (user, tenant)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def integration_client_as(integration_app):
+    """Return a factory that yields an AsyncClient authenticated as the given user.
+
+    Usage::
+
+        async with integration_client_as(user_id, tenant_id, role="owner") as client:
+            resp = await client.get("/api/v1/projects/...")
+
+    The factory temporarily replaces ``integration_app.dependency_overrides``
+    for ``mw_get_current_user`` and restores the original override afterwards.
+    """
+    from qaplatform.api.auth.middleware import (
+        CurrentUser as MiddlewareCurrentUser,
+        get_current_user as mw_get_current_user,
+    )
+
+    def _factory(user_id, tenant_id, role: str = "owner"):
+        original = integration_app.dependency_overrides.get(mw_get_current_user)
+
+        class _CM:
+            async def __aenter__(self):
+                fake = MiddlewareCurrentUser(
+                    user_id=str(user_id),
+                    role=role,
+                    tenant_id=str(tenant_id),
+                    is_platform_admin=False,
+                )
+                integration_app.dependency_overrides[mw_get_current_user] = (
+                    lambda: fake
+                )
+                transport = ASGITransport(app=integration_app)
+                self._client = AsyncClient(
+                    transport=transport, base_url="http://test"
+                )
+                return await self._client.__aenter__()
+
+            async def __aexit__(self, *args):
+                try:
+                    await self._client.__aexit__(*args)
+                finally:
+                    if original is None:
+                        integration_app.dependency_overrides.pop(
+                            mw_get_current_user, None
+                        )
+                    else:
+                        integration_app.dependency_overrides[
+                            mw_get_current_user
+                        ] = original
+
+        return _CM()
+
+    return _factory
