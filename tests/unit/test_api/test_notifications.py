@@ -144,7 +144,7 @@ async def test_delete_rule(app, mock_repos, project_id):
         )
 
     assert resp.status_code == 204
-    mock_repos.notification_rule.delete.assert_awaited_once_with(rule.id)
+    mock_repos.notification_rule.delete.assert_awaited_once_with(rule)
 
 
 @pytest.mark.asyncio

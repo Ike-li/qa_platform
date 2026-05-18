@@ -221,7 +221,7 @@ async def delete_schedule(
     if schedule is None or schedule.project_id != project.id:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    await repos.schedule.delete(schedule_id)
+    await repos.schedule.delete(schedule)
     await write_audit(
         repos, user,
         action="schedule.delete",

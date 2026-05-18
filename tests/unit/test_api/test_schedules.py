@@ -165,7 +165,7 @@ async def test_delete_schedule(app, mock_repos, project_id, pipeline_id):
         resp = await client.delete(f"/api/v1/projects/{project_id}/schedules/{schedule.id}")
 
     assert resp.status_code == 204
-    mock_repos.schedule.delete.assert_awaited_once_with(schedule.id)
+    mock_repos.schedule.delete.assert_awaited_once_with(schedule)
 
 
 @pytest.mark.asyncio

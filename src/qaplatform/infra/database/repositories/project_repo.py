@@ -187,6 +187,7 @@ class NotificationRuleRepository(BaseRepository[NotificationRule]):
         stmt = select(NotificationRule).where(
             NotificationRule.project_id == project_id,
             NotificationRule.enabled.is_(True),
+            NotificationRule.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

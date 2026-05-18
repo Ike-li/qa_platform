@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -36,7 +35,7 @@ def _evaluate_conditions(conditions: list[dict], run_summary: dict | None, statu
         elif field == "failed":
             actual = (run_summary or {}).get("failed", 0)
         else:
-            # Unknown field — skip this condition
+            log.warning("unknown_condition_field", extra={"field": field})
             continue
 
         if not _compare(actual, op, expected):
@@ -46,19 +45,22 @@ def _evaluate_conditions(conditions: list[dict], run_summary: dict | None, statu
 
 
 def _compare(actual: Any, op: str, expected: Any) -> bool:
-    if op == "eq":
-        return actual == expected
-    if op == "ne":
-        return actual != expected
-    if op == "lt":
-        return actual < expected
-    if op == "gt":
-        return actual > expected
-    if op == "lte":
-        return actual <= expected
-    if op == "gte":
-        return actual >= expected
-    return False
+    try:
+        if op == "eq":
+            return actual == expected
+        if op == "ne":
+            return actual != expected
+        if op == "lt":
+            return actual < expected
+        if op == "gt":
+            return actual > expected
+        if op == "lte":
+            return actual <= expected
+        if op == "gte":
+            return actual >= expected
+        return False
+    except TypeError:
+        return False
 
 
 async def _send_channel(channel_type: str, channel_config: dict, message: str) -> None:
@@ -131,13 +133,19 @@ async def evaluate_and_notify(
                         },
                     )
 
-                await log_repo.create(
-                    project_id=project_id,
-                    run_id=run_id,
-                    rule_id=rule.id,
-                    channel_type=channel_type,
-                    status=log_status,
-                    error_message=error_message,
-                )
+                try:
+                    await log_repo.create(
+                        project_id=project_id,
+                        run_id=run_id,
+                        rule_id=rule.id,
+                        channel_type=channel_type,
+                        status=log_status,
+                        error_message=error_message,
+                    )
+                except Exception:
+                    log.info(
+                        "notification_log_already_exists",
+                        extra={"run_id": str(run_id), "rule_id": str(rule.id)},
+                    )
 
         await session.commit()
