@@ -315,3 +315,39 @@ class CredentialResponse(BaseModel):
     type: str
     created_by: UUID
     created_at: datetime
+
+
+# ── Schedule schemas ────────────────────────────────────────────────────────
+
+class ScheduleCreate(BaseModel):
+    pipeline_id: UUID
+    cron_expr: str = Field(..., min_length=1, max_length=100)
+    timezone: str = Field("Asia/Shanghai", max_length=50)
+    missed_fire_policy: Literal["skip", "run_once", "run_all"] = "skip"
+    quiet_windows: list[dict] = Field(default_factory=list)
+    enabled: bool = True
+
+
+class ScheduleUpdate(BaseModel):
+    cron_expr: str | None = Field(None, min_length=1, max_length=100)
+    timezone: str | None = Field(None, max_length=50)
+    missed_fire_policy: Literal["skip", "run_once", "run_all"] | None = None
+    quiet_windows: list[dict] | None = None
+    enabled: bool | None = None
+
+
+class ScheduleResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    project_id: UUID
+    pipeline_id: UUID
+    cron_expr: str
+    timezone: str
+    missed_fire_policy: str
+    quiet_windows: list[dict]
+    enabled: bool
+    last_run_at: datetime | None
+    next_run_at: datetime | None
+    last_error: str | None
+    created_at: datetime

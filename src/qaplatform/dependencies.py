@@ -132,6 +132,7 @@ class DependencyContainer:
             EnvironmentRepository,
             PipelineRepository,
             ProjectRepository,
+            ScheduleRepository,
         )
         from qaplatform.infra.database.repositories.run_repo import (
             ArtifactRepository,
@@ -150,6 +151,7 @@ class DependencyContainer:
             environment=EnvironmentRepository(session),
             pipeline=PipelineRepository(session),
             credential=CredentialRepository(session),
+            schedule=ScheduleRepository(session),
             run=RunRepository(session),
             test_result=TestResultRepository(session),
             artifact=ArtifactRepository(session),
@@ -177,6 +179,7 @@ class RepositoryBundle:
         "environment",
         "pipeline",
         "credential",
+        "schedule",
         "run",
         "test_result",
         "artifact",
@@ -192,6 +195,7 @@ class RepositoryBundle:
         environment,
         pipeline,
         credential,
+        schedule,
         run,
         test_result,
         artifact,
@@ -203,6 +207,7 @@ class RepositoryBundle:
         self.environment = environment
         self.pipeline = pipeline
         self.credential = credential
+        self.schedule = schedule
         self.run = run
         self.test_result = test_result
         self.artifact = artifact
