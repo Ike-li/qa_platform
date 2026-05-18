@@ -106,10 +106,36 @@ class TestWatchForCancel:
         assert pubsub.subscribed == [f"{CANCEL_CHANNEL_PREFIX}{run_id}"]
 
         pubsub.feed({"type": "message", "data": b"cancel"})
+        # P1-D: watcher now keeps listening after each delivery (so a
+        # cancel arriving during a stage transition still has a
+        # consumer). Close the stream to make the task exit.
+        await asyncio.sleep(0)
+        pubsub.feed(None)
         await asyncio.wait_for(task, timeout=1.0)
 
         on_cancel.assert_awaited_once()
         assert pubsub.unsubscribed == [f"{CANCEL_CHANNEL_PREFIX}{run_id}"]
+
+    @pytest.mark.asyncio
+    async def test_callback_invoked_for_each_message(self):
+        """P1-D regression: a second cancel signal — e.g. a redelivery
+        during a stage boundary, or the user clicking cancel twice — must
+        still reach the handler. The pre-fix watcher returned after the
+        first message and silently dropped subsequent ones."""
+        pubsub = _FakePubSub()
+        redis = _FakeRedis(pubsub)
+        on_cancel = AsyncMock()
+        stop = asyncio.Event()
+
+        task = asyncio.create_task(watch_for_cancel(redis, "r", on_cancel, stop))
+        await asyncio.sleep(0)
+
+        pubsub.feed({"type": "message", "data": b"cancel"})
+        pubsub.feed({"type": "message", "data": b"cancel"})
+        pubsub.feed(None)
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert on_cancel.await_count == 2
 
     @pytest.mark.asyncio
     async def test_ignores_non_message_envelopes(self):
@@ -125,6 +151,7 @@ class TestWatchForCancel:
 
         pubsub.feed({"type": "subscribe", "data": 1})
         pubsub.feed({"type": "message", "data": b"cancel"})
+        pubsub.feed(None)
 
         await asyncio.wait_for(task, timeout=1.0)
         on_cancel.assert_awaited_once()
@@ -150,6 +177,7 @@ class TestWatchForCancel:
         task = asyncio.create_task(watch_for_cancel(redis, "r", bad_handler, stop))
         await asyncio.sleep(0)
         pubsub.feed({"type": "message", "data": b"cancel"})
+        pubsub.feed(None)
         await asyncio.wait_for(task, timeout=1.0)
 
 
@@ -238,3 +266,86 @@ class TestExecutorCancelHandler:
         await executor._handle_cancel_signal("r")
 
         executor.backend.force_kill.assert_awaited_once_with("c")
+
+
+# --------------------------------------------------------------------------- #
+# P1-D — stage-boundary cancel guards
+# --------------------------------------------------------------------------- #
+
+
+class TestStageBoundaryCancelGuard:
+    """The watcher's callback only kills the active container if one is
+    running when the message arrives. Two separate failure modes need a
+    boundary check on top of that:
+
+      - cancel published *before* the worker's pubsub.subscribe completed
+        → message is gone (redis pub/sub does not buffer).
+      - cancel arrived *between* stages, when ``_active_execution_id`` is
+        None → previous behaviour was to silently drop the second / late
+        signal because the watcher returned after the first delivery.
+
+    ``_check_cancel_boundary`` covers both: the in-process Event is set
+    by every callback invocation, and a fresh DB SELECT recovers the
+    pub/sub-dropped case.
+    """
+
+    @pytest.fixture
+    def executor(self):
+        from qaplatform.engine.executor import RunExecutor
+
+        backend = AsyncMock()
+        run_repo = AsyncMock()
+        run_repo.is_cancel_requested = AsyncMock(return_value=False)
+        return RunExecutor(
+            backend=backend,
+            log_stream=AsyncMock(),
+            run_repo=run_repo,
+            plugin_registry=MagicMock(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_event_short_circuits_without_db_lookup(self, executor):
+        """If the watcher already set ``_cancel_requested`` we don't need
+        the DB probe — and we shouldn't pay for it on every stage."""
+        executor._cancel_requested.set()
+
+        assert await executor._check_cancel_boundary("run-id") is True
+        executor.run_repo.is_cancel_requested.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_db_recovers_dropped_pubsub_signal(self, executor):
+        """No callback fired (pubsub raced the subscribe) but the row has
+        ``cancel_requested_at`` set — we must still stop at the boundary
+        and latch the in-process flag for subsequent stages."""
+        executor.run_repo.is_cancel_requested.return_value = True
+
+        assert await executor._check_cancel_boundary("run-id") is True
+        assert executor._cancel_requested.is_set()
+
+    @pytest.mark.asyncio
+    async def test_no_cancel_lets_pipeline_continue(self, executor):
+        """Happy path: neither in-memory nor DB flag set → boundary
+        returns False so the next stage starts normally."""
+        assert await executor._check_cancel_boundary("run-id") is False
+
+    @pytest.mark.asyncio
+    async def test_db_probe_failure_falls_through(self, executor):
+        """A transient DB error in is_cancel_requested must not abort
+        the pipeline — we degrade to the watcher-only signal path."""
+        executor.run_repo.is_cancel_requested.side_effect = RuntimeError("db down")
+
+        assert await executor._check_cancel_boundary("run-id") is False
+
+    @pytest.mark.asyncio
+    async def test_handle_cancel_signal_sets_event_even_without_container(
+        self, executor
+    ):
+        """When the cancel arrives between stages (no active container)
+        the handler must still latch ``_cancel_requested`` so the next
+        stage boundary stops the run instead of starting another stage.
+        """
+        executor._active_execution_id = None
+
+        await executor._handle_cancel_signal("run-id")
+
+        assert executor._cancel_requested.is_set()

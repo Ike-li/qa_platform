@@ -38,6 +38,7 @@ def mock_run_repo():
     repo.finish_if_current.return_value = True
     repo.fail_if_current.return_value = True
     repo.commit.return_value = None
+    repo.is_cancel_requested.return_value = False
     return repo
 
 
@@ -476,6 +477,7 @@ class TestRunStagesTimeoutGracePeriod:
         plugin_registry.get_runner.return_value = runner
 
         run_repo = AsyncMock()
+        run_repo.is_cancel_requested.return_value = False
 
         return RunExecutor(
             backend=backend,
