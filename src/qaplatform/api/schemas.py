@@ -403,3 +403,48 @@ class NotificationLogResponse(BaseModel):
     status: str
     error_message: str | None
     sent_at: datetime
+
+
+# ── Webhook schemas ─────────────────────────────────────────────────────────
+
+class WebhookTriggerRequest(BaseModel):
+    git_ref: str = Field(..., min_length=1, max_length=200)
+    git_sha: str | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+# ── Batch schemas ───────────────────────────────────────────────────────────
+
+class BatchRunRequest(BaseModel):
+    run_ids: list[UUID] = Field(..., min_length=1, max_length=50)
+
+
+class BatchRunResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    processed: int
+    failed: int
+    errors: list[str] = Field(default_factory=list)
+
+
+# ── Analytics schemas ───────────────────────────────────────────────────────
+
+class TrendDataPoint(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    date: str
+    total_runs: int
+    passed_runs: int
+    failed_runs: int
+    pass_rate: float
+
+
+class FlakyTest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    suite: str
+    name: str
+    total_runs: int
+    failed_count: int
+    passed_count: int
+    flaky_rate: float
