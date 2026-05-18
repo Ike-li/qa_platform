@@ -106,32 +106,32 @@ async def _attempt_retry(
         )
         await session.commit()
 
-    # Enqueue after delay
-    arq = ctx["arq_pool"]
-    settings = ctx["settings"]
-    if delay > 0:
-        import asyncio
-        await asyncio.sleep(delay)
+        # Enqueue while session is still open — scheduler uses run_repo
+        arq = ctx["arq_pool"]
+        settings = ctx["settings"]
+        if delay > 0:
+            import asyncio
+            await asyncio.sleep(delay)
 
-    scheduler = FairScheduler(arq, run_repo, settings)
-    enqueued = await scheduler.enqueue(retry_run)
-    if enqueued:
-        log.info(
-            "retry_scheduled",
-            extra={
-                "original_run_id": str(run_id),
-                "retry_run_id": str(retry_run.id),
-                "attempt": retry_run.attempt,
-                "delay_seconds": delay,
-            },
-        )
-    else:
-        log.warning(
-            "retry_enqueue_failed",
-            extra={
-                "original_run_id": str(run_id),
-                "retry_run_id": str(retry_run.id),
-            },
+        scheduler = FairScheduler(arq, run_repo, settings)
+        enqueued = await scheduler.enqueue(retry_run)
+        if enqueued:
+            log.info(
+                "retry_scheduled",
+                extra={
+                    "original_run_id": str(run_id),
+                    "retry_run_id": str(retry_run.id),
+                    "attempt": retry_run.attempt,
+                    "delay_seconds": delay,
+                },
+            )
+        else:
+            log.warning(
+                "retry_enqueue_failed",
+                extra={
+                    "original_run_id": str(run_id),
+                    "retry_run_id": str(retry_run.id),
+                },
         )
     return enqueued
 
@@ -228,9 +228,9 @@ async def execute_run(ctx: dict, run_id: str) -> None:
             if updated:
                 log.info("run %s completed with status: %s", run_id, status.value)
 
-            # 4. Auto-retry on infrastructure failure
-            if status == RunStatus.FAILED:
-                await _attempt_retry(run_id, RuntimeError("pipeline execution failed"), ctx, session_factory)
+            # Retry is handled in the except branch below — when the executor
+            # returns FAILED the real infra exception is already swallowed
+            # inside executor.execute() and cannot be recovered here.
 
         except Exception as exc:
             log.exception("execute_run failed for run %s", run_id)
