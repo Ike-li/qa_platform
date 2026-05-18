@@ -232,7 +232,17 @@ class RunExecutor:
                 )
 
             # 4. Collect results
-            await self.run_repo.mark_collecting(run_id)
+            if not await self.run_repo.mark_collecting(run_id):
+                log.info(
+                    "run_status_transition_skipped",
+                    extra={
+                        "run_id": str(run_id),
+                        "from_": RunStatus.RUNNING.value,
+                        "to": RunStatus.COLLECTING.value,
+                        "reason": "row not in expected state — likely cancelled concurrently",
+                    },
+                )
+                return RunStatus.CANCELLED
             # Commit so the COLLECTING transition is visible to other connections.
             await self.run_repo.commit()
             await self._publish(run_id, RunStatus.COLLECTING.value, previous=RunStatus.RUNNING.value)
