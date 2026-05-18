@@ -1,7 +1,6 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import {
-  GitBranch,
   Clock,
   User,
   ArrowRight
@@ -9,6 +8,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { useRuns } from "../../hooks/use-runs";
 import { RunStatusBadge } from "../../components/run-status-badge";
+import { BranchBadge } from "../../components/branch-badge";
 import { DurationDisplay } from "../../components/duration-display";
 import { RelativeTime } from "../../components/relative-time";
 import { Skeleton } from "../../components/ui/skeleton";
@@ -19,7 +19,21 @@ import { usePageTitle } from "../../hooks/use-page-title";
 export default function Runs() {
   const { t } = useTranslation();
   usePageTitle(t('runs.title'));
-  const [page, setPage] = useState(1);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
+
+  const setPage = useCallback((updater: number | ((prev: number) => number)) => {
+    setSearchParams(prev => {
+      const next = typeof updater === "function" ? updater(parseInt(prev.get("page") || "1", 10)) : updater;
+      if (next <= 1) {
+        prev.delete("page");
+      } else {
+        prev.set("page", String(next));
+      }
+      return prev;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   const { data, isLoading, isError } = useRuns({ per_page: 20, page });
 
   return (
@@ -88,11 +102,8 @@ export default function Runs() {
                       {run.pipeline_name}
                     </Link>
                   </td>
-                  <td className="px-6 py-4 text-ink-muted">
-                    <div className="flex items-center gap-1.5">
-                      <GitBranch className="h-3.5 w-3.5" />
-                      <span>{run.branch}</span>
-                    </div>
+                  <td className="px-6 py-4">
+                    <BranchBadge branch={run.branch} />
                   </td>
                   <td className="px-6 py-4 text-ink-muted">
                     <div className="flex items-center gap-1.5">
