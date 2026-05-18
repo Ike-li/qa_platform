@@ -32,8 +32,16 @@ def _evaluate_conditions(conditions: list[dict], run_summary: dict | None, statu
             actual = status
         elif field == "pass_rate":
             actual = (run_summary or {}).get("pass_rate", 0.0)
+            try:
+                expected = float(expected)
+            except (TypeError, ValueError):
+                pass
         elif field == "failed":
             actual = (run_summary or {}).get("failed", 0)
+            try:
+                expected = int(expected)
+            except (TypeError, ValueError):
+                pass
         else:
             log.warning("unknown_condition_field", extra={"field": field})
             continue
@@ -116,9 +124,19 @@ async def evaluate_and_notify(
             if not _evaluate_conditions(rule.conditions, summary, status):
                 continue
 
-            message = f"Run {run_id} completed with status: {status}"
-            if summary:
-                message += f" (passed: {summary.get('passed', 0)}, failed: {summary.get('failed', 0)})"
+            if rule.template:
+                message = rule.template
+                message = message.replace("{{run_id}}", str(run_id))
+                message = message.replace("{{status}}", status)
+                if summary:
+                    message = message.replace("{{passed}}", str(summary.get("passed", 0)))
+                    message = message.replace("{{failed}}", str(summary.get("failed", 0)))
+                    message = message.replace("{{total}}", str(summary.get("total", 0)))
+                    message = message.replace("{{pass_rate}}", str(summary.get("pass_rate", 0)))
+            else:
+                message = f"Run {run_id} completed with status: {status}"
+                if summary:
+                    message += f" (passed: {summary.get('passed', 0)}, failed: {summary.get('failed', 0)})"
 
             for channel in rule.channels:
                 channel_type = channel.get("type", "unknown")

@@ -62,13 +62,7 @@ async def webhook_trigger(
                 status_code=401,
                 detail="Missing X-Webhook-Signature header",
             )
-        # Reconstruct the raw body for verification.  FastAPI has already
-        # consumed the stream, so we rely on the serialised JSON content
-        # that was used for parsing.
-        import json as _json
-        raw_body = _json.dumps(
-            body.model_dump(), separators=(",", ":"), ensure_ascii=False
-        ).encode()
+        raw_body = await request.body()
         if not verify_webhook_signature(webhook_secret, raw_body, signature_header):
             raise HTTPException(
                 status_code=401,
