@@ -73,7 +73,7 @@ class TestArtifactDownloadHelpers:
         mock_s3 = AsyncMock()
         mock_s3.generate_presigned_url.return_value = "http://s3/signed-url"
 
-        url = await _generate_download_url(mock_s3, "qa-platform", "artifacts/abc/report.html")
+        url = await _generate_download_url(mock_s3, "qa-platform", "artifacts/abc/report.html", 3600)
 
         assert url == "http://s3/signed-url"
         mock_s3.generate_presigned_url.assert_called_once_with(
@@ -111,9 +111,10 @@ class TestArtifactDownloadHelpers:
         artifact = MagicMock(run_id=run_id)
         mock_repos.artifact.get_by_id.return_value = artifact
 
+        # get_for_tenant filters by tenant in SQL — a cross-tenant run
+        # surfaces as None, identical to a missing run.
         mock_repos.run = AsyncMock()
-        run = MagicMock(tenant_id=uuid4())  # different tenant
-        mock_repos.run.get_by_id.return_value = run
+        mock_repos.run.get_for_tenant.return_value = None
 
         with pytest.raises(HTTPException) as exc_info:
             await _get_artifact_or_404(mock_repos, uuid4(), tenant_id)
@@ -132,7 +133,7 @@ class TestArtifactDownloadHelpers:
         mock_repos.artifact.get_by_id.return_value = artifact
 
         mock_repos.run = AsyncMock()
-        mock_repos.run.get_by_id.return_value = None
+        mock_repos.run.get_for_tenant.return_value = None
 
         with pytest.raises(HTTPException) as exc_info:
             await _get_artifact_or_404(mock_repos, uuid4(), uuid4())
@@ -153,7 +154,7 @@ class TestArtifactDownloadHelpers:
 
         mock_repos.run = AsyncMock()
         run = MagicMock(tenant_id=tenant_id)
-        mock_repos.run.get_by_id.return_value = run
+        mock_repos.run.get_for_tenant.return_value = run
 
         result_artifact, result_run = await _get_artifact_or_404(
             mock_repos, uuid4(), tenant_id
@@ -187,7 +188,7 @@ class TestDownloadArtifactRBAC:
         mock_repos.artifact.get_by_id.return_value = artifact
         mock_repos.run = AsyncMock()
         run = MagicMock(tenant_id=tenant_id, project_id=project_id)
-        mock_repos.run.get_by_id.return_value = run
+        mock_repos.run.get_for_tenant.return_value = run
 
         user = MagicMock(tenant_id=tenant_id, user_id=uuid4(), role="reader")
         request = MagicMock()
@@ -226,7 +227,7 @@ class TestDownloadArtifactRBAC:
         mock_repos.artifact.get_by_id.return_value = artifact
         mock_repos.run = AsyncMock()
         run = MagicMock(tenant_id=tenant_id, project_id=project_id)
-        mock_repos.run.get_by_id.return_value = run
+        mock_repos.run.get_for_tenant.return_value = run
 
         user = MagicMock(tenant_id=tenant_id, user_id=uuid4(), role="reader")
 
@@ -236,6 +237,7 @@ class TestDownloadArtifactRBAC:
             "http://s3/signed"
         )
         request.app.state.container.settings.s3_bucket = "qa-platform"
+        request.app.state.container.settings.s3_presigned_url_ttl = 3600
         session = MagicMock()
 
         captured = {}

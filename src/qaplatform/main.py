@@ -48,6 +48,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
             await container.init_db()
             await container.init_redis()
             await container.init_arq()
+            await container.init_s3()
             container.init_crypto()
             _ensure_plugin_registry(container)
             app.state.container = container
