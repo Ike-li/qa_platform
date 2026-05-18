@@ -12,14 +12,26 @@ log = logging.getLogger(__name__)
 
 
 async def _heartbeat_loop(worker_id: str, redis: Any, interval: int = 30) -> None:
-    """Background task: refresh worker heartbeat key every interval seconds."""
-    try:
-        while True:
+    """Background task: refresh worker heartbeat key every interval seconds.
+
+    Transient errors (Redis blip) are logged and the loop continues — only
+    CancelledError exits cleanly. This prevents the heartbeat task from
+    silently dying and causing the reclaimer to flag a still-alive worker
+    as worker_lost.
+    """
+    while True:
+        try:
             now = datetime.now(timezone.utc).isoformat()
             await redis.set(f"worker:{worker_id}:heartbeat", now, ex=90)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("worker_heartbeat_set_failed", extra={"worker_id": worker_id}, exc_info=True)
+        # Use separate try/except for sleep to ensure CancelledError propagates cleanly
+        try:
             await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        pass
+        except asyncio.CancelledError:
+            raise
 
 
 async def execute_run(ctx: dict, run_id: str) -> None:

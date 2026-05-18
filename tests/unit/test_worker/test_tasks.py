@@ -7,6 +7,7 @@ on other connections aren't blocked for the duration of the run.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -184,3 +185,69 @@ class TestClaimReleasesRowLock:
         run_repo.claim_for_worker.assert_awaited_once()
         # No-op fast path: no commits expected.
         assert mock_session.commit.await_count == 0
+
+
+class TestHeartbeatLoop:
+    """P1-5: _heartbeat_loop resilience to transient Redis errors."""
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_continues_after_redis_error(self):
+        """Verify that transient Redis errors don't kill the heartbeat loop.
+
+        Scenario: redis.set() fails on first call, succeeds on second.
+        Expected: loop continues, subsequent set() calls are made.
+        """
+        from qaplatform.worker.tasks import _heartbeat_loop
+
+        worker_id = "test-worker-1"
+        redis = AsyncMock()
+
+        # First call raises Exception, second and third succeed
+        redis.set = AsyncMock(side_effect=[
+            Exception("Redis connection error"),
+            None,  # success
+            None,  # success
+        ])
+
+        # Run heartbeat with very short interval
+        task = asyncio.create_task(_heartbeat_loop(worker_id, redis, interval=0.05))
+
+        # Let it run for a bit to trigger multiple iterations
+        await asyncio.sleep(0.2)
+
+        # Cancel the task
+        task.cancel()
+        results = await asyncio.gather(task, return_exceptions=True)
+
+        # Should have CancelledError, not the original Exception
+        assert len(results) == 1
+        assert isinstance(results[0], asyncio.CancelledError)
+
+        # Verify redis.set was called multiple times (at least 3)
+        assert redis.set.await_count >= 3
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_propagates_cancelled(self):
+        """Verify that CancelledError propagates cleanly from heartbeat loop.
+
+        Scenario: heartbeat is running normally, then cancelled.
+        Expected: task exits with CancelledError, not suppressed.
+        """
+        from qaplatform.worker.tasks import _heartbeat_loop
+
+        worker_id = "test-worker-2"
+        redis = AsyncMock()
+        redis.set = AsyncMock()
+
+        task = asyncio.create_task(_heartbeat_loop(worker_id, redis, interval=0.1))
+
+        # Let it run for a bit
+        await asyncio.sleep(0.05)
+
+        # Cancel it
+        task.cancel()
+        results = await asyncio.gather(task, return_exceptions=True)
+
+        # Should get CancelledError
+        assert len(results) == 1
+        assert isinstance(results[0], asyncio.CancelledError)
