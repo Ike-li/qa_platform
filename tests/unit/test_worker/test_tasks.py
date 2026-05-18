@@ -23,6 +23,7 @@ def fake_run():
     run.pipeline = MagicMock()
     run.pipeline.stages = []
     run.pipeline.timeout_seconds = 60
+    run.pipeline.retry_policy = None
     run.environment = MagicMock()
     run.environment.base_image = "python:3.12-alpine"
     run.environment.env_vars = {}
@@ -101,6 +102,8 @@ class TestClaimReleasesRowLock:
         ), patch(
             "qaplatform.engine.executor.RunExecutor",
             return_value=executor,
+        ), patch(
+            "qaplatform.worker.tasks._attempt_retry", new_callable=AsyncMock
         ):
             await worker_tasks.execute_run(ctx, str(fake_run.id))
 

@@ -150,6 +150,8 @@ async def trigger_run(
         trigger_type="manual",
         metadata_=metadata,
     )
+    # Set retry_group_id to the run's own id so retries share the same group.
+    run.retry_group_id = run.id
 
     container = request.app.state.container
     arq_pool = getattr(container, "arq_pool", None)
