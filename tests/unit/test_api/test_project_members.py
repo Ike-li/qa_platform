@@ -240,7 +240,7 @@ async def test_remove_member(app, mock_user, tenant_id):
 
     session = MagicMock()
     session.execute = AsyncMock(return_value=_result(scalar=member))
-    session.delete = AsyncMock()
+    session.flush = AsyncMock()
     _override_session(app, session)
 
     async with await _make_client(app) as ac:
@@ -249,7 +249,9 @@ async def test_remove_member(app, mock_user, tenant_id):
             headers={"Authorization": "Bearer fake"},
         )
     assert resp.status_code == 204
-    session.delete.assert_called_once_with(member)
+    # Soft-delete: deleted_at is set, no physical delete
+    assert member.deleted_at is not None
+    session.flush.assert_called()
 
 
 @pytest.mark.asyncio

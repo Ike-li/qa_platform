@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
@@ -71,6 +72,7 @@ async def list_project_members(
         .where(
             ProjectMember.project_id == project_id,
             ProjectMember.tenant_id == user.tenant_id,
+            ProjectMember.deleted_at.is_(None),
         )
         .options(selectinload(ProjectMember.user))
     )
@@ -108,6 +110,7 @@ async def add_project_member(
             select(ProjectMember).where(
                 ProjectMember.project_id == project_id,
                 ProjectMember.user_id == body.user_id,
+                ProjectMember.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -159,6 +162,7 @@ async def update_project_member(
                 ProjectMember.project_id == project_id,
                 ProjectMember.user_id == user_id,
                 ProjectMember.tenant_id == user.tenant_id,
+                ProjectMember.deleted_at.is_(None),
             )
             .options(selectinload(ProjectMember.user))
         )
@@ -204,13 +208,15 @@ async def remove_project_member(
                 ProjectMember.project_id == project_id,
                 ProjectMember.user_id == user_id,
                 ProjectMember.tenant_id == user.tenant_id,
+                ProjectMember.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()
     if member is None:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    await session.delete(member)
+    member.deleted_at = datetime.now(timezone.utc)
+    await session.flush()
     await write_audit(
         repos, user,
         action="project_member.remove",

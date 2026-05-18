@@ -332,7 +332,7 @@ async def test_delete_credential_happy_path(app, project, tenant_id):
 
     session = MagicMock()
     session.execute = AsyncMock(return_value=_result(scalar=cred))
-    session.delete = AsyncMock()
+    session.flush = AsyncMock()
     _override_session(app, session)
 
     async with await _make_client(app) as ac:
@@ -341,4 +341,6 @@ async def test_delete_credential_happy_path(app, project, tenant_id):
             headers={"Authorization": "Bearer fake"},
         )
     assert resp.status_code == 204
-    session.delete.assert_called_once_with(cred)
+    # Soft-delete: deleted_at is set, no physical delete
+    assert cred.deleted_at is not None
+    session.flush.assert_called()

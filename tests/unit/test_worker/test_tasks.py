@@ -38,6 +38,12 @@ def mock_session():
     session = AsyncMock()
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
+    # Default: session.execute returns an active project (for archive check)
+    active_project = MagicMock()
+    active_project.status = "active"
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = active_project
+    session.execute = AsyncMock(return_value=mock_result)
     return session
 
 
@@ -185,6 +191,125 @@ class TestClaimReleasesRowLock:
         run_repo.claim_for_worker.assert_awaited_once()
         # No-op fast path: no commits expected.
         assert mock_session.commit.await_count == 0
+
+
+class TestArchiveBlocking:
+    """Worker-side archive check: archived projects cancel queued runs."""
+
+    @pytest.mark.asyncio
+    async def test_worker_skips_archived_project(self, ctx, mock_session, fake_run):
+        """When project is archived, worker cancels the run without executing."""
+        from qaplatform.worker import tasks as worker_tasks
+
+        run_repo = AsyncMock()
+        run_repo.claim_for_worker = AsyncMock(return_value=fake_run)
+        run_repo.cancel_if_current = AsyncMock(return_value=True)
+        run_repo.release_worker = AsyncMock()
+
+        # Mock session.execute to return archived project
+        archived_project = MagicMock()
+        archived_project.status = "archived"
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = archived_project
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        executor = AsyncMock()
+
+        with patch(
+            "qaplatform.engine.events.publish_status_event", new=AsyncMock()
+        ), patch(
+            "qaplatform.infra.database.repositories.run_repo.RunRepository",
+            return_value=run_repo,
+        ), patch(
+            "qaplatform.infra.database.repositories.run_repo.ArtifactRepository",
+            return_value=AsyncMock(),
+        ), patch(
+            "qaplatform.engine.executor.RunExecutor",
+            return_value=executor,
+        ):
+            await worker_tasks.execute_run(ctx, str(fake_run.id))
+
+        # Run was cancelled
+        run_repo.cancel_if_current.assert_awaited_once_with(fake_run.id)
+        # Executor was never called
+        executor.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_worker_skips_deleted_project(self, ctx, mock_session, fake_run):
+        """When project is soft-deleted (None), worker cancels the run."""
+        from qaplatform.worker import tasks as worker_tasks
+
+        run_repo = AsyncMock()
+        run_repo.claim_for_worker = AsyncMock(return_value=fake_run)
+        run_repo.cancel_if_current = AsyncMock(return_value=True)
+        run_repo.release_worker = AsyncMock()
+
+        # Mock session.execute to return None (deleted project)
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        executor = AsyncMock()
+
+        with patch(
+            "qaplatform.engine.events.publish_status_event", new=AsyncMock()
+        ), patch(
+            "qaplatform.infra.database.repositories.run_repo.RunRepository",
+            return_value=run_repo,
+        ), patch(
+            "qaplatform.infra.database.repositories.run_repo.ArtifactRepository",
+            return_value=AsyncMock(),
+        ), patch(
+            "qaplatform.engine.executor.RunExecutor",
+            return_value=executor,
+        ):
+            await worker_tasks.execute_run(ctx, str(fake_run.id))
+
+        run_repo.cancel_if_current.assert_awaited_once_with(fake_run.id)
+        executor.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_worker_executes_active_project(self, ctx, mock_session, fake_run):
+        """When project is active, worker proceeds with execution."""
+        from qaplatform.worker import tasks as worker_tasks
+        from qaplatform.domain.models.run import RunStatus
+
+        run_repo = AsyncMock()
+        run_repo.claim_for_worker = AsyncMock(return_value=fake_run)
+        run_repo.release_worker = AsyncMock()
+        run_repo.finish_if_current = AsyncMock(return_value=True)
+        run_repo.fail_if_current = AsyncMock(return_value=False)
+
+        # Mock session.execute to return active project
+        active_project = MagicMock()
+        active_project.status = "active"
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = active_project
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        executor = AsyncMock()
+        executor.execute = AsyncMock(return_value=RunStatus.DONE)
+
+        with patch(
+            "qaplatform.engine.events.publish_status_event", new=AsyncMock()
+        ), patch(
+            "qaplatform.infra.database.repositories.run_repo.RunRepository",
+            return_value=run_repo,
+        ), patch(
+            "qaplatform.infra.database.repositories.run_repo.ArtifactRepository",
+            return_value=AsyncMock(),
+        ), patch(
+            "qaplatform.engine.executor.RunExecutor",
+            return_value=executor,
+        ):
+            await worker_tasks.execute_run(ctx, str(fake_run.id))
+
+        # Executor was called (project is active)
+        executor.execute.assert_awaited_once()
+        # cancel_if_current was NOT called for archive reason
+        run_repo.cancel_if_current.assert_not_awaited()
 
 
 class TestHeartbeatLoop:

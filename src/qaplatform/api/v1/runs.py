@@ -215,6 +215,7 @@ async def list_runs(
                     select(ProjectMember.project_id).where(
                         ProjectMember.user_id == user.user_id,
                         ProjectMember.tenant_id == user.tenant_id,
+                        ProjectMember.deleted_at.is_(None),
                     )
                 )
             ).scalars().all()

@@ -81,7 +81,10 @@ class RunRepository(BaseRepository[Run]):
         )
 
     async def get_by_arq_job_id(self, arq_job_id: str) -> Run | None:
-        stmt = select(Run).where(Run.arq_job_id == arq_job_id)
+        stmt = select(Run).where(
+            Run.arq_job_id == arq_job_id,
+            Run.deleted_at.is_(None),
+        )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -92,7 +95,7 @@ class RunRepository(BaseRepository[Run]):
         now = _utcnow()
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.status == RunStatusEnum.QUEUED)
+            .where(Run.id == run_id, Run.status == RunStatusEnum.QUEUED, Run.deleted_at.is_(None))
             .values(
                 status=RunStatusEnum.PREPARING,
                 worker_id=worker_id,
@@ -291,7 +294,7 @@ class RunRepository(BaseRepository[Run]):
         cancel write happens in a separate connection and the cached
         ORM object would otherwise still show the old value.
         """
-        stmt = select(Run.cancel_requested_at).where(Run.id == run_id)
+        stmt = select(Run.cancel_requested_at).where(Run.id == run_id, Run.deleted_at.is_(None))
         result = await self.session.execute(stmt)
         value = result.scalar_one_or_none()
         return value is not None
@@ -347,7 +350,7 @@ class RunRepository(BaseRepository[Run]):
         """Find queued runs not yet enqueued, ordered by priority."""
         stmt = (
             select(Run)
-            .where(Run.status == RunStatusEnum.QUEUED, Run.enqueued_at.is_(None))
+            .where(Run.status == RunStatusEnum.QUEUED, Run.enqueued_at.is_(None), Run.deleted_at.is_(None))
             .order_by(Run.priority, Run.created_at)
             .limit(limit)
         )
@@ -361,6 +364,7 @@ class RunRepository(BaseRepository[Run]):
         stmt = select(Run).where(
             Run.status == status,
             Run.status_updated_at < older_than,
+            Run.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
@@ -374,6 +378,7 @@ class RunRepository(BaseRepository[Run]):
                 RunStatusEnum.COLLECTING,
             ]),
             Run.worker_id.isnot(None),
+            Run.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
@@ -402,6 +407,7 @@ class RunRepository(BaseRepository[Run]):
             .join(Pipeline, Pipeline.id == Run.pipeline_id)
             .where(
                 Run.status.in_(statuses),
+                Run.deleted_at.is_(None),
                 text(
                     "run.status_updated_at + "
                     "(INTERVAL '1 second' * ("
@@ -477,17 +483,19 @@ class RunRepository(BaseRepository[Run]):
         await self.session.flush()
 
     async def delete_terminal_older_than(self, *, cutoff: datetime) -> int:
-        """Delete done/failed runs (and cascade) older than cutoff. Returns deleted count.
+        """Hard-delete already soft-deleted done/failed runs (and cascade) older than cutoff.
 
-        Only DONE and FAILED are eligible — CANCELLED and TIMEOUT are kept so
-        operators can investigate unexpected terminations.  The caller is
-        responsible for committing the session.
+        Only records where ``deleted_at IS NOT NULL`` (already soft-deleted) AND
+        status is DONE or FAILED AND finished_at < cutoff are eligible.
+        Returns deleted count.  The caller is responsible for committing the
+        session.
         """
         from sqlalchemy import delete as sa_delete
 
         stmt = (
             sa_delete(Run)
             .where(
+                Run.deleted_at.isnot(None),
                 Run.status.in_([RunStatusEnum.DONE, RunStatusEnum.FAILED]),
                 Run.finished_at < cutoff,
             )

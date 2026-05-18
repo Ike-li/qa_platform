@@ -154,6 +154,7 @@ async def _resolve_project_role(
         ProjectMember.project_id == project_id,
         ProjectMember.user_id == user.user_id,
         ProjectMember.tenant_id == user.tenant_id,
+        ProjectMember.deleted_at.is_(None),
     )
     raw = (await session.execute(stmt)).scalar_one_or_none()
     if raw is None:

@@ -26,6 +26,7 @@ class ProjectRepository(BaseRepository[Project]):
         stmt = select(Project).where(
             Project.tenant_id == tenant_id,
             Project.slug == slug,
+            Project.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
@@ -59,6 +60,7 @@ class EnvironmentRepository(BaseRepository[Environment]):
         stmt = select(Environment).where(
             Environment.project_id == project_id,
             Environment.name == name,
+            Environment.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
@@ -83,6 +85,7 @@ class PipelineRepository(BaseRepository[Pipeline]):
         stmt = select(Pipeline).where(
             Pipeline.project_id == project_id,
             Pipeline.enabled.is_(True),
+            Pipeline.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
@@ -107,6 +110,7 @@ class CredentialRepository(BaseRepository[Credential]):
         stmt = select(Credential).where(
             Credential.project_id == project_id,
             Credential.name == name,
+            Credential.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
