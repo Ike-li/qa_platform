@@ -139,8 +139,8 @@ async def get_project(
     repos: Repos,
     user: CurrentUser,
 ):
-    project = await repos.project.get_by_id(project_id)
-    if project is None or project.tenant_id != user.tenant_id:
+    project = await repos.project.get_for_tenant(project_id, user.tenant_id)
+    if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return _to_response(project)
 
@@ -158,8 +158,8 @@ async def update_project(
     user: CurrentUser,
     _perm=require_project_permission(Action.PROJECT_EDIT),
 ):
-    project = await repos.project.get_by_id(project_id)
-    if project is None or project.tenant_id != user.tenant_id:
+    project = await repos.project.get_for_tenant(project_id, user.tenant_id)
+    if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
     before = _to_response(project)
@@ -189,8 +189,8 @@ async def delete_project(
     user: CurrentUser,
     _perm=require_project_permission(Action.PROJECT_DELETE),
 ):
-    project = await repos.project.get_by_id(project_id)
-    if project is None or project.tenant_id != user.tenant_id:
+    project = await repos.project.get_for_tenant(project_id, user.tenant_id)
+    if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
     before = _to_response(project)

@@ -41,8 +41,8 @@ def _to_response(orm) -> EnvironmentResponse:
 
 
 async def _verify_project_access(project_id: UUID, repos: Repos, user):
-    project = await repos.project.get_by_id(project_id)
-    if project is None or project.tenant_id != user.tenant_id:
+    project = await repos.project.get_for_tenant(project_id, user.tenant_id)
+    if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
 

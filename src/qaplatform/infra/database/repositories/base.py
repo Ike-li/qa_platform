@@ -31,6 +31,26 @@ class BaseRepository(Generic[ModelT]):
     async def get_by_id(self, id: UUID) -> ModelT | None:
         return await self.session.get(self.model, id)
 
+    async def get_for_tenant(self, id: UUID, tenant_id: UUID) -> ModelT | None:
+        """Fetch by primary key, scoped to a tenant.
+
+        Returns None when the row does not exist OR exists in another tenant —
+        the API layer maps both to 404 to avoid leaking existence across
+        tenants. Models without a ``tenant_id`` column must use a join-based
+        repo method (e.g. Artifact via Run.tenant_id) and not call this.
+        """
+        if not hasattr(self.model, "tenant_id"):
+            raise TypeError(
+                f"{self.model.__name__} has no tenant_id column; "
+                "use a join-based lookup instead of get_for_tenant"
+            )
+        stmt = select(self.model).where(
+            self.model.id == id,  # type: ignore[attr-defined]
+            self.model.tenant_id == tenant_id,  # type: ignore[attr-defined]
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def list(
         self,
         *,
