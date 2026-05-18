@@ -98,13 +98,20 @@ jobs:
       - name: Install backend dependencies
         run: python -m pip install -e '.[dev]'
 
-      - name: Pull alpine image for cancel E2E
-        run: docker pull alpine:3.19
+      - name: Pull docker images (with retry)
+        run: |
+          for image in alpine:3.19 python:3.12-alpine; do
+            for attempt in 1 2 3; do
+              docker pull "$image" && break
+              echo "Pull attempt $attempt failed for $image, retrying..."
+              sleep 10
+            done
+          done
 
-      - name: Run cancel E2E (F-EX-06 < 10s contract)
+      - name: Run integration tests
         env:
           RUN_INTEGRATION_TESTS: "1"
-        run: pytest tests/integration/test_cancel_e2e.py -v
+        run: pytest tests/integration/ -v --tb=short
 
   frontend-build:
     runs-on: ubuntu-latest
