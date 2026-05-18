@@ -172,6 +172,8 @@ test("trigger a run against the real backend and display live logs", async ({ pa
   const pipeline = await ensurePipeline(request, token, project.id);
 
   await page.goto(`/projects/${project.id}`);
+  // Wait for project data to load before clicking Trigger Run
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Trigger Run" }).click();
   await page.getByRole("combobox").click();
   await page.getByRole("option", { name: pipeline.name }).click();
