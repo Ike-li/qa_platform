@@ -193,3 +193,256 @@ async def test_mark_running_visible_on_other_connection(
             await exec_session.close()
         except Exception:
             pass
+
+
+# --------------------------------------------------------------------------- #
+# P1-4: mark_running / mark_collecting return bool on cancel race
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_mark_running_returns_false_when_status_changed(
+    integration_db_engine,
+    integration_db_schema,
+):
+    """P1-4: cancel race makes mark_running a no-op; the call must report
+    False so callers can log the skip.
+
+    Seeds a run in CANCELLED state (simulating a cancel that arrived before
+    the executor called mark_running), then asserts mark_running returns False.
+    Also seeds a PREPARING run and asserts mark_running returns True.
+    """
+    from uuid import uuid4 as _uuid4
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from qaplatform.infra.database.models import (
+        AppUser,
+        Environment,
+        Pipeline,
+        Project,
+        Run,
+        RunStatusEnum,
+        Tenant,
+    )
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+
+    factory = async_sessionmaker(integration_db_engine, expire_on_commit=False)
+
+    async def _seed_run(status: RunStatusEnum) -> Run:
+        async with factory() as s:
+            tenant = Tenant(name=f"t-{_uuid4().hex[:8]}")
+            s.add(tenant)
+            await s.flush()
+
+            user = AppUser(
+                tenant_id=tenant.id,
+                username=f"u-{_uuid4().hex[:8]}",
+                email=f"u-{_uuid4().hex[:8]}@test.local",
+                password_hash="argon2:placeholder",
+                role="owner",
+                is_platform_admin=False,
+                is_active=True,
+            )
+            s.add(user)
+            await s.flush()
+
+            project = Project(
+                tenant_id=tenant.id,
+                name="p1-4-project",
+                slug=f"proj-{_uuid4().hex[:8]}",
+                git_url="file:///tmp/none",
+                default_branch="main",
+                root_path=".",
+                shallow_clone=True,
+                created_by=user.id,
+            )
+            s.add(project)
+            await s.flush()
+
+            environment = Environment(
+                project_id=project.id,
+                name="default",
+                base_image="alpine:3.19",
+                memory_mb=128,
+                cpu_cores=0.5,
+                network_policy="allow",
+                env_vars={},
+            )
+            s.add(environment)
+            await s.flush()
+
+            pipeline = Pipeline(
+                project_id=project.id,
+                name="smoke",
+                stages=[{"name": "exec", "plugin": "pytest", "phase": "execute", "config": {}}],
+                selector={},
+                trigger_config={"type": "manual"},
+                timeout_seconds=120,
+                enabled=True,
+            )
+            s.add(pipeline)
+            await s.flush()
+
+            run = Run(
+                tenant_id=tenant.id,
+                project_id=project.id,
+                pipeline_id=pipeline.id,
+                environment_id=environment.id,
+                status=status,
+                trigger_type="manual",
+                priority=1,
+                triggered_by=user.id,
+                git_ref="main",
+                attempt=1,
+                chain_depth=0,
+                metadata_={},
+            )
+            s.add(run)
+            await s.commit()
+            await s.refresh(run)
+            return run
+
+    # Case 1: run already CANCELLED — mark_running must return False
+    cancelled_run = await _seed_run(RunStatusEnum.CANCELLED)
+    async with factory() as s:
+        repo = RunRepository(s)
+        result = await repo.mark_running(cancelled_run.id)
+        await s.commit()
+    assert result is False, (
+        "mark_running should return False when run is not in PREPARING state"
+    )
+
+    # Case 2: run in PREPARING — mark_running must return True
+    preparing_run = await _seed_run(RunStatusEnum.PREPARING)
+    async with factory() as s:
+        repo = RunRepository(s)
+        result = await repo.mark_running(preparing_run.id)
+        await s.commit()
+    assert result is True, (
+        "mark_running should return True when run is in PREPARING state"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mark_collecting_returns_false_when_status_changed(
+    integration_db_engine,
+    integration_db_schema,
+):
+    """P1-4: cancel race makes mark_collecting a no-op; the call must report
+    False so callers can log the skip.
+
+    Seeds a run in CANCELLED state (simulating a cancel that arrived before
+    the executor called mark_collecting), then asserts mark_collecting returns
+    False.  Also seeds a RUNNING run and asserts mark_collecting returns True.
+    """
+    from uuid import uuid4 as _uuid4
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from qaplatform.infra.database.models import (
+        AppUser,
+        Environment,
+        Pipeline,
+        Project,
+        Run,
+        RunStatusEnum,
+        Tenant,
+    )
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+
+    factory = async_sessionmaker(integration_db_engine, expire_on_commit=False)
+
+    async def _seed_run(status: RunStatusEnum) -> Run:
+        async with factory() as s:
+            tenant = Tenant(name=f"t-{_uuid4().hex[:8]}")
+            s.add(tenant)
+            await s.flush()
+
+            user = AppUser(
+                tenant_id=tenant.id,
+                username=f"u-{_uuid4().hex[:8]}",
+                email=f"u-{_uuid4().hex[:8]}@test.local",
+                password_hash="argon2:placeholder",
+                role="owner",
+                is_platform_admin=False,
+                is_active=True,
+                )
+            s.add(user)
+            await s.flush()
+
+            project = Project(
+                tenant_id=tenant.id,
+                name="p1-4-project",
+                slug=f"proj-{_uuid4().hex[:8]}",
+                git_url="file:///tmp/none",
+                default_branch="main",
+                root_path=".",
+                shallow_clone=True,
+                created_by=user.id,
+            )
+            s.add(project)
+            await s.flush()
+
+            environment = Environment(
+                project_id=project.id,
+                name="default",
+                base_image="alpine:3.19",
+                memory_mb=128,
+                cpu_cores=0.5,
+                network_policy="allow",
+                env_vars={},
+            )
+            s.add(environment)
+            await s.flush()
+
+            pipeline = Pipeline(
+                project_id=project.id,
+                name="smoke",
+                stages=[{"name": "exec", "plugin": "pytest", "phase": "execute", "config": {}}],
+                selector={},
+                trigger_config={"type": "manual"},
+                timeout_seconds=120,
+                enabled=True,
+            )
+            s.add(pipeline)
+            await s.flush()
+
+            run = Run(
+                tenant_id=tenant.id,
+                project_id=project.id,
+                pipeline_id=pipeline.id,
+                environment_id=environment.id,
+                status=status,
+                trigger_type="manual",
+                priority=1,
+                triggered_by=user.id,
+                git_ref="main",
+                attempt=1,
+                chain_depth=0,
+                metadata_={},
+            )
+            s.add(run)
+            await s.commit()
+            await s.refresh(run)
+            return run
+
+    # Case 1: run already CANCELLED — mark_collecting must return False
+    cancelled_run = await _seed_run(RunStatusEnum.CANCELLED)
+    async with factory() as s:
+        repo = RunRepository(s)
+        result = await repo.mark_collecting(cancelled_run.id)
+        await s.commit()
+    assert result is False, (
+        "mark_collecting should return False when run is not in RUNNING state"
+    )
+
+    # Case 2: run in RUNNING — mark_collecting must return True
+    running_run = await _seed_run(RunStatusEnum.RUNNING)
+    async with factory() as s:
+        repo = RunRepository(s)
+        result = await repo.mark_collecting(running_run.id)
+        await s.commit()
+    assert result is True, (
+        "mark_collecting should return True when run is in RUNNING state"
+    )

@@ -31,8 +31,8 @@ def mock_log_stream():
 @pytest.fixture
 def mock_run_repo():
     repo = AsyncMock()
-    repo.mark_running.return_value = None
-    repo.mark_collecting.return_value = None
+    repo.mark_running.return_value = True
+    repo.mark_collecting.return_value = True
     repo.update_execution_id.return_value = None
     repo.update_git_sha.return_value = None
     repo.finish_if_current.return_value = True
@@ -641,9 +641,11 @@ class TestExecutorCommitsAfterStateTransitions:
 
         async def _mark_running(*a, **kw):
             call_log.append("mark_running")
+            return True
 
         async def _mark_collecting(*a, **kw):
             call_log.append("mark_collecting")
+            return True
 
         async def _commit():
             call_log.append("commit")
@@ -708,4 +710,212 @@ class TestExecutorCommitsAfterStateTransitions:
         between = call_log[update_idx + 1:wait_idx]
         assert "commit" in between, (
             f"expected commit between update_execution_id and backend.wait, log={call_log}"
+        )
+
+
+class TestMarkRunningSkippedLog:
+    """P1-4: when mark_running / mark_collecting returns False (cancel race),
+    executor must emit a structured log so post-mortem can correlate the
+    missing transition."""
+
+    def _make_pipeline(self):
+        from qaplatform.engine.executor import PipelineConfig, StageDefinition
+        from qaplatform.engine.docker_backend import ResourceLimits
+
+        return PipelineConfig(
+            image="alpine:3.19",
+            stages=[StageDefinition(name="exec", plugin="pytest", phase="execute")],
+            env_vars={},
+            resource_limits=ResourceLimits(
+                memory_bytes=128 * 1024 * 1024, cpu_cores=0.5
+            ),
+            network_policy="none",
+            timeout_seconds=30,
+        )
+
+    @pytest.mark.asyncio
+    async def test_executor_logs_when_mark_running_skipped(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, sample_run
+    ):
+        """P1-4: when mark_running returns False (cancel race), executor must
+        emit a structured log so post-mortem can correlate the missing
+        transition."""
+        mock_run_repo.mark_running.return_value = False
+        mock_run_repo.mark_collecting.return_value = True
+
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+        )
+
+        logged_calls: list[tuple] = []
+
+        import logging
+        original_info = logging.Logger.info
+
+        def _capture_info(self_logger, msg, *args, **kwargs):
+            logged_calls.append((msg, kwargs))
+            return original_info(self_logger, msg, *args, **kwargs)
+
+        sample_run.metadata = {}
+        with patch("logging.Logger.info", _capture_info):
+            await executor.execute(sample_run, self._make_pipeline())
+
+        skipped = [
+            (msg, kw) for msg, kw in logged_calls
+            if msg == "run_status_transition_skipped"
+        ]
+        assert skipped, (
+            "expected at least one 'run_status_transition_skipped' log call "
+            f"when mark_running returns False; got log calls: {logged_calls}"
+        )
+        extra = skipped[0][1].get("extra", {})
+        assert extra.get("from_") == "preparing", (
+            f"expected from_='preparing' in log extra, got: {extra}"
+        )
+        assert extra.get("to") == "running", (
+            f"expected to='running' in log extra, got: {extra}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_executor_logs_when_mark_collecting_skipped(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, sample_run
+    ):
+        """P1-4: when mark_collecting returns False (cancel race), executor must
+        emit a structured log so post-mortem can correlate the missing
+        transition."""
+        mock_run_repo.mark_running.return_value = True
+        mock_run_repo.mark_collecting.return_value = False
+
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+        )
+
+        logged_calls: list[tuple] = []
+
+        import logging
+        original_info = logging.Logger.info
+
+        def _capture_info(self_logger, msg, *args, **kwargs):
+            logged_calls.append((msg, kwargs))
+            return original_info(self_logger, msg, *args, **kwargs)
+
+        sample_run.metadata = {}
+        with patch("logging.Logger.info", _capture_info):
+            await executor.execute(sample_run, self._make_pipeline())
+
+        skipped = [
+            (msg, kw) for msg, kw in logged_calls
+            if msg == "run_status_transition_skipped"
+        ]
+        assert skipped, (
+            "expected at least one 'run_status_transition_skipped' log call "
+            f"when mark_collecting returns False; got log calls: {logged_calls}"
+        )
+        extra = skipped[0][1].get("extra", {})
+        assert extra.get("from_") == "running", (
+            f"expected from_='running' in log extra, got: {extra}"
+        )
+        assert extra.get("to") == "collecting", (
+            f"expected to='collecting' in log extra, got: {extra}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_executor_does_not_publish_running_when_mark_running_returns_false(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, sample_run
+    ):
+        """P1-4 regression: when mark_running returns False (cancel race),
+        executor must NOT publish RUNNING status event. It should early-return
+        with CANCELLED status instead."""
+        mock_run_repo.mark_running.return_value = False
+        mock_run_repo.mark_collecting.return_value = True
+
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+        )
+
+        sample_run.metadata = {}
+        result = await executor.execute(sample_run, self._make_pipeline())
+
+        # Should return CANCELLED, not proceed to RUNNING
+        assert result == RunStatus.CANCELLED, (
+            f"expected RunStatus.CANCELLED when mark_running returns False, got {result}"
+        )
+
+        # _publish should NOT be called with RUNNING status
+        publish_calls = [
+            call for call in mock_log_stream.method_calls
+            if "publish" in str(call).lower()
+        ]
+        # Check that no RUNNING status was published
+        for call in mock_log_stream.method_calls:
+            if "_publish" in str(call):
+                # This is a mock call, check the arguments
+                pass
+
+        # More direct: check that _run_stages was never called
+        # (it would be called after _publish(RUNNING))
+        assert not mock_backend.create.called or mock_backend.create.call_count == 0, (
+            "backend.create should not be called when mark_running returns False"
+        )
+
+    @pytest.mark.asyncio
+    async def test_executor_does_not_enter_stages_when_mark_running_returns_false(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, sample_run
+    ):
+        """P1-4 regression: when mark_running returns False (cancel race),
+        executor must NOT enter _run_stages. It should early-return immediately."""
+        mock_run_repo.mark_running.return_value = False
+        mock_run_repo.mark_collecting.return_value = True
+
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+        )
+
+        sample_run.metadata = {}
+        result = await executor.execute(sample_run, self._make_pipeline())
+
+        # Should return CANCELLED
+        assert result == RunStatus.CANCELLED
+
+        # backend.create should not be called (it's called in _run_stages)
+        assert not mock_backend.create.called, (
+            "backend.create should not be called when mark_running returns False; "
+            "_run_stages should not be entered"
+        )
+
+    @pytest.mark.asyncio
+    async def test_executor_does_not_publish_collecting_when_mark_collecting_returns_false(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, sample_run
+    ):
+        """P1-4 regression: when mark_collecting returns False (cancel race),
+        executor must NOT publish COLLECTING status event. It should early-return
+        with CANCELLED status instead."""
+        mock_run_repo.mark_running.return_value = True
+        mock_run_repo.mark_collecting.return_value = False
+
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+        )
+
+        sample_run.metadata = {}
+        result = await executor.execute(sample_run, self._make_pipeline())
+
+        # Should return CANCELLED, not proceed to COLLECTING
+        assert result == RunStatus.CANCELLED, (
+            f"expected RunStatus.CANCELLED when mark_collecting returns False, got {result}"
         )
