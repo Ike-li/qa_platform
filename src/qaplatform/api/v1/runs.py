@@ -296,7 +296,6 @@ async def batch_cancel_runs(
             errors.append(f"{run_id}: {exc}")
             failed += 1
 
-    await session.commit()
     return BatchRunResponse(processed=processed, failed=failed, errors=errors)
 
 
@@ -347,6 +346,8 @@ async def batch_retry_runs(
                 metadata_=dict(original.metadata_ or {}),
             )
             new_run.retry_group_id = new_run.id
+            new_run.source_run_id = original.id
+            new_run.chain_depth = (original.chain_depth or 0) + 1
 
             if arq_pool is not None:
                 from qaplatform.worker.scheduler import enqueue_run
@@ -358,7 +359,6 @@ async def batch_retry_runs(
             errors.append(f"{run_id}: {exc}")
             failed += 1
 
-    await session.commit()
     return BatchRunResponse(processed=processed, failed=failed, errors=errors)
 
 
