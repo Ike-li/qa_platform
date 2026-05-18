@@ -141,3 +141,60 @@ class TestLogStream:
     async def test_delete_stream(self):
         await self.stream.delete_stream(self.run_id)
         self.redis.delete.assert_awaited_once_with(f"run:{self.run_id}:logs")
+
+
+class TestLogStreamLineTruncation:
+    """P1-H: log lines must be capped at 4KB before reaching Redis to
+    keep producers like base64 dumps from blowing up Redis nodes or
+    stalling SSE consumers.
+    """
+
+    def setup_method(self):
+        self.redis = AsyncMock()
+        self.stream = LogStream(self.redis)
+        self.run_id = uuid4()
+
+    @pytest.mark.asyncio
+    async def test_short_line_passes_through(self):
+        await self.stream.write_log(self.run_id, "short line")
+        line = self.redis.xadd.call_args[0][1]["line"]
+        assert line == "short line"
+
+    @pytest.mark.asyncio
+    async def test_oversize_line_truncated_with_marker(self):
+        line = "x" * 10000
+        await self.stream.write_log(self.run_id, line)
+        out = self.redis.xadd.call_args[0][1]["line"]
+        assert len(out.encode("utf-8")) <= 4096
+        assert out.endswith("...[truncated]")
+
+    @pytest.mark.asyncio
+    async def test_truncation_preserves_utf8_boundary(self):
+        line = "中" * 2000  # 6000 bytes
+        await self.stream.write_log(self.run_id, line)
+        out = self.redis.xadd.call_args[0][1]["line"]
+        assert isinstance(out, str)
+        assert len(out.encode("utf-8")) <= 4096
+        assert out.endswith("...[truncated]")
+        assert "�" not in out
+
+    @pytest.mark.asyncio
+    async def test_write_batch_truncates_each_entry(self):
+        long = "y" * 10000
+        pipeline_mock = AsyncMock()
+        pipeline_mock.execute = AsyncMock(return_value=[])
+        self.redis.pipeline = MagicMock(return_value=pipeline_mock)
+
+        await self.stream.write_batch(
+            self.run_id,
+            [
+                {"stream": "stdout", "line": "ok"},
+                {"stream": "stderr", "line": long},
+            ],
+        )
+        assert pipeline_mock.xadd.call_count == 2
+        first = pipeline_mock.xadd.call_args_list[0][0][1]
+        second = pipeline_mock.xadd.call_args_list[1][0][1]
+        assert first["line"] == "ok"
+        assert len(second["line"].encode("utf-8")) <= 4096
+        assert second["line"].endswith("...[truncated]")
