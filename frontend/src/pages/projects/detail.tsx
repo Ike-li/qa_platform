@@ -318,7 +318,7 @@ export default function ProjectDetail() {
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
-                    <AlertDialogAction onClick={onArchiveProject}>{t('projects.danger.archiveAction')}</AlertDialogAction>
+                    <AlertDialogAction onClick={onArchiveProject}>{t('projects.danger.archive')}</AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
