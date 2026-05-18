@@ -23,11 +23,20 @@ async def watch_for_cancel(
     stop_event: asyncio.Event,
 ) -> None:
     """Subscribe to the cancel channel for ``run_id`` and invoke
-    ``on_cancel`` if a message arrives before ``stop_event`` is set.
+    ``on_cancel`` for *every* message until ``stop_event`` is set.
 
     The watcher is intended to run as a background task for the lifetime
     of an executing run. ``stop_event`` lets the executor signal that the
     run has reached a terminal state and the watcher should exit.
+
+    P1-D: previously the watcher returned after the first cancel message,
+    so a cancel that arrived during a stage transition (when
+    ``_active_execution_id is None``) silently dropped — the next signal
+    after the new container started had no consumer. We now keep
+    listening until ``stop_event`` fires, so each redelivered cancel
+    re-runs ``on_cancel`` and the executor's idempotent
+    ``_handle_cancel_signal`` can target whichever container is currently
+    active.
 
     The function never raises; subscribe-side failures degrade to a
     warning log, since the worst case is missing one cancel signal which
@@ -52,7 +61,8 @@ async def watch_for_cancel(
                 await on_cancel()
             except Exception:
                 log.exception("cancel handler raised for run %s", run_id)
-            return
+            # Keep listening — do NOT return — so a follow-up cancel
+            # arriving during a stage boundary still reaches a consumer.
     except asyncio.CancelledError:
         raise
     except Exception:

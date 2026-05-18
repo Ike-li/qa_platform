@@ -80,6 +80,7 @@ class RunRepositoryProtocol(Protocol):
         *,
         expected_in: Collection[RunStatus] | None = None,
     ) -> bool: ...
+    async def is_cancel_requested(self, run_id: UUID | str) -> bool: ...
     async def update_execution_id(self, run_id: UUID | str, execution_id: str) -> None: ...
     async def update_git_sha(self, run_id: UUID | str, sha: str) -> None: ...
     async def commit(self) -> None: ...
@@ -168,6 +169,11 @@ class RunExecutor:
         self.workspace_dir = workspace_dir
         self.artifact_repo = artifact_repo
         self.redis = redis
+        # P1-D: persistent flag the cancel watcher sets on every signal.
+        # Initialised here (not just in execute()) so direct callers of
+        # _run_stages / _check_cancel_boundary in tests still work.
+        self._active_execution_id: str | None = None
+        self._cancel_requested = asyncio.Event()
 
     async def _publish(self, run_id: str, status: str, previous: str | None = None) -> None:
         await publish_status_event(self.redis, run_id, status, previous=previous)
@@ -177,7 +183,11 @@ class RunExecutor:
         run_id = str(run.id)
         working_dir = Path(tempfile.mkdtemp(prefix=f"qap-{run_id[:8]}-"))
 
-        self._active_execution_id: str | None = None
+        self._active_execution_id = None
+        # Reset across runs so a previous cancel doesn't bleed in. The
+        # event still lives on the instance so test paths that call
+        # _run_stages directly see a usable Event.
+        self._cancel_requested.clear()
         cancel_stop = asyncio.Event()
         cancel_task = asyncio.create_task(
             watch_for_cancel(
@@ -360,11 +370,15 @@ class RunExecutor:
     async def _handle_cancel_signal(self, run_id: str) -> None:
         """Cancel callback wired to the redis cancel channel.
 
-        Sends SIGTERM to the active container, waits 30 s for graceful
-        shutdown, then SIGKILL if the container is still running. The 30 s
-        grace window matches F-PL-03's contract for OOM/timeout teardown
-        so cancel and resource-limit terminations behave the same way.
+        Sets the persistent ``_cancel_requested`` flag (so stage / setup
+        boundaries can short-circuit even if no container is active when
+        the signal arrives), then sends SIGTERM to whatever container is
+        currently running. The 30s grace window matches F-PL-03's
+        contract for OOM/timeout teardown so cancel and resource-limit
+        terminations behave the same way.
         """
+        self._cancel_requested.set()
+
         execution_id = self._active_execution_id
         if execution_id is None:
             log.info("cancel signal for run %s but no active container", run_id)
@@ -379,6 +393,34 @@ class RunExecutor:
     # private steps
     # --------------------------------------------------------------------- #
 
+    async def _check_cancel_boundary(self, run_id: str) -> bool:
+        """Return True if the run should stop at this stage boundary.
+
+        P1-D guard against two failure modes:
+
+        1. **Pub/sub race** — the cancel API publishes to redis pub/sub
+           which is fire-and-forget. If the worker subscribed *after* the
+           publish, the message is lost. The cancel API also persists
+           ``cancel_requested_at`` on the row, so a fresh SELECT recovers
+           any dropped notification.
+        2. **Stage transition race** — the watcher's callback only had
+           a container to SIGTERM if ``_active_execution_id`` was set
+           when the message arrived. Between stages it briefly is None.
+           ``_cancel_requested`` is now set in the watcher callback
+           regardless, so we still see the request here.
+        """
+        if self._cancel_requested.is_set():
+            return True
+        try:
+            if await self.run_repo.is_cancel_requested(run_id):
+                self._cancel_requested.set()
+                return True
+        except Exception:
+            log.warning(
+                "is_cancel_requested probe failed for %s", run_id, exc_info=True
+            )
+        return False
+
     async def _run_stages(self, run: Run, pipeline: PipelineConfig, working_dir: Path) -> ExitResult:
         """Run all stages sequentially using Docker containers."""
         # ExitResult requires started_at/finished_at; seed both to "now" so
@@ -386,8 +428,15 @@ class RunExecutor:
         # (the executor calls .timed_out / .oom_killed on this further down).
         _now = datetime.now(timezone.utc)
         final_exit = ExitResult(exit_code=0, started_at=_now, finished_at=_now)
-        
+
         for stage in pipeline.stages:
+            if await self._check_cancel_boundary(str(run.id)):
+                await self.log_stream.write_log(
+                    str(run.id),
+                    f"Cancel requested before stage '{stage.name}'; stopping",
+                    stream="stderr",
+                )
+                break
             await self.log_stream.write_log(str(run.id), f"Starting stage: {stage.name}")
             
             try:

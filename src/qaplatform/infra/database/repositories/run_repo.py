@@ -178,6 +178,7 @@ class RunRepository(BaseRepository[Run]):
                 finished_at=now,
                 status_updated_at=now,
                 updated_at=now,
+                cancel_requested_at=now,
             )
         )
         result = await self.session.execute(stmt)
@@ -259,6 +260,24 @@ class RunRepository(BaseRepository[Run]):
         )
         await self.session.execute(stmt)
         await self.session.flush()
+
+    async def is_cancel_requested(self, run_id: UUID) -> bool:
+        """Has cancel been requested for this run?
+
+        P1-D fallback for redis pub/sub: if the cancel signal was
+        published before the worker subscribed, the message is gone
+        forever (pub/sub is not persistent). The cancel API also writes
+        ``cancel_requested_at`` on the row, so the executor can poll the
+        DB at stage boundaries to recover any dropped notification.
+
+        Uses a fresh SELECT to bypass the session's identity map; the
+        cancel write happens in a separate connection and the cached
+        ORM object would otherwise still show the old value.
+        """
+        stmt = select(Run.cancel_requested_at).where(Run.id == run_id)
+        result = await self.session.execute(stmt)
+        value = result.scalar_one_or_none()
+        return value is not None
 
     async def release_worker(self, run_id: UUID, worker_id: str) -> None:
         """Clear worker_id after run completes (best-effort)."""
