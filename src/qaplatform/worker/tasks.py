@@ -215,6 +215,7 @@ async def execute_run(ctx: dict, run_id: str) -> None:
             _heartbeat_loop(worker_id, redis)
         )
 
+        status = None
         try:
             # 2. Execute the pipeline
             config = _build_pipeline_config(run, run.pipeline, run.environment)
@@ -249,6 +250,23 @@ async def execute_run(ctx: dict, run_id: str) -> None:
             # Cancel heartbeat
             heartbeat_task.cancel()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+            # Send notifications for terminal run (best-effort)
+            try:
+                from qaplatform.worker.notifications import evaluate_and_notify
+                terminal_status = status if status in (
+                    RunStatus.DONE, RunStatus.FAILED, RunStatus.TIMEOUT
+                ) else None
+                if terminal_status:
+                    await evaluate_and_notify(
+                        run_id=run.id,
+                        project_id=run.project_id,
+                        status=terminal_status.value,
+                        summary=getattr(run, "summary", None),
+                        session_factory=session_factory,
+                    )
+            except Exception:
+                log.warning("notification_evaluation_failed", exc_info=True)
 
             # Best-effort log archival
             try:

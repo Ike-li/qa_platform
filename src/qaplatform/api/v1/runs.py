@@ -17,6 +17,7 @@ from qaplatform.api.deps import (
 from qaplatform.api.schemas import (
     ArtifactResponse,
     ErrorResponse,
+    NotificationLogResponse,
     PaginatedResponse,
     RunCancel,
     RunResponse,
@@ -25,6 +26,7 @@ from qaplatform.api.schemas import (
 )
 from qaplatform.infra.database.models import (
     Artifact as ArtifactORM,
+    NotificationLog as NotificationLogORM,
     Run as RunORM,
     RunStatusEnum,
     TestResult as TestResultORM,
@@ -377,6 +379,49 @@ async def get_run_artifacts(
     )
     return PaginatedResponse(
         data=[_to_artifact_response(i) for i in items],
+        page=page,
+        per_page=per_page,
+        total=total,
+    )
+
+
+def _to_notification_log_response(orm: NotificationLogORM) -> NotificationLogResponse:
+    return NotificationLogResponse(
+        id=orm.id,
+        project_id=orm.project_id,
+        run_id=orm.run_id,
+        rule_id=orm.rule_id,
+        channel_type=orm.channel_type,
+        status=orm.status.value if hasattr(orm.status, "value") else orm.status,
+        error_message=orm.error_message,
+        sent_at=orm.sent_at,
+    )
+
+
+@router.get(
+    "/{run_id}/notifications",
+    response_model=PaginatedResponse[NotificationLogResponse],
+    responses={404: {"model": ErrorResponse}},
+    summary="通知日志",
+)
+async def get_run_notifications(
+    run_id: UUID,
+    repos: Repos,
+    user: CurrentUser,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(_get_db_session),
+):
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    await enforce_project_action(session, user, run.project_id, Action.NOTIFICATION_READ)
+
+    items, total = await repos.notification_log.list_by_run(
+        run_id, offset=(page - 1) * per_page, limit=per_page,
+    )
+    return PaginatedResponse(
+        data=[_to_notification_log_response(i) for i in items],
         page=page,
         per_page=per_page,
         total=total,

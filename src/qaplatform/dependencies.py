@@ -130,6 +130,8 @@ class DependencyContainer:
         from qaplatform.infra.database.repositories.project_repo import (
             CredentialRepository,
             EnvironmentRepository,
+            NotificationLogRepository,
+            NotificationRuleRepository,
             PipelineRepository,
             ProjectRepository,
             ScheduleRepository,
@@ -152,6 +154,8 @@ class DependencyContainer:
             pipeline=PipelineRepository(session),
             credential=CredentialRepository(session),
             schedule=ScheduleRepository(session),
+            notification_rule=NotificationRuleRepository(session),
+            notification_log=NotificationLogRepository(session),
             run=RunRepository(session),
             test_result=TestResultRepository(session),
             artifact=ArtifactRepository(session),
@@ -180,6 +184,8 @@ class RepositoryBundle:
         "pipeline",
         "credential",
         "schedule",
+        "notification_rule",
+        "notification_log",
         "run",
         "test_result",
         "artifact",
@@ -196,6 +202,8 @@ class RepositoryBundle:
         pipeline,
         credential,
         schedule,
+        notification_rule,
+        notification_log,
         run,
         test_result,
         artifact,
@@ -208,6 +216,8 @@ class RepositoryBundle:
         self.pipeline = pipeline
         self.credential = credential
         self.schedule = schedule
+        self.notification_rule = notification_rule
+        self.notification_log = notification_log
         self.run = run
         self.test_result = test_result
         self.artifact = artifact

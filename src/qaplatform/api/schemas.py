@@ -359,3 +359,47 @@ class ScheduleResponse(BaseModel):
     next_run_at: datetime | None
     last_error: str | None
     created_at: datetime
+
+
+# ── Notification schemas ───────────────────────────────────────────────────
+
+class NotificationRuleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    enabled: bool = True
+    conditions: list[dict] = Field(default_factory=list)
+    channels: list[dict] = Field(..., min_length=1)
+    template: str | None = None
+
+
+class NotificationRuleUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=200)
+    enabled: bool | None = None
+    conditions: list[dict] | None = None
+    channels: list[dict] | None = None
+    template: str | None = None
+
+
+class NotificationRuleResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    project_id: UUID
+    name: str
+    enabled: bool
+    conditions: list[dict]
+    channels: list[dict]
+    template: str | None
+    created_at: datetime
+
+
+class NotificationLogResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    project_id: UUID
+    run_id: UUID
+    rule_id: UUID
+    channel_type: str
+    status: str
+    error_message: str | None
+    sent_at: datetime

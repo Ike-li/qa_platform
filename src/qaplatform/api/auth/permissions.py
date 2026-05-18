@@ -80,6 +80,10 @@ class Action(str, Enum):
     SCHEDULE_READ = "schedule.read"
     SCHEDULE_EDIT = "schedule.edit"
 
+    # Notification
+    NOTIFICATION_READ = "notification.read"
+    NOTIFICATION_EDIT = "notification.edit"
+
 
 # Actions whose authorisation requires both tenant-level and project-level role
 # (intersection semantics). Project-level enforcement is wired in a later
@@ -98,6 +102,8 @@ PROJECT_SCOPED_ACTIONS: frozenset[Action] = frozenset({
     Action.CREDENTIAL_EDIT,
     Action.SCHEDULE_READ,
     Action.SCHEDULE_EDIT,
+    Action.NOTIFICATION_READ,
+    Action.NOTIFICATION_EDIT,
     Action.MEMBER_READ,
     Action.MEMBER_EDIT,
     Action.RUN_READ,
@@ -135,6 +141,8 @@ TENANT_ROLE_PERMISSIONS: dict[Role, set[Action]] = {
         Action.TOKEN_MANAGE,
         Action.SCHEDULE_READ,
         Action.SCHEDULE_EDIT,
+        Action.NOTIFICATION_READ,
+        Action.NOTIFICATION_EDIT,
     },
     Role.VIEWER: {
         Action.PROJECT_READ,
@@ -144,6 +152,7 @@ TENANT_ROLE_PERMISSIONS: dict[Role, set[Action]] = {
         Action.MEMBER_READ,
         Action.CREDENTIAL_READ,
         Action.SCHEDULE_READ,
+        Action.NOTIFICATION_READ,
     },
 }
 
@@ -164,6 +173,8 @@ PROJECT_ROLE_PERMISSIONS: dict[ProjectRole, set[Action]] = {
         Action.CREDENTIAL_READ,
         Action.SCHEDULE_READ,
         Action.SCHEDULE_EDIT,
+        Action.NOTIFICATION_READ,
+        Action.NOTIFICATION_EDIT,
         Action.MEMBER_READ,
     },
     ProjectRole.VIEWER: {
@@ -172,6 +183,7 @@ PROJECT_ROLE_PERMISSIONS: dict[ProjectRole, set[Action]] = {
         Action.CONFIG_READ,
         Action.CREDENTIAL_READ,
         Action.SCHEDULE_READ,
+        Action.NOTIFICATION_READ,
         Action.MEMBER_READ,
     },
 }
