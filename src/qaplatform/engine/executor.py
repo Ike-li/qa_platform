@@ -22,6 +22,7 @@ from qaplatform.engine.docker_backend import (
 )
 from qaplatform.engine.events import publish_status_event
 from qaplatform.engine.log_stream import LogStream
+from qaplatform.engine.redact import redact_url_userinfo
 from qaplatform.plugins.registry import PluginRegistry
 
 _ARTIFACT_TYPE_BY_EXT = {
@@ -292,7 +293,9 @@ class RunExecutor:
             raise
         except Exception as exc:
             log.exception("execution failed for run %s", run_id)
-            failed = await self.run_repo.fail_if_current(run_id, message=str(exc))
+            failed = await self.run_repo.fail_if_current(
+                run_id, message=redact_url_userinfo(str(exc))
+            )
             if failed:
                 await self._publish(run_id, RunStatus.FAILED.value)
             return RunStatus.FAILED
