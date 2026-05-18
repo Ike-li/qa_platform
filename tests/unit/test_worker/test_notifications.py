@@ -145,6 +145,7 @@ class TestEvaluateAndNotify:
         with (
             patch("qaplatform.infra.database.repositories.project_repo.NotificationRuleRepository", return_value=rule_repo),
             patch("qaplatform.infra.database.repositories.project_repo.NotificationLogRepository", return_value=log_repo),
+            patch("qaplatform.worker.notifications._send_channel", new_callable=AsyncMock),
         ):
             await evaluate_and_notify(
                 run_id=uuid4(),

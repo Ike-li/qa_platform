@@ -66,9 +66,12 @@ def _compare(actual: Any, op: str, expected: Any) -> bool:
 async def _send_channel(channel_type: str, channel_config: dict, message: str) -> None:
     """Send a notification to a single channel.
 
-    Currently logs the message. Real integrations (email, webhook, etc.)
-    should be plugged in here.
+    Delegates to ChannelRouter for real delivery (email / webhook).
+    Raises ``RuntimeError`` on failure so the caller can log it to
+    ``NotificationLog``.
     """
+    from qaplatform.worker.notifications.channels import route_channel
+
     log.info(
         "notification_send",
         extra={
@@ -76,6 +79,10 @@ async def _send_channel(channel_type: str, channel_config: dict, message: str) -
             "message_length": len(message),
         },
     )
+
+    result = await route_channel(channel_type, channel_config, message)
+    if not result.success:
+        raise RuntimeError(result.error or "channel send failed")
 
 
 async def evaluate_and_notify(
