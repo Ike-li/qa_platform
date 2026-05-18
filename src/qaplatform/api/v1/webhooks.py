@@ -18,6 +18,7 @@ from qaplatform.api.schemas import (
     RunResponse,
     WebhookTriggerRequest,
 )
+from qaplatform.infra.webhook_signature import verify_webhook_signature
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -51,6 +52,28 @@ async def webhook_trigger(
             status_code=409,
             detail="Project is archived; new runs cannot be triggered",
         )
+
+    # --- Webhook HMAC-SHA256 signature verification ---
+    webhook_secret: str | None = (project.settings or {}).get("webhook_secret")
+    if webhook_secret:
+        signature_header = request.headers.get("X-Webhook-Signature", "")
+        if not signature_header:
+            raise HTTPException(
+                status_code=401,
+                detail="Missing X-Webhook-Signature header",
+            )
+        # Reconstruct the raw body for verification.  FastAPI has already
+        # consumed the stream, so we rely on the serialised JSON content
+        # that was used for parsing.
+        import json as _json
+        raw_body = _json.dumps(
+            body.model_dump(), separators=(",", ":"), ensure_ascii=False
+        ).encode()
+        if not verify_webhook_signature(webhook_secret, raw_body, signature_header):
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid webhook signature",
+            )
 
     await enforce_project_action(session, user, project.id, Action.RUN_TRIGGER)
 
