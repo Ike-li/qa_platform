@@ -430,6 +430,7 @@ class RunRepository(BaseRepository[Run]):
     async def count_active_or_enqueued(self) -> int:
         """Count globally active or enqueued runs."""
         stmt = select(func.count()).select_from(Run).where(
+            Run.deleted_at.is_(None),
             (Run.status.in_(self._ACTIVE_STATUSES))
             | ((Run.status == RunStatusEnum.QUEUED) & (Run.enqueued_at.isnot(None)))
         )
@@ -439,6 +440,7 @@ class RunRepository(BaseRepository[Run]):
     async def count_active_or_enqueued_by_project(self, project_id: UUID) -> int:
         """Count active or enqueued runs for a specific project."""
         stmt = select(func.count()).select_from(Run).where(
+            Run.deleted_at.is_(None),
             Run.project_id == project_id,
             (Run.status.in_(self._ACTIVE_STATUSES))
             | ((Run.status == RunStatusEnum.QUEUED) & (Run.enqueued_at.isnot(None)))
@@ -449,6 +451,7 @@ class RunRepository(BaseRepository[Run]):
     async def count_queued_waiting(self) -> int:
         """Count queued runs not yet dispatched to arq (enqueued_at IS NULL)."""
         stmt = select(func.count()).select_from(Run).where(
+            Run.deleted_at.is_(None),
             Run.status == RunStatusEnum.QUEUED,
             Run.enqueued_at.is_(None),
         )

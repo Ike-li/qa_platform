@@ -42,8 +42,12 @@ TABLES = [
     "project_member",
 ]
 
-# High-volume tables that benefit from partial indexes
-INDEXED_TABLES = ["run", "test_result", "run_event"]
+# Partial indexes on query-pattern columns (not PK — PK already indexed)
+PARTIAL_INDEXES = {
+    "run": "(status)",
+    "test_result": "(run_id)",
+    "run_event": "(run_id)",
+}
 
 
 def upgrade() -> None:
@@ -53,14 +57,14 @@ def upgrade() -> None:
             sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         )
 
-    for table in INDEXED_TABLES:
+    for table, cols in PARTIAL_INDEXES.items():
         op.execute(
-            f"CREATE INDEX ix_{table}_active ON {table} (id) WHERE deleted_at IS NULL"
+            f"CREATE INDEX ix_{table}_active ON {table} {cols} WHERE deleted_at IS NULL"
         )
 
 
 def downgrade() -> None:
-    for table in INDEXED_TABLES:
+    for table in PARTIAL_INDEXES:
         op.execute(f"DROP INDEX IF EXISTS ix_{table}_active")
 
     for table in TABLES:
