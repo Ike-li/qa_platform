@@ -136,6 +136,7 @@ jobs:
         run: npm run build
 
   e2e-test:
+    if: false  # frontend e2e disabled until frontend test infra is ready
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
