@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     s3_secret_key: str
     s3_bucket: str = "qa-platform"
     s3_region: str = "us-east-1"
+    s3_presigned_url_ttl: int = 3600  # seconds; how long artifact download URLs stay valid
 
     # Security
     jwt_secret: str
