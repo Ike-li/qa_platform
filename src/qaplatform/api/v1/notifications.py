@@ -216,7 +216,7 @@ async def delete_notification_rule(
     if rule is None or rule.project_id != project.id:
         raise HTTPException(status_code=404, detail="Notification rule not found")
 
-    await repos.notification_rule.delete(rule_id)
+    await repos.notification_rule.delete(rule)
     await write_audit(
         repos, user,
         action="notification_rule.delete",
