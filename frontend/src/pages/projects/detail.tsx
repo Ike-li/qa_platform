@@ -9,6 +9,7 @@ import {
   Plus,
   ArrowRight,
   TrendingUp,
+  Bell,
 } from "lucide-react";
 import * as React from "react";
 import { useForm } from "react-hook-form";
@@ -44,6 +45,7 @@ import { PipelineModal } from "../../components/projects/pipeline-modal";
 import { TriggerRunModal } from "../../components/runs/trigger-run-modal";
 import { AnalyticsPanel } from "../../components/projects/analytics-panel";
 import { EnvironmentEditor } from "../../components/projects/environment-editor";
+import { NotificationRulesPanel } from "../../components/projects/notification-rules-panel";
 import { cn } from "../../lib/utils";
 import { usePageTitle } from "../../hooks/use-page-title";
 
@@ -204,6 +206,9 @@ export default function ProjectDetail() {
           <TabsTrigger value="analytics">
             <TrendingUp className="mr-2 h-4 w-4" /> {t('projects.tabs.analytics')}
           </TabsTrigger>
+          <TabsTrigger value="notifications">
+            <Bell className="mr-2 h-4 w-4" /> {t('projects.tabs.notifications')}
+          </TabsTrigger>
           <TabsTrigger value="settings">
             <SettingsIcon className="mr-2 h-4 w-4" /> {t('projects.tabs.settings')}
           </TabsTrigger>
@@ -272,6 +277,10 @@ export default function ProjectDetail() {
 
         <TabsContent value="analytics">
           <AnalyticsPanel projectId={id!} />
+        </TabsContent>
+
+        <TabsContent value="notifications">
+          <NotificationRulesPanel projectId={id!} />
         </TabsContent>
 
         <TabsContent value="settings" className="space-y-6 max-w-2xl">

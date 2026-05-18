@@ -102,6 +102,28 @@ export interface Artifact {
   created_at: string;
 }
 
+export interface NotificationCondition {
+  field: "status" | "pass_rate" | "failed";
+  op: "eq" | "ne" | "lt" | "gt" | "lte" | "gte";
+  value: string | number;
+}
+
+export interface NotificationChannel {
+  type: "email" | "webhook";
+  config: Record<string, string>;
+}
+
+export interface NotificationRule {
+  id: string;
+  project_id: string;
+  name: string;
+  enabled: boolean;
+  conditions: NotificationCondition[];
+  channels: NotificationChannel[];
+  template: string | null;
+  created_at: string;
+}
+
 export interface PaginatedResponse<T> {
   data: T[];
   total: number;
