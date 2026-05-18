@@ -12,6 +12,14 @@ from sqlalchemy import select as _select
 
 log = logging.getLogger(__name__)
 
+# Exceptions that represent infrastructure failures (not test logic errors).
+# Only these trigger automatic retries per PRD F-EX-07.
+_INFRA_EXCEPTIONS = (
+    ConnectionError,
+    TimeoutError,
+    OSError,
+)
+
 
 async def _heartbeat_loop(worker_id: str, redis: Any, interval: int = 30) -> None:
     """Background task: refresh worker heartbeat key every interval seconds.
@@ -34,6 +42,98 @@ async def _heartbeat_loop(worker_id: str, redis: Any, interval: int = 30) -> Non
             await asyncio.sleep(interval)
         except asyncio.CancelledError:
             raise
+
+
+def _should_retry(exc: Exception, retry_policy: dict | None, current_attempt: int) -> bool:
+    """Determine if a failed run should be retried.
+
+    Only infrastructure failures (Docker, network, OS errors) trigger retries.
+    Test failures (exit_code != 0) are handled through finish_if_current and
+    never reach this path.
+    """
+    if retry_policy is None:
+        return False
+    if not retry_policy.get("enabled", True):
+        return False
+    max_retries = retry_policy.get("max_retries", 0)
+    if max_retries <= 0:
+        return False
+    if current_attempt >= max_retries + 1:
+        return False
+    if not isinstance(exc, _INFRA_EXCEPTIONS):
+        return False
+    return True
+
+
+async def _attempt_retry(
+    run_id: str,
+    exc: Exception,
+    ctx: dict,
+    session_factory: Any,
+) -> bool:
+    """Create a retry run and enqueue it. Returns True if a retry was scheduled."""
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+    from qaplatform.worker.scheduler import FairScheduler
+
+    async with session_factory() as session:
+        run_repo = RunRepository(session)
+        original = await run_repo.get_by_id(run_id)
+        if original is None:
+            return False
+
+        await session.refresh(original, ["pipeline"])
+        retry_policy = getattr(original.pipeline, "retry_policy", None)
+        if not _should_retry(exc, retry_policy, original.attempt):
+            return False
+
+        # Compute backoff delay (exponential: delay * 2^(attempt-1))
+        backoff = retry_policy.get("backoff_seconds", 30)
+        delay = backoff * (2 ** (original.attempt - 1))
+
+        # Create retry run
+        retry_run = await run_repo.create(
+            tenant_id=original.tenant_id,
+            project_id=original.project_id,
+            pipeline_id=original.pipeline_id,
+            environment_id=original.environment_id,
+            git_ref=original.git_ref,
+            triggered_by=original.triggered_by,
+            trigger_type=original.trigger_type,
+            metadata_=dict(original.metadata_ or {}),
+            retry_group_id=original.retry_group_id,
+            attempt=original.attempt + 1,
+            source_run_id=original.id,
+        )
+        await session.commit()
+
+    # Enqueue after delay
+    arq = ctx["arq_pool"]
+    settings = ctx["settings"]
+    if delay > 0:
+        import asyncio
+        await asyncio.sleep(delay)
+
+    scheduler = FairScheduler(arq, run_repo, settings)
+    enqueued = await scheduler.enqueue(retry_run)
+    if enqueued:
+        log.info(
+            "retry_scheduled",
+            extra={
+                "original_run_id": str(run_id),
+                "retry_run_id": str(retry_run.id),
+                "attempt": retry_run.attempt,
+                "delay_seconds": delay,
+            },
+        )
+    else:
+        log.warning(
+            "retry_enqueue_failed",
+            extra={
+                "original_run_id": str(run_id),
+                "retry_run_id": str(retry_run.id),
+            },
+        )
+    return enqueued
 
 
 async def execute_run(ctx: dict, run_id: str) -> None:
@@ -128,6 +228,10 @@ async def execute_run(ctx: dict, run_id: str) -> None:
             if updated:
                 log.info("run %s completed with status: %s", run_id, status.value)
 
+            # 4. Auto-retry on infrastructure failure
+            if status == RunStatus.FAILED:
+                await _attempt_retry(run_id, RuntimeError("pipeline execution failed"), ctx, session_factory)
+
         except Exception as exc:
             log.exception("execute_run failed for run %s", run_id)
             from qaplatform.worker._redact import redact_url_userinfo
@@ -137,6 +241,9 @@ async def execute_run(ctx: dict, run_id: str) -> None:
             )
             if updated:
                 log.info("run %s marked as failed: %s", run_id, exc)
+
+            # Auto-retry on infrastructure exception
+            await _attempt_retry(run_id, exc, ctx, session_factory)
 
         finally:
             # Cancel heartbeat
