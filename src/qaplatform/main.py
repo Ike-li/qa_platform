@@ -56,16 +56,24 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
         logger.info("application_started", version="0.1.0")
         yield
         # Shutdown
+        # NOTE: do NOT cancel asyncio.all_tasks() here.
+        #
+        # Every asyncio.create_task() call in this codebase (heartbeat_task in
+        # worker/tasks.py, cancel_task and log_task in engine/executor.py) holds
+        # an explicit reference and is cleaned up in its own finally block.
+        # There are no "orphan" tasks that need a global sweep.
+        #
+        # Cancelling all tasks at this point would race with:
+        #   - in-flight HTTP request handlers still being drained by uvicorn
+        #     (uvicorn waits up to graceful_timeout=30 s before SIGKILL)
+        #   - SSE long-poll generators blocked on redis.xread(..., block=5000)
+        #     — they self-terminate within 5 s once the client disconnects or
+        #     the run reaches a terminal status
+        #   - asyncio.gather() sub-tasks that share a CancelledError scope
+        #
+        # Rely on uvicorn's own graceful shutdown instead; container.close()
+        # handles all connection-pool teardown.
         logger.info("application_shutting_down")
-        
-        # Cancel all pending tasks
-        import asyncio
-        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        if tasks:
-            logger.info("cancelling_pending_tasks", count=len(tasks))
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
 
         if hasattr(container, "close"):
             await container.close()
