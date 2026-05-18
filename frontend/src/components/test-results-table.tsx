@@ -60,10 +60,15 @@ function TestResultRow({ result }: { result: TestResult }) {
     <>
       <tr
         className={cn(
-          "group hover:bg-surface-2/50 transition-colors cursor-pointer",
+          "group hover:bg-surface-2/50 transition-colors",
+          isFailed && "cursor-pointer",
           expanded && "bg-surface-2/30"
         )}
         onClick={() => isFailed && setExpanded(!expanded)}
+        onKeyDown={(e) => isFailed && (e.key === "Enter" || e.key === " ") && setExpanded(!expanded)}
+        tabIndex={isFailed ? 0 : undefined}
+        role={isFailed ? "button" : undefined}
+        aria-expanded={isFailed ? expanded : undefined}
       >
         <td className="px-4 py-3 text-center">
           {isFailed && (
