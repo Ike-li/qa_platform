@@ -33,6 +33,10 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
   }, []);
 
   const startPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
     setStatus('polling');
     const poll = async () => {
       try {
