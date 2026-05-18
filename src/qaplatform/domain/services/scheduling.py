@@ -46,10 +46,11 @@ def should_fire(
         import zoneinfo
 
         for qw in schedule.quiet_windows:
-            qw_tz = zoneinfo.ZoneInfo(qw.timezone)
+            # JSONB loads as plain dicts, not objects — use key access.
+            qw_tz = zoneinfo.ZoneInfo(qw["timezone"])
             local_now = now.astimezone(qw_tz)
-            start_h, start_m = map(int, qw.start.split(":"))
-            end_h, end_m = map(int, qw.end.split(":"))
+            start_h, start_m = map(int, qw["start"].split(":"))
+            end_h, end_m = map(int, qw["end"].split(":"))
             current_minutes = local_now.hour * 60 + local_now.minute
             start_minutes = start_h * 60 + start_m
             end_minutes = end_h * 60 + end_m

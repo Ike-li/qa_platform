@@ -198,7 +198,7 @@ async def check_schedules(ctx: dict) -> None:
                 environment_id = envs[0].id if envs else None
 
                 # Determine git_ref from pipeline's project default
-                git_ref = "main"
+                git_ref = getattr(pipeline.project, "default_branch", None) or "main"
 
                 run = await run_repo.create(
                     tenant_id=pipeline.project.tenant_id if pipeline.project else None,
