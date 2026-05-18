@@ -7,6 +7,8 @@ from typing import Any
 from uuid import UUID
 
 from qaplatform.domain.models.run import RunStatus, TERMINAL_STATUSES
+from qaplatform.infra.database.models import Project
+from sqlalchemy import select as _select
 
 log = logging.getLogger(__name__)
 
@@ -94,9 +96,6 @@ async def execute_run(ctx: dict, run_id: str) -> None:
             return
 
         # Check if project is archived — skip execution
-        from qaplatform.infra.database.models import Project
-        from sqlalchemy import select as _select
-
         proj_result = await session.execute(
             _select(Project).where(
                 Project.id == run.project_id,
