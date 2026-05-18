@@ -17,6 +17,12 @@ from qaplatform.api.middleware.request_id import RequestIdMiddleware
 from qaplatform.api.middleware.rate_limit import RateLimitMiddleware
 from qaplatform.api.middleware.security_headers import SecurityHeadersMiddleware
 from qaplatform.api.middleware.cors import setup_cors
+from qaplatform.api.metrics import (
+    http_request_duration,
+    metrics_route,
+    run_queue_depth,
+    runs_in_flight,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -104,6 +110,21 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     # ── Middlewares ──────────────────────────────────────────────────────
     app.add_middleware(SecurityHeadersMiddleware, settings=_settings_obj)
     app.add_middleware(RequestIdMiddleware)
+
+    # HTTP request duration histogram — wraps all routes including /metrics itself
+    @app.middleware("http")
+    async def _record_request_duration(request: Request, call_next):
+        import time as _time
+        route = request.url.path
+        start = _time.perf_counter()
+        response = await call_next(request)
+        duration = _time.perf_counter() - start
+        http_request_duration.labels(
+            method=request.method,
+            route=route,
+            status_code=str(response.status_code),
+        ).observe(duration)
+        return response
     
     # Rate limiting middleware needs redis_client from container
     # Since container might not be fully initialized here (it is in lifespan),
@@ -153,6 +174,8 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     app.include_router(sse_router, prefix=api_prefix)
 
     # ── Health checks ────────────────────────────────────────────────────
+    app.add_route("/metrics", metrics_route.endpoint, methods=["GET"], include_in_schema=False)
+
     @app.get("/health", tags=["ops"])
     async def health():
         return {
