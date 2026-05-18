@@ -107,11 +107,11 @@ async def trigger_run(
     if pipeline is None:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
-    project = await repos.project.get_by_id(pipeline.project_id)
     # Treat 'pipeline belongs to a different tenant' identically to
     # 'pipeline does not exist' — otherwise an attacker can enumerate
     # pipeline_ids across tenants by status-code differential.
-    if project is None or project.tenant_id != user.tenant_id:
+    project = await repos.project.get_for_tenant(pipeline.project_id, user.tenant_id)
+    if project is None:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
     if project.status == "archived":
@@ -250,8 +250,8 @@ async def get_run(
     user: CurrentUser,
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_by_id(run_id)
-    if run is None or run.tenant_id != user.tenant_id:
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+    if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
     return _to_run_response(run)
@@ -271,8 +271,8 @@ async def cancel_run(
     body: RunCancel | None = None,
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_by_id(run_id)
-    if run is None or run.tenant_id != user.tenant_id:
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+    if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
     is_own = str(run.triggered_by) == str(user.user_id)
@@ -328,8 +328,8 @@ async def get_run_results(
     status: str | None = Query(None, description="passed / failed / error / skipped / xfail"),
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_by_id(run_id)
-    if run is None or run.tenant_id != user.tenant_id:
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+    if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
 
@@ -364,8 +364,8 @@ async def get_run_artifacts(
     per_page: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_by_id(run_id)
-    if run is None or run.tenant_id != user.tenant_id:
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+    if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
 

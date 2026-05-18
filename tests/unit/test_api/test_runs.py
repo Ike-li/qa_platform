@@ -140,7 +140,7 @@ async def test_trigger_run(client, mock_pipeline_repo, mock_project_repo, mock_e
     proj.tenant_id = tenant_id
     proj.default_branch = "main"
     proj.default_env_id = env_id
-    mock_project_repo.get_by_id.return_value = proj
+    mock_project_repo.get_for_tenant.return_value = proj
     mock_run_repo.create.return_value = run
 
     # Mock arq_pool on container
@@ -185,7 +185,7 @@ async def test_trigger_run_enqueues_without_arq_pool(client, mock_pipeline_repo,
     proj.tenant_id = tenant_id
     proj.default_branch = "main"
     proj.default_env_id = env_id
-    mock_project_repo.get_by_id.return_value = proj
+    mock_project_repo.get_for_tenant.return_value = proj
     mock_run_repo.create.return_value = run
 
     app.state.container.arq_pool = None
@@ -223,10 +223,9 @@ async def test_trigger_run_cross_tenant_pipeline_returns_same_404(
     pipeline.project_id = uuid.uuid4()
     mock_pipeline_repo.get_by_id.return_value = pipeline
 
-    foreign_project = MagicMock()
-    foreign_project.id = pipeline.project_id
-    foreign_project.tenant_id = uuid.uuid4()  # different tenant
-    mock_project_repo.get_by_id.return_value = foreign_project
+    # get_for_tenant returns None for cross-tenant projects, identical to
+    # 'project does not exist'.
+    mock_project_repo.get_for_tenant.return_value = None
 
     resp = await client.post(
         "/api/v1/runs",
@@ -257,7 +256,7 @@ async def test_list_runs(client, mock_run_repo):
 @pytest.mark.asyncio
 async def test_get_run(client, mock_run_repo, tenant_id):
     run = _make_orm_run(tenant_id=tenant_id)
-    mock_run_repo.get_by_id.return_value = run
+    mock_run_repo.get_for_tenant.return_value = run
 
     resp = await client.get(f"/api/v1/runs/{run.id}", headers={"Authorization": "Bearer fake"})
     assert resp.status_code == 200
@@ -266,7 +265,7 @@ async def test_get_run(client, mock_run_repo, tenant_id):
 
 @pytest.mark.asyncio
 async def test_get_run_not_found(client, mock_run_repo):
-    mock_run_repo.get_by_id.return_value = None
+    mock_run_repo.get_for_tenant.return_value = None
 
     resp = await client.get(f"/api/v1/runs/{uuid.uuid4()}", headers={"Authorization": "Bearer fake"})
     assert resp.status_code == 404
@@ -277,7 +276,11 @@ async def test_cancel_run(client, mock_run_repo, tenant_id, app):
     from qaplatform.infra.database.models import RunStatusEnum
 
     run = _make_orm_run(status=RunStatusEnum.RUNNING, tenant_id=tenant_id)
-    mock_run_repo.get_by_id.side_effect = [run, run]
+    # First lookup is the tenant-scoped fetch; the second is the post-cancel
+    # re-read inside the handler (still get_by_id, no tenant filter needed
+    # because the run is already known to be in-tenant).
+    mock_run_repo.get_for_tenant.return_value = run
+    mock_run_repo.get_by_id.return_value = run
     mock_run_repo.cancel_if_current.return_value = True
 
     app.state.container.redis_client = AsyncMock()
@@ -292,7 +295,7 @@ async def test_cancel_already_terminal(client, mock_run_repo, tenant_id):
     from qaplatform.infra.database.models import RunStatusEnum
 
     run = _make_orm_run(status=RunStatusEnum.DONE, tenant_id=tenant_id)
-    mock_run_repo.get_by_id.return_value = run
+    mock_run_repo.get_for_tenant.return_value = run
 
     resp = await client.post(f"/api/v1/runs/{run.id}/cancel", headers={"Authorization": "Bearer fake"})
     assert resp.status_code == 409
@@ -300,7 +303,7 @@ async def test_cancel_already_terminal(client, mock_run_repo, tenant_id):
 
 @pytest.mark.asyncio
 async def test_get_run_results(client, mock_run_repo, mock_result_repo, tenant_id):
-    mock_run_repo.get_by_id.return_value = _make_orm_run(tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.return_value = _make_orm_run(tenant_id=tenant_id)
     mock_result_repo.list.return_value = ([], 0)
 
     resp = await client.get(
@@ -313,7 +316,7 @@ async def test_get_run_results(client, mock_run_repo, mock_result_repo, tenant_i
 
 @pytest.mark.asyncio
 async def test_get_run_artifacts(client, mock_run_repo, mock_artifact_repo, tenant_id):
-    mock_run_repo.get_by_id.return_value = _make_orm_run(tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.return_value = _make_orm_run(tenant_id=tenant_id)
     mock_artifact_repo.list_by_run.return_value = ([], 0)
 
     resp = await client.get(
@@ -338,7 +341,7 @@ async def test_trigger_run_archived_project_returns_409(
     project.id = pipeline.project_id
     project.tenant_id = tenant_id
     project.status = "archived"
-    mock_project_repo.get_by_id.return_value = project
+    mock_project_repo.get_for_tenant.return_value = project
 
     resp = await client.post(
         "/api/v1/runs",
