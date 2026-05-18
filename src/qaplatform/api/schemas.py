@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Re-export domain common schemas for convenience
 from qaplatform.domain.models.common import PaginatedResponse, PaginationParams
@@ -326,6 +326,14 @@ class ScheduleCreate(BaseModel):
     missed_fire_policy: Literal["skip", "run_once", "run_all"] = "skip"
     quiet_windows: list[dict] = Field(default_factory=list)
     enabled: bool = True
+
+    @field_validator("cron_expr")
+    @classmethod
+    def validate_cron_expr(cls, v: str) -> str:
+        from croniter import croniter
+        if not croniter.is_valid(v):
+            raise ValueError(f"invalid cron expression: {v}")
+        return v
 
 
 class ScheduleUpdate(BaseModel):
