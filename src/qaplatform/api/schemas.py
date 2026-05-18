@@ -448,3 +448,27 @@ class FlakyTest(BaseModel):
     failed_count: int
     passed_count: int
     flaky_rate: float
+
+
+# ── Analytics paginated wrappers ─────────────────────────────────────────────
+
+class AnalyticsPaginationMeta(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    offset: int
+    limit: int
+    total: int
+
+
+class TrendsResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    data: list[TrendDataPoint]
+    pagination: AnalyticsPaginationMeta
+
+
+class FlakyResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    data: list[FlakyTest]
+    pagination: AnalyticsPaginationMeta

@@ -42,6 +42,7 @@ def mock_project(project_id, tenant_id):
     obj.credential_id = None
     obj.default_branch = "main"
     obj.default_env_id = uuid.uuid4()
+    obj.settings = {}
     return obj
 
 
@@ -269,19 +270,13 @@ class TestBatchRetry:
 
 
 class TestAnalytics:
-    @pytest.mark.asyncio
-    async def test_trends_returns_data(self, app, mock_repos, project_id):
-        mock_result = MagicMock()
-        mock_result.all.return_value = [
-            SimpleNamespace(date="2026-05-19", total_runs=10, passed_runs=8, failed_runs=2),
-        ]
-        mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
+    """Tests for analytics endpoints with pagination support."""
+
+    def _setup_session(self, app, mock_repos, mock_session):
+        """Common session override setup for analytics tests."""
+        from qaplatform.api.deps import _get_db_session, _get_repos, get_current_user
 
         app.dependency_overrides = {}
-        from qaplatform.api.deps import _get_db_session, _get_repos, get_current_user
 
         async def _override_repos():
             return mock_repos
@@ -292,37 +287,134 @@ class TestAnalytics:
         app.dependency_overrides[_get_repos] = _override_repos
         app.dependency_overrides[get_current_user] = _override_user
         app.dependency_overrides[_get_db_session] = lambda: mock_session
+
+    @pytest.mark.asyncio
+    async def test_trends_returns_paginated_response(self, app, mock_repos, project_id):
+        mock_session = AsyncMock()
+        # First call = count, second call = data
+        count_result = MagicMock()
+        count_result.scalar_one.return_value = 1
+        data_result = MagicMock()
+        data_result.all.return_value = [
+            SimpleNamespace(date="2026-05-19", total_runs=10, passed_runs=8, failed_runs=2),
+        ]
+        mock_session.execute = AsyncMock(side_effect=[count_result, data_result])
+        self._setup_session(app, mock_repos, mock_session)
 
         async with await _make_client(app) as client:
             resp = await client.get(f"/api/v1/projects/{project_id}/analytics/trends")
 
         assert resp.status_code == 200
+        body = resp.json()
+        assert "data" in body
+        assert "pagination" in body
+        assert len(body["data"]) == 1
+        assert body["data"][0]["date"] == "2026-05-19"
+        assert body["data"][0]["total_runs"] == 10
+        assert body["pagination"]["total"] == 1
+        assert body["pagination"]["offset"] == 0
+        assert body["pagination"]["limit"] == 365
 
     @pytest.mark.asyncio
-    async def test_flaky_returns_data(self, app, mock_repos, project_id):
-        mock_result = MagicMock()
-        mock_result.all.return_value = [
+    async def test_trends_with_custom_pagination(self, app, mock_repos, project_id):
+        mock_session = AsyncMock()
+        count_result = MagicMock()
+        count_result.scalar_one.return_value = 10
+        data_result = MagicMock()
+        data_result.all.return_value = []
+        mock_session.execute = AsyncMock(side_effect=[count_result, data_result])
+        self._setup_session(app, mock_repos, mock_session)
+
+        async with await _make_client(app) as client:
+            resp = await client.get(
+                f"/api/v1/projects/{project_id}/analytics/trends?offset=5&limit=3",
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pagination"]["offset"] == 5
+        assert body["pagination"]["limit"] == 3
+        assert body["pagination"]["total"] == 10
+
+    @pytest.mark.asyncio
+    async def test_trends_rejects_invalid_pagination(self, app, mock_repos, project_id):
+        mock_session = AsyncMock()
+        self._setup_session(app, mock_repos, mock_session)
+
+        async with await _make_client(app) as client:
+            # offset < 0
+            resp = await client.get(
+                f"/api/v1/projects/{project_id}/analytics/trends?offset=-1",
+            )
+            assert resp.status_code == 422
+
+            # limit > 365
+            resp = await client.get(
+                f"/api/v1/projects/{project_id}/analytics/trends?limit=366",
+            )
+            assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_flaky_returns_paginated_response(self, app, mock_repos, project_id):
+        mock_session = AsyncMock()
+        count_result = MagicMock()
+        count_result.scalar_one.return_value = 1
+        data_result = MagicMock()
+        data_result.all.return_value = [
             SimpleNamespace(suite="test_auth", name="test_login", total_runs=10, passed_count=7, failed_count=3),
         ]
-        mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        app.dependency_overrides = {}
-        from qaplatform.api.deps import _get_db_session, _get_repos, get_current_user
-
-        async def _override_repos():
-            return mock_repos
-
-        async def _override_user():
-            return MagicMock(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="owner", is_platform_admin=False)
-
-        app.dependency_overrides[_get_repos] = _override_repos
-        app.dependency_overrides[get_current_user] = _override_user
-        app.dependency_overrides[_get_db_session] = lambda: mock_session
+        mock_session.execute = AsyncMock(side_effect=[count_result, data_result])
+        self._setup_session(app, mock_repos, mock_session)
 
         async with await _make_client(app) as client:
             resp = await client.get(f"/api/v1/projects/{project_id}/analytics/flaky")
 
         assert resp.status_code == 200
+        body = resp.json()
+        assert "data" in body
+        assert "pagination" in body
+        assert len(body["data"]) == 1
+        assert body["data"][0]["suite"] == "test_auth"
+        assert body["data"][0]["flaky_rate"] == 0.3
+        assert body["pagination"]["total"] == 1
+        assert body["pagination"]["offset"] == 0
+        assert body["pagination"]["limit"] == 50
+
+    @pytest.mark.asyncio
+    async def test_flaky_with_offset(self, app, mock_repos, project_id):
+        mock_session = AsyncMock()
+        count_result = MagicMock()
+        count_result.scalar_one.return_value = 100
+        data_result = MagicMock()
+        data_result.all.return_value = []
+        mock_session.execute = AsyncMock(side_effect=[count_result, data_result])
+        self._setup_session(app, mock_repos, mock_session)
+
+        async with await _make_client(app) as client:
+            resp = await client.get(
+                f"/api/v1/projects/{project_id}/analytics/flaky?offset=10&limit=20",
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pagination"]["offset"] == 10
+        assert body["pagination"]["limit"] == 20
+        assert body["pagination"]["total"] == 100
+
+    @pytest.mark.asyncio
+    async def test_flaky_rejects_invalid_pagination(self, app, mock_repos, project_id):
+        mock_session = AsyncMock()
+        self._setup_session(app, mock_repos, mock_session)
+
+        async with await _make_client(app) as client:
+            # offset < 0
+            resp = await client.get(
+                f"/api/v1/projects/{project_id}/analytics/flaky?offset=-1",
+            )
+            assert resp.status_code == 422
+
+            # limit > 200
+            resp = await client.get(
+                f"/api/v1/projects/{project_id}/analytics/flaky?limit=201",
+            )
+            assert resp.status_code == 422
