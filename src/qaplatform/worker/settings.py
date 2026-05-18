@@ -69,6 +69,7 @@ async def on_shutdown(ctx: dict) -> None:
 
 async def reclaim_resources(ctx: dict) -> None:
     """Periodic task: reclaim orphan containers and timeout stale runs."""
+    from qaplatform.api.metrics import run_queue_depth, runs_in_flight
     from qaplatform.engine.reclaim import reclaim_worker_lost
     from qaplatform.infra.database.repositories.run_repo import RunRepository
 
@@ -85,6 +86,11 @@ async def reclaim_resources(ctx: dict) -> None:
                 redis=redis,
                 backend=ctx.get("docker_backend"),
             )
+            # Update gauges after reclaim so values reflect post-cleanup state
+            in_flight = await run_repo.count_active_or_enqueued()
+            runs_in_flight.set(in_flight)
+            queue_depth = await run_repo.count_queued_waiting()
+            run_queue_depth.set(queue_depth)
         finally:
             await session.commit()
 
@@ -107,6 +113,26 @@ async def dequeue_waiting(ctx: dict) -> None:
         )
         await scheduler.try_dequeue_waiting()
         await session.commit()
+
+
+async def cleanup_old_runs(ctx: dict) -> None:
+    """Periodic task: delete done/failed runs older than retention_runs_days."""
+    from datetime import timedelta
+
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+
+    session_factory = ctx.get("db_session_factory")
+    settings = ctx.get("settings")
+    if session_factory is None or settings is None:
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.retention_runs_days)
+    async with session_factory() as session:
+        run_repo = RunRepository(session)
+        deleted = await run_repo.delete_terminal_older_than(cutoff=cutoff)
+        await session.commit()
+    if deleted:
+        log.info("retention_cleanup_done", deleted=deleted, cutoff=cutoff.isoformat())
 
 
 async def retry_failed_archives(ctx: dict) -> None:
@@ -157,5 +183,6 @@ class WorkerSettings:
         cron(reclaim_resources, second={0}),
         cron(dequeue_waiting, second={30}),
         cron(retry_failed_archives, second={45}),
+        cron(cleanup_old_runs, minute={0}, second={0}),  # hourly retention sweep
     ]
     redis_settings = _get_redis_settings()

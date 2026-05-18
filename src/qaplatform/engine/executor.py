@@ -284,6 +284,8 @@ class RunExecutor:
                 summary=summary,
             )
             if updated:
+                from qaplatform.api.metrics import run_terminal_total
+                run_terminal_total.labels(status=status.value).inc()
                 await self._publish(run_id, status.value, previous=RunStatus.COLLECTING.value)
                 await self.log_stream.write_log(run_id, f"Run completed: {status.value}")
 
@@ -297,6 +299,8 @@ class RunExecutor:
                 run_id, message=redact_url_userinfo(str(exc))
             )
             if failed:
+                from qaplatform.api.metrics import run_terminal_total
+                run_terminal_total.labels(status=RunStatus.FAILED.value).inc()
                 await self._publish(run_id, RunStatus.FAILED.value)
             return RunStatus.FAILED
         finally:
