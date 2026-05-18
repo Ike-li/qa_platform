@@ -224,6 +224,82 @@ class TestRunSetupContainerised:
         with pytest.raises(RuntimeError, match="timed out"):
             await executor._run_setup(sample_run, setup_pipeline, tmp_path)
 
+    @pytest.mark.asyncio
+    async def test_setup_outer_wait_for_triggers_graceful_stop(
+        self, executor, mock_backend, sample_run, setup_pipeline, tmp_path
+    ):
+        """P1-B: if backend.wait ignores its timeout, the outer asyncio.wait_for
+        guard fires _graceful_stop and synthesises a timed_out result so the
+        run still terminates instead of hanging forever.
+        """
+        mock_backend.create_execution = AsyncMock(return_value="c")
+        mock_backend.start = AsyncMock()
+
+        async def _hang(*_a, **_kw):
+            await asyncio.sleep(3600)
+
+        mock_backend.wait = AsyncMock(side_effect=_hang)
+        mock_backend.cleanup = AsyncMock()
+        mock_backend.cancel = AsyncMock()
+        mock_backend.force_kill = AsyncMock()
+
+        async def _empty_logs(_id):
+            if False:
+                yield
+        mock_backend.stream_logs = _empty_logs
+
+        # Shrink the setup timeout so the outer wait_for fires fast.
+        setup_pipeline = setup_pipeline.__class__(
+            image=setup_pipeline.image,
+            stages=setup_pipeline.stages,
+            env_vars=setup_pipeline.env_vars,
+            timeout_seconds=0,
+            setup_script=setup_pipeline.setup_script,
+        )
+
+        with patch.object(
+            executor, "_graceful_stop", new=AsyncMock()
+        ) as graceful:
+            with pytest.raises(RuntimeError, match="timed out"):
+                await executor._run_setup(sample_run, setup_pipeline, tmp_path)
+
+        graceful.assert_awaited_once()
+        kwargs = graceful.call_args.kwargs
+        assert "setup timeout" in kwargs.get("reason", "")
+        mock_backend.cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_log_task_stuck_does_not_block_cleanup(
+        self, executor, mock_backend, sample_run, setup_pipeline, tmp_path
+    ):
+        """P1-C: a wedged log-follow coroutine must not block backend.cleanup
+        or pin the run's finally block. Cleanup runs first; log_task drain is
+        bounded by _LOG_DRAIN_TIMEOUT.
+        """
+        mock_backend.create_execution = AsyncMock(return_value="c")
+        mock_backend.start = AsyncMock()
+        mock_backend.wait = AsyncMock(
+            return_value=MagicMock(exit_code=0, timed_out=False)
+        )
+        mock_backend.cleanup = AsyncMock()
+
+        # Simulate a log stream that never ends, even after the container
+        # is cleaned up — exactly the failure mode P1-C guards against.
+        async def _wedged_logs(_id):
+            await asyncio.sleep(3600)
+            if False:
+                yield
+        mock_backend.stream_logs = _wedged_logs
+
+        # Patch the drain timeout down to keep the test fast.
+        with patch("qaplatform.engine.executor._LOG_DRAIN_TIMEOUT", 0.05):
+            await asyncio.wait_for(
+                executor._run_setup(sample_run, setup_pipeline, tmp_path),
+                timeout=2.0,
+            )
+
+        mock_backend.cleanup.assert_awaited_once()
+
 
 class TestExecutorUsesSourcePlugin:
     """Verify executor delegates to SourceProtocol plugin."""
