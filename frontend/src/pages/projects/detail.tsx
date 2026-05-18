@@ -7,7 +7,8 @@ import {
   Globe,
   Play,
   Plus,
-  ArrowRight
+  ArrowRight,
+  TrendingUp,
 } from "lucide-react";
 import * as React from "react";
 import { useForm } from "react-hook-form";
@@ -41,6 +42,7 @@ import {
 } from "../../components/ui/alert-dialog";
 import { PipelineModal } from "../../components/projects/pipeline-modal";
 import { TriggerRunModal } from "../../components/runs/trigger-run-modal";
+import { AnalyticsPanel } from "../../components/projects/analytics-panel";
 import { EnvironmentEditor } from "../../components/projects/environment-editor";
 import { cn } from "../../lib/utils";
 import { usePageTitle } from "../../hooks/use-page-title";
@@ -199,6 +201,9 @@ export default function ProjectDetail() {
           <TabsTrigger value="environments">
             <Globe className="mr-2 h-4 w-4" /> {t('projects.tabs.environments')}
           </TabsTrigger>
+          <TabsTrigger value="analytics">
+            <TrendingUp className="mr-2 h-4 w-4" /> {t('projects.tabs.analytics')}
+          </TabsTrigger>
           <TabsTrigger value="settings">
             <SettingsIcon className="mr-2 h-4 w-4" /> {t('projects.tabs.settings')}
           </TabsTrigger>
@@ -263,6 +268,10 @@ export default function ProjectDetail() {
 
         <TabsContent value="environments" className="space-y-4">
           <EnvironmentEditor projectId={id!} />
+        </TabsContent>
+
+        <TabsContent value="analytics">
+          <AnalyticsPanel projectId={id!} />
         </TabsContent>
 
         <TabsContent value="settings" className="space-y-6 max-w-2xl">
