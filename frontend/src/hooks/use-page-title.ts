@@ -1,8 +1,9 @@
 import { useEffect } from "react";
-import i18n from "../i18n";
+import { useTranslation } from "react-i18next";
 
 export function usePageTitle(title: string) {
+  const { t } = useTranslation();
   useEffect(() => {
-    document.title = `${title} | ${i18n.t("common.appName")}`;
-  }, [title]);
+    document.title = `${title} | ${t("common.appName")}`;
+  }, [title, t]);
 }

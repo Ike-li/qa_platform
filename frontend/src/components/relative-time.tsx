@@ -20,6 +20,8 @@ let intervalId: ReturnType<typeof setInterval> | null = null;
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
+  const onLangChange = () => { tick++; listeners.forEach((l) => l()); };
+  i18n.on('languageChanged', onLangChange);
   if (!intervalId) {
     intervalId = setInterval(() => {
       tick++;
@@ -28,6 +30,7 @@ function subscribe(listener: () => void) {
   }
   return () => {
     listeners.delete(listener);
+    i18n.off('languageChanged', onLangChange);
     if (listeners.size === 0 && intervalId) {
       clearInterval(intervalId);
       intervalId = null;
