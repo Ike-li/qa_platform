@@ -161,6 +161,81 @@ class TestEvaluateAndNotify:
         assert call_kwargs["status"].value == "sent"
 
     @pytest.mark.asyncio
+    async def test_template_rendering(self):
+        rule = MagicMock()
+        rule.id = uuid4()
+        rule.conditions = []
+        rule.template = "Run {{run_id}} status={{status}} passed={{passed}} failed={{failed}}"
+        rule.channels = [{"type": "webhook", "config": {"url": "https://example.com"}}]
+
+        session = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        sf = MagicMock(return_value=session)
+
+        rule_repo = AsyncMock()
+        rule_repo.find_enabled_by_project = AsyncMock(return_value=[rule])
+        log_repo = AsyncMock()
+
+        mock_send = AsyncMock()
+        with (
+            patch("qaplatform.infra.database.repositories.project_repo.NotificationRuleRepository", return_value=rule_repo),
+            patch("qaplatform.infra.database.repositories.project_repo.NotificationLogRepository", return_value=log_repo),
+            patch("qaplatform.worker.notifications._send_channel", mock_send),
+        ):
+            run_id = uuid4()
+            await evaluate_and_notify(
+                run_id=run_id,
+                project_id=uuid4(),
+                status="failed",
+                summary={"passed": 5, "failed": 3},
+                session_factory=sf,
+            )
+
+        mock_send.assert_awaited_once()
+        sent_message = mock_send.call_args.args[2]
+        assert str(run_id) in sent_message
+        assert "status=failed" in sent_message
+        assert "passed=5" in sent_message
+        assert "failed=3" in sent_message
+
+    @pytest.mark.asyncio
+    async def test_numeric_coercion_in_conditions(self):
+        rule = MagicMock()
+        rule.id = uuid4()
+        rule.conditions = [
+            {"field": "pass_rate", "operator": "gte", "value": "0.8"},
+            {"field": "failed", "operator": "gt", "value": "0"},
+        ]
+        rule.channels = [{"type": "webhook", "config": {}}]
+        rule.template = None
+
+        session = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        sf = MagicMock(return_value=session)
+
+        rule_repo = AsyncMock()
+        rule_repo.find_enabled_by_project = AsyncMock(return_value=[rule])
+        log_repo = AsyncMock()
+
+        with (
+            patch("qaplatform.infra.database.repositories.project_repo.NotificationRuleRepository", return_value=rule_repo),
+            patch("qaplatform.infra.database.repositories.project_repo.NotificationLogRepository", return_value=log_repo),
+            patch("qaplatform.worker.notifications._send_channel", new_callable=AsyncMock),
+        ):
+            await evaluate_and_notify(
+                run_id=uuid4(),
+                project_id=uuid4(),
+                status="failed",
+                summary={"passed": 2, "failed": 8, "pass_rate": 0.2},
+                session_factory=sf,
+            )
+
+        # pass_rate 0.2 < 0.8 and failed 8 > 0 → first condition fails, notification skipped
+        log_repo.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_non_matching_rule_skipped(self):
         rule = MagicMock()
         rule.id = uuid4()

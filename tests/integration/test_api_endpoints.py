@@ -216,7 +216,7 @@ class TestNotificationRules:
             "name": "slack-alert",
             "enabled": True,
             "conditions": [{"field": "status", "operator": "eq", "value": "failed"}],
-            "channels": [{"type": "slack", "webhook_url": "https://hooks.example.com/test"}],
+            "channels": [{"type": "webhook", "webhook_url": "https://hooks.example.com/test"}],
         }
         resp = await integration_client.post(
             f"/api/v1/projects/{project_id}/notification-rules", json=payload
@@ -254,7 +254,7 @@ class TestNotificationRules:
             f"/api/v1/projects/{project_id}/notification-rules",
             json={
                 "name": "before-update",
-                "channels": [{"type": "slack", "webhook_url": "https://h.example.com"}],
+                "channels": [{"type": "webhook", "webhook_url": "https://h.example.com"}],
             },
         )
         assert create_resp.status_code == 201
@@ -278,7 +278,7 @@ class TestNotificationRules:
             f"/api/v1/projects/{project_id}/notification-rules",
             json={
                 "name": "to-delete",
-                "channels": [{"type": "slack", "webhook_url": "https://h.example.com"}],
+                "channels": [{"type": "webhook", "webhook_url": "https://h.example.com"}],
             },
         )
         assert create_resp.status_code == 201
