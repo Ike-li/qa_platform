@@ -36,6 +36,11 @@ pytestmark = [
         reason="Docker Desktop macOS OOM behavior unstable (cgroup hard limit "
         "may not trigger kernel OOM killer)",
     ),
+    pytest.mark.skipif(
+        os.environ.get("QAP_TEST_OOM") != "1",
+        reason="OOM detection unreliable on GitHub Actions (cgroup v2 may not set "
+        "OOMKilled=true even on exit 137); set QAP_TEST_OOM=1 on bare-metal Linux",
+    ),
 ]
 
 
