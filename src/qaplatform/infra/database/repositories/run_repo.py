@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.infra.database.models import (
     Artifact,
+    Pipeline,
     Run,
     RunStatusEnum,
     TestResult,
@@ -232,7 +233,14 @@ class RunRepository(BaseRepository[Run]):
         await self.session.execute(stmt)
         await self.session.flush()
 
-    async def mark_running(self, run_id: UUID) -> None:
+    async def mark_running(self, run_id: UUID) -> bool:
+        """Set PREPARING → RUNNING. Returns True if the row was updated.
+
+        Returns False when a concurrent CANCEL/FAIL has already moved the run
+        out of PREPARING — caller should treat this as a state race, not an
+        error.  Matches the pattern of ``finish_if_current`` /
+        ``cancel_if_current``.
+        """
         now = _utcnow()
         stmt = (
             update(Run)
@@ -244,10 +252,18 @@ class RunRepository(BaseRepository[Run]):
                 updated_at=now,
             )
         )
-        await self.session.execute(stmt)
+        result = await self.session.execute(stmt)
         await self.session.flush()
+        return result.rowcount > 0
 
-    async def mark_collecting(self, run_id: UUID) -> None:
+    async def mark_collecting(self, run_id: UUID) -> bool:
+        """Set RUNNING → COLLECTING. Returns True if the row was updated.
+
+        Returns False when a concurrent CANCEL/FAIL has already moved the run
+        out of RUNNING — caller should treat this as a state race, not an
+        error.  Matches the pattern of ``finish_if_current`` /
+        ``cancel_if_current``.
+        """
         now = _utcnow()
         stmt = (
             update(Run)
@@ -258,8 +274,9 @@ class RunRepository(BaseRepository[Run]):
                 updated_at=now,
             )
         )
-        await self.session.execute(stmt)
+        result = await self.session.execute(stmt)
         await self.session.flush()
+        return result.rowcount > 0
 
     async def is_cancel_requested(self, run_id: UUID) -> bool:
         """Has cancel been requested for this run?
@@ -289,6 +306,40 @@ class RunRepository(BaseRepository[Run]):
         )
         await self.session.execute(stmt)
         await self.session.flush()
+
+    async def mark_worker_lost(
+        self,
+        run_id: UUID,
+        *,
+        worker_id: str,
+        message: str,
+    ) -> bool:
+        """Mark a non-terminal run as failed because its worker heartbeat expired.
+
+        Conditional on (status non-terminal) AND (worker_id still matches), so a
+        run that just got reclaimed by another worker, finished normally, or was
+        cancelled in the meantime is left untouched.
+        """
+        now = _utcnow()
+        stmt = (
+            update(Run)
+            .where(
+                Run.id == run_id,
+                Run.worker_id == worker_id,
+                Run.status.in_(self._FAIL_EXPECTED),
+            )
+            .values(
+                status=RunStatusEnum.FAILED,
+                finished_at=now,
+                error_message=message,
+                worker_id=None,
+                status_updated_at=now,
+                updated_at=now,
+            )
+        )
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return result.rowcount > 0
 
     # --- Queries for scheduler / reclaimer ---
 
@@ -328,14 +379,35 @@ class RunRepository(BaseRepository[Run]):
         return list(result.scalars().all())
 
     async def find_past_pipeline_deadline(
-        self, statuses: list[RunStatusEnum]
+        self,
+        statuses: list[RunStatusEnum],
+        buffer_seconds: int = 120,
     ) -> list[Run]:
-        """Find runs exceeding their pipeline timeout (stale running/collecting)."""
+        """Find runs exceeding their pipeline timeout (stale running/collecting).
+
+        A run is considered past deadline when:
+            status_updated_at + GREATEST(pipeline.timeout_seconds, 1800) + buffer_seconds < now()
+
+        ``buffer_seconds`` (default 120) gives the worker time to handle its own
+        SIGTERM→SIGKILL sequence (~30 s) and for the status write-back + Redis
+        pub/sub propagation to settle before reclaim forcibly marks the run failed.
+
+        ``GREATEST(pipeline.timeout_seconds, 1800)`` is used instead of
+        ``COALESCE`` because a pipeline with timeout_seconds=0 would otherwise
+        produce an absurdly short deadline; treating any value below 1800 as 1800
+        is the safer floor.
+        """
         stmt = (
             select(Run)
+            .join(Pipeline, Pipeline.id == Run.pipeline_id)
             .where(
                 Run.status.in_(statuses),
-                text("status_updated_at + (INTERVAL '1 second' * 1800) < now()"),
+                text(
+                    "run.status_updated_at + "
+                    "(INTERVAL '1 second' * ("
+                    "GREATEST(pipeline.timeout_seconds, 1800) + :buffer_seconds"
+                    ")) < now()"
+                ).bindparams(buffer_seconds=buffer_seconds),
             )
         )
         result = await self.session.execute(stmt)

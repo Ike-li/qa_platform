@@ -57,8 +57,8 @@ class RunRepositoryProtocol(Protocol):
     """Minimal run repository interface needed by the executor."""
 
     async def get(self, run_id: UUID | str) -> Run | None: ...
-    async def mark_running(self, run_id: UUID | str) -> None: ...
-    async def mark_collecting(self, run_id: UUID | str) -> None: ...
+    async def mark_running(self, run_id: UUID | str) -> bool: ...
+    async def mark_collecting(self, run_id: UUID | str) -> bool: ...
     async def finish_if_current(
         self,
         run_id: UUID | str,
@@ -208,7 +208,17 @@ class RunExecutor:
                 await self._run_setup(run, pipeline, working_dir)
 
             # 3. Run all stages
-            await self.run_repo.mark_running(run_id)
+            if not await self.run_repo.mark_running(run_id):
+                log.info(
+                    "run_status_transition_skipped",
+                    extra={
+                        "run_id": str(run_id),
+                        "from_": RunStatus.PREPARING.value,
+                        "to": RunStatus.RUNNING.value,
+                        "reason": "row not in expected state — likely cancelled concurrently",
+                    },
+                )
+                return RunStatus.CANCELLED
             # Commit so the RUNNING transition is visible to other connections (cancel API, SSE).
             await self.run_repo.commit()
             await self._publish(run_id, RunStatus.RUNNING.value, previous=RunStatus.PREPARING.value)
