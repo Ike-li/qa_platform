@@ -3,20 +3,27 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { useAuth } from "../hooks/use-auth";
 import api from "../lib/api";
+import i18n from "../i18n";
 
-const loginSchema = z.object({
-  username: z.string().min(1, "Username or email is required"),
-  password: z.string().min(1, "Password is required"),
-});
+function createLoginSchema() {
+  return z.object({
+    username: z.string().min(1, i18n.t('validation.usernameRequired')),
+    password: z.string().min(1, i18n.t('validation.passwordRequired')),
+  });
+}
 
-type LoginFormValues = z.infer<typeof loginSchema>;
+type LoginFormValues = z.infer<ReturnType<typeof createLoginSchema>>;
 
 export default function Login() {
+  const { t } = useTranslation();
   const { login } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
+
+  const loginSchema = createLoginSchema();
 
   const {
     register,
@@ -37,7 +44,7 @@ export default function Login() {
       navigate("/projects");
     } catch (err: unknown) {
       const axiosError = err as { response?: { data?: { detail?: string } } };
-      setError(axiosError.response?.data?.detail || "Failed to log in");
+      setError(axiosError.response?.data?.detail || t('auth.loginFailed'));
     }
   };
 
@@ -45,8 +52,8 @@ export default function Login() {
     <div className="flex min-h-screen items-center justify-center bg-canvas p-4 text-ink">
       <div className="w-full max-w-sm rounded-xl border border-hairline bg-surface-1 p-8">
         <div className="mb-8 text-center">
-          <h1 className="text-2xl font-semibold tracking-tight">Sign in to QA Platform</h1>
-          <p className="mt-2 text-sm text-ink-subtle">Enter your credentials to continue</p>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('auth.signInTitle')}</h1>
+          <p className="mt-2 text-sm text-ink-subtle">{t('auth.signInSubtitle')}</p>
         </div>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
@@ -57,7 +64,7 @@ export default function Login() {
           )}
 
           <div className="space-y-2">
-            <label htmlFor="username" className="text-sm font-medium text-ink-muted">Username</label>
+            <label htmlFor="username" className="text-sm font-medium text-ink-muted">{t('auth.username')}</label>
             <input
               id="username"
               type="text"
@@ -69,7 +76,7 @@ export default function Login() {
           </div>
 
           <div className="space-y-2">
-            <label htmlFor="password" className="text-sm font-medium text-ink-muted">Password</label>
+            <label htmlFor="password" className="text-sm font-medium text-ink-muted">{t('auth.password')}</label>
             <input
               id="password"
               type="password"
@@ -85,7 +92,7 @@ export default function Login() {
             disabled={isSubmitting}
             className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-primary-focus focus:ring-offset-2 focus:ring-offset-canvas disabled:opacity-50"
           >
-            {isSubmitting ? "Signing in..." : "Sign in"}
+            {isSubmitting ? t('auth.signingIn') : t('auth.signIn')}
           </button>
         </form>
       </div>

@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { FolderGit2, PlayCircle, Settings } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useProjects } from "../../hooks/use-projects";
 import { useRuns } from "../../hooks/use-runs";
 import {
@@ -13,6 +14,7 @@ import {
 } from "../../components/ui/command";
 
 export function CommandPalette() {
+  const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const paletteRef = React.useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -85,12 +87,12 @@ export function CommandPalette() {
         onKeyDown: trapFocus,
       }}
     >
-      <CommandInput placeholder="Type a command or search..." />
+      <CommandInput placeholder={t('commandPalette.placeholder')} />
       <CommandList>
-        <CommandEmpty>No results found.</CommandEmpty>
-        
+        <CommandEmpty>{t('commandPalette.noResults')}</CommandEmpty>
+
         {projects && projects.data.length > 0 && (
-          <CommandGroup heading="Projects">
+          <CommandGroup heading={t('commandPalette.projects')}>
             {projects.data.map((project) => (
               <CommandItem
                 key={project.id}
@@ -104,7 +106,7 @@ export function CommandPalette() {
         )}
 
         {runs && runs.data.length > 0 && (
-          <CommandGroup heading="Recent Runs">
+          <CommandGroup heading={t('commandPalette.recentRuns')}>
             {runs.data.map((run) => (
               <CommandItem
                 key={run.id}
@@ -118,10 +120,10 @@ export function CommandPalette() {
           </CommandGroup>
         )}
 
-        <CommandGroup heading="Settings">
+        <CommandGroup heading={t('commandPalette.settings')}>
           <CommandItem onSelect={() => runCommand(() => navigate('/settings'))}>
             <Settings className="mr-2 h-4 w-4" />
-            <span>Settings</span>
+            <span>{t('commandPalette.settings')}</span>
           </CommandItem>
         </CommandGroup>
       </CommandList>

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { cn } from "../lib/utils";
 import type { RunStatus } from "../types/api";
 
@@ -13,13 +14,14 @@ const statusStyles: Record<RunStatus, string> = {
 };
 
 export function RunStatusBadge({ status, className }: { status: RunStatus; className?: string }) {
+  const { t } = useTranslation();
   return (
     <span className={cn(
       "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize",
       statusStyles[status],
       className
     )}>
-      {status}
+      {t(`runStatus.${status}`)}
     </span>
   );
 }

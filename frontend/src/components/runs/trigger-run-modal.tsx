@@ -3,6 +3,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { useTriggerRun } from "../../hooks/use-runs";
 import { useProjectPipelines } from "../../hooks/use-projects";
 import { 
@@ -25,7 +26,7 @@ import {
 } from "../../components/ui/select";
 
 const triggerSchema = z.object({
-  pipeline_id: z.string().min(1, "Pipeline is required"),
+  pipeline_id: z.string().min(1),
   branch: z.string().optional(),
 });
 
@@ -42,6 +43,7 @@ export function TriggerRunModal({
   onOpenChange: (open: boolean) => void;
   defaultPipelineId?: string;
 }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { data: pipelines } = useProjectPipelines(projectId);
   const { mutateAsync: triggerRun, isPending } = useTriggerRun();
@@ -68,13 +70,13 @@ export function TriggerRunModal({
         pipeline_id: data.pipeline_id,
         branch: data.branch || undefined,
       });
-      toast.success("Run triggered successfully");
+      toast.success(t("trigger.toast.success"));
       reset();
       onOpenChange(false);
       navigate(`/runs/${run.id}`);
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } };
-      toast.error(axiosError.response?.data?.detail || "Failed to trigger run");
+      toast.error(axiosError.response?.data?.detail || t("trigger.toast.failed"));
     }
   };
 
@@ -82,19 +84,19 @@ export function TriggerRunModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>Trigger Run</DialogTitle>
-          <DialogDescription>Start a new execution for this project.</DialogDescription>
+          <DialogTitle>{t("trigger.title")}</DialogTitle>
+          <DialogDescription>{t("trigger.description")}</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-6 py-4">
           <div className="space-y-2">
-            <Label htmlFor="pipeline">Select Pipeline</Label>
+            <Label htmlFor="pipeline">{t("trigger.selectPipeline")}</Label>
             <Select 
               value={watchPipelineId || defaultPipelineId}
               onValueChange={(value) => setValue("pipeline_id", value)}
             >
               <SelectTrigger>
-                <SelectValue placeholder="Select a pipeline" />
+                <SelectValue placeholder={t("trigger.selectPipelinePlaceholder")} />
               </SelectTrigger>
               <SelectContent>
                 {pipelines?.map(p => (
@@ -102,19 +104,19 @@ export function TriggerRunModal({
                 ))}
               </SelectContent>
             </Select>
-            {errors.pipeline_id && <p className="text-xs text-status-failed">{errors.pipeline_id.message}</p>}
+            {errors.pipeline_id && <p className="text-xs text-status-failed">{t("validation.pipelineRequired")}</p>}
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="branch">Branch Override (Optional)</Label>
+            <Label htmlFor="branch">{t("trigger.branchOverride")}</Label>
             <Input id="branch" {...register("branch")} placeholder="e.g. develop" />
-            <p className="text-[10px] text-ink-tertiary">Defaults to the project's default branch if left empty.</p>
+            <p className="text-[10px] text-ink-tertiary">{t("trigger.branchHint")}</p>
           </div>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>{t("common.cancel")}</Button>
             <Button type="submit" disabled={isPending || !pipelines?.length}>
-              {isPending ? "Triggering..." : "Run Pipeline"}
+              {isPending ? t("trigger.triggering") : t("trigger.runPipeline")}
             </Button>
           </DialogFooter>
         </form>

@@ -6,6 +6,7 @@ import {
   User,
   ArrowRight
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useRuns } from "../../hooks/use-runs";
 import { RunStatusBadge } from "../../components/run-status-badge";
 import { DurationDisplay } from "../../components/duration-display";
@@ -16,7 +17,8 @@ import { Button } from "../../components/ui/button";
 import { usePageTitle } from "../../hooks/use-page-title";
 
 export default function Runs() {
-  usePageTitle("Runs");
+  const { t } = useTranslation();
+  usePageTitle(t('runs.title'));
   const [page, setPage] = useState(1);
   const { data, isLoading, isError } = useRuns({ per_page: 20, page });
 
@@ -24,15 +26,15 @@ export default function Runs() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Recent Runs</h1>
-          <p className="text-sm text-ink-subtle">Monitor automation execution across all projects</p>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('runs.title')}</h1>
+          <p className="text-sm text-ink-subtle">{t('runs.subtitle')}</p>
         </div>
       </div>
 
       {isError && (
         <div className="rounded-xl border border-status-failed/20 bg-status-failed/5 p-6 text-center">
-          <p className="text-sm text-status-failed">Failed to load runs.</p>
-          <Button variant="outline" size="sm" className="mt-3" onClick={() => setPage(1)}>Retry</Button>
+          <p className="text-sm text-status-failed">{t('runs.failedToLoad')}</p>
+          <Button variant="outline" size="sm" className="mt-3" onClick={() => setPage(1)}>{t('common.retry')}</Button>
         </div>
       )}
 
@@ -41,13 +43,13 @@ export default function Runs() {
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-hairline bg-surface-2/50 text-ink-muted">
-              <th className="px-6 py-3 font-medium">Status</th>
-              <th className="px-6 py-3 font-medium">Pipeline</th>
-              <th className="px-6 py-3 font-medium">Branch</th>
-              <th className="px-6 py-3 font-medium">Triggered By</th>
-              <th className="px-6 py-3 font-medium">Duration</th>
-              <th className="px-6 py-3 font-medium">Started</th>
-              <th className="px-6 py-3 font-medium text-right">Action</th>
+              <th className="px-6 py-3 font-medium">{t('runs.table.status')}</th>
+              <th className="px-6 py-3 font-medium">{t('runs.table.pipeline')}</th>
+              <th className="px-6 py-3 font-medium">{t('runs.table.branch')}</th>
+              <th className="px-6 py-3 font-medium">{t('runs.table.triggeredBy')}</th>
+              <th className="px-6 py-3 font-medium">{t('runs.table.duration')}</th>
+              <th className="px-6 py-3 font-medium">{t('runs.table.started')}</th>
+              <th className="px-6 py-3 font-medium text-right">{t('runs.table.action')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-hairline">
@@ -68,9 +70,9 @@ export default function Runs() {
             ) : data?.data.length === 0 ? (
               <tr>
                 <td colSpan={7} className="p-0">
-                  <EmptyState 
-                    title="No runs found"
-                    description="Trigger a pipeline in a project to see runs here."
+                  <EmptyState
+                    title={t('runs.noRuns')}
+                    description={t('runs.noRunsDescription')}
                     className="border-0 rounded-none rounded-b-xl"
                   />
                 </td>
@@ -110,7 +112,7 @@ export default function Runs() {
                   <td className="px-6 py-4 text-right">
                     <Button variant="ghost" size="sm" asChild>
                       <Link to={`/runs/${run.id}`}>
-                        Details <ArrowRight className="ml-2 h-3 w-3" />
+                        {t('common.details')} <ArrowRight className="ml-2 h-3 w-3" />
                       </Link>
                     </Button>
                   </td>
@@ -124,10 +126,10 @@ export default function Runs() {
 
       {data && data.total > data.per_page && (
         <div className="flex items-center justify-between px-2">
-          <p className="text-xs text-ink-tertiary">Showing {data.data.length} of {data.total} runs</p>
+          <p className="text-xs text-ink-tertiary">{t('common.showingOf', { count: data.data.length, total: data.total })}</p>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(p => p - 1)}>Previous</Button>
-            <Button variant="outline" size="sm" disabled={page * data.per_page >= data.total} onClick={() => setPage(p => p + 1)}>Next</Button>
+            <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(p => p - 1)}>{t('common.previous')}</Button>
+            <Button variant="outline" size="sm" disabled={page * data.per_page >= data.total} onClick={() => setPage(p => p + 1)}>{t('common.next')}</Button>
           </div>
         </div>
       )}

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Plus, Trash2, Eye, EyeOff, Save, X } from "lucide-react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import {
   useProjectEnvironments,
   useCreateEnvironment,
@@ -11,19 +12,20 @@ import type { Environment } from "../../types/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
-import { 
-  AlertDialog, 
-  AlertDialogAction, 
-  AlertDialogCancel, 
-  AlertDialogContent, 
-  AlertDialogDescription, 
-  AlertDialogFooter, 
-  AlertDialogHeader, 
-  AlertDialogTitle, 
-  AlertDialogTrigger 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger
 } from "../../components/ui/alert-dialog";
 
 export function EnvironmentEditor({ projectId }: { projectId: string }) {
+  const { t } = useTranslation();
   const { data: environments, isLoading } = useProjectEnvironments(projectId);
   const { mutateAsync: createEnv } = useCreateEnvironment(projectId);
 
@@ -39,22 +41,22 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
     if (!newEnvName) return;
     try {
       await createEnv({ name: newEnvName, variables: {} });
-      toast.success("Environment created");
+      toast.success(t('environments.toast.created'));
       setNewEnvName("");
       setIsAdding(false);
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } };
-      toast.error(axiosError.response?.data?.detail || "Failed to create environment");
+      toast.error(axiosError.response?.data?.detail || t('environments.toast.createFailed'));
     }
   };
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h3 className="text-lg font-medium text-ink">Environments</h3>
+        <h3 className="text-lg font-medium text-ink">{t('environments.title')}</h3>
         {!isAdding && (
           <Button size="sm" onClick={() => setIsAdding(true)}>
-            <Plus className="mr-2 h-4 w-4" /> New Environment
+            <Plus className="mr-2 h-4 w-4" /> {t('environments.newEnvironment')}
           </Button>
         )}
       </div>
@@ -62,16 +64,16 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
       {isAdding && (
         <div className="rounded-lg border border-hairline bg-surface-1 p-4 flex items-end gap-4 animate-in fade-in slide-in-from-top-2">
           <div className="flex-1 space-y-2">
-            <Label>Environment Name</Label>
-            <Input 
-              value={newEnvName} 
-              onChange={(e) => setNewEnvName(e.target.value)} 
-              placeholder="e.g. Production, Staging" 
+            <Label>{t('environments.envNameLabel')}</Label>
+            <Input
+              value={newEnvName}
+              onChange={(e) => setNewEnvName(e.target.value)}
+              placeholder="e.g. Production, Staging"
             />
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setIsAdding(false)}>Cancel</Button>
-            <Button size="sm" onClick={handleAdd}>Create</Button>
+            <Button variant="outline" size="sm" onClick={() => setIsAdding(false)}>{t('common.cancel')}</Button>
+            <Button size="sm" onClick={handleAdd}>{t('common.create')}</Button>
           </div>
         </div>
       )}
@@ -79,13 +81,13 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
       <div className="grid gap-6">
         {environments?.length === 0 ? (
           <div className="rounded-xl border border-hairline border-dashed p-12 text-center text-sm text-ink-tertiary">
-            No environments configured.
+            {t('environments.noEnvironments')}
           </div>
         ) : (
           environments?.map(env => (
-            <EnvironmentCard 
-              key={env.id} 
-              env={env} 
+            <EnvironmentCard
+              key={env.id}
+              env={env}
               projectId={projectId}
             />
           ))
@@ -96,6 +98,7 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
 }
 
 function EnvironmentCard({ env, projectId }: { env: Environment; projectId: string }) {
+  const { t } = useTranslation();
   const [variables, setVariables] = useState(env.variables);
   const [isEditing, setIsEditing] = useState(false);
   const [showValues, setShowValues] = useState<Record<string, boolean>>({});
@@ -106,19 +109,19 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
   const handleSave = async () => {
     try {
       await updateEnv({ ...env, variables });
-      toast.success("Environment variables saved");
+      toast.success(t('environments.toast.saved'));
       setIsEditing(false);
     } catch {
-      toast.error("Failed to save variables");
+      toast.error(t('environments.toast.saveFailed'));
     }
   };
 
   const handleDelete = async () => {
     try {
       await deleteEnv();
-      toast.success("Environment deleted");
+      toast.success(t('environments.toast.deleted'));
     } catch {
-      toast.error("Failed to delete environment");
+      toast.error(t('environments.toast.deleteFailed'));
     }
   };
 
@@ -159,7 +162,7 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
         <div className="flex gap-2">
           {isEditing && (
             <Button size="sm" variant="ghost" className="text-status-passed hover:bg-status-passed/5" onClick={handleSave}>
-              <Save className="mr-2 h-4 w-4" /> Save
+              <Save className="mr-2 h-4 w-4" /> {t('common.save')}
             </Button>
           )}
           <AlertDialog>
@@ -170,14 +173,14 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
             </AlertDialogTrigger>
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>Delete Environment?</AlertDialogTitle>
+                <AlertDialogTitle>{t('environments.deleteTitle')}</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Are you sure you want to delete the "{env.name}" environment? All variables will be lost.
+                  {t('environments.deleteDescription', { name: env.name })}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={handleDelete} className="bg-status-failed hover:bg-status-failed/90">Delete</AlertDialogAction>
+                <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+                <AlertDialogAction onClick={handleDelete} className="bg-status-failed hover:bg-status-failed/90">{t('common.delete')}</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
@@ -189,19 +192,19 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
           {Object.entries(variables).map(([key, value]) => (
             <div key={key} className="flex gap-3 items-start">
               <div className="flex-1">
-                <Input 
-                  value={key} 
-                  onChange={(e) => updateKey(key, e.target.value)} 
-                  placeholder="KEY" 
+                <Input
+                  value={key}
+                  onChange={(e) => updateKey(key, e.target.value)}
+                  placeholder="KEY"
                   className="font-mono text-xs h-9"
                 />
               </div>
               <div className="flex-[2] relative">
-                <Input 
+                <Input
                   type={showValues[key] ? "text" : "password"}
-                  value={value as string} 
-                  onChange={(e) => updateValue(key, e.target.value)} 
-                  placeholder="VALUE" 
+                  value={value as string}
+                  onChange={(e) => updateValue(key, e.target.value)}
+                  placeholder="VALUE"
                   className="font-mono text-xs h-9 pr-10"
                 />
                 <button
@@ -219,9 +222,9 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
             </div>
           ))}
         </div>
-        
+
         <Button variant="ghost" size="sm" onClick={addVariable} className="text-ink-subtle hover:text-ink">
-          <Plus className="mr-2 h-4 w-4" /> Add variable
+          <Plus className="mr-2 h-4 w-4" /> {t('environments.addVariable')}
         </Button>
       </div>
     </div>
