@@ -147,16 +147,15 @@ class TestLogin:
         user_repo = AsyncMock()
         user_repo.get_by_username.return_value = user
 
-        _, session_cm = _session_mock()
-
         container = MagicMock()
         container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
+        container.db_session_factory = _multi_session_factory()
 
         with (
             patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=_make_audit_repo_mock()),
         ):
             mock_resolve.return_value = uuid4()
             resp = await client.post(
@@ -171,16 +170,15 @@ class TestLogin:
         user_repo = AsyncMock()
         user_repo.get_by_username.return_value = None
 
-        _, session_cm = _session_mock()
-
         container = MagicMock()
         container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
+        container.db_session_factory = _multi_session_factory()
 
         with (
             patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=_make_audit_repo_mock()),
         ):
             mock_resolve.return_value = uuid4()
             resp = await client.post(
@@ -199,16 +197,15 @@ class TestLogin:
         user_repo = AsyncMock()
         user_repo.get_by_username.return_value = user
 
-        _, session_cm = _session_mock()
-
         container = MagicMock()
         container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
+        container.db_session_factory = _multi_session_factory()
 
         with (
             patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=_make_audit_repo_mock()),
         ):
             mock_resolve.return_value = uuid4()
             resp = await client.post(
@@ -354,6 +351,7 @@ class TestRefresh:
 
         container = MagicMock()
         container.settings = settings
+        container.redis_client = None  # no blacklist in this test
         container.db_session_factory = MagicMock(return_value=session_cm)
 
         with (
@@ -542,3 +540,697 @@ class TestTokenRoutes:
         assert len(data) == 1
         assert data[0]["token_id"] == "tok1"
         assert data[0]["name"] == "ci"
+
+
+# --- JWT Blacklist / Logout tests ---
+
+
+def _make_redis_mock(revoked_jtis: set[str] | None = None):
+    """Return an AsyncMock redis that tracks revoked jtis in memory."""
+    store: dict[str, str] = {}
+    if revoked_jtis:
+        for jti in revoked_jtis:
+            store[f"jwt:revoked:{jti}"] = "1"
+
+    redis = AsyncMock()
+
+    async def _set(key, value, ex=None):
+        store[key] = value
+
+    async def _exists(key):
+        return 1 if key in store else 0
+
+    redis.set = AsyncMock(side_effect=_set)
+    redis.exists = AsyncMock(side_effect=_exists)
+    return redis, store
+
+
+class TestRefreshRevokesOldToken:
+    @pytest.mark.asyncio
+    async def test_refresh_revokes_old_refresh_token(self, client: AsyncClient):
+        """After refresh, the old refresh token jti must be in the blacklist."""
+        settings = _settings()
+        redis_mock, store = _make_redis_mock()
+        jwt_svc = JWTService(settings, redis=redis_mock)
+        user_id = uuid4()
+        old_refresh_token = jwt_svc.create_refresh_token(str(user_id))
+
+        import jwt as _jwt
+        old_payload = _jwt.decode(
+            old_refresh_token,
+            settings.jwt_secret,
+            algorithms=["HS256"],
+        )
+        old_jti = old_payload["jti"]
+
+        user = _make_orm_user(id=user_id)
+        user_repo = AsyncMock()
+        user_repo.get_by_id.return_value = user
+
+        _, session_cm = _session_mock()
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+        container.db_session_factory = MagicMock(return_value=session_cm)
+
+        with (
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/refresh",
+                cookies={"refresh_token": old_refresh_token},
+            )
+
+        assert resp.status_code == 200
+        # Old jti must now be in the blacklist store
+        assert f"jwt:revoked:{old_jti}" in store
+
+    @pytest.mark.asyncio
+    async def test_refresh_with_revoked_token_returns_401(self, client: AsyncClient):
+        """After refresh, calling revoke() on the old jti is verified via mock."""
+        settings = _settings()
+        redis_mock, store = _make_redis_mock()
+        jwt_svc = JWTService(settings, redis=redis_mock)
+        user_id = uuid4()
+        refresh_token = jwt_svc.create_refresh_token(str(user_id))
+
+        import jwt as _jwt
+        payload = _jwt.decode(
+            refresh_token, settings.jwt_secret, algorithms=["HS256"]
+        )
+        old_jti = payload["jti"]
+
+        user = _make_orm_user(id=user_id)
+        user_repo = AsyncMock()
+        user_repo.get_by_id.return_value = user
+
+        _, session_cm = _session_mock()
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+        container.db_session_factory = MagicMock(return_value=session_cm)
+
+        with (
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/refresh",
+                cookies={"refresh_token": refresh_token},
+            )
+
+        assert resp.status_code == 200
+        # The old refresh token jti must now be blacklisted
+        assert f"jwt:revoked:{old_jti}" in store
+
+
+class TestLogoutRevokesTokens:
+    @pytest.mark.asyncio
+    async def test_logout_revokes_access_token(self, client: AsyncClient):
+        """logout must add the access token jti to the blacklist."""
+        settings = _settings()
+        redis_mock, store = _make_redis_mock()
+        jwt_svc = JWTService(settings, redis=redis_mock)
+        access_token = jwt_svc.create_access_token("user-1", "developer", "tenant-1")
+
+        import jwt as _jwt
+        payload = _jwt.decode(access_token, settings.jwt_secret, algorithms=["HS256"])
+        access_jti = payload["jti"]
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+
+        with patch(
+            "qaplatform.api.v1.auth._get_jwt_service",
+            return_value=jwt_svc,
+        ):
+            with patch("qaplatform.api.v1.auth._get_container", return_value=container):
+                resp = await client.post(
+                    "/api/v1/auth/logout",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+
+        assert resp.status_code == 204
+        assert f"jwt:revoked:{access_jti}" in store
+
+    @pytest.mark.asyncio
+    async def test_logout_revokes_refresh_token(self, client: AsyncClient):
+        """logout must add the refresh token jti to the blacklist."""
+        settings = _settings()
+        redis_mock, store = _make_redis_mock()
+        jwt_svc = JWTService(settings, redis=redis_mock)
+        refresh_token = jwt_svc.create_refresh_token("user-1")
+
+        import jwt as _jwt
+        payload = _jwt.decode(refresh_token, settings.jwt_secret, algorithms=["HS256"])
+        refresh_jti = payload["jti"]
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+
+        with patch(
+            "qaplatform.api.v1.auth._get_jwt_service",
+            return_value=jwt_svc,
+        ):
+            with patch("qaplatform.api.v1.auth._get_container", return_value=container):
+                resp = await client.post(
+                    "/api/v1/auth/logout",
+                    cookies={"refresh_token": refresh_token},
+                )
+
+        assert resp.status_code == 204
+        assert f"jwt:revoked:{refresh_jti}" in store
+
+    @pytest.mark.asyncio
+    async def test_logout_revokes_both_tokens(self, client: AsyncClient):
+        """logout with both tokens present must revoke both jtis."""
+        settings = _settings()
+        redis_mock, store = _make_redis_mock()
+        jwt_svc = JWTService(settings, redis=redis_mock)
+        access_token = jwt_svc.create_access_token("user-1", "developer", "tenant-1")
+        refresh_token = jwt_svc.create_refresh_token("user-1")
+
+        import jwt as _jwt
+        a_payload = _jwt.decode(access_token, settings.jwt_secret, algorithms=["HS256"])
+        r_payload = _jwt.decode(refresh_token, settings.jwt_secret, algorithms=["HS256"])
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+
+        with patch(
+            "qaplatform.api.v1.auth._get_jwt_service",
+            return_value=jwt_svc,
+        ):
+            with patch("qaplatform.api.v1.auth._get_container", return_value=container):
+                resp = await client.post(
+                    "/api/v1/auth/logout",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    cookies={"refresh_token": refresh_token},
+                )
+
+        assert resp.status_code == 204
+        assert f"jwt:revoked:{a_payload['jti']}" in store
+        assert f"jwt:revoked:{r_payload['jti']}" in store
+
+    @pytest.mark.asyncio
+    async def test_logout_no_tokens_still_returns_204(self, client: AsyncClient):
+        """logout with no tokens at all must still succeed (idempotent)."""
+        settings = _settings()
+        redis_mock, _ = _make_redis_mock()
+        jwt_svc = JWTService(settings, redis=redis_mock)
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+
+        with patch(
+            "qaplatform.api.v1.auth._get_jwt_service",
+            return_value=jwt_svc,
+        ):
+            with patch("qaplatform.api.v1.auth._get_container", return_value=container):
+                resp = await client.post("/api/v1/auth/logout")
+
+        assert resp.status_code == 204
+
+
+class TestRevokedTokenMiddleware:
+    """Verify that a blacklisted access token is rejected by get_current_user."""
+
+    @pytest.mark.asyncio
+    async def test_revoked_access_token_returns_401(self):
+        """A token whose jti is in the blacklist must be rejected with 'revoked'."""
+        import time
+
+        import jwt as _jwt
+        from fastapi import Depends, FastAPI
+        from httpx import ASGITransport, AsyncClient
+
+        from qaplatform.api.auth.middleware import get_current_user
+
+        settings = _settings()
+        jwt_svc = JWTService(settings)
+        access_token = jwt_svc.create_access_token("user-1", "developer", "tenant-1")
+
+        payload = _jwt.decode(access_token, settings.jwt_secret, algorithms=["HS256"])
+        jti = payload["jti"]
+
+        # Redis already has this jti blacklisted
+        redis_mock, _ = _make_redis_mock(revoked_jtis={jti})
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+
+        app = FastAPI()
+
+        @app.get("/protected")
+        async def protected(user=Depends(get_current_user)):
+            return {"user_id": user.user_id}
+
+        with patch(
+            "qaplatform.api.auth.middleware._get_container",
+            return_value=container,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                resp = await ac.get(
+                    "/protected",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+
+        assert resp.status_code == 401
+        assert "revoked" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_jti_missing_token_passes_through(self):
+        """A token without jti (legacy) must not be treated as revoked."""
+        import time
+
+        import jwt as _jwt
+        from fastapi import Depends, FastAPI
+        from httpx import ASGITransport, AsyncClient
+
+        from qaplatform.api.auth.middleware import get_current_user
+
+        settings = _settings()
+        # Manually craft a token without jti
+        now = int(time.time())
+        payload_no_jti = {
+            "sub": "user-1",
+            "role": "developer",
+            "tenant_id": "tenant-1",
+            "is_platform_admin": False,
+            "exp": now + 1800,
+            "iat": now,
+            "type": "access",
+        }
+        token_no_jti = _jwt.encode(
+            payload_no_jti, settings.jwt_secret, algorithm="HS256"
+        )
+
+        redis_mock, _ = _make_redis_mock()
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+
+        app = FastAPI()
+
+        @app.get("/protected")
+        async def protected(user=Depends(get_current_user)):
+            return {"user_id": user.user_id}
+
+        with patch(
+            "qaplatform.api.auth.middleware._get_container",
+            return_value=container,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                resp = await ac.get(
+                    "/protected",
+                    headers={"Authorization": f"Bearer {token_no_jti}"},
+                )
+
+        assert resp.status_code == 200
+        assert resp.json()["user_id"] == "user-1"
+
+
+# ---------------------------------------------------------------------------
+# P1-8: Audit event tests
+# ---------------------------------------------------------------------------
+
+
+def _make_audit_repo_mock():
+    """Return an AsyncMock AuditEventRepository with a tracked .create()."""
+    repo = AsyncMock()
+    repo.create = AsyncMock(return_value=MagicMock())
+    return repo
+
+
+def _session_mock_with_audit(audit_repo_mock):
+    """Session mock that also supports AuditEventRepository instantiation via patch."""
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    session.flush = AsyncMock()
+
+    @asynccontextmanager
+    async def factory():
+        yield session
+
+    return session, factory()
+
+
+def _multi_session_factory():
+    """Return a factory callable that yields a fresh AsyncMock session each call.
+
+    Use this when a route calls _new_session() more than once (e.g. failure paths
+    that open a second session for the audit write).
+    """
+    def _make_fresh_session():
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.rollback = AsyncMock()
+        session.flush = AsyncMock()
+
+        @asynccontextmanager
+        async def _cm():
+            yield session
+
+        return _cm()
+
+    return MagicMock(side_effect=lambda: _make_fresh_session())
+
+
+class TestAuditLogin:
+    @pytest.mark.asyncio
+    async def test_login_success_emits_audit(self, client: AsyncClient):
+        from argon2 import PasswordHasher
+
+        ph = PasswordHasher()
+        user = _make_orm_user(password_hash=ph.hash("correct-password"))
+        user_repo = AsyncMock()
+        user_repo.get_by_username.return_value = user
+        user_repo.update_last_login = AsyncMock()
+
+        audit_repo = _make_audit_repo_mock()
+        _, session_cm = _session_mock()
+
+        container = MagicMock()
+        container.settings = _settings()
+        container.db_session_factory = MagicMock(return_value=session_cm)
+
+        with (
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
+            patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock, return_value=uuid4()),
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "alice", "password": "correct-password"},
+            )
+
+        assert resp.status_code == 200
+        audit_repo.create.assert_awaited_once()
+        call_kwargs = audit_repo.create.call_args.kwargs
+        assert call_kwargs["action"] == "auth.login"
+        assert call_kwargs["resource_type"] == "auth"
+        assert call_kwargs["user_id"] == user.id
+        assert "ip_address" in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_login_failed_emits_audit(self, client: AsyncClient):
+        user_repo = AsyncMock()
+        user_repo.get_by_username.return_value = None  # user not found
+
+        audit_repo = _make_audit_repo_mock()
+
+        container = MagicMock()
+        container.settings = _settings()
+        container.db_session_factory = _multi_session_factory()
+
+        with (
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
+            patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock, return_value=uuid4()),
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "nobody", "password": "wrong"},
+            )
+
+        assert resp.status_code == 401
+        audit_repo.create.assert_awaited_once()
+        call_kwargs = audit_repo.create.call_args.kwargs
+        assert call_kwargs["action"] == "auth.login_failed"
+        assert call_kwargs["user_id"] is None
+        assert call_kwargs["after_state"]["reason"] == "invalid_credentials"
+
+    @pytest.mark.asyncio
+    async def test_login_failed_wrong_password_emits_audit(self, client: AsyncClient):
+        from argon2 import PasswordHasher
+
+        ph = PasswordHasher()
+        user = _make_orm_user(password_hash=ph.hash("correct-password"))
+        user_repo = AsyncMock()
+        user_repo.get_by_username.return_value = user
+
+        audit_repo = _make_audit_repo_mock()
+
+        container = MagicMock()
+        container.settings = _settings()
+        container.db_session_factory = _multi_session_factory()
+
+        with (
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
+            patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock, return_value=uuid4()),
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/login",
+                json={"username": "alice", "password": "wrong-password"},
+            )
+
+        assert resp.status_code == 401
+        audit_repo.create.assert_awaited_once()
+        call_kwargs = audit_repo.create.call_args.kwargs
+        assert call_kwargs["action"] == "auth.login_failed"
+        assert call_kwargs["after_state"]["reason"] == "invalid_credentials"
+
+
+class TestAuditRegister:
+    @pytest.mark.asyncio
+    async def test_register_success_emits_audit(self, client: AsyncClient):
+        audit_repo = _make_audit_repo_mock()
+        _, session_cm = _register_session_mock()
+
+        container = MagicMock()
+        container.settings = _settings()
+        container.db_session_factory = MagicMock(return_value=session_cm)
+
+        with (
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "username": "bob",
+                    "email": "bob@example.com",
+                    "password": "secure-password-1",
+                },
+            )
+
+        assert resp.status_code == 201
+        audit_repo.create.assert_awaited_once()
+        call_kwargs = audit_repo.create.call_args.kwargs
+        assert call_kwargs["action"] == "auth.register"
+        assert call_kwargs["resource_type"] == "auth"
+        assert call_kwargs["after_state"]["username"] == "bob"
+        assert call_kwargs["after_state"]["email"] == "bob@example.com"
+
+
+class TestAuditLogout:
+    @pytest.mark.asyncio
+    async def test_logout_emits_audit(self, client: AsyncClient):
+        settings = _settings()
+        redis_mock, _ = _make_redis_mock()
+        jwt_svc = JWTService(settings, redis=redis_mock)
+        # Use a valid UUID so the logout handler can parse it from the token payload.
+        user_uuid = uuid4()
+        tenant_uuid = uuid4()
+        access_token = jwt_svc.create_access_token(
+            str(user_uuid), "developer", str(tenant_uuid)
+        )
+
+        audit_repo = _make_audit_repo_mock()
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+        container.db_session_factory = _multi_session_factory()
+
+        with (
+            patch("qaplatform.api.v1.auth._get_jwt_service", return_value=jwt_svc),
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/logout",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        assert resp.status_code == 204
+        audit_repo.create.assert_awaited_once()
+        call_kwargs = audit_repo.create.call_args.kwargs
+        assert call_kwargs["action"] == "auth.logout"
+        assert call_kwargs["resource_type"] == "auth"
+        # user_id extracted from access token sub claim (valid UUID)
+        assert call_kwargs["user_id"] == user_uuid
+
+    @pytest.mark.asyncio
+    async def test_logout_without_token_still_emits_audit(self, client: AsyncClient):
+        """Logout with no token still writes an audit record with user_id=None."""
+        settings = _settings()
+        redis_mock, _ = _make_redis_mock()
+        jwt_svc = JWTService(settings, redis=redis_mock)
+
+        audit_repo = _make_audit_repo_mock()
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+        container.db_session_factory = _multi_session_factory()
+
+        with (
+            patch("qaplatform.api.v1.auth._get_jwt_service", return_value=jwt_svc),
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+        ):
+            resp = await client.post("/api/v1/auth/logout")
+
+        assert resp.status_code == 204
+        audit_repo.create.assert_awaited_once()
+        call_kwargs = audit_repo.create.call_args.kwargs
+        assert call_kwargs["action"] == "auth.logout"
+        assert call_kwargs["user_id"] is None
+
+
+class TestAuditRefresh:
+    @pytest.mark.asyncio
+    async def test_refresh_success_emits_audit_with_jti(self, client: AsyncClient):
+        settings = _settings()
+        redis_mock, _ = _make_redis_mock()
+        jwt_svc = JWTService(settings, redis=redis_mock)
+        user_id = uuid4()
+        old_refresh_token = jwt_svc.create_refresh_token(str(user_id))
+
+        import jwt as _jwt
+        old_payload = _jwt.decode(old_refresh_token, settings.jwt_secret, algorithms=["HS256"])
+        old_jti = old_payload["jti"]
+
+        user = _make_orm_user(id=user_id)
+        user_repo = AsyncMock()
+        user_repo.get_by_id.return_value = user
+
+        audit_repo = _make_audit_repo_mock()
+        _, session_cm = _session_mock()
+
+        container = MagicMock()
+        container.settings = settings
+        container.redis_client = redis_mock
+        container.db_session_factory = MagicMock(return_value=session_cm)
+
+        with (
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/refresh",
+                cookies={"refresh_token": old_refresh_token},
+            )
+
+        assert resp.status_code == 200
+        audit_repo.create.assert_awaited_once()
+        call_kwargs = audit_repo.create.call_args.kwargs
+        assert call_kwargs["action"] == "auth.refresh"
+        assert call_kwargs["before_state"]["old_jti"] == old_jti
+        assert call_kwargs["user_id"] == user.id
+
+    @pytest.mark.asyncio
+    async def test_refresh_failed_emits_audit(self, client: AsyncClient):
+        audit_repo = _make_audit_repo_mock()
+        _, session_cm = _session_mock()
+
+        container = MagicMock()
+        container.settings = _settings()
+        container.db_session_factory = MagicMock(return_value=session_cm)
+
+        with (
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+        ):
+            resp = await client.post(
+                "/api/v1/auth/refresh",
+                cookies={"refresh_token": "not-a-valid-token"},
+            )
+
+        assert resp.status_code == 401
+        audit_repo.create.assert_awaited_once()
+        call_kwargs = audit_repo.create.call_args.kwargs
+        assert call_kwargs["action"] == "auth.refresh_failed"
+        assert call_kwargs["user_id"] is None
+
+
+class TestAuditApiTokens:
+    @pytest.mark.asyncio
+    async def test_create_token_emits_audit(self, auth_client: AsyncClient):
+        fake_record = _make_orm_token(token_id="tok123", name="ci")
+        api_token_repo = AsyncMock()
+        api_token_repo.create.return_value = fake_record
+
+        audit_repo = _make_audit_repo_mock()
+        _, session_cm = _session_mock()
+
+        container = MagicMock()
+        container.settings = _settings()
+        container.db_session_factory = MagicMock(return_value=session_cm)
+
+        with (
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+        ):
+            resp = await auth_client.post(
+                "/api/v1/auth/tokens",
+                json={"name": "ci", "scopes": ["*"], "expires_days": 90},
+            )
+
+        assert resp.status_code == 201
+        audit_repo.create.assert_awaited_once()
+        call_kwargs = audit_repo.create.call_args.kwargs
+        assert call_kwargs["action"] == "auth.api_token_create"
+        assert call_kwargs["after_state"]["name"] == "ci"
+        assert call_kwargs["user_id"] == UUID("a0000000-0000-0000-0000-000000000001")
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_emits_audit(self, auth_client: AsyncClient):
+        fake_token = _make_orm_token(
+            token_id="tok123",
+            user_id=UUID("a0000000-0000-0000-0000-000000000001"),
+            name="ci",
+        )
+        api_token_repo = AsyncMock()
+        api_token_repo.get_by_token_id.return_value = fake_token
+        api_token_repo.revoke = AsyncMock()
+
+        audit_repo = _make_audit_repo_mock()
+        _, session_cm = _session_mock()
+
+        container = MagicMock()
+        container.settings = _settings()
+        container.db_session_factory = MagicMock(return_value=session_cm)
+
+        with (
+            patch("qaplatform.api.v1.auth._get_container", return_value=container),
+            patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
+            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+        ):
+            resp = await auth_client.delete("/api/v1/auth/tokens/tok123")
+
+        assert resp.status_code == 204
+        audit_repo.create.assert_awaited_once()
+        call_kwargs = audit_repo.create.call_args.kwargs
+        assert call_kwargs["action"] == "auth.api_token_revoke"
+        assert call_kwargs["before_state"]["name"] == "ci"
+        assert call_kwargs["user_id"] == UUID("a0000000-0000-0000-0000-000000000001")

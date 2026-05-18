@@ -19,7 +19,7 @@ class AuditEventRepository:
     async def create(
         self,
         *,
-        tenant_id: UUID,
+        tenant_id: UUID | None,
         user_id: UUID | None,
         action: str,
         resource_type: str,
