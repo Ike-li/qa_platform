@@ -108,3 +108,20 @@ export interface PaginatedResponse<T> {
   page: number;
   per_page: number;
 }
+
+export interface TrendDataPoint {
+  date: string;
+  total_runs: number;
+  passed_runs: number;
+  failed_runs: number;
+  pass_rate: number;
+}
+
+export interface FlakyTest {
+  suite: string;
+  name: string;
+  total_runs: number;
+  failed_count: number;
+  passed_count: number;
+  flaky_rate: number;
+}
