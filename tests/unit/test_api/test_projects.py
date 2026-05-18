@@ -190,7 +190,7 @@ async def test_create_project_adds_creator_as_project_admin(
 @pytest.mark.asyncio
 async def test_get_project(client, mock_project_repo, tenant_id):
     project = _make_orm_project(tenant_id=tenant_id)
-    mock_project_repo.get_by_id.return_value = project
+    mock_project_repo.get_for_tenant.return_value = project
 
     resp = await client.get(f"/api/v1/projects/{project.id}", headers={"Authorization": "Bearer fake"})
     assert resp.status_code == 200
@@ -199,7 +199,7 @@ async def test_get_project(client, mock_project_repo, tenant_id):
 
 @pytest.mark.asyncio
 async def test_get_project_not_found(client, mock_project_repo):
-    mock_project_repo.get_by_id.return_value = None
+    mock_project_repo.get_for_tenant.return_value = None
 
     resp = await client.get(f"/api/v1/projects/{uuid.uuid4()}", headers={"Authorization": "Bearer fake"})
     assert resp.status_code == 404
@@ -209,7 +209,7 @@ async def test_get_project_not_found(client, mock_project_repo):
 async def test_update_project(client, mock_project_repo, tenant_id):
     project = _make_orm_project(tenant_id=tenant_id)
     updated = _make_orm_project(name="updated-name", tenant_id=tenant_id)
-    mock_project_repo.get_by_id.return_value = project
+    mock_project_repo.get_for_tenant.return_value = project
     mock_project_repo.update.return_value = updated
 
     resp = await client.put(
@@ -223,7 +223,7 @@ async def test_update_project(client, mock_project_repo, tenant_id):
 
 @pytest.mark.asyncio
 async def test_update_project_not_found(client, mock_project_repo):
-    mock_project_repo.get_by_id.return_value = None
+    mock_project_repo.get_for_tenant.return_value = None
 
     resp = await client.put(
         f"/api/v1/projects/{uuid.uuid4()}",
@@ -236,7 +236,7 @@ async def test_update_project_not_found(client, mock_project_repo):
 @pytest.mark.asyncio
 async def test_delete_project(client, mock_project_repo, tenant_id):
     project = _make_orm_project(tenant_id=tenant_id)
-    mock_project_repo.get_by_id.return_value = project
+    mock_project_repo.get_for_tenant.return_value = project
 
     resp = await client.delete(f"/api/v1/projects/{project.id}", headers={"Authorization": "Bearer fake"})
     assert resp.status_code == 204
@@ -244,7 +244,7 @@ async def test_delete_project(client, mock_project_repo, tenant_id):
 
 @pytest.mark.asyncio
 async def test_delete_project_not_found(client, mock_project_repo):
-    mock_project_repo.get_by_id.return_value = None
+    mock_project_repo.get_for_tenant.return_value = None
 
     resp = await client.delete(f"/api/v1/projects/{uuid.uuid4()}", headers={"Authorization": "Bearer fake"})
     assert resp.status_code == 404

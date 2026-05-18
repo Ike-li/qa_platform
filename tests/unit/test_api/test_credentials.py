@@ -73,7 +73,7 @@ def project(tenant_id):
 def mock_repos(project):
     repos = MagicMock()
     repos.project = AsyncMock()
-    repos.project.get_by_id.return_value = project
+    repos.project.get_for_tenant.return_value = project
     repos.audit = AsyncMock()
     return repos
 
@@ -309,7 +309,7 @@ async def test_delete_credential_in_use_returns_409(
     must fail with 409 to avoid orphaning git auth on the project."""
     cred = _make_orm_credential(project.id, tenant_id)
     project.credential_id = cred.id  # mark it as in use
-    mock_repos.project.get_by_id.return_value = project
+    mock_repos.project.get_for_tenant.return_value = project
 
     session = MagicMock()
     session.execute = AsyncMock(return_value=_result(scalar=cred))
