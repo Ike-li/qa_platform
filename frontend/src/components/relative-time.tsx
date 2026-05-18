@@ -1,15 +1,17 @@
 import { useSyncExternalStore } from "react";
+import i18n from "../i18n";
 
 function formatRelativeTime(date: Date) {
   const now = new Date();
   const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+  const t = i18n.t.bind(i18n);
 
-  if (diffInSeconds < 60) return "just now";
-  if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
-  if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
-  if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)}d ago`;
+  if (diffInSeconds < 60) return t("time.justNow");
+  if (diffInSeconds < 3600) return t("time.minutesAgo", { count: Math.floor(diffInSeconds / 60) });
+  if (diffInSeconds < 86400) return t("time.hoursAgo", { count: Math.floor(diffInSeconds / 3600) });
+  if (diffInSeconds < 604800) return t("time.daysAgo", { count: Math.floor(diffInSeconds / 86400) });
 
-  return date.toLocaleDateString();
+  return date.toLocaleDateString(i18n.language);
 }
 
 let tick = 0;
@@ -42,7 +44,7 @@ export function RelativeTime({ date }: { date: string | Date }) {
   useSyncExternalStore(subscribe, getSnapshot);
 
   return (
-    <time dateTime={d.toISOString()} title={d.toLocaleString()} className="cursor-help">
+    <time dateTime={d.toISOString()} title={d.toLocaleString(i18n.language)} className="cursor-help">
       {formatRelativeTime(d)}
     </time>
   );

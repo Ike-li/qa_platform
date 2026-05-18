@@ -1,9 +1,9 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { 
-  GitBranch, 
-  Settings as SettingsIcon, 
-  Activity, 
-  Layers, 
+import {
+  GitBranch,
+  Settings as SettingsIcon,
+  Activity,
+  Layers,
   Globe,
   Play,
   Plus,
@@ -14,6 +14,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
+import i18n from "../../i18n";
 import {
   useProject,
   useProjectPipelines,
@@ -26,16 +28,16 @@ import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { Textarea } from "../../components/ui/textarea";
-import { 
-  AlertDialog, 
-  AlertDialogAction, 
-  AlertDialogCancel, 
-  AlertDialogContent, 
-  AlertDialogDescription, 
-  AlertDialogFooter, 
-  AlertDialogHeader, 
-  AlertDialogTitle, 
-  AlertDialogTrigger 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger
 } from "../../components/ui/alert-dialog";
 import { PipelineModal } from "../../components/projects/pipeline-modal";
 import { TriggerRunModal } from "../../components/runs/trigger-run-modal";
@@ -43,26 +45,29 @@ import { EnvironmentEditor } from "../../components/projects/environment-editor"
 import { cn } from "../../lib/utils";
 import { usePageTitle } from "../../hooks/use-page-title";
 
-const projectSchema = z.object({
-  name: z.string().min(1, "Name is required"),
-  description: z.string().optional(),
-  git_url: z.string().url("Invalid Git URL"),
-  default_branch: z.string().min(1, "Default branch is required"),
-  root_path: z.string().min(1, "Root path is required"),
-});
+function createProjectSchema() {
+  return z.object({
+    name: z.string().min(1, i18n.t('validation.nameRequired')),
+    description: z.string().optional(),
+    git_url: z.string().url(i18n.t('validation.invalidUrl')),
+    default_branch: z.string().min(1, i18n.t('validation.defaultBranchRequired')),
+    root_path: z.string().min(1, i18n.t('validation.rootPathRequired')),
+  });
+}
 
-type ProjectFormValues = z.infer<typeof projectSchema>;
+type ProjectFormValues = z.infer<ReturnType<typeof createProjectSchema>>;
 
 export default function ProjectDetail() {
+  const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [isPipelineModalOpen, setIsPipelineModalOpen] = React.useState(false);
   const [selectedPipeline, setSelectedPipeline] = React.useState<Pipeline | undefined>(undefined);
   const [isTriggerModalOpen, setIsTriggerModalOpen] = React.useState(false);
-  
+
   const { data: project, isLoading: isProjectLoading } = useProject(id!);
 
-  usePageTitle(project ? project.name : "Project Details");
+  usePageTitle(project ? project.name : t("projects.detailTitle"));
 
   const openNewPipeline = () => {
     setSelectedPipeline(undefined);
@@ -75,9 +80,11 @@ export default function ProjectDetail() {
   };
 
   const { data: pipelines, isLoading: isPipelinesLoading } = useProjectPipelines(id!);
-  
+
   const { mutateAsync: updateProject, isPending: isUpdating } = useUpdateProject(id!);
   const { mutateAsync: deleteProject } = useDeleteProject(id!);
+
+  const projectSchema = createProjectSchema();
 
   const {
     register,
@@ -103,31 +110,31 @@ export default function ProjectDetail() {
   const onUpdateSubmit = async (data: ProjectFormValues) => {
     try {
       await updateProject(data);
-      toast.success("Project updated successfully");
+      toast.success(t('projects.toast.updated'));
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } };
-      toast.error(axiosError.response?.data?.detail || "Failed to update project");
+      toast.error(axiosError.response?.data?.detail || t('projects.toast.updateFailed'));
     }
   };
 
   const onDeleteProject = async () => {
     try {
       await deleteProject();
-      toast.success("Project deleted successfully");
+      toast.success(t('projects.toast.deleted'));
       navigate("/projects");
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } };
-      toast.error(axiosError.response?.data?.detail || "Failed to delete project");
+      toast.error(axiosError.response?.data?.detail || t('projects.toast.deleteFailed'));
     }
   };
 
   const onArchiveProject = async () => {
     try {
       await updateProject({ status: "archived" });
-      toast.success("Project archived successfully");
+      toast.success(t('projects.toast.archived'));
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } };
-      toast.error(axiosError.response?.data?.detail || "Failed to archive project");
+      toast.error(axiosError.response?.data?.detail || t('projects.toast.archiveFailed'));
     }
   };
 
@@ -139,7 +146,7 @@ export default function ProjectDetail() {
     </div>;
   }
 
-  if (!project) return <div>Project not found</div>;
+  if (!project) return <div>{t('projects.notFound')}</div>;
 
   return (
     <div className="space-y-8">
@@ -152,10 +159,10 @@ export default function ProjectDetail() {
               "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize",
               project.status === "active" ? "border-status-passed/20 bg-status-passed/10 text-status-passed" : "border-ink-tertiary/20 bg-ink-tertiary/10 text-ink-tertiary"
             )}>
-              {project.status}
+              {t('projectStatus.' + project.status)}
             </span>
           </div>
-          <p className="max-w-2xl text-ink-subtle">{project.description || "No description provided."}</p>
+          <p className="max-w-2xl text-ink-subtle">{project.description || t('projects.noDescription')}</p>
           <div className="flex flex-wrap items-center gap-4 pt-2 text-sm text-ink-muted">
             <div className="flex items-center gap-1.5">
               <GitBranch className="h-4 w-4" />
@@ -169,39 +176,39 @@ export default function ProjectDetail() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setIsTriggerModalOpen(true)}>
-            <Play className="mr-2 h-4 w-4" /> Trigger Run
+            <Play className="mr-2 h-4 w-4" /> {t('projects.triggerRun')}
           </Button>
         </div>
       </div>
 
-      <TriggerRunModal 
-        projectId={id!} 
-        open={isTriggerModalOpen} 
-        onOpenChange={setIsTriggerModalOpen} 
+      <TriggerRunModal
+        projectId={id!}
+        open={isTriggerModalOpen}
+        onOpenChange={setIsTriggerModalOpen}
       />
 
       {/* Tabs */}
       <Tabs defaultValue="runs" className="w-full">
         <TabsList className="mb-6">
           <TabsTrigger value="runs">
-            <Activity className="mr-2 h-4 w-4" /> Runs
+            <Activity className="mr-2 h-4 w-4" /> {t('projects.tabs.runs')}
           </TabsTrigger>
           <TabsTrigger value="pipelines">
-            <Layers className="mr-2 h-4 w-4" /> Pipelines
+            <Layers className="mr-2 h-4 w-4" /> {t('projects.tabs.pipelines')}
           </TabsTrigger>
           <TabsTrigger value="environments">
-            <Globe className="mr-2 h-4 w-4" /> Environments
+            <Globe className="mr-2 h-4 w-4" /> {t('projects.tabs.environments')}
           </TabsTrigger>
           <TabsTrigger value="settings">
-            <SettingsIcon className="mr-2 h-4 w-4" /> Settings
+            <SettingsIcon className="mr-2 h-4 w-4" /> {t('projects.tabs.settings')}
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="runs" className="space-y-4">
           <div className="rounded-xl border border-hairline bg-surface-1 p-12 text-center">
-            <p className="text-sm text-ink-tertiary">No runs found for this project.</p>
+            <p className="text-sm text-ink-tertiary">{t('projects.noRuns')}</p>
             <Button variant="outline" className="mt-4" onClick={() => setIsTriggerModalOpen(true)}>
-              Trigger your first run
+              {t('projects.triggerFirstRun')}
             </Button>
           </div>
         </TabsContent>
@@ -209,21 +216,21 @@ export default function ProjectDetail() {
         <TabsContent value="pipelines" className="space-y-4">
           <div className="flex justify-end">
             <Button size="sm" onClick={openNewPipeline}>
-              <Plus className="mr-2 h-4 w-4" /> New Pipeline
+              <Plus className="mr-2 h-4 w-4" /> {t('projects.newPipeline')}
             </Button>
           </div>
-          <PipelineModal 
-            projectId={id!} 
+          <PipelineModal
+            projectId={id!}
             pipeline={selectedPipeline}
-            open={isPipelineModalOpen} 
-            onOpenChange={setIsPipelineModalOpen} 
+            open={isPipelineModalOpen}
+            onOpenChange={setIsPipelineModalOpen}
           />
           <div className="grid gap-4">
             {isPipelinesLoading ? (
               [1, 2].map(i => <div key={i} className="h-20 animate-pulse rounded-lg border border-hairline bg-surface-1" />)
             ) : pipelines?.length === 0 ? (
               <div className="rounded-xl border border-hairline bg-surface-1 p-12 text-center text-sm text-ink-tertiary">
-                No pipelines configured.
+                {t('projects.noPipelines')}
               </div>
             ) : (
               pipelines?.map(pipeline => (
@@ -240,13 +247,13 @@ export default function ProjectDetail() {
                       <div className="flex items-center gap-3 text-xs text-ink-muted">
                         <span>{pipeline.selector.framework}</span>
                         <span>•</span>
-                        <span>{pipeline.timeout_seconds / 60}m timeout</span>
-                        {!pipeline.enabled && <span className="text-status-failed">(Disabled)</span>}
+                        <span>{t('pipelines.minuteTimeout', { minutes: pipeline.timeout_seconds / 60 })}</span>
+                        {!pipeline.enabled && <span className="text-status-failed">{t('pipelines.disabled')}</span>}
                       </div>
                     </div>
                   </div>
                   <Button variant="ghost" size="sm" onClick={() => openEditPipeline(pipeline)}>
-                    Edit <ArrowRight className="ml-2 h-3 w-3" />
+                    {t('common.edit')} <ArrowRight className="ml-2 h-3 w-3" />
                   </Button>
                 </div>
               ))
@@ -260,78 +267,77 @@ export default function ProjectDetail() {
 
         <TabsContent value="settings" className="space-y-6 max-w-2xl">
           <form onSubmit={handleSubmit(onUpdateSubmit)} className="rounded-xl border border-hairline bg-surface-1 p-6 space-y-4">
-            <h3 className="text-lg font-medium">General Settings</h3>
+            <h3 className="text-lg font-medium">{t('projects.settings.title')}</h3>
             <div className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="name">Project Name</Label>
+                <Label htmlFor="name">{t('projects.settings.name')}</Label>
                 <Input id="name" {...register("name")} />
                 {errors.name && <p className="text-xs text-status-failed">{errors.name.message}</p>}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="description">Description</Label>
+                <Label htmlFor="description">{t('projects.settings.description')}</Label>
                 <Textarea id="description" {...register("description")} rows={3} />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="git_url">Git Repository URL</Label>
+                <Label htmlFor="git_url">{t('projects.settings.gitUrl')}</Label>
                 <Input id="git_url" {...register("git_url")} />
                 {errors.git_url && <p className="text-xs text-status-failed">{errors.git_url.message}</p>}
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="default_branch">Default Branch</Label>
+                  <Label htmlFor="default_branch">{t('projects.settings.defaultBranch')}</Label>
                   <Input id="default_branch" {...register("default_branch")} />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="root_path">Root Path</Label>
+                  <Label htmlFor="root_path">{t('projects.settings.rootPath')}</Label>
                   <Input id="root_path" {...register("root_path")} />
                 </div>
               </div>
             </div>
             <div className="flex justify-end pt-2">
               <Button type="submit" disabled={isUpdating}>
-                {isUpdating ? "Saving..." : "Save Changes"}
+                {isUpdating ? t('projects.settings.saving') : t('projects.settings.saveChanges')}
               </Button>
             </div>
           </form>
-          
+
           <div className="rounded-xl border border-status-failed/20 bg-status-failed/5 p-6 space-y-4">
-            <h3 className="text-lg font-medium text-status-failed">Danger Zone</h3>
-            <p className="text-sm text-ink-muted">Actions that are irreversible or have significant impact.</p>
+            <h3 className="text-lg font-medium text-status-failed">{t('projects.danger.title')}</h3>
+            <p className="text-sm text-ink-muted">{t('projects.danger.description')}</p>
             <div className="flex flex-wrap gap-3">
               <AlertDialog>
                 <AlertDialogTrigger asChild>
-                  <Button variant="outline" className="text-ink hover:text-ink">Archive Project</Button>
+                  <Button variant="outline" className="text-ink hover:text-ink">{t('projects.danger.archiveProject')}</Button>
                 </AlertDialogTrigger>
                 <AlertDialogContent>
                   <AlertDialogHeader>
-                    <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                    <AlertDialogTitle>{t('projects.danger.archiveConfirmTitle')}</AlertDialogTitle>
                     <AlertDialogDescription>
-                      This will archive the project. You can still view it, but no new runs can be triggered.
+                      {t('projects.danger.archiveConfirmDescription')}
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={onArchiveProject}>Archive</AlertDialogAction>
+                    <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+                    <AlertDialogAction onClick={onArchiveProject}>{t('projects.danger.archiveAction')}</AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
 
               <AlertDialog>
                 <AlertDialogTrigger asChild>
-                  <Button variant="destructive">Delete Project</Button>
+                  <Button variant="destructive">{t('projects.danger.deleteProject')}</Button>
                 </AlertDialogTrigger>
                 <AlertDialogContent>
                   <AlertDialogHeader>
-                    <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                    <AlertDialogTitle>{t('projects.danger.deleteConfirmTitle')}</AlertDialogTitle>
                     <AlertDialogDescription>
-                      This action cannot be undone. This will permanently delete the project
-                      and all associated data, including pipelines, environments, and run history.
+                      {t('projects.danger.deleteConfirmDescription')}
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
                     <AlertDialogAction onClick={onDeleteProject} className="bg-status-failed hover:bg-status-failed/90">
-                      Delete Project
+                      {t('projects.danger.deleteProject')}
                     </AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>

@@ -3,10 +3,12 @@ import { Terminal, Search, Pause, Play, ChevronDown } from 'lucide-react';
 import AnsiToReact from 'ansi-to-react';
 import DOMPurify from 'dompurify';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { useTranslation } from 'react-i18next';
 import { useSSE } from '../../hooks/use-sse';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { cn } from '../../lib/utils';
+import i18n from '../../i18n';
 
 interface LogMessage {
   timestamp?: string;
@@ -22,6 +24,7 @@ function sanitizeLogMessage(message: string): string {
 }
 
 export function LogViewer({ runId }: { runId: string }) {
+  const { t } = useTranslation();
   const [logs, setLogs] = useState<LogMessage[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [search, setSearch] = useState('');
@@ -94,7 +97,7 @@ export function LogViewer({ runId }: { runId: string }) {
         <div className="flex items-center gap-3">
           <Terminal className="h-4 w-4 text-ink-subtle" />
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-ink">Execution Logs</span>
+            <span className="text-sm font-medium text-ink">{t("logs.title")}</span>
             <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-3">
               <span className={cn(
                 "h-2 w-2 rounded-full",
@@ -111,7 +114,7 @@ export function LogViewer({ runId }: { runId: string }) {
           <div className="relative w-48">
             <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-tertiary" />
             <Input
-              placeholder="Search logs..."
+              placeholder={t("logs.searchPlaceholder")}
               value={search}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
               className="h-8 pl-8 text-xs bg-surface-3 border-hairline"
@@ -122,8 +125,8 @@ export function LogViewer({ runId }: { runId: string }) {
             size="sm"
             className="h-8 px-2 text-ink-subtle hover:text-ink"
             onClick={() => setAutoScroll(!autoScroll)}
-            aria-label={autoScroll ? "Pause auto-scroll" : "Resume auto-scroll"}
-            title={autoScroll ? "Pause auto-scroll" : "Resume auto-scroll"}
+            aria-label={autoScroll ? t("logs.pauseAutoScroll") : t("logs.resumeAutoScroll")}
+            title={autoScroll ? t("logs.pauseAutoScroll") : t("logs.resumeAutoScroll")}
           >
             {autoScroll ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
           </Button>
@@ -139,7 +142,7 @@ export function LogViewer({ runId }: { runId: string }) {
         {filteredLogs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-ink-tertiary space-y-2">
             <Terminal className="h-8 w-8 opacity-20" />
-            <p>Waiting for logs...</p>
+            <p>{t("logs.waitingForLogs")}</p>
           </div>
         ) : (
           <div
@@ -161,7 +164,7 @@ export function LogViewer({ runId }: { runId: string }) {
                 >
                   {log.timestamp && (
                     <span className="text-ink-tertiary mr-3 shrink-0 select-none">
-                      [{new Date(log.timestamp).toLocaleTimeString()}]
+                      [{new Date(log.timestamp).toLocaleTimeString(i18n.language)}]
                     </span>
                   )}
                   <span className="whitespace-pre-wrap break-all">
@@ -187,7 +190,7 @@ export function LogViewer({ runId }: { runId: string }) {
             }}
           >
             <ChevronDown className="mr-1.5 h-4 w-4" />
-            Resume auto-scroll
+            {t("logs.resumeAutoScroll")}
           </Button>
         </div>
       )}
