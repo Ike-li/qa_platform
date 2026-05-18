@@ -15,6 +15,32 @@ pytestmark = pytest.mark.skipif(
     reason="set RUN_INTEGRATION_TESTS=1 to run integration tests"
 )
 
+BASE_URL = os.environ.get("QAP_API_URL", "http://localhost:8000")
+
+
+@pytest.fixture(scope="module")
+def docker_available():
+    try:
+        subprocess.run(["docker", "info"], check=True, capture_output=True, timeout=5)
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pytest.skip("docker daemon not available")
+    return True
+
+
+@pytest.fixture(scope="module")
+def api_server_available():
+    """Skip if the API server is not reachable (e.g. CI without docker-compose stack)."""
+    import socket
+    import urllib.parse
+    parsed = urllib.parse.urlparse(BASE_URL)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 8000
+    try:
+        with socket.create_connection((host, port), timeout=3):
+            pass
+    except OSError:
+        pytest.skip(f"API server not reachable at {BASE_URL} — start docker-compose stack first")
+
 
 @pytest.fixture(scope="module")
 def docker_available():
@@ -42,9 +68,9 @@ def fixture_git_repo(tmp_path_factory):
 
 
 @pytest.fixture
-async def api_client():
-    """假设后端已经启动在 localhost:8000（由 conftest 或外部启动）。"""
-    async with httpx.AsyncClient(base_url="http://localhost:8000", timeout=30.0) as client:
+async def api_client(api_server_available):
+    """假设后端已经启动在 BASE_URL（由 conftest 或外部启动）。"""
+    async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:
         yield client
 
 
