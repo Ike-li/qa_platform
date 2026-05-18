@@ -73,7 +73,7 @@ const CHANNEL_TYPES: NotificationChannel["type"][] = ["email", "webhook"];
 /* ------------------------------------------------------------------ */
 
 function emptyCondition(): NotificationCondition {
-  return { field: "status", op: "eq", value: "" };
+  return { field: "status", operator: "eq", value: "" };
 }
 
 function emptyChannel(): NotificationChannel {
@@ -247,8 +247,7 @@ function RuleCard({
             {t("notifications.conditions")}
           </span>
           <p className="text-ink font-medium">
-            {rule.conditions.length}{" "}
-            {rule.conditions.length === 1 ? "condition" : "conditions"}
+            {rule.conditions.length} {t("notifications.conditionsCount", { count: rule.conditions.length })}
           </p>
         </div>
         <div>
@@ -434,10 +433,10 @@ function RuleForm({
             </Select>
 
             <Select
-              value={cond.op}
+              value={cond.operator}
               onValueChange={(v) =>
                 updateCondition(idx, {
-                  op: v as NotificationCondition["op"],
+                  operator: v as NotificationCondition["operator"],
                 })
               }
             >

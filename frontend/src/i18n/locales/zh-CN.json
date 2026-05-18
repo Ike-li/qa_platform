@@ -282,6 +282,7 @@
   "notifications.deleteDescription": "确定要删除「{{name}}」吗？此操作不可撤销。",
   "notifications.addCondition": "添加条件",
   "notifications.addChannel": "添加渠道",
+  "notifications.conditionsCount": "{{count}} 个条件",
   "notifications.toast.created": "通知规则创建成功",
   "notifications.toast.updated": "通知规则更新成功",
   "notifications.toast.deleted": "通知规则删除成功",

@@ -62,8 +62,8 @@ class EmailChannel:
             )
         except asyncio.TimeoutError:
             return ChannelResult(success=False, error=f"SMTP timeout after {self.TIMEOUT}s")
-        except smtplib.SMTPAuthenticationError as exc:
-            return ChannelResult(success=False, error=f"SMTP auth failed: {exc}")
+        except smtplib.SMTPAuthenticationError:
+            return ChannelResult(success=False, error="SMTP authentication failed")
         except (smtplib.SMTPException, OSError) as exc:
             return ChannelResult(success=False, error=f"SMTP error: {exc}")
 

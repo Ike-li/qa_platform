@@ -104,7 +104,7 @@ export interface Artifact {
 
 export interface NotificationCondition {
   field: "status" | "pass_rate" | "failed";
-  op: "eq" | "ne" | "lt" | "gt" | "lte" | "gte";
+  operator: "eq" | "ne" | "lt" | "gt" | "lte" | "gte";
   value: string | number;
 }
 

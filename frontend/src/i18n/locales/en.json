@@ -282,6 +282,7 @@
   "notifications.deleteDescription": "Are you sure you want to delete \"{{name}}\"? This action cannot be undone.",
   "notifications.addCondition": "Add Condition",
   "notifications.addChannel": "Add Channel",
+  "notifications.conditionsCount": "{{count}} condition",
   "notifications.toast.created": "Notification rule created",
   "notifications.toast.updated": "Notification rule updated",
   "notifications.toast.deleted": "Notification rule deleted",
