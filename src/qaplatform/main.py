@@ -152,6 +152,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     # app.add_middleware(AuthMiddleware)
 
     # ── Routers ──────────────────────────────────────────────────────────
+    from qaplatform.api.v1.analytics import router as analytics_router
     from qaplatform.api.v1.artifacts import router as artifact_router
     from qaplatform.api.v1.auth import router as auth_router
     from qaplatform.api.v1.credentials import router as credential_router
@@ -163,9 +164,11 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     from qaplatform.api.v1.runs import router as run_router
     from qaplatform.api.v1.schedules import router as schedule_router
     from qaplatform.api.v1.sse import router as sse_router
+    from qaplatform.api.v1.webhooks import router as webhook_router
 
     api_prefix = "/api/v1"
     app.include_router(auth_router, prefix=api_prefix)
+    app.include_router(analytics_router, prefix=api_prefix)
     app.include_router(project_router, prefix=api_prefix)
     app.include_router(project_member_router, prefix=api_prefix)
     app.include_router(credential_router, prefix=api_prefix)
@@ -176,6 +179,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     app.include_router(schedule_router, prefix=api_prefix)
     app.include_router(artifact_router, prefix=api_prefix)
     app.include_router(sse_router, prefix=api_prefix)
+    app.include_router(webhook_router, prefix=api_prefix)
 
     # ── Health checks ────────────────────────────────────────────────────
     app.add_route("/metrics", metrics_route.endpoint, methods=["GET"], include_in_schema=False)

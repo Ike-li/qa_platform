@@ -16,6 +16,8 @@ from qaplatform.api.deps import (
 )
 from qaplatform.api.schemas import (
     ArtifactResponse,
+    BatchRunRequest,
+    BatchRunResponse,
     ErrorResponse,
     NotificationLogResponse,
     PaginatedResponse,
@@ -243,6 +245,123 @@ async def list_runs(
     )
 
 
+@router.post(
+    "/batch/cancel",
+    response_model=BatchRunResponse,
+    summary="批量取消执行",
+)
+async def batch_cancel_runs(
+    body: BatchRunRequest,
+    request: Request,
+    repos: Repos,
+    user: CurrentUser,
+    session: AsyncSession = Depends(_get_db_session),
+):
+    processed = 0
+    failed = 0
+    errors: list[str] = []
+
+    container = request.app.state.container
+    redis = getattr(container, "redis_client", None)
+
+    for run_id in body.run_ids:
+        try:
+            run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+            if run is None:
+                errors.append(f"{run_id}: not found")
+                failed += 1
+                continue
+
+            if run.status not in _CANCELABLE:
+                errors.append(f"{run_id}: already terminal ({run.status})")
+                failed += 1
+                continue
+
+            cancelled = await repos.run.cancel_if_current(run_id, expected_in=_CANCELABLE)
+            if not cancelled:
+                errors.append(f"{run_id}: status changed concurrently")
+                failed += 1
+                continue
+
+            if redis is not None:
+                from qaplatform.engine.cancel import publish_cancel
+                from qaplatform.engine.events import publish_status_event
+
+                await publish_cancel(redis, run_id)
+                previous = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
+                await publish_status_event(redis, run_id, "cancelled", previous=previous)
+
+            processed += 1
+        except Exception as exc:
+            errors.append(f"{run_id}: {exc}")
+            failed += 1
+
+    await session.commit()
+    return BatchRunResponse(processed=processed, failed=failed, errors=errors)
+
+
+@router.post(
+    "/batch/retry",
+    response_model=BatchRunResponse,
+    summary="批量重试执行",
+)
+async def batch_retry_runs(
+    body: BatchRunRequest,
+    request: Request,
+    repos: Repos,
+    user: CurrentUser,
+    session: AsyncSession = Depends(_get_db_session),
+):
+    processed = 0
+    failed = 0
+    errors: list[str] = []
+
+    container = request.app.state.container
+    arq_pool = getattr(container, "arq_pool", None)
+
+    for run_id in body.run_ids:
+        try:
+            original = await repos.run.get_for_tenant(run_id, user.tenant_id)
+            if original is None:
+                errors.append(f"{run_id}: not found")
+                failed += 1
+                continue
+
+            terminal = {RunStatusEnum.DONE, RunStatusEnum.FAILED, RunStatusEnum.TIMEOUT, RunStatusEnum.CANCELLED}
+            if original.status not in terminal:
+                errors.append(f"{run_id}: not terminal ({original.status})")
+                failed += 1
+                continue
+
+            await session.refresh(original, ['pipeline', 'environment'])
+
+            new_run = await repos.run.create(
+                tenant_id=original.tenant_id,
+                project_id=original.project_id,
+                pipeline_id=original.pipeline_id,
+                environment_id=original.environment_id,
+                git_ref=original.git_ref,
+                git_sha=original.git_sha,
+                triggered_by=user.user_id,
+                trigger_type="manual",
+                metadata_=dict(original.metadata_ or {}),
+            )
+            new_run.retry_group_id = new_run.id
+
+            if arq_pool is not None:
+                from qaplatform.worker.scheduler import enqueue_run
+
+                await enqueue_run(arq_pool, repos.run, new_run, "manual", container.settings)
+
+            processed += 1
+        except Exception as exc:
+            errors.append(f"{run_id}: {exc}")
+            failed += 1
+
+    await session.commit()
+    return BatchRunResponse(processed=processed, failed=failed, errors=errors)
+
+
 @router.get(
     "/{run_id}",
     response_model=RunResponse,
@@ -426,3 +545,5 @@ async def get_run_notifications(
         per_page=per_page,
         total=total,
     )
+
+

@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select, case, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from qaplatform.api.auth.permissions import Action
+from qaplatform.api.deps import (
+    CurrentUser,
+    Repos,
+    _get_db_session,
+    enforce_project_action,
+)
+from qaplatform.api.schemas import FlakyTest, TrendDataPoint
+from qaplatform.infra.database.models import (
+    Run as RunORM,
+    RunStatusEnum,
+    TestResult as TestResultORM,
+    TestResultStatusEnum,
+)
+
+router = APIRouter(prefix="/projects/{project_id}/analytics", tags=["analytics"])
+
+
+@router.get(
+    "/trends",
+    response_model=list[TrendDataPoint],
+    summary="历史趋势",
+)
+async def get_run_trends(
+    project_id: UUID,
+    repos: Repos,
+    user: CurrentUser,
+    days: int = Query(30, ge=1, le=365),
+    session: AsyncSession = Depends(_get_db_session),
+):
+    project = await repos.project.get_for_tenant(project_id, user.tenant_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await enforce_project_action(session, user, project.id, Action.RUN_READ)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    stmt = (
+        select(
+            func.date(RunORM.created_at).label("date"),
+            func.count().label("total_runs"),
+            func.sum(case((RunORM.status == RunStatusEnum.DONE, 1), else_=0)).label("passed_runs"),
+            func.sum(case((RunORM.status.in_([RunStatusEnum.FAILED, RunStatusEnum.TIMEOUT]), 1), else_=0)).label("failed_runs"),
+        )
+        .where(
+            RunORM.project_id == project_id,
+            RunORM.created_at >= cutoff,
+            RunORM.status.in_([RunStatusEnum.DONE, RunStatusEnum.FAILED, RunStatusEnum.TIMEOUT]),
+        )
+        .group_by(func.date(RunORM.created_at))
+        .order_by(func.date(RunORM.created_at))
+    )
+
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    return [
+        TrendDataPoint(
+            date=str(row.date),
+            total_runs=row.total_runs,
+            passed_runs=row.passed_runs,
+            failed_runs=row.failed_runs,
+            pass_rate=round(row.passed_runs / row.total_runs, 4) if row.total_runs > 0 else 0.0,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/flaky",
+    response_model=list[FlakyTest],
+    summary="Flaky 测试检测",
+)
+async def get_flaky_tests(
+    project_id: UUID,
+    repos: Repos,
+    user: CurrentUser,
+    days: int = Query(30, ge=1, le=365),
+    min_runs: int = Query(3, ge=2, le=100),
+    session: AsyncSession = Depends(_get_db_session),
+):
+    project = await repos.project.get_for_tenant(project_id, user.tenant_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await enforce_project_action(session, user, project.id, Action.RUN_READ)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Find tests that have both passed and failed across runs in the time window
+    stmt = (
+        select(
+            TestResultORM.suite,
+            TestResultORM.name,
+            func.count().label("total_runs"),
+            func.sum(case((TestResultORM.status == TestResultStatusEnum.PASSED, 1), else_=0)).label("passed_count"),
+            func.sum(case((TestResultORM.status.in_([TestResultStatusEnum.FAILED, TestResultStatusEnum.ERROR]), 1), else_=0)).label("failed_count"),
+        )
+        .join(RunORM, RunORM.id == TestResultORM.run_id)
+        .where(
+            RunORM.project_id == project_id,
+            RunORM.created_at >= cutoff,
+            RunORM.status.in_([RunStatusEnum.DONE, RunStatusEnum.FAILED, RunStatusEnum.TIMEOUT]),
+        )
+        .group_by(TestResultORM.suite, TestResultORM.name)
+        .having(
+            and_(
+                func.count() >= min_runs,
+                func.sum(case((TestResultORM.status == TestResultStatusEnum.PASSED, 1), else_=0)) > 0,
+                func.sum(case((TestResultORM.status.in_([TestResultStatusEnum.FAILED, TestResultStatusEnum.ERROR]), 1), else_=0)) > 0,
+            )
+        )
+        .order_by(
+            func.sum(case((TestResultORM.status.in_([TestResultStatusEnum.FAILED, TestResultStatusEnum.ERROR]), 1), else_=0)).desc()
+        )
+        .limit(50)
+    )
+
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    return [
+        FlakyTest(
+            suite=row.suite,
+            name=row.name,
+            total_runs=row.total_runs,
+            passed_count=row.passed_count,
+            failed_count=row.failed_count,
+            flaky_rate=round(row.failed_count / row.total_runs, 4),
+        )
+        for row in rows
+    ]
