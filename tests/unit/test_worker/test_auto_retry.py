@@ -234,6 +234,38 @@ class TestAttemptRetry:
         scheduler.enqueue.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_non_infra_exception_not_retried(
+        self, mock_run_factory
+    ):
+        """RuntimeError is not in _INFRA_EXCEPTIONS — retry should not be scheduled.
+
+        This test exercises the real _should_retry predicate (no mock) to
+        verify the FAILED-status path correctly rejects non-infra errors.
+        """
+        policy = {"enabled": True, "max_retries": 3, "backoff_seconds": 0}
+        original = mock_run_factory(attempt=1, retry_policy=policy)
+
+        run_repo = AsyncMock()
+        run_repo.get_by_id = AsyncMock(return_value=original)
+
+        scheduler = AsyncMock()
+        scheduler.enqueue = AsyncMock(return_value=True)
+
+        ctx = {"arq_pool": MagicMock(), "settings": MagicMock()}
+
+        with (
+            patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo),
+            patch("qaplatform.worker.scheduler.FairScheduler", return_value=scheduler),
+        ):
+            session = AsyncMock()
+            sf = MagicMock(return_value=session)
+            result = await _attempt_retry(str(original.id), RuntimeError("pipeline execution failed"), ctx, sf)
+
+        assert result is False
+        run_repo.create.assert_not_awaited()
+        scheduler.enqueue.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_enqueues_with_exponential_backoff(self, mock_run_factory):
         policy = {"enabled": True, "max_retries": 3, "backoff_seconds": 30}
         original = mock_run_factory(attempt=2, retry_policy=policy)
