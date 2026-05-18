@@ -440,6 +440,15 @@ class RunRepository(BaseRepository[Run]):
         result = await self.session.execute(stmt)
         return result.scalar_one()
 
+    async def count_queued_waiting(self) -> int:
+        """Count queued runs not yet dispatched to arq (enqueued_at IS NULL)."""
+        stmt = select(func.count()).select_from(Run).where(
+            Run.status == RunStatusEnum.QUEUED,
+            Run.enqueued_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
     @asynccontextmanager
     async def scheduler_lock(self) -> AsyncIterator[None]:
         """Acquire a PostgreSQL advisory lock for the scheduler."""
@@ -466,6 +475,26 @@ class RunRepository(BaseRepository[Run]):
         )
         await self.session.execute(stmt)
         await self.session.flush()
+
+    async def delete_terminal_older_than(self, *, cutoff: datetime) -> int:
+        """Delete done/failed runs (and cascade) older than cutoff. Returns deleted count.
+
+        Only DONE and FAILED are eligible — CANCELLED and TIMEOUT are kept so
+        operators can investigate unexpected terminations.  The caller is
+        responsible for committing the session.
+        """
+        from sqlalchemy import delete as sa_delete
+
+        stmt = (
+            sa_delete(Run)
+            .where(
+                Run.status.in_([RunStatusEnum.DONE, RunStatusEnum.FAILED]),
+                Run.finished_at < cutoff,
+            )
+        )
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return result.rowcount
 
 
 class TestResultRepository(BaseRepository[TestResult]):

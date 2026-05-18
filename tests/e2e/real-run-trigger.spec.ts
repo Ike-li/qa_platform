@@ -42,7 +42,7 @@ function authHeaders(token: string) {
 
 async function createProjectThroughUi(page: Page): Promise<string> {
   const name = `E2E Project ${Date.now()}`;
-  await page.getByRole("button", { name: "New Project" }).click();
+  await page.getByRole("button", { name: "New Project" }).first().click();
   await page.getByLabel("Name").fill(name);
   await page.getByLabel("Git Repository URL").fill("https://github.com/example/e2e-project.git");
   await page.getByRole("button", { name: "Create Project" }).click();
@@ -172,6 +172,8 @@ test("trigger a run against the real backend and display live logs", async ({ pa
   const pipeline = await ensurePipeline(request, token, project.id);
 
   await page.goto(`/projects/${project.id}`);
+  // Wait for project detail to load (project name appears in h1)
+  await expect(page.getByRole("heading", { level: 1, name: project.name })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Trigger Run" }).click();
   await page.getByRole("combobox").click();
   await page.getByRole("option", { name: pipeline.name }).click();
