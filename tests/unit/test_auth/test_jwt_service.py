@@ -94,3 +94,54 @@ class TestDecodeToken:
         tampered = parts[0] + "." + parts[1][::-1] + "." + parts[2]
         with pytest.raises(jwt.DecodeError):
             svc.decode_token(tampered)
+
+
+class TestBlacklist:
+    @pytest.mark.asyncio
+    async def test_revoke_marks_jti_as_revoked(self):
+        from unittest.mock import AsyncMock
+
+        redis = AsyncMock()
+        store: dict[str, str] = {}
+
+        async def _set(key, value, ex=None):
+            store[key] = value
+
+        async def _exists(key):
+            return 1 if key in store else 0
+
+        redis.set = AsyncMock(side_effect=_set)
+        redis.exists = AsyncMock(side_effect=_exists)
+
+        svc = JWTService(_make_settings(), redis=redis)
+        await svc.revoke("abc123", 3600)
+        assert await svc.is_revoked("abc123") is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_jti_not_revoked(self):
+        from unittest.mock import AsyncMock
+
+        redis = AsyncMock()
+        redis.exists = AsyncMock(return_value=0)
+
+        svc = JWTService(_make_settings(), redis=redis)
+        assert await svc.is_revoked("unknown-jti") is False
+
+    @pytest.mark.asyncio
+    async def test_revoke_without_redis_is_noop(self):
+        """When no redis is injected, revoke/is_revoked must not raise."""
+        svc = JWTService(_make_settings(), redis=None)
+        await svc.revoke("jti-x", 3600)  # must not raise
+        assert await svc.is_revoked("jti-x") is False
+
+    @pytest.mark.asyncio
+    async def test_revoke_ttl_floored_at_one(self):
+        """ttl_seconds=0 must be stored with ex=1 (Redis rejects ex=0)."""
+        from unittest.mock import AsyncMock, call
+
+        redis = AsyncMock()
+        redis.set = AsyncMock()
+
+        svc = JWTService(_make_settings(), redis=redis)
+        await svc.revoke("jti-y", 0)
+        redis.set.assert_called_once_with("jwt:revoked:jti-y", "1", ex=1)

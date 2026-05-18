@@ -37,10 +37,10 @@ async def get_current_user(
     container = _get_container()
     if token.startswith("qap_"):
         return await _authenticate_api_token(token, container)
-    return _authenticate_jwt(token, container)
+    return await _authenticate_jwt(token, container)
 
 
-def _authenticate_jwt(token: str, container: DependencyContainer) -> CurrentUser:
+async def _authenticate_jwt(token: str, container: DependencyContainer) -> CurrentUser:
     settings = container.settings
     try:
         payload = jwt.decode(
@@ -64,6 +64,33 @@ def _authenticate_jwt(token: str, container: DependencyContainer) -> CurrentUser
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token type",
         )
+
+    # Blacklist check — only when jti is present (old tokens without jti pass through)
+    jti = payload.get("jti")
+    if jti is not None:
+        from qaplatform.api.auth.jwt_service import JWTService
+        import logging
+
+        jwt_svc = JWTService(settings, redis=container.redis_client)
+        try:
+            revoked = await jwt_svc.is_revoked(jti)
+        except Exception:
+            # P1 fail-open: Redis blip must not 500 the request.
+            # Fail-open prevents site-wide outage when Redis is degraded.
+            # Trade-off: revoked tokens may pass through during Redis failure window
+            # (max window = max(redis_downtime, token_ttl), typically acceptable).
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "jwt_blacklist_lookup_failed",
+                extra={"jti": jti},
+                exc_info=True,
+            )
+            revoked = False
+        if revoked:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked",
+            )
 
     return CurrentUser(
         user_id=payload["sub"],
