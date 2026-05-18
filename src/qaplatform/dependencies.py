@@ -159,12 +159,12 @@ class DependencyContainer:
     async def close(self) -> None:
         if self.s3_client is not None:
             await self.s3_client.__aexit__(None, None, None)
-        if self.db_engine is not None:
-            await self.db_engine.dispose()
-        if self.redis_client is not None:
-            await self.redis_client.aclose()
         if self.arq_pool is not None:
             await self.arq_pool.close()
+        if self.redis_client is not None:
+            await self.redis_client.aclose()
+        if self.db_engine is not None:
+            await self.db_engine.dispose()
 
 
 class RepositoryBundle:
