@@ -41,6 +41,12 @@ log = logging.getLogger(__name__)
 # container exits, matching ``docker stop --time=30`` semantics.
 GRACE_PERIOD_SECONDS = 30
 
+# Cap on how long the executor waits for a log-follow task to drain after
+# the container has been cleaned up. Without this, a stuck `_stream_container_logs`
+# coroutine would block the run's finally block forever, leaving subsequent
+# stages, the workdir teardown, and worker release dangling.
+_LOG_DRAIN_TIMEOUT = 5
+
 
 # --------------------------------------------------------------------------- #
 # Repository protocol (dependency injection, avoids ORM coupling)
@@ -273,6 +279,30 @@ class RunExecutor:
             except Exception:
                 pass
 
+    async def _drain_log_task(self, log_task: asyncio.Task) -> None:
+        """Bounded await on a `_stream_container_logs` task.
+
+        After the container has been cleaned up, the log follow loop
+        should observe the close and return promptly. We still cap the
+        wait at ``_LOG_DRAIN_TIMEOUT`` so a stalled docker logs stream
+        cannot pin the run's finally block, leaving the workdir + worker
+        slot held indefinitely.
+        """
+        if log_task.done():
+            try:
+                log_task.result()
+            except Exception:
+                pass
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(log_task), timeout=_LOG_DRAIN_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.warning("log task did not drain within %ss; cancelling", _LOG_DRAIN_TIMEOUT)
+            log_task.cancel()
+            await asyncio.gather(log_task, return_exceptions=True)
+        except Exception:
+            log.warning("log task raised during drain", exc_info=True)
+
     async def _graceful_stop(self, execution_id: str, *, reason: str) -> None:
         """SIGTERM → bounded wait (≤30 s) → SIGKILL teardown.
 
@@ -426,11 +456,15 @@ class RunExecutor:
                         timed_out=True,
                     )
             finally:
-                await log_task
+                # Cleanup container first so the log follow loop sees EOF
+                # and exits naturally; only then bound-await the log task
+                # so a stalled docker logs stream cannot pin this run's
+                # finally block forever (P1-C).
                 try:
                     await self.backend.cleanup(execution_id)
                 except Exception:
                     log.warning("failed to cleanup container %s", execution_id)
+                await self._drain_log_task(log_task)
                 self._active_execution_id = None
 
             if exit_result.exit_code != 0:
@@ -492,18 +526,48 @@ class RunExecutor:
         self._active_execution_id = execution_id
 
         log_task = asyncio.create_task(self._stream_container_logs(run_id, execution_id))
+        # Setup gets a tighter cap than stage timeout to keep slow scripts
+        # from eating into stage time. Cap at min(pipeline_timeout, 600s).
+        setup_timeout = min(pipeline.timeout_seconds, 600)
+        setup_started_at = datetime.now(timezone.utc)
         try:
-            # Setup gets a tighter cap than stage timeout to keep slow scripts
-            # from eating into stage time. Cap at min(pipeline_timeout, 600s).
-            setup_timeout = min(pipeline.timeout_seconds, 600)
-            exit_result = await self.backend.wait(execution_id, setup_timeout)
+            # Outer guard mirrors _run_stages: if backend.wait ignores the
+            # timeout (already-known risk), wait_for prevents setup from
+            # pinning the run forever. On timeout we run the same SIGTERM
+            # → 30s → SIGKILL teardown the stage path uses (P1-B).
+            try:
+                exit_result = await asyncio.wait_for(
+                    self.backend.wait(execution_id, setup_timeout),
+                    timeout=setup_timeout + 5,
+                )
+            except asyncio.TimeoutError:
+                await self.log_stream.write_log(
+                    run_id,
+                    f"Setup script exceeded timeout {setup_timeout}s, sending SIGTERM",
+                    stream="stderr",
+                )
+                await self._graceful_stop(
+                    execution_id,
+                    reason=f"setup timeout {setup_timeout}s",
+                )
+                exit_result = ExitResult(
+                    exit_code=-1,
+                    started_at=setup_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    timed_out=True,
+                )
         finally:
-            await log_task
             try:
                 await self.backend.cleanup(execution_id)
             except Exception:
                 log.warning("failed to cleanup setup container %s", execution_id)
+            await self._drain_log_task(log_task)
             self._active_execution_id = None
+
+        if exit_result.timed_out:
+            raise RuntimeError(f"Setup script timed out after {setup_timeout}s")
+        if exit_result.exit_code != 0:
+            raise RuntimeError(f"Setup script failed (exit {exit_result.exit_code})")
 
         if exit_result.timed_out:
             raise RuntimeError(f"Setup script timed out after {setup_timeout}s")
