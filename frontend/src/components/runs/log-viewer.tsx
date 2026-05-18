@@ -102,7 +102,7 @@ export function LogViewer({ runId }: { runId: string }) {
               <span className={cn(
                 "h-2 w-2 rounded-full",
                 status === 'connected' ? "bg-status-passed" :
-                status === 'connecting' ? "bg-status-running animate-pulse" :
+                status === 'connecting' || status === 'polling' ? "bg-status-running animate-pulse" :
                 "bg-status-failed"
               )} />
               <span className="text-xs text-ink-muted capitalize">{status}</span>

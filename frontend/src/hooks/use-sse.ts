@@ -10,10 +10,11 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<Event | null>(null);
   const [lastEventId, setLastEventId] = useState<string | null>(null);
-  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'polling'>('connecting');
   const eventSourceRef = useRef<EventSource | null>(null);
   const retryCount = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const maxRetries = 5;
 
   const cleanup = useCallback(() => {
@@ -21,11 +22,29 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
     }
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
     }
   }, []);
+
+  const startPolling = useCallback(() => {
+    setStatus('polling');
+    const poll = async () => {
+      try {
+        const { data: polled } = await api.get<T>(url);
+        setData(polled);
+      } catch {
+        // Polling failure is non-fatal; next interval will retry.
+      }
+    };
+    poll();
+    pollTimerRef.current = setInterval(poll, 5000);
+  }, [url]);
 
   useEffect(() => {
     if (!enabled) {
@@ -50,6 +69,8 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
           retryCount.current += 1;
           const timeout = Math.min(1000 * Math.pow(2, retryCount.current), 30000);
           retryTimerRef.current = setTimeout(connect, timeout);
+        } else {
+          startPolling();
         }
         return;
       }
@@ -89,6 +110,8 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
           retryCount.current += 1;
           const timeout = Math.min(1000 * Math.pow(2, retryCount.current), 30000);
           retryTimerRef.current = setTimeout(connect, timeout);
+        } else {
+          startPolling();
         }
       };
     };
@@ -96,7 +119,7 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
     connect();
 
     return cleanup;
-  }, [url, enabled, cleanup]);
+  }, [url, enabled, cleanup, startPolling]);
 
   return { data, status, error, lastEventId };
 }

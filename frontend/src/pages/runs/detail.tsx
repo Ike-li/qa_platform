@@ -1,26 +1,23 @@
 import { useParams, Link } from "react-router-dom";
 import {
-  GitBranch,
   Clock,
   User,
   Terminal,
   FileText,
   Package,
-  ChevronDown,
-  ChevronRight,
   Download,
   ExternalLink,
   RotateCcw,
   Ban
 } from "lucide-react";
-import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useRun, useRunResults, useRunArtifacts, useCancelRun } from "../../hooks/use-runs";
-import type { TestResult } from "../../types/api";
 import { RunStatusBadge } from "../../components/run-status-badge";
+import { BranchBadge } from "../../components/branch-badge";
 import { DurationDisplay } from "../../components/duration-display";
 import { RelativeTime } from "../../components/relative-time";
 import { LogViewer } from "../../components/runs/log-viewer";
+import { TestResultsTable } from "../../components/test-results-table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Button } from "../../components/ui/button";
 import {
@@ -86,10 +83,7 @@ export default function RunDetail() {
                 {t('runs.detail.projectDetail')} <ExternalLink className="h-3 w-3" />
               </Link>
               <span>•</span>
-              <div className="flex items-center gap-1">
-                <GitBranch className="h-3.5 w-3.5" />
-                <span>{run.branch}</span>
-              </div>
+              <BranchBadge branch={run.branch} />
             </div>
           </div>
         </div>
@@ -175,30 +169,7 @@ export default function RunDetail() {
             <SummaryCard label={t('runs.results.skipped')} value={run.skipped_tests} color="tertiary" />
           </div>
 
-          <div className="rounded-xl border border-hairline bg-surface-1 overflow-hidden">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-hairline bg-surface-2/50 text-ink-muted">
-                  <th className="w-10 px-4 py-3"></th>
-                  <th className="px-4 py-3 font-medium">{t('runs.results.testCase')}</th>
-                  <th className="px-4 py-3 font-medium">{t('runs.results.suite')}</th>
-                  <th className="px-4 py-3 font-medium">{t('runs.results.status')}</th>
-                  <th className="px-4 py-3 font-medium">{t('runs.results.duration')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-hairline">
-                {isResultsLoading ? (
-                  [1, 2, 3].map(i => <tr key={i} className="animate-pulse"><td colSpan={5} className="p-4"><div className="h-4 w-full bg-surface-2 rounded" /></td></tr>)
-                ) : results?.data.length === 0 ? (
-                  <tr><td colSpan={5} className="p-12 text-center text-ink-tertiary">{t('runs.results.noResults')}</td></tr>
-                ) : (
-                  results?.data.map(result => (
-                    <TestResultRow key={result.id} result={result} />
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <TestResultsTable results={results?.data ?? []} isLoading={isResultsLoading} />
         </TabsContent>
 
         <TabsContent value="artifacts" className="mt-4">
@@ -250,54 +221,3 @@ function SummaryCard({ label, value, color }: { label: string; value: number; co
   );
 }
 
-function TestResultRow({ result }: { result: TestResult }) {
-  const { t } = useTranslation();
-  const [expanded, setExpanded] = React.useState(false);
-  const isFailed = result.status === "failed" || result.status === "error";
-
-  return (
-    <>
-      <tr
-        className={cn(
-          "group hover:bg-surface-2/50 transition-colors cursor-pointer",
-          expanded && "bg-surface-2/30"
-        )}
-        onClick={() => isFailed && setExpanded(!expanded)}
-      >
-        <td className="px-4 py-3 text-center">
-          {isFailed && (
-            expanded ? <ChevronDown className="h-4 w-4 text-ink-tertiary" /> : <ChevronRight className="h-4 w-4 text-ink-tertiary" />
-          )}
-        </td>
-        <td className="px-4 py-3 font-medium text-ink">{result.name}</td>
-        <td className="px-4 py-3 text-ink-muted truncate max-w-[200px]">{result.suite}</td>
-        <td className="px-4 py-3">
-          <span className={cn(
-            "inline-flex items-center gap-1.5 text-xs font-medium",
-            result.status === "passed" && "text-status-passed",
-            isFailed && "text-status-failed",
-            result.status === "skipped" && "text-ink-tertiary"
-          )}>
-            {result.status === "passed" ? <RotateCcw className="h-3 w-3 hidden" /> : null}
-            {t('testStatus.' + result.status)}
-          </span>
-        </td>
-        <td className="px-4 py-3 text-ink-tertiary">{result.duration_ms}ms</td>
-      </tr>
-      {expanded && isFailed && (
-        <tr>
-          <td colSpan={5} className="bg-surface-2/20 px-8 py-4">
-            <div className="rounded-md border border-status-failed/20 bg-status-failed/5 p-4 space-y-3">
-              <p className="font-semibold text-status-failed text-sm">{result.error_message || t('runs.results.unknownError')}</p>
-              {result.stack_trace && (
-                <pre className="mt-2 overflow-x-auto font-mono text-xs text-ink-muted leading-relaxed whitespace-pre-wrap max-h-[300px]">
-                  {result.stack_trace}
-                </pre>
-              )}
-            </div>
-          </td>
-        </tr>
-      )}
-    </>
-  );
-}
