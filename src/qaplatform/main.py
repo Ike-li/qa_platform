@@ -160,6 +160,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     from qaplatform.api.v1.project_members import router as project_member_router
     from qaplatform.api.v1.projects import router as project_router
     from qaplatform.api.v1.runs import router as run_router
+    from qaplatform.api.v1.schedules import router as schedule_router
     from qaplatform.api.v1.sse import router as sse_router
 
     api_prefix = "/api/v1"
@@ -170,6 +171,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     app.include_router(env_router, prefix=api_prefix)
     app.include_router(pipeline_router, prefix=api_prefix)
     app.include_router(run_router, prefix=api_prefix)
+    app.include_router(schedule_router, prefix=api_prefix)
     app.include_router(artifact_router, prefix=api_prefix)
     app.include_router(sse_router, prefix=api_prefix)
 

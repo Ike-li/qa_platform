@@ -32,6 +32,7 @@ dependencies = [
     "tenacity",
     "sse-starlette",
     "httpx",
+    "croniter>=2.0",
 ]
 
 [project.optional-dependencies]

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 
 import aiodocker
+
+log = logging.getLogger(__name__)
 from arq import cron, func
 from arq.connections import RedisSettings
 
@@ -139,6 +142,109 @@ async def retry_failed_archives(ctx: dict) -> None:
     """Periodic task: retry failed log archival."""
 
 
+async def check_schedules(ctx: dict) -> None:
+    """Periodic task: fire due schedules by creating runs and enqueueing them."""
+    from datetime import datetime, timezone
+
+    from qaplatform.domain.services.scheduling import (
+        compute_next_run_at,
+        should_fire,
+    )
+    from qaplatform.infra.database.repositories.project_repo import (
+        EnvironmentRepository,
+        PipelineRepository,
+        ScheduleRepository,
+    )
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+    from qaplatform.worker.scheduler import enqueue_run
+
+    session_factory = ctx.get("db_session_factory")
+    arq = ctx.get("arq_pool")
+    settings = ctx.get("settings")
+    if session_factory is None or arq is None:
+        return
+
+    now = datetime.now(timezone.utc)
+
+    async with session_factory() as session:
+        schedule_repo = ScheduleRepository(session)
+        run_repo = RunRepository(session)
+        pipeline_repo = PipelineRepository(session)
+        env_repo = EnvironmentRepository(session)
+
+        due = await schedule_repo.find_due_schedules(now)
+        if not due:
+            return
+
+        for schedule in due:
+            if not should_fire(schedule, now):
+                # In quiet window or not yet due — just skip
+                continue
+
+            try:
+                # Resolve pipeline for project context
+                pipeline = await pipeline_repo.get_by_id(schedule.pipeline_id)
+                if pipeline is None:
+                    await schedule_repo.update_after_fire(
+                        schedule.id,
+                        last_run_at=now,
+                        next_run_at=compute_next_run_at(schedule.cron_expr, schedule.timezone, now),
+                        last_error="pipeline not found",
+                    )
+                    continue
+
+                # Resolve environment
+                envs, _ = await env_repo.list_by_project(schedule.project_id, limit=1)
+                environment_id = envs[0].id if envs else None
+
+                # Determine git_ref from pipeline's project default
+                git_ref = "main"
+
+                run = await run_repo.create(
+                    tenant_id=pipeline.project.tenant_id if pipeline.project else None,
+                    project_id=schedule.project_id,
+                    pipeline_id=schedule.pipeline_id,
+                    environment_id=environment_id,
+                    git_ref=git_ref,
+                    trigger_type="schedule",
+                    metadata_={"schedule_id": str(schedule.id)},
+                )
+                run.retry_group_id = run.id
+                await session.commit()
+
+                enqueued = await enqueue_run(arq, run_repo, run, "schedule", settings)
+                next_run = compute_next_run_at(schedule.cron_expr, schedule.timezone, now)
+                await schedule_repo.update_after_fire(
+                    schedule.id,
+                    last_run_at=now,
+                    next_run_at=next_run,
+                    last_error=None if enqueued else "enqueue failed",
+                )
+                await session.commit()
+
+                log.info(
+                    "schedule_fired",
+                    extra={
+                        "schedule_id": str(schedule.id),
+                        "run_id": str(run.id),
+                        "enqueued": enqueued,
+                    },
+                )
+            except Exception:
+                log.exception("schedule_fire_failed", extra={"schedule_id": str(schedule.id)})
+                try:
+                    next_run = compute_next_run_at(schedule.cron_expr, schedule.timezone, now)
+                    await schedule_repo.update_after_fire(
+                        schedule.id,
+                        last_run_at=now,
+                        next_run_at=next_run,
+                        last_error="internal error",
+                    )
+                    await session.commit()
+                except Exception:
+                    log.exception("schedule_update_failed", extra={"schedule_id": str(schedule.id)})
+
+
 async def after_job_end(ctx: dict) -> None:
     """arq after_job_end hook: compensate failed jobs."""
     if ctx.get("success"):
@@ -182,6 +288,7 @@ class WorkerSettings:
     cron_jobs = [
         cron(reclaim_resources, second={0}),
         cron(dequeue_waiting, second={30}),
+        cron(check_schedules, second={15}),
         cron(retry_failed_archives, second={45}),
         cron(cleanup_old_runs, minute={0}, second={0}),  # hourly retention sweep
     ]
