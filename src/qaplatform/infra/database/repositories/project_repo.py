@@ -1,4 +1,4 @@
-"""Project, Environment, Pipeline, Credential, and Schedule repositories."""
+"""Project, Environment, Pipeline, Credential, Schedule, and Notification repositories."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qaplatform.infra.database.models import (
     Credential,
     Environment,
+    NotificationLog,
+    NotificationRule,
     Pipeline,
     Project,
     Schedule,
@@ -163,3 +165,44 @@ class ScheduleRepository(BaseRepository[Schedule]):
         schedule.last_run_at = last_run_at
         schedule.next_run_at = next_run_at
         schedule.last_error = last_error
+
+
+class NotificationRuleRepository(BaseRepository[NotificationRule]):
+    model = NotificationRule
+
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+
+    async def list_by_project(
+        self, project_id: UUID, *, offset: int = 0, limit: int = 20
+    ) -> tuple[list[NotificationRule], int]:
+        return await self.list(
+            offset=offset,
+            limit=limit,
+            filters=[NotificationRule.project_id == project_id],
+        )
+
+    async def find_enabled_by_project(self, project_id: UUID) -> list[NotificationRule]:
+        """Find all enabled notification rules for a project."""
+        stmt = select(NotificationRule).where(
+            NotificationRule.project_id == project_id,
+            NotificationRule.enabled.is_(True),
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+
+class NotificationLogRepository(BaseRepository[NotificationLog]):
+    model = NotificationLog
+
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+
+    async def list_by_run(
+        self, run_id: UUID, *, offset: int = 0, limit: int = 20
+    ) -> tuple[list[NotificationLog], int]:
+        return await self.list(
+            offset=offset,
+            limit=limit,
+            filters=[NotificationLog.run_id == run_id],
+        )

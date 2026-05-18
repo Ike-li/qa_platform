@@ -59,6 +59,8 @@ class TestTenantRolePermissions:
             Action.TOKEN_MANAGE,
             Action.SCHEDULE_READ,
             Action.SCHEDULE_EDIT,
+            Action.NOTIFICATION_READ,
+            Action.NOTIFICATION_EDIT,
         }
         assert TENANT_ROLE_PERMISSIONS[Role.MEMBER] == expected
 

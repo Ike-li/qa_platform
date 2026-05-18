@@ -1,0 +1,143 @@
+"""Notification evaluation and sending for completed runs."""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any
+from uuid import UUID
+
+from qaplatform.infra.database.models import NotificationStatusEnum
+
+log = logging.getLogger(__name__)
+
+
+def _evaluate_conditions(conditions: list[dict], run_summary: dict | None, status: str) -> bool:
+    """Check whether a run matches all conditions of a notification rule.
+
+    Conditions are dicts with ``field``, ``operator``, ``value`` keys.
+    Supported fields: ``status``, ``pass_rate``, ``failed``.
+    Supported operators: ``eq``, ``ne``, ``lt``, ``gt``, ``lte``, ``gte``.
+
+    Returns True if all conditions match (or if conditions is empty).
+    """
+    if not conditions:
+        return True
+
+    for cond in conditions:
+        field = cond.get("field")
+        op = cond.get("operator", "eq")
+        expected = cond.get("value")
+
+        if field == "status":
+            actual = status
+        elif field == "pass_rate":
+            actual = (run_summary or {}).get("pass_rate", 0.0)
+        elif field == "failed":
+            actual = (run_summary or {}).get("failed", 0)
+        else:
+            # Unknown field — skip this condition
+            continue
+
+        if not _compare(actual, op, expected):
+            return False
+
+    return True
+
+
+def _compare(actual: Any, op: str, expected: Any) -> bool:
+    if op == "eq":
+        return actual == expected
+    if op == "ne":
+        return actual != expected
+    if op == "lt":
+        return actual < expected
+    if op == "gt":
+        return actual > expected
+    if op == "lte":
+        return actual <= expected
+    if op == "gte":
+        return actual >= expected
+    return False
+
+
+async def _send_channel(channel_type: str, channel_config: dict, message: str) -> None:
+    """Send a notification to a single channel.
+
+    Currently logs the message. Real integrations (email, webhook, etc.)
+    should be plugged in here.
+    """
+    log.info(
+        "notification_send",
+        extra={
+            "channel_type": channel_type,
+            "message_length": len(message),
+        },
+    )
+
+
+async def evaluate_and_notify(
+    *,
+    run_id: UUID,
+    project_id: UUID,
+    status: str,
+    summary: dict | None,
+    session_factory: Any,
+) -> None:
+    """Evaluate notification rules for a completed run and send notifications.
+
+    Called from execute_run after the run reaches a terminal status.
+    Each rule's channels are processed independently — a failure in one
+    channel does not prevent others from being sent.
+    """
+    from qaplatform.infra.database.repositories.project_repo import (
+        NotificationLogRepository,
+        NotificationRuleRepository,
+    )
+
+    async with session_factory() as session:
+        rule_repo = NotificationRuleRepository(session)
+        log_repo = NotificationLogRepository(session)
+
+        rules = await rule_repo.find_enabled_by_project(project_id)
+        if not rules:
+            return
+
+        for rule in rules:
+            if not _evaluate_conditions(rule.conditions, summary, status):
+                continue
+
+            message = f"Run {run_id} completed with status: {status}"
+            if summary:
+                message += f" (passed: {summary.get('passed', 0)}, failed: {summary.get('failed', 0)})"
+
+            for channel in rule.channels:
+                channel_type = channel.get("type", "unknown")
+                channel_config = channel.get("config", {})
+                log_status = NotificationStatusEnum.SENT
+                error_message = None
+
+                try:
+                    await _send_channel(channel_type, channel_config, message)
+                except Exception as exc:
+                    log_status = NotificationStatusEnum.FAILED
+                    error_message = str(exc)[:500]
+                    log.exception(
+                        "notification_send_failed",
+                        extra={
+                            "run_id": str(run_id),
+                            "rule_id": str(rule.id),
+                            "channel_type": channel_type,
+                        },
+                    )
+
+                await log_repo.create(
+                    project_id=project_id,
+                    run_id=run_id,
+                    rule_id=rule.id,
+                    channel_type=channel_type,
+                    status=log_status,
+                    error_message=error_message,
+                )
+
+        await session.commit()
