@@ -68,6 +68,24 @@ async def on_shutdown(ctx: dict) -> None:
 
 async def reclaim_resources(ctx: dict) -> None:
     """Periodic task: reclaim orphan containers and timeout stale runs."""
+    from qaplatform.engine.reclaim import reclaim_worker_lost
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+
+    session_factory = ctx.get("db_session_factory")
+    redis = ctx.get("redis")
+    if session_factory is None or redis is None:
+        return
+
+    async with session_factory() as session:
+        run_repo = RunRepository(session)
+        try:
+            await reclaim_worker_lost(
+                run_repo=run_repo,
+                redis=redis,
+                backend=ctx.get("docker_backend"),
+            )
+        finally:
+            await session.commit()
 
 
 async def dequeue_waiting(ctx: dict) -> None:
