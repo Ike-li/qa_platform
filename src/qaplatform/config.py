@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     rate_limit_auth_failure: int = 5
     rate_limit_auth_failure_window: int = 60
+    # CIDR blocks of trusted reverse proxies (e.g. ["10.0.0.0/8", "172.16.0.0/12"]).
+    # Empty list (default) means no proxy is trusted; client.host is always used directly.
+    trusted_proxies: list[str] = []
 
     # Data retention
     retention_runs_days: int = 90
