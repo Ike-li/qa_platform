@@ -42,7 +42,7 @@ function authHeaders(token: string) {
 
 async function createProjectThroughUi(page: Page): Promise<string> {
   const name = `E2E Project ${Date.now()}`;
-  await page.getByRole("button", { name: "New Project" }).click();
+  await page.getByRole("button", { name: "New Project" }).first().click();
   await page.getByLabel("Name").fill(name);
   await page.getByLabel("Git Repository URL").fill("https://github.com/example/e2e-project.git");
   await page.getByRole("button", { name: "Create Project" }).click();
