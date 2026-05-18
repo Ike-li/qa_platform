@@ -57,7 +57,7 @@ const CONDITION_FIELDS: NotificationCondition["field"][] = [
   "failed",
 ];
 
-const CONDITION_OPS: NotificationCondition["op"][] = [
+const CONDITION_OPS: NotificationCondition["operator"][] = [
   "eq",
   "ne",
   "lt",
