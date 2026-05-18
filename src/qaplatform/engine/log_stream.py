@@ -15,6 +15,25 @@ _MAXLEN = 10_000
 _STREAM_TTL = 3600  # 1 hour
 # TTL for stream on archive failure (seconds)
 _ARCHIVE_FAILURE_TTL = 86400  # 24 hours
+# Per-line byte cap (PRD §observability: 4KB max per log line) — guards
+# against pathological producers (e.g. base64 blobs) blowing up Redis or
+# stalling SSE consumers.
+_MAX_LINE_BYTES = 4096
+_TRUNCATION_MARKER = "...[truncated]"
+
+
+def _truncate_line(line: str) -> str:
+    """Cap a log line at _MAX_LINE_BYTES (UTF-8) with a trailing marker.
+
+    Truncates on byte length, not char count, then trims any partial
+    multibyte sequence at the boundary.
+    """
+    encoded = line.encode("utf-8")
+    if len(encoded) <= _MAX_LINE_BYTES:
+        return line
+    marker_bytes = _TRUNCATION_MARKER.encode("utf-8")
+    cap = _MAX_LINE_BYTES - len(marker_bytes)
+    return encoded[:cap].decode("utf-8", errors="ignore") + _TRUNCATION_MARKER
 
 
 class LogStream:
@@ -43,7 +62,7 @@ class LogStream:
         key = self._stream_key(run_id)
         await self._redis.xadd(
             key,
-            {"stream": stream, "line": line},
+            {"stream": stream, "line": _truncate_line(line)},
             maxlen=_MAXLEN,
             approximate=True,
         )
@@ -57,9 +76,12 @@ class LogStream:
         key = self._stream_key(run_id)
         pipe = self._redis.pipeline(transaction=False)
         for entry in lines:
+            capped = dict(entry)
+            if "line" in capped:
+                capped["line"] = _truncate_line(capped["line"])
             pipe.xadd(
                 key,
-                entry,
+                capped,
                 maxlen=_MAXLEN,
                 approximate=True,
             )
