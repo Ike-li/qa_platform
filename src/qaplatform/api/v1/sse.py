@@ -30,16 +30,19 @@ async def _authenticate_sse_ticket(
     request: Request,
     ticket: str = Query(...),
 ) -> UserIdentity:
-    """Authenticate SSE connection via single-use ticket from Redis."""
+    """Authenticate SSE connection via single-use ticket from Redis.
+    
+    Uses atomic GETDEL to prevent race condition where two concurrent
+    requests both succeed with the same ticket.
+    """
     redis = request.app.state.container.redis_client
     key = f"sse_ticket:{ticket}"
-    payload = await redis.get(key)
+    payload = await redis.getdel(key)
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired SSE ticket",
         )
-    await redis.delete(key)
     user_id, role, tenant_id = payload.split(":", 2)
     return UserIdentity(
         user_id=UUID(user_id),
@@ -62,8 +65,8 @@ async def stream_logs(
     session: AsyncSession = Depends(_get_db_session),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
 ):
-    run = await repos.run.get_by_id(run_id)
-    if run is None or run.tenant_id != user.tenant_id:
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+    if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
 
@@ -128,8 +131,8 @@ async def stream_events(
     session: AsyncSession = Depends(_get_db_session),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
 ):
-    run = await repos.run.get_by_id(run_id)
-    if run is None or run.tenant_id != user.tenant_id:
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+    if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
 

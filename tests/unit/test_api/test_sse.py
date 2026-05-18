@@ -101,7 +101,7 @@ def _make_run(*, run_id, tenant_id, project_id=None):
 @pytest.mark.asyncio
 async def test_logs_sse_endpoint_exists(client, mock_redis, mock_run_repo, tenant_id):
     run_id = uuid.uuid4()
-    mock_run_repo.get_by_id.return_value = _make_run(run_id=run_id, tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.return_value = _make_run(run_id=run_id, tenant_id=tenant_id)
 
     mock_redis.xread = AsyncMock(
         side_effect=[
@@ -121,7 +121,7 @@ async def test_logs_sse_endpoint_exists(client, mock_redis, mock_run_repo, tenan
 @pytest.mark.asyncio
 async def test_events_sse_endpoint_exists(client, mock_redis, mock_run_repo, tenant_id):
     run_id = uuid.uuid4()
-    mock_run_repo.get_by_id.return_value = _make_run(run_id=run_id, tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.return_value = _make_run(run_id=run_id, tenant_id=tenant_id)
 
     mock_redis.xread = AsyncMock(
         side_effect=[
@@ -180,9 +180,8 @@ async def test_stream_logs_cross_tenant_returns_404(
     """
     run_id = uuid.uuid4()
     # run lives in a *different* tenant than the authenticated user
-    mock_run_repo.get_by_id.return_value = _make_run(
-        run_id=run_id, tenant_id=other_tenant_id
-    )
+    # — get_for_tenant filters in SQL, so it surfaces as None.
+    mock_run_repo.get_for_tenant.return_value = None
     mock_redis.xread = AsyncMock()
 
     resp = await client.get(f"/api/v1/runs/{run_id}/logs?ticket=test-ticket")
@@ -200,9 +199,7 @@ async def test_stream_events_cross_tenant_returns_404(
 ):
     """Same cross-tenant guard for the events endpoint."""
     run_id = uuid.uuid4()
-    mock_run_repo.get_by_id.return_value = _make_run(
-        run_id=run_id, tenant_id=other_tenant_id
-    )
+    mock_run_repo.get_for_tenant.return_value = None
     mock_redis.xread = AsyncMock()
 
     resp = await client.get(f"/api/v1/runs/{run_id}/events?ticket=test-ticket")
@@ -220,7 +217,7 @@ async def test_stream_logs_run_not_found_returns_404(
 ):
     """Non-existent run_id must yield 404 just like cross-tenant access."""
     run_id = uuid.uuid4()
-    mock_run_repo.get_by_id.return_value = None
+    mock_run_repo.get_for_tenant.return_value = None
     mock_redis.xread = AsyncMock()
 
     resp = await client.get(f"/api/v1/runs/{run_id}/logs?ticket=test-ticket")
@@ -270,7 +267,7 @@ async def test_stream_logs_same_tenant_no_project_perm_returns_403(
     app.dependency_overrides[_get_db_session] = _override_session
 
     run_id = uuid.uuid4()
-    mock_run_repo.get_by_id.return_value = _make_run(
+    mock_run_repo.get_for_tenant.return_value = _make_run(
         run_id=run_id, tenant_id=tenant_id
     )
     mock_redis.xread = AsyncMock()
@@ -328,7 +325,7 @@ async def test_stream_events_same_tenant_no_project_perm_returns_403(
     app.dependency_overrides[_get_db_session] = _override_session
 
     run_id = uuid.uuid4()
-    mock_run_repo.get_by_id.return_value = _make_run(
+    mock_run_repo.get_for_tenant.return_value = _make_run(
         run_id=run_id, tenant_id=tenant_id
     )
     mock_redis.xread = AsyncMock()
@@ -354,7 +351,7 @@ async def test_stream_logs_same_project_returns_200_event_stream(
 ):
     """Happy path: user authorised for the run's project sees the stream."""
     run_id = uuid.uuid4()
-    mock_run_repo.get_by_id.return_value = _make_run(
+    mock_run_repo.get_for_tenant.return_value = _make_run(
         run_id=run_id, tenant_id=tenant_id
     )
 
@@ -372,3 +369,69 @@ async def test_stream_logs_same_project_returns_200_event_stream(
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers.get("content-type", "")
     assert "expected-log-line" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_authenticate_sse_ticket_consumes_atomically():
+    """Two concurrent calls with the same ticket must yield exactly one success
+    and one failure — the getdel operation must be atomic.
+    
+    This test verifies that _authenticate_sse_ticket uses redis.getdel (atomic)
+    and not the racy get+delete pattern.
+    """
+    import asyncio
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
+    from qaplatform.api.deps import UserIdentity
+    from fastapi import HTTPException
+    
+    ticket = "test-ticket-atomic"
+    user_id = uuid.uuid4()
+    role = "platform_admin"
+    tenant_id = uuid.uuid4()
+    payload = f"{user_id}:{role}:{tenant_id}"
+    
+    # Mock redis with getdel that returns payload on first call, None on second
+    call_count = 0
+    
+    async def mock_getdel(key):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return payload
+        return None
+    
+    mock_redis = AsyncMock()
+    mock_redis.getdel = mock_getdel
+    
+    # Mock request with redis client
+    mock_request = MagicMock()
+    mock_request.app.state.container.redis_client = mock_redis
+    
+    # Run two concurrent calls with the same ticket
+    results = await asyncio.gather(
+        _authenticate_sse_ticket(mock_request, ticket),
+        _authenticate_sse_ticket(mock_request, ticket),
+        return_exceptions=True,
+    )
+    
+    # Verify exactly one success and one failure
+    successes = [r for r in results if isinstance(r, UserIdentity)]
+    failures = [r for r in results if isinstance(r, HTTPException)]
+    
+    assert len(successes) == 1, f"Expected 1 success, got {len(successes)}"
+    assert len(failures) == 1, f"Expected 1 failure, got {len(failures)}"
+    
+    # Verify the success has correct identity
+    success = successes[0]
+    assert success.user_id == user_id
+    assert success.role == role
+    assert success.tenant_id == tenant_id
+    
+    # Verify the failure is 401
+    failure = failures[0]
+    assert failure.status_code == 401
+    
+    # Verify getdel was called exactly twice (not get+delete separately)
+    assert call_count == 2
+    mock_redis.get.assert_not_called()
+    mock_redis.delete.assert_not_called()
