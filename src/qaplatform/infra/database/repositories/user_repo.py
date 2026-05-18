@@ -22,6 +22,7 @@ class UserRepository(BaseRepository[AppUser]):
         stmt = select(AppUser).where(
             AppUser.tenant_id == tenant_id,
             AppUser.username == username,
+            AppUser.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
@@ -30,6 +31,7 @@ class UserRepository(BaseRepository[AppUser]):
         stmt = select(AppUser).where(
             AppUser.tenant_id == tenant_id,
             AppUser.email == email,
+            AppUser.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
@@ -54,7 +56,10 @@ class ApiTokenRepository(BaseRepository[ApiToken]):
         super().__init__(session)
 
     async def get_by_token_id(self, token_id: str) -> ApiToken | None:
-        stmt = select(ApiToken).where(ApiToken.token_id == token_id)
+        stmt = select(ApiToken).where(
+            ApiToken.token_id == token_id,
+            ApiToken.deleted_at.is_(None),
+        )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 

@@ -93,6 +93,24 @@ async def execute_run(ctx: dict, run_id: str) -> None:
             await session.commit()
             return
 
+        # Check if project is archived — skip execution
+        from qaplatform.infra.database.models import Project
+        from sqlalchemy import select as _select
+
+        proj_result = await session.execute(
+            _select(Project).where(
+                Project.id == run.project_id,
+                Project.deleted_at.is_(None),
+            )
+        )
+        project = proj_result.scalar_one_or_none()
+        if project is None or project.status == "archived":
+            if await run_repo.cancel_if_current(run.id):
+                log.info("run %s skipped: project archived or deleted", run_id)
+                await publish_status_event(redis, run_id, "cancelled", previous="preparing")
+            await session.commit()
+            return
+
         # Start heartbeat
         heartbeat_task = asyncio.create_task(
             _heartbeat_loop(worker_id, redis)

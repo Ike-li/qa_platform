@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Generic, Sequence, TypeVar
 from uuid import UUID
 
@@ -21,6 +22,20 @@ class BaseRepository(Generic[ModelT]):
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    # ---- soft-delete helpers ----
+
+    @staticmethod
+    def _is_soft_deletable(model: type) -> bool:
+        return getattr(model, "__soft_deletable__", True)
+
+    def _soft_delete_filter(self) -> list:
+        """Return [deleted_at IS None] filter if the model supports soft-delete."""
+        if self._is_soft_deletable(self.model):
+            return [self.model.deleted_at.is_(None)]
+        return []
+
+    # ---- CRUD ----
+
     async def create(self, **kwargs) -> ModelT:
         instance = self.model(**kwargs)
         self.session.add(instance)
@@ -29,7 +44,11 @@ class BaseRepository(Generic[ModelT]):
         return instance
 
     async def get_by_id(self, id: UUID) -> ModelT | None:
-        return await self.session.get(self.model, id)
+        stmt = select(self.model).where(self.model.id == id)
+        for f in self._soft_delete_filter():
+            stmt = stmt.where(f)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def get_for_tenant(self, id: UUID, tenant_id: UUID) -> ModelT | None:
         """Fetch by primary key, scoped to a tenant.
@@ -48,6 +67,8 @@ class BaseRepository(Generic[ModelT]):
             self.model.id == id,  # type: ignore[attr-defined]
             self.model.tenant_id == tenant_id,  # type: ignore[attr-defined]
         )
+        for f in self._soft_delete_filter():
+            stmt = stmt.where(f)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -61,6 +82,10 @@ class BaseRepository(Generic[ModelT]):
     ) -> tuple[Sequence[ModelT], int]:
         stmt = select(self.model)
         count_stmt = select(func.count()).select_from(self.model)
+
+        for f in self._soft_delete_filter():
+            stmt = stmt.where(f)
+            count_stmt = count_stmt.where(f)
 
         if filters:
             for f in filters:
@@ -90,8 +115,12 @@ class BaseRepository(Generic[ModelT]):
         return instance
 
     async def delete(self, instance: ModelT) -> None:
-        await self.session.delete(instance)
-        await self.session.flush()
+        if self._is_soft_deletable(self.model):
+            instance.deleted_at = datetime.now(timezone.utc)
+            await self.session.flush()
+        else:
+            await self.session.delete(instance)
+            await self.session.flush()
 
     async def commit(self) -> None:
         """Commit the current transaction. Use to release row locks mid-task."""

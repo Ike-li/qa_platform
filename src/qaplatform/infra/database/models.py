@@ -68,7 +68,11 @@ class NotificationStatusEnum(str, enum.Enum):
 
 
 class Base(DeclarativeBase):
-    pass
+    __soft_deletable__ = True
+
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
 
 
 class AuditBase(DeclarativeBase):
@@ -438,6 +442,7 @@ class Run(Base):
 
 class TestResult(Base):
     __tablename__ = "test_result"
+    __soft_deletable__ = False
     __table_args__ = (
         UniqueConstraint("run_id", "suite", "name", name="uq_test_result_run_suite_name"),
         Index("idx_test_result_run", "run_id"),
@@ -496,6 +501,7 @@ class Artifact(Base):
 
 class RunEvent(Base):
     __tablename__ = "run_event"
+    __soft_deletable__ = False
     __table_args__ = (Index("idx_run_event_run_created", "run_id", "created_at"),)
 
     id: Mapped[UUID] = mapped_column(
@@ -572,6 +578,7 @@ class NotificationRule(Base):
 
 class NotificationLog(Base):
     __tablename__ = "notification_log"
+    __soft_deletable__ = False
     __table_args__ = (
         UniqueConstraint("run_id", "rule_id", "channel_type", name="uq_notification_log_run_rule_channel"),
         ForeignKeyConstraint(

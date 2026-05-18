@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -69,6 +70,7 @@ async def list_credentials(
             select(CredentialORM).where(
                 CredentialORM.project_id == project_id,
                 CredentialORM.tenant_id == user.tenant_id,
+                CredentialORM.deleted_at.is_(None),
             )
         )
     ).scalars().all()
@@ -98,6 +100,7 @@ async def create_credential(
             select(CredentialORM.id).where(
                 CredentialORM.project_id == project_id,
                 CredentialORM.name == body.name,
+                CredentialORM.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -153,6 +156,7 @@ async def get_credential(
                 CredentialORM.id == credential_id,
                 CredentialORM.project_id == project_id,
                 CredentialORM.tenant_id == user.tenant_id,
+                CredentialORM.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -184,6 +188,7 @@ async def update_credential(
                 CredentialORM.id == credential_id,
                 CredentialORM.project_id == project_id,
                 CredentialORM.tenant_id == user.tenant_id,
+                CredentialORM.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -228,6 +233,7 @@ async def delete_credential(
                 CredentialORM.id == credential_id,
                 CredentialORM.project_id == project_id,
                 CredentialORM.tenant_id == user.tenant_id,
+                CredentialORM.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -241,7 +247,8 @@ async def delete_credential(
         )
 
     before = _to_response(cred)
-    await session.delete(cred)
+    cred.deleted_at = datetime.now(timezone.utc)
+    await session.flush()
     await write_audit(
         repos, user,
         action="credential.delete",
