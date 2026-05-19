@@ -294,6 +294,9 @@ class RunExecutor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            import traceback
+            log.error("EXECUTION FAILED for run %s: %s", run_id, exc)
+            log.error("Traceback: %s", traceback.format_exc())
             log.exception("execution failed for run %s", run_id)
             failed = await self.run_repo.fail_if_current(
                 run_id, message=redact_url_userinfo(str(exc))
@@ -485,6 +488,7 @@ class RunExecutor:
                 ],
                 resource_limits=pipeline.resource_limits,
                 network_policy=pipeline.network_policy,
+                security=SandboxSecurity(readonly_rootfs=False),
                 labels={"run_id": str(run.id), "stage": stage.name},
             )
             
@@ -594,6 +598,8 @@ class RunExecutor:
             ],
             resource_limits=pipeline.resource_limits,
             network_policy=pipeline.network_policy,
+            security=SandboxSecurity(readonly_rootfs=False),
+            user="root",
             labels={"run_id": run_id, "phase": "setup"},
         )
 
