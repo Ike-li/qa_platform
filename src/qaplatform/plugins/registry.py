@@ -84,10 +84,16 @@ class PluginRegistry:
     def register_builtins(self) -> None:
         """Register all built-in plugins."""
         from qaplatform.plugins.builtin.git_source import GitSource
+        from qaplatform.plugins.builtin.go_test_runner import GoTestRunner
+        from qaplatform.plugins.builtin.jest_runner import JestRunner
         from qaplatform.plugins.builtin.junit_collector import JUnitCollector
+        from qaplatform.plugins.builtin.playwright_runner import PlaywrightRunner
         from qaplatform.plugins.builtin.pytest_runner import PytestRunner
 
         self.register_runner(PytestRunner())
+        self.register_runner(JestRunner())
+        self.register_runner(GoTestRunner())
+        self.register_runner(PlaywrightRunner())
         self.register_collector(JUnitCollector())
         self.register_source(GitSource())
 
