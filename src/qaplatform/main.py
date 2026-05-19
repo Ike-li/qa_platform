@@ -152,6 +152,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     # app.add_middleware(AuthMiddleware)
 
     # ── Routers ──────────────────────────────────────────────────────────
+    from qaplatform.api.v1.admin import router as admin_router
     from qaplatform.api.v1.analytics import router as analytics_router
     from qaplatform.api.v1.artifacts import router as artifact_router
     from qaplatform.api.v1.auth import router as auth_router
@@ -167,6 +168,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     from qaplatform.api.v1.webhooks import router as webhook_router
 
     api_prefix = "/api/v1"
+    app.include_router(admin_router, prefix=api_prefix)
     app.include_router(auth_router, prefix=api_prefix)
     app.include_router(analytics_router, prefix=api_prefix)
     app.include_router(project_router, prefix=api_prefix)

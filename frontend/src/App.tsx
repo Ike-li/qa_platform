@@ -14,6 +14,7 @@ const ProjectDetail = lazy(() => import("./pages/projects/detail"));
 const Runs = lazy(() => import("./pages/runs/list"));
 const RunDetail = lazy(() => import("./pages/runs/detail"));
 const Settings = lazy(() => import("./pages/settings"));
+const AdminStatus = lazy(() => import("./pages/admin/status"));
 const NotFound = lazy(() => import("./pages/not-found"));
 
 // Loading fallback
@@ -43,6 +44,7 @@ export default function App() {
                     <Route path="/runs" element={<Runs />} />
                     <Route path="/runs/:id" element={<RunDetail />} />
                     <Route path="/settings" element={<Settings />} />
+                    <Route path="/admin/status" element={<AdminStatus />} />
                     <Route path="*" element={<NotFound />} />
                   </Route>
                 </Route>
