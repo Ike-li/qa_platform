@@ -160,9 +160,18 @@ class DockerBackend:
         container = self.client.containers.container(execution_id)
         started_at = datetime.now(timezone.utc)
 
-        result = await container.wait(timeout=timeout)
-        finished_at = datetime.now(timezone.utc)
+        try:
+            result = await container.wait(timeout=timeout)
+        except Exception as e:
+            log.error("container.wait failed for %s: %s", execution_id[:12], e)
+            return ExitResult(
+                exit_code=-1,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                oom_killed=False,
+            )
 
+        finished_at = datetime.now(timezone.utc)
         exit_code = result.get("StatusCode", -1)
 
         # Docker /containers/{id}/wait only returns {StatusCode, Error}; OOMKilled
