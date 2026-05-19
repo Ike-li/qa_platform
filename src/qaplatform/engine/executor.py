@@ -689,6 +689,10 @@ class RunExecutor:
             if self.artifact_repo is not None:
                 ext = artifact_path.suffix.lower()
                 artifact_type = _ARTIFACT_TYPE_BY_EXT.get(ext, "other")
+                # Allure report/results directories get a dedicated type
+                path_str = str(artifact_path)
+                if "allure-report" in path_str or "allure-results" in path_str:
+                    artifact_type = "allure-report"
                 mime_type, _ = mimetypes.guess_type(artifact_path.name)
                 try:
                     await self.artifact_repo.create(
