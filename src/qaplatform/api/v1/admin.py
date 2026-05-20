@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,13 @@ from qaplatform.api.deps import (
     get_current_user,
 )
 from qaplatform.infra.database.models import Run, RunStatusEnum
+
+
+class SystemStatusResponse(BaseModel):
+    queue_depth: int
+    in_flight: int
+    success_rate_1h: float
+    total_runs_1h: int
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -27,7 +35,7 @@ async def _require_platform_admin(
     return user
 
 
-@router.get("/status")
+@router.get("/status", response_model=SystemStatusResponse)
 async def system_status(
     db: AsyncSession = Depends(_get_db_session),
     _user: UserIdentity = Depends(_require_platform_admin),
