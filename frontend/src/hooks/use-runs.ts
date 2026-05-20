@@ -49,6 +49,7 @@ function normalizeRun(run: Run | BackendRun): Run {
     skipped_tests: (run as Run).skipped_tests ?? summary.skipped ?? 0,
     worker_id: (run as Run).worker_id ?? null,
     cancel_requested_at: (run as Run).cancel_requested_at ?? null,
+    priority: (run as Run).priority ?? (backendRun as { priority?: number }).priority ?? 1,
   };
 }
 
@@ -80,10 +81,11 @@ export function useRun(id: string) {
 export function useTriggerRun() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (runData: { pipeline_id: string; branch?: string; env_overrides?: Record<string, string>; params?: Record<string, unknown> }) => {
+    mutationFn: async (runData: { pipeline_id: string; branch?: string; priority?: number; env_overrides?: Record<string, string>; params?: Record<string, unknown> }) => {
       const { data } = await api.post<Run | BackendRun>("/runs", {
         pipeline_id: runData.pipeline_id,
         git_ref: runData.branch,
+        priority: runData.priority ?? 1,
         env_overrides: runData.env_overrides,
         params: runData.params,
       });

@@ -73,6 +73,7 @@ export interface Run {
   error_message: string | null;
   worker_id: string | null;
   cancel_requested_at: string | null;
+  priority: number;
   created_at: string;
   updated_at: string;
 }

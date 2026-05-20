@@ -28,6 +28,7 @@ import {
 const triggerSchema = z.object({
   pipeline_id: z.string().min(1),
   branch: z.string().optional(),
+  priority: z.coerce.number().min(0).max(2).default(1),
 });
 
 type TriggerFormValues = z.infer<typeof triggerSchema>;
@@ -59,6 +60,7 @@ export function TriggerRunModal({
     resolver: zodResolver(triggerSchema),
     defaultValues: {
       pipeline_id: defaultPipelineId,
+      priority: 1,
     },
   });
 
@@ -69,6 +71,7 @@ export function TriggerRunModal({
       const run = await triggerRun({
         pipeline_id: data.pipeline_id,
         branch: data.branch || undefined,
+        priority: data.priority,
       });
       toast.success(t("trigger.toast.success"));
       reset();
@@ -111,6 +114,23 @@ export function TriggerRunModal({
             <Label htmlFor="branch">{t("trigger.branchOverride")}</Label>
             <Input id="branch" {...register("branch")} placeholder="e.g. develop" />
             <p className="text-[10px] text-ink-tertiary">{t("trigger.branchHint")}</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>{t("trigger.priority")}</Label>
+            <Select
+              value={String(watch("priority") ?? 1)}
+              onValueChange={(value) => setValue("priority", Number(value))}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={t("trigger.priorityPlaceholder")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="0">{t("priority.high")}</SelectItem>
+                <SelectItem value="1">{t("priority.medium")}</SelectItem>
+                <SelectItem value="2">{t("priority.low")}</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <DialogFooter>
