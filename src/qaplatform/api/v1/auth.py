@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import secrets
 import time
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -11,6 +10,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 
+from qaplatform.api import deps as auth_deps
 from qaplatform.api.auth.jwt_service import JWTService
 from qaplatform.api.auth.middleware import CurrentUser, get_current_user
 from qaplatform.api.auth.token_service import TokenService
@@ -22,9 +22,7 @@ from qaplatform.infra.database.repositories.user_repo import (
 )
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-    from qaplatform.dependencies import DependencyContainer
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -108,37 +106,6 @@ def _clear_refresh_cookie(response: Response) -> None:
     )
 
 
-def _get_container() -> DependencyContainer:
-    from qaplatform.dependencies import get_container
-
-    return get_container()
-
-
-def _get_jwt_service() -> JWTService:
-    container = _get_container()
-    return JWTService(container.settings, redis=container.redis_client)
-
-
-def _get_session_factory():
-    container = _get_container()
-    if container.db_session_factory is None:
-        raise HTTPException(status_code=503, detail="Database not initialized")
-    return container.db_session_factory
-
-
-@asynccontextmanager
-async def _new_session():
-    """Yield a new AsyncSession, committing on success and rolling back on error."""
-    factory = _get_session_factory()
-    async with factory() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-
-
 async def _resolve_tenant_id(
     session: AsyncSession, tenant_id: UUID | None
 ) -> UUID:
@@ -159,7 +126,14 @@ async def _resolve_tenant_id(
 
 
 @router.post("/register", response_model=LoginResponse, status_code=201)
-async def register(body: RegisterRequest, request: Request, response: Response) -> LoginResponse:
+async def register(
+    body: RegisterRequest,
+    request: Request,
+    response: Response,
+    jwt_svc: JWTService = Depends(auth_deps.get_jwt_service),
+    settings=Depends(auth_deps.get_settings),
+    session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
+) -> LoginResponse:
     """Self-service registration: create a new tenant and its first owner.
 
     Each registration provisions an isolated workspace (one tenant per user).
@@ -171,54 +145,54 @@ async def register(body: RegisterRequest, request: Request, response: Response) 
     ph = PasswordHasher()
     password_hash = ph.hash(body.password)
 
-    async with _new_session() as session:
-        existing_tenant = await session.execute(
-            select(Tenant).where(Tenant.name == body.username)
-        )
-        if existing_tenant.scalar_one_or_none() is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Username already taken",
+    async with session_factory() as session:
+        try:
+            existing_tenant = await session.execute(
+                select(Tenant).where(Tenant.name == body.username)
             )
+            if existing_tenant.scalar_one_or_none() is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Username already taken",
+                )
 
-        tenant = Tenant(name=body.username)
-        session.add(tenant)
-        await session.flush()
+            tenant = Tenant(name=body.username)
+            session.add(tenant)
+            await session.flush()
 
-        user = AppUser(
-            tenant_id=tenant.id,
-            username=body.username,
-            email=body.email,
-            password_hash=password_hash,
-            role="owner",
-        )
-        session.add(user)
-        await session.flush()
+            user = AppUser(
+                tenant_id=tenant.id,
+                username=body.username,
+                email=body.email,
+                password_hash=password_hash,
+                role="owner",
+            )
+            session.add(user)
+            await session.flush()
 
-        user_id = str(user.id)
-        user_tenant_id = str(user.tenant_id)
-        user_role = user.role
-        user_is_platform_admin = bool(getattr(user, "is_platform_admin", False))
-        user_email = user.email
-        user_username = user.username
+            user_id = str(user.id)
+            user_tenant_id = str(user.tenant_id)
+            user_role = user.role
+            user_is_platform_admin = bool(getattr(user, "is_platform_admin", False))
+            user_email = user.email
+            user_username = user.username
 
-        # Audit: write in same session/transaction so user + audit commit atomically.
-        # IP: using request.client.host directly; behind K8s ingress this will be the
-        # proxy address. Use X-Forwarded-For parsing (P1-K helper) if real client IP needed.
-        audit_repo = AuditEventRepository(session)
-        await audit_repo.create(
-            tenant_id=user.tenant_id,
-            user_id=user.id,
-            action="auth.register",
-            resource_type="auth",
-            resource_id=None,
-            after_state={"username": body.username, "email": body.email},
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-        )
+            audit_repo = AuditEventRepository(session)
+            await audit_repo.create(
+                tenant_id=user.tenant_id,
+                user_id=user.id,
+                action="auth.register",
+                resource_type="auth",
+                resource_id=None,
+                after_state={"username": body.username, "email": body.email},
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
-    jwt_svc = _get_jwt_service()
-    settings = _get_container().settings
     access_token = jwt_svc.create_access_token(
         user_id=user_id,
         role=user_role,
@@ -241,12 +215,17 @@ async def register(body: RegisterRequest, request: Request, response: Response) 
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(body: LoginRequest, request: Request, response: Response) -> LoginResponse:
+async def login(
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    jwt_svc: JWTService = Depends(auth_deps.get_jwt_service),
+    settings=Depends(auth_deps.get_settings),
+    session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
+) -> LoginResponse:
     from argon2 import PasswordHasher
     from argon2.exceptions import VerifyMismatchError
 
-    # IP: using request.client.host; behind K8s ingress this is the proxy address.
-    # Use X-Forwarded-For parsing (P1-K helper) if real client IP is needed.
     client_ip = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
 
@@ -256,78 +235,80 @@ async def login(body: LoginRequest, request: Request, response: Response) -> Log
         tenant_id: UUID | None = None,
         user_id: UUID | None = None,
     ) -> None:
-        """Write a login_failed audit in an independent session (failure path).
+        """Write a login_failed audit in an independent session (failure path)."""
+        async with session_factory() as audit_session:
+            try:
+                audit_repo = AuditEventRepository(audit_session)
+                await audit_repo.create(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    action="auth.login_failed",
+                    resource_type="auth",
+                    resource_id=None,
+                    after_state={"reason": reason, "username": body.username},
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+                await audit_session.commit()
+            except Exception:
+                await audit_session.rollback()
+                raise
 
-        tenant_id / user_id are filled from the resolved user when available
-        so that security review can correlate failed attempts to a specific
-        account; they remain None only when the username never resolved.
-        """
-        async with _new_session() as audit_session:
-            audit_repo = AuditEventRepository(audit_session)
+    async with session_factory() as session:
+        try:
+            user_repo = UserRepository(session)
+            tenant_id = await _resolve_tenant_id(session, body.tenant_id)
+            user: AppUser | None = await user_repo.get_by_username(tenant_id, body.username)
+
+            if user is None:
+                await _write_failed_audit("invalid_credentials")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid credentials",
+                )
+
+            if not user.is_active:
+                await _write_failed_audit(
+                    "account_deactivated", tenant_id=user.tenant_id, user_id=user.id
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Account is deactivated",
+                )
+
+            ph = PasswordHasher()
+            try:
+                ph.verify(user.password_hash, body.password)
+            except VerifyMismatchError:
+                await _write_failed_audit(
+                    "invalid_credentials", tenant_id=user.tenant_id, user_id=user.id
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid credentials",
+                )
+
+            if ph.check_needs_rehash(user.password_hash):
+                user.password_hash = ph.hash(body.password)
+
+            await user_repo.update_last_login(user, datetime.now(timezone.utc))
+
+            audit_repo = AuditEventRepository(session)
             await audit_repo.create(
-                tenant_id=tenant_id,
-                user_id=user_id,
-                action="auth.login_failed",
+                tenant_id=user.tenant_id,
+                user_id=user.id,
+                action="auth.login",
                 resource_type="auth",
                 resource_id=None,
-                after_state={"reason": reason, "username": body.username},
+                after_state={"username": user.username},
                 ip_address=client_ip,
                 user_agent=user_agent,
             )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
-    async with _new_session() as session:
-        user_repo = UserRepository(session)
-        tenant_id = await _resolve_tenant_id(session, body.tenant_id)
-        user: AppUser | None = await user_repo.get_by_username(tenant_id, body.username)
-
-        if user is None:
-            await _write_failed_audit("invalid_credentials")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials",
-            )
-
-        if not user.is_active:
-            await _write_failed_audit(
-                "account_deactivated", tenant_id=user.tenant_id, user_id=user.id
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Account is deactivated",
-            )
-
-        ph = PasswordHasher()
-        try:
-            ph.verify(user.password_hash, body.password)
-        except VerifyMismatchError:
-            await _write_failed_audit(
-                "invalid_credentials", tenant_id=user.tenant_id, user_id=user.id
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials",
-            )
-
-        if ph.check_needs_rehash(user.password_hash):
-            user.password_hash = ph.hash(body.password)
-
-        await user_repo.update_last_login(user, datetime.now(timezone.utc))
-
-        # Audit success in same session/transaction — atomically committed with login state.
-        audit_repo = AuditEventRepository(session)
-        await audit_repo.create(
-            tenant_id=user.tenant_id,
-            user_id=user.id,
-            action="auth.login",
-            resource_type="auth",
-            resource_id=None,
-            after_state={"username": user.username},
-            ip_address=client_ip,
-            user_agent=user_agent,
-        )
-
-    jwt_svc = _get_jwt_service()
-    settings = _get_container().settings
     access_token = jwt_svc.create_access_token(
         user_id=str(user.id),
         role=user.role,
@@ -354,6 +335,9 @@ async def refresh(
     request: Request,
     response: Response,
     refresh_token: str | None = Cookie(None, alias=REFRESH_TOKEN_COOKIE),
+    jwt_svc: JWTService = Depends(auth_deps.get_jwt_service),
+    settings=Depends(auth_deps.get_settings),
+    session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
 ) -> TokenPair:
     client_ip = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
@@ -364,22 +348,25 @@ async def refresh(
             detail="Missing refresh token",
         )
 
-    jwt_svc = _get_jwt_service()
-    settings = _get_container().settings
     try:
         payload = jwt_svc.decode_token(refresh_token)
     except Exception:
         _clear_refresh_cookie(response)
-        async with _new_session() as audit_session:
-            await AuditEventRepository(audit_session).create(
-                tenant_id=None,
-                user_id=None,
-                action="auth.refresh_failed",
-                resource_type="auth",
-                after_state={"reason": "invalid_refresh_token"},
-                ip_address=client_ip,
-                user_agent=user_agent,
-            )
+        async with session_factory() as audit_session:
+            try:
+                await AuditEventRepository(audit_session).create(
+                    tenant_id=None,
+                    user_id=None,
+                    action="auth.refresh_failed",
+                    resource_type="auth",
+                    after_state={"reason": "invalid_refresh_token"},
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+                await audit_session.commit()
+            except Exception:
+                await audit_session.rollback()
+                raise
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
@@ -387,16 +374,21 @@ async def refresh(
 
     if payload.get("type") != "refresh":
         _clear_refresh_cookie(response)
-        async with _new_session() as audit_session:
-            await AuditEventRepository(audit_session).create(
-                tenant_id=None,
-                user_id=None,
-                action="auth.refresh_failed",
-                resource_type="auth",
-                after_state={"reason": "invalid_token_type"},
-                ip_address=client_ip,
-                user_agent=user_agent,
-            )
+        async with session_factory() as audit_session:
+            try:
+                await AuditEventRepository(audit_session).create(
+                    tenant_id=None,
+                    user_id=None,
+                    action="auth.refresh_failed",
+                    resource_type="auth",
+                    after_state={"reason": "invalid_token_type"},
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+                await audit_session.commit()
+            except Exception:
+                await audit_session.rollback()
+                raise
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token type",
@@ -411,30 +403,34 @@ async def refresh(
 
     user_id = payload["sub"]
 
-    async with _new_session() as session:
-        user_repo = UserRepository(session)
-        user: AppUser | None = await user_repo.get_by_id(UUID(user_id))
+    async with session_factory() as session:
+        try:
+            user_repo = UserRepository(session)
+            user: AppUser | None = await user_repo.get_by_id(UUID(user_id))
 
-        if user is None or not user.is_active:
-            _clear_refresh_cookie(response)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found or deactivated",
+            if user is None or not user.is_active:
+                _clear_refresh_cookie(response)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User not found or deactivated",
+                )
+
+            new_jti_placeholder = None
+            audit_repo = AuditEventRepository(session)
+            await audit_repo.create(
+                tenant_id=user.tenant_id,
+                user_id=user.id,
+                action="auth.refresh",
+                resource_type="auth",
+                before_state={"old_jti": old_jti},
+                after_state={"new_jti": new_jti_placeholder},
+                ip_address=client_ip,
+                user_agent=user_agent,
             )
-
-        # Audit success in same session/transaction.
-        new_jti_placeholder = None  # new jti assigned after create_refresh_token below
-        audit_repo = AuditEventRepository(session)
-        await audit_repo.create(
-            tenant_id=user.tenant_id,
-            user_id=user.id,
-            action="auth.refresh",
-            resource_type="auth",
-            before_state={"old_jti": old_jti},
-            after_state={"new_jti": new_jti_placeholder},
-            ip_address=client_ip,
-            user_agent=user_agent,
-        )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
     access_token = jwt_svc.create_access_token(
         user_id=str(user.id),
@@ -455,16 +451,15 @@ async def logout(
     response: Response,
     request: Request,
     refresh_token: str | None = Cookie(None, alias=REFRESH_TOKEN_COOKIE),
+    jwt_svc: JWTService = Depends(auth_deps.get_jwt_service),
+    session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
 ) -> None:
-    jwt_svc = _get_jwt_service()
     client_ip = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
 
-    # Extract user identity from access token for audit (best-effort; may be absent/invalid).
     audit_user_id: UUID | None = None
     audit_tenant_id: UUID | None = None
 
-    # Revoke access token from Authorization header
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
         try:
@@ -474,7 +469,6 @@ async def logout(
             if jti and exp:
                 ttl = max(0, int(exp) - int(time.time()))
                 await jwt_svc.revoke(jti, ttl)
-            # Capture identity for audit even if revoke path not taken
             sub = payload.get("sub")
             tid = payload.get("tenant_id")
             if sub:
@@ -488,9 +482,8 @@ async def logout(
                 except ValueError:
                     pass
         except Exception:
-            pass  # already invalid — no need to revoke
+            pass
 
-    # Revoke refresh token from cookie
     if refresh_token:
         try:
             payload = jwt_svc.decode_token(refresh_token)
@@ -500,22 +493,25 @@ async def logout(
                 ttl = max(0, int(exp) - int(time.time()))
                 await jwt_svc.revoke(jti, ttl)
         except Exception:
-            pass  # already invalid — no need to revoke
+            pass
 
     _clear_refresh_cookie(response)
 
-    # Audit logout in an independent session — logout always writes audit regardless of
-    # whether tokens were valid (direction Y: independent session for this fire-and-done path).
-    async with _new_session() as audit_session:
-        await AuditEventRepository(audit_session).create(
-            tenant_id=audit_tenant_id,
-            user_id=audit_user_id,
-            action="auth.logout",
-            resource_type="auth",
-            after_state={"had_access_token": auth_header.lower().startswith("bearer ")},
-            ip_address=client_ip,
-            user_agent=user_agent,
-        )
+    async with session_factory() as audit_session:
+        try:
+            await AuditEventRepository(audit_session).create(
+                tenant_id=audit_tenant_id,
+                user_id=audit_user_id,
+                action="auth.logout",
+                resource_type="auth",
+                after_state={"had_access_token": auth_header.lower().startswith("bearer ")},
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            await audit_session.commit()
+        except Exception:
+            await audit_session.rollback()
+            raise
 
 
 @router.post("/tokens", response_model=ApiTokenResponse, status_code=201)
@@ -523,31 +519,36 @@ async def create_token(
     body: CreateTokenRequest,
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
+    session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
 ) -> ApiTokenResponse:
-    async with _new_session() as session:
-        api_token_repo = ApiTokenRepository(session)
-        token_service = TokenService(api_token_repo)
+    async with session_factory() as session:
+        try:
+            api_token_repo = ApiTokenRepository(session)
+            token_service = TokenService(api_token_repo)
 
-        expires_at = datetime.now(timezone.utc) + timedelta(days=body.expires_days)
-        result = await token_service.create_api_token(
-            user_id=UUID(current_user.user_id),
-            name=body.name,
-            scopes=body.scopes,
-            expires_at=expires_at,
-        )
-        record = result["record"]
+            expires_at = datetime.now(timezone.utc) + timedelta(days=body.expires_days)
+            result = await token_service.create_api_token(
+                user_id=UUID(current_user.user_id),
+                name=body.name,
+                scopes=body.scopes,
+                expires_at=expires_at,
+            )
+            record = result["record"]
 
-        # Audit in same session/transaction — token creation + audit commit atomically.
-        await AuditEventRepository(session).create(
-            tenant_id=UUID(current_user.tenant_id),
-            user_id=UUID(current_user.user_id),
-            action="auth.api_token_create",
-            resource_type="auth",
-            resource_id=record.id,
-            after_state={"name": body.name, "scopes": body.scopes},
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-        )
+            await AuditEventRepository(session).create(
+                tenant_id=UUID(current_user.tenant_id),
+                user_id=UUID(current_user.user_id),
+                action="auth.api_token_create",
+                resource_type="auth",
+                resource_id=record.id,
+                after_state={"name": body.name, "scopes": body.scopes},
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
     return ApiTokenResponse(
         token_id=record.token_id,
@@ -564,37 +565,43 @@ async def revoke_token(
     token_id: str,
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
+    session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
 ) -> None:
-    async with _new_session() as session:
-        api_token_repo = ApiTokenRepository(session)
-        token = await api_token_repo.get_by_token_id(token_id)
+    async with session_factory() as session:
+        try:
+            api_token_repo = ApiTokenRepository(session)
+            token = await api_token_repo.get_by_token_id(token_id)
 
-        if token is None or str(token.user_id) != current_user.user_id:
-            raise HTTPException(status_code=404, detail="Token not found")
+            if token is None or str(token.user_id) != current_user.user_id:
+                raise HTTPException(status_code=404, detail="Token not found")
 
-        token_name = token.name
-        token_db_id = token.id
+            token_name = token.name
+            token_db_id = token.id
 
-        await api_token_repo.revoke(token)
+            await api_token_repo.revoke(token)
 
-        # Audit in same session/transaction — revoke + audit commit atomically.
-        await AuditEventRepository(session).create(
-            tenant_id=UUID(current_user.tenant_id),
-            user_id=UUID(current_user.user_id),
-            action="auth.api_token_revoke",
-            resource_type="auth",
-            resource_id=token_db_id,
-            before_state={"name": token_name},
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-        )
+            await AuditEventRepository(session).create(
+                tenant_id=UUID(current_user.tenant_id),
+                user_id=UUID(current_user.user_id),
+                action="auth.api_token_revoke",
+                resource_type="auth",
+                resource_id=token_db_id,
+                before_state={"name": token_name},
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 @router.get("/tokens", response_model=list[ApiTokenListItem])
 async def list_tokens(
     current_user: CurrentUser = Depends(get_current_user),
+    session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
 ) -> list[ApiTokenListItem]:
-    async with _new_session() as session:
+    async with session_factory() as session:
         api_token_repo = ApiTokenRepository(session)
         tokens, _ = await api_token_repo.list_by_user(UUID(current_user.user_id))
 
