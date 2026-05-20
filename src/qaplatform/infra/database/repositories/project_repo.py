@@ -1,4 +1,4 @@
-"""Project, Environment, Pipeline, Credential, Schedule, and Notification repositories."""
+"""Project, Environment, Pipeline, Credential, ProjectMember, Schedule, and Notification repositories."""
 
 from __future__ import annotations
 
@@ -7,14 +7,17 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from qaplatform.infra.database.models import (
+    AppUser,
     Credential,
     Environment,
     NotificationLog,
     NotificationRule,
     Pipeline,
     Project,
+    ProjectMember,
     Schedule,
 )
 from qaplatform.infra.database.repositories.base import BaseRepository
@@ -115,6 +118,89 @@ class CredentialRepository(BaseRepository[Credential]):
             Credential.project_id == project_id,
             Credential.name == name,
             Credential.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_by_project_tenant(
+        self, project_id: UUID, tenant_id: UUID
+    ) -> list[Credential]:
+        stmt = select(Credential).where(
+            Credential.project_id == project_id,
+            Credential.tenant_id == tenant_id,
+            Credential.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_by_project_tenant(
+        self, credential_id: UUID, project_id: UUID, tenant_id: UUID
+    ) -> Credential | None:
+        stmt = select(Credential).where(
+            Credential.id == credential_id,
+            Credential.project_id == project_id,
+            Credential.tenant_id == tenant_id,
+            Credential.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_name_exists(
+        self, project_id: UUID, name: str
+    ) -> bool:
+        stmt = select(Credential.id).where(
+            Credential.project_id == project_id,
+            Credential.name == name,
+            Credential.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+
+class ProjectMemberRepository(BaseRepository[ProjectMember]):
+    model = ProjectMember
+
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+
+    async def list_by_project_tenant(
+        self, project_id: UUID, tenant_id: UUID
+    ) -> list[ProjectMember]:
+        stmt = (
+            select(ProjectMember)
+            .where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.tenant_id == tenant_id,
+                ProjectMember.deleted_at.is_(None),
+            )
+            .options(selectinload(ProjectMember.user))
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_by_project_user(
+        self, project_id: UUID, user_id: UUID, tenant_id: UUID
+    ) -> ProjectMember | None:
+        stmt = (
+            select(ProjectMember)
+            .where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == user_id,
+                ProjectMember.tenant_id == tenant_id,
+                ProjectMember.deleted_at.is_(None),
+            )
+            .options(selectinload(ProjectMember.user))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_existing(
+        self, project_id: UUID, user_id: UUID
+    ) -> ProjectMember | None:
+        stmt = select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+            ProjectMember.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()

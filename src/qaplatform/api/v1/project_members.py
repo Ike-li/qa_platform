@@ -1,19 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
 from qaplatform.api.deps import (
     CurrentUser,
     Repos,
-    _get_db_session,
     require_project_permission,
 )
 from qaplatform.api.schemas import (
@@ -22,12 +17,6 @@ from qaplatform.api.schemas import (
     ProjectMemberResponse,
     ProjectMemberUpdate,
 )
-from qaplatform.infra.database.models import (
-    AppUser as AppUserORM,
-    ProjectMember,
-)
-
-from fastapi import Depends
 
 router = APIRouter(
     prefix="/projects/{project_id}/members",
@@ -35,7 +24,7 @@ router = APIRouter(
 )
 
 
-def _to_response(member: ProjectMember, user: AppUserORM) -> ProjectMemberResponse:
+def _to_response(member, user) -> ProjectMemberResponse:
     return ProjectMemberResponse(
         project_id=member.project_id,
         user_id=member.user_id,
@@ -62,21 +51,10 @@ async def list_project_members(
     project_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
     _perm=require_project_permission(Action.MEMBER_READ),
 ):
     await _verify_project_access(project_id, repos, user)
-
-    stmt = (
-        select(ProjectMember)
-        .where(
-            ProjectMember.project_id == project_id,
-            ProjectMember.tenant_id == user.tenant_id,
-            ProjectMember.deleted_at.is_(None),
-        )
-        .options(selectinload(ProjectMember.user))
-    )
-    rows = (await session.execute(stmt)).scalars().all()
+    rows = await repos.project_member.list_by_project_tenant(project_id, user.tenant_id)
     return [_to_response(m, m.user) for m in rows]
 
 
@@ -92,40 +70,24 @@ async def add_project_member(
     body: ProjectMemberCreate,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
     _perm=require_project_permission(Action.MEMBER_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
 
-    candidate = (
-        await session.execute(
-            select(AppUserORM).where(AppUserORM.id == body.user_id)
-        )
-    ).scalar_one_or_none()
+    candidate = await repos.user.get_by_id(body.user_id)
     if candidate is None or candidate.tenant_id != user.tenant_id:
         raise HTTPException(status_code=422, detail="User not in this tenant")
 
-    existing = (
-        await session.execute(
-            select(ProjectMember).where(
-                ProjectMember.project_id == project_id,
-                ProjectMember.user_id == body.user_id,
-                ProjectMember.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    existing = await repos.project_member.get_existing(project_id, body.user_id)
     if existing is not None:
         raise HTTPException(status_code=409, detail="User already a project member")
 
-    member = ProjectMember(
+    member = await repos.project_member.create(
         tenant_id=user.tenant_id,
         project_id=project_id,
         user_id=body.user_id,
         role=body.role,
     )
-    session.add(member)
-    await session.flush()
-    await session.refresh(member, ["created_at"])
 
     response = _to_response(member, candidate)
     await write_audit(
@@ -150,29 +112,16 @@ async def update_project_member(
     body: ProjectMemberUpdate,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
     _perm=require_project_permission(Action.MEMBER_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
 
-    member = (
-        await session.execute(
-            select(ProjectMember)
-            .where(
-                ProjectMember.project_id == project_id,
-                ProjectMember.user_id == user_id,
-                ProjectMember.tenant_id == user.tenant_id,
-                ProjectMember.deleted_at.is_(None),
-            )
-            .options(selectinload(ProjectMember.user))
-        )
-    ).scalar_one_or_none()
+    member = await repos.project_member.get_by_project_user(project_id, user_id, user.tenant_id)
     if member is None:
         raise HTTPException(status_code=404, detail="Member not found")
 
     before_role = member.role
-    member.role = body.role
-    await session.flush()
+    await repos.project_member.update(member, role=body.role)
 
     response = _to_response(member, member.user)
     await write_audit(
@@ -197,30 +146,20 @@ async def remove_project_member(
     user_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
     _perm=require_project_permission(Action.MEMBER_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
 
-    member = (
-        await session.execute(
-            select(ProjectMember).where(
-                ProjectMember.project_id == project_id,
-                ProjectMember.user_id == user_id,
-                ProjectMember.tenant_id == user.tenant_id,
-                ProjectMember.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
-    if member is None:
+    member = await repos.project_member.get_existing(project_id, user_id)
+    if member is None or member.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    member.deleted_at = datetime.now(timezone.utc)
-    await session.flush()
+    before_role = member.role
+    await repos.project_member.delete(member)
     await write_audit(
         repos, user,
         action="project_member.remove",
         resource_type="project_member",
         resource_id=project_id,
-        before={"user_id": str(user_id), "role": member.role},
+        before={"user_id": str(user_id), "role": before_role},
     )

@@ -133,6 +133,7 @@ class DependencyContainer:
             NotificationLogRepository,
             NotificationRuleRepository,
             PipelineRepository,
+            ProjectMemberRepository,
             ProjectRepository,
             ScheduleRepository,
         )
@@ -153,6 +154,7 @@ class DependencyContainer:
             environment=EnvironmentRepository(session),
             pipeline=PipelineRepository(session),
             credential=CredentialRepository(session),
+            project_member=ProjectMemberRepository(session),
             schedule=ScheduleRepository(session),
             notification_rule=NotificationRuleRepository(session),
             notification_log=NotificationLogRepository(session),
@@ -183,6 +185,7 @@ class RepositoryBundle:
         "environment",
         "pipeline",
         "credential",
+        "project_member",
         "schedule",
         "notification_rule",
         "notification_log",
@@ -201,6 +204,7 @@ class RepositoryBundle:
         environment,
         pipeline,
         credential,
+        project_member,
         schedule,
         notification_rule,
         notification_log,
@@ -215,6 +219,7 @@ class RepositoryBundle:
         self.environment = environment
         self.pipeline = pipeline
         self.credential = credential
+        self.project_member = project_member
         self.schedule = schedule
         self.notification_rule = notification_rule
         self.notification_log = notification_log

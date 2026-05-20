@@ -39,16 +39,6 @@ def _make_orm_credential(project_id, tenant_id, name="db_password", type_="passw
     return obj
 
 
-def _result(scalar=None, scalars_all=None):
-    r = MagicMock()
-    r.scalar_one_or_none = MagicMock(return_value=scalar)
-    if scalars_all is not None:
-        sp = MagicMock()
-        sp.all = MagicMock(return_value=scalars_all)
-        r.scalars = MagicMock(return_value=sp)
-    return r
-
-
 @pytest.fixture
 def tenant_id():
     return uuid.uuid4()
@@ -74,6 +64,7 @@ def mock_repos(project):
     repos = MagicMock()
     repos.project = AsyncMock()
     repos.project.get_for_tenant.return_value = project
+    repos.credential = AsyncMock()
     repos.audit = AsyncMock()
     return repos
 
@@ -91,7 +82,6 @@ def app(mock_repos, mock_user, mock_crypto):
     from qaplatform.main import create_app
 
     app = create_app(container=MagicMock())
-    # The routes read crypto from request.app.state.container.crypto_service
     container_mock = MagicMock()
     container_mock.crypto_service = mock_crypto
     app.state.container = container_mock
@@ -107,15 +97,6 @@ def app(mock_repos, mock_user, mock_crypto):
     return app
 
 
-def _override_session(app, mock_session):
-    from qaplatform.api.deps import _get_db_session
-
-    async def _gen():
-        yield mock_session
-
-    app.dependency_overrides[_get_db_session] = _gen
-
-
 async def _make_client(app):
     transport = ASGITransport(app=app)
     return AsyncClient(transport=transport, base_url="http://test")
@@ -123,14 +104,11 @@ async def _make_client(app):
 
 @pytest.mark.asyncio
 async def test_list_credentials_returns_response_without_plaintext(
-    app, project, tenant_id
+    app, project, tenant_id, mock_repos
 ):
     c1 = _make_orm_credential(project.id, tenant_id, name="t1", type_="token")
     c2 = _make_orm_credential(project.id, tenant_id, name="t2", type_="ssh_key")
-
-    session = MagicMock()
-    session.execute = AsyncMock(return_value=_result(scalars_all=[c1, c2]))
-    _override_session(app, session)
+    mock_repos.credential.list_by_project_tenant.return_value = [c1, c2]
 
     async with await _make_client(app) as ac:
         resp = await ac.get(
@@ -140,7 +118,6 @@ async def test_list_credentials_returns_response_without_plaintext(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert len(body) == 2
-    # Schema does not include plaintext or encrypted_value, even by accident.
     for entry in body:
         assert "value" not in entry
         assert "encrypted_value" not in entry
@@ -148,26 +125,14 @@ async def test_list_credentials_returns_response_without_plaintext(
 
 @pytest.mark.asyncio
 async def test_create_credential_encrypts_with_aad(
-    app, project, tenant_id, mock_crypto
+    app, project, tenant_id, mock_crypto, mock_repos
 ):
     """The router must bind ciphertext to (project_id, name) via AAD so a
     ciphertext from another project/name cannot decrypt here."""
-    session = MagicMock()
-    # 1) duplicate-name check returns None, 2) flush, 3) refresh sets created_at
-    session.execute = AsyncMock(return_value=_result(scalar=None))
+    mock_repos.credential.get_name_exists.return_value = False
 
-    def _add(instance):
-        # ORM auto-generates id/created_by/created_at on flush in real life;
-        # simulate enough of that here so the response model can serialize.
-        if getattr(instance, "id", None) is None:
-            instance.id = uuid.uuid4()
-        if getattr(instance, "created_at", None) is None:
-            instance.created_at = datetime.now(timezone.utc)
-
-    session.add = MagicMock(side_effect=_add)
-    session.flush = AsyncMock()
-    session.refresh = AsyncMock()
-    _override_session(app, session)
+    created = _make_orm_credential(project.id, tenant_id, name="db_password", type_="password")
+    mock_repos.credential.create.return_value = created
 
     async with await _make_client(app) as ac:
         resp = await ac.post(
@@ -177,13 +142,11 @@ async def test_create_credential_encrypts_with_aad(
         )
     assert resp.status_code == 201, resp.text
 
-    # crypto.encrypt must be called once with the AAD context_id.
     mock_crypto.encrypt.assert_called_once()
     call = mock_crypto.encrypt.call_args
     assert call.args[0] == "s3cret"
     assert call.kwargs["context_id"] == f"credential:{project.id}:db_password"
 
-    # Plaintext must not surface in the response.
     body = resp.json()
     assert "value" not in body
 
@@ -192,22 +155,11 @@ async def test_create_credential_encrypts_with_aad(
 async def test_create_credential_audit_does_not_leak_plaintext(
     app, project, tenant_id, mock_crypto, mock_repos
 ):
-    """The audit trail must not contain the plaintext value or ciphertext —
-    only metadata (id/name/type). Otherwise an audit reader becomes a
-    secondary credential-disclosure surface."""
-    session = MagicMock()
-    session.execute = AsyncMock(return_value=_result(scalar=None))
+    """The audit trail must not contain the plaintext value or ciphertext."""
+    mock_repos.credential.get_name_exists.return_value = False
 
-    def _add(instance):
-        if getattr(instance, "id", None) is None:
-            instance.id = uuid.uuid4()
-        if getattr(instance, "created_at", None) is None:
-            instance.created_at = datetime.now(timezone.utc)
-
-    session.add = MagicMock(side_effect=_add)
-    session.flush = AsyncMock()
-    session.refresh = AsyncMock()
-    _override_session(app, session)
+    created = _make_orm_credential(project.id, tenant_id, name="k", type_="password")
+    mock_repos.credential.create.return_value = created
 
     secret_value = "totally-secret-pw-9999"
     async with await _make_client(app) as ac:
@@ -224,17 +176,13 @@ async def test_create_credential_audit_does_not_leak_plaintext(
     serialised = repr(after_state) + repr(audit_kwargs.get("before_state"))
     assert secret_value not in serialised
     assert "encrypted_value" not in serialised
-    # And positively assert the metadata fields we DO want.
     assert after_state.get("name") == "k"
     assert after_state.get("type") == "password"
 
 
 @pytest.mark.asyncio
-async def test_create_credential_duplicate_name_returns_409(app, project):
-    existing_id = uuid.uuid4()
-    session = MagicMock()
-    session.execute = AsyncMock(return_value=_result(scalar=existing_id))
-    _override_session(app, session)
+async def test_create_credential_duplicate_name_returns_409(app, project, mock_repos):
+    mock_repos.credential.get_name_exists.return_value = True
 
     async with await _make_client(app) as ac:
         resp = await ac.post(
@@ -246,10 +194,8 @@ async def test_create_credential_duplicate_name_returns_409(app, project):
 
 
 @pytest.mark.asyncio
-async def test_get_credential_404_when_missing(app, project):
-    session = MagicMock()
-    session.execute = AsyncMock(return_value=_result(scalar=None))
-    _override_session(app, session)
+async def test_get_credential_404_when_missing(app, project, mock_repos):
+    mock_repos.credential.get_by_project_tenant.return_value = None
 
     async with await _make_client(app) as ac:
         resp = await ac.get(
@@ -261,14 +207,10 @@ async def test_get_credential_404_when_missing(app, project):
 
 @pytest.mark.asyncio
 async def test_rotate_credential_re_encrypts_with_aad(
-    app, project, tenant_id, mock_crypto
+    app, project, tenant_id, mock_crypto, mock_repos
 ):
     cred = _make_orm_credential(project.id, tenant_id, name="db_password")
-
-    session = MagicMock()
-    session.execute = AsyncMock(return_value=_result(scalar=cred))
-    session.flush = AsyncMock()
-    _override_session(app, session)
+    mock_repos.credential.get_by_project_tenant.return_value = cred
 
     async with await _make_client(app) as ac:
         resp = await ac.put(
@@ -281,17 +223,13 @@ async def test_rotate_credential_re_encrypts_with_aad(
     mock_crypto.encrypt.assert_called_once()
     call = mock_crypto.encrypt.call_args
     assert call.args[0] == "new-secret"
-    # AAD must rebind to the credential's *current* name, preventing cross-name reuse.
     assert call.kwargs["context_id"] == f"credential:{project.id}:db_password"
-    # The ORM mutation used the freshly produced ciphertext.
-    assert cred.encrypted_value == b"\x00\x01\x02encrypted"
+    mock_repos.credential.update.assert_called_once_with(cred, encrypted_value=b"\x00\x01\x02encrypted")
 
 
 @pytest.mark.asyncio
-async def test_delete_credential_404_when_missing(app, project):
-    session = MagicMock()
-    session.execute = AsyncMock(return_value=_result(scalar=None))
-    _override_session(app, session)
+async def test_delete_credential_404_when_missing(app, project, mock_repos):
+    mock_repos.credential.get_by_project_tenant.return_value = None
 
     async with await _make_client(app) as ac:
         resp = await ac.delete(
@@ -308,13 +246,9 @@ async def test_delete_credential_in_use_returns_409(
     """If the credential is referenced by project.credential_id, deleting it
     must fail with 409 to avoid orphaning git auth on the project."""
     cred = _make_orm_credential(project.id, tenant_id)
-    project.credential_id = cred.id  # mark it as in use
+    project.credential_id = cred.id
     mock_repos.project.get_for_tenant.return_value = project
-
-    session = MagicMock()
-    session.execute = AsyncMock(return_value=_result(scalar=cred))
-    session.delete = AsyncMock(side_effect=AssertionError("delete should not happen"))
-    _override_session(app, session)
+    mock_repos.credential.get_by_project_tenant.return_value = cred
 
     async with await _make_client(app) as ac:
         resp = await ac.delete(
@@ -322,18 +256,13 @@ async def test_delete_credential_in_use_returns_409(
             headers={"Authorization": "Bearer fake"},
         )
     assert resp.status_code == 409
-    session.delete.assert_not_called()
+    mock_repos.credential.delete.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_delete_credential_happy_path(app, project, tenant_id):
+async def test_delete_credential_happy_path(app, project, tenant_id, mock_repos):
     cred = _make_orm_credential(project.id, tenant_id)
-    # Not in use: project.credential_id is None.
-
-    session = MagicMock()
-    session.execute = AsyncMock(return_value=_result(scalar=cred))
-    session.flush = AsyncMock()
-    _override_session(app, session)
+    mock_repos.credential.get_by_project_tenant.return_value = cred
 
     async with await _make_client(app) as ac:
         resp = await ac.delete(
@@ -341,6 +270,4 @@ async def test_delete_credential_happy_path(app, project, tenant_id):
             headers={"Authorization": "Bearer fake"},
         )
     assert resp.status_code == 204
-    # Soft-delete: deleted_at is set, no physical delete
-    assert cred.deleted_at is not None
-    session.flush.assert_called()
+    mock_repos.credential.delete.assert_called_once_with(cred)
