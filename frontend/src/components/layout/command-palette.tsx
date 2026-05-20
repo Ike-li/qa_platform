@@ -19,8 +19,8 @@ export function CommandPalette() {
   const paletteRef = React.useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  const { data: projects } = useProjects({ per_page: 5 });
-  const { data: runs } = useRuns({ per_page: 5 });
+  const { data: projects } = useProjects({ per_page: 5, enabled: open });
+  const { data: runs } = useRuns({ per_page: 5, enabled: open });
 
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {

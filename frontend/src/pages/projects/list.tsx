@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useDeferredValue } from "react";
 import { Link } from "react-router-dom";
 import { Search, Plus, GitBranch, ExternalLink, Clock } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -15,8 +15,9 @@ export default function Projects() {
   const { t } = useTranslation();
   usePageTitle(t('projects.title'));
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const { data, isLoading, isError } = useProjects({ search });
+  const { data, isLoading, isError } = useProjects({ search: deferredSearch });
 
   return (
     <div className="space-y-6">
