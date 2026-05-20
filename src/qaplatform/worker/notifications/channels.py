@@ -109,10 +109,45 @@ class WebhookChannel:
 
     TIMEOUT = 30  # seconds
 
+    @staticmethod
+    def _validate_webhook_url(url: str) -> str | None:
+        """Validate webhook URL to prevent SSRF. Returns error message or None."""
+        from urllib.parse import urlparse
+        import ipaddress, socket
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("https", "http"):
+            return f"webhook URL must use http/https protocol, got: {parsed.scheme}://"
+        if not parsed.hostname:
+            return "webhook URL has no hostname"
+
+        private_cidrs = [
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+            ipaddress.ip_network("169.254.0.0/16"),
+            ipaddress.ip_network("127.0.0.0/8"),
+            ipaddress.ip_network("::1/128"),
+        ]
+        try:
+            infos = socket.getaddrinfo(parsed.hostname, None)
+            for family, _, _, _, sockaddr in infos:
+                ip = ipaddress.ip_address(sockaddr[0])
+                for cidr in private_cidrs:
+                    if ip in cidr:
+                        return f"webhook URL resolves to private IP: {ip}"
+        except socket.gaierror:
+            return f"cannot resolve webhook hostname: {parsed.hostname}"
+        return None
+
     async def send(self, config: dict, message: str) -> ChannelResult:
         url = config.get("url")
         if not url:
             return ChannelResult(success=False, error="missing webhook url")
+
+        ssrf_error = self._validate_webhook_url(url)
+        if ssrf_error:
+            return ChannelResult(success=False, error=ssrf_error)
 
         headers = config.get("headers", {})
         method = config.get("method", "POST").upper()
