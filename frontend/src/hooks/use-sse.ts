@@ -62,6 +62,7 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
         return;
       }
 
+      retryCount.current = 0;
       setStatus('connecting');
 
       let ticket: string;

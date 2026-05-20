@@ -20,15 +20,18 @@ function unwrapPaginated<T>(value: T[] | PaginatedResponse<T>): T[] {
   return Array.isArray(value) ? value : value.data;
 }
 
+const VALID_RUN_STATUSES = new Set(["pending", "running", "passed", "failed", "cancelled", "timed_out"]);
+
 function normalizeRun(run: Run | BackendRun): Run {
   const backendRun = run as BackendRun;
   const summary = backendRun.summary ?? {};
   const backendStatus = String(backendRun.status);
-  const status = backendStatus === "done"
+  const rawStatus = backendStatus === "done"
     ? "passed"
     : backendStatus === "timeout"
       ? "timed_out"
       : backendStatus;
+  const status = VALID_RUN_STATUSES.has(rawStatus) ? rawStatus : "failed";
 
   return {
     ...run,
