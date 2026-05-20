@@ -22,6 +22,7 @@ class CurrentUser:
     role: str
     tenant_id: str
     is_platform_admin: bool = False
+    scopes: list[str] | None = None
 
 
 async def get_current_user(
@@ -158,6 +159,7 @@ async def _authenticate_api_token(
         role=token.user.role,
         tenant_id=str(token.user.tenant_id),
         is_platform_admin=bool(getattr(token.user, "is_platform_admin", False)),
+        scopes=list(token.scopes) if token.scopes else None,
     )
 
 

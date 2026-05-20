@@ -127,6 +127,7 @@ def require_permission(action: "Action"):
             role=user.role,
             tenant_id=str(user.tenant_id),
             is_platform_admin=getattr(user, "is_platform_admin", False),
+            scopes=getattr(user, "scopes", None),
         )
         if not check_permission(ctx, action):
             raise HTTPException(status_code=403, detail="Insufficient permissions")

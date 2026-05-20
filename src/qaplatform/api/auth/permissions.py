@@ -202,6 +202,7 @@ class PermissionContext:
     project_id: str | None = None
     project_role: ProjectRole | None = None
     is_platform_admin: bool = False
+    scopes: list[str] | None = None
 
 
 def check_permission(
@@ -222,6 +223,11 @@ def check_permission(
     """
     if ctx.is_platform_admin:
         return True
+
+    # API token scope enforcement: if scopes are set, check action is allowed
+    if ctx.scopes is not None and "*" not in ctx.scopes:
+        if action.value not in ctx.scopes:
+            return False
 
     role = normalize_tenant_role(ctx.role)
     if role is None:
