@@ -81,6 +81,8 @@ export function useTriggerRun() {
       const { data } = await api.post<Run | BackendRun>("/runs", {
         pipeline_id: runData.pipeline_id,
         git_ref: runData.branch,
+        env_overrides: runData.env_overrides,
+        params: runData.params,
       });
       return normalizeRun(data);
     },

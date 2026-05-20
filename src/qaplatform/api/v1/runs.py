@@ -424,7 +424,7 @@ async def cancel_run(
         await publish_cancel(redis, run_id)
         await publish_status_event(redis, run_id, "cancelled", previous=previous_status)
 
-    run = await repos.run.get_by_id(run_id)
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
     after_response = _to_run_response(run)
     await write_audit(
         repos, user,

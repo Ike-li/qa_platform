@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
@@ -19,6 +20,17 @@ router = APIRouter(
     prefix="/projects/{project_id}/environments",
     tags=["environments"],
 )
+
+_IMAGE_TAG_RE = re.compile(r"^[a-zA-Z0-9._/\-]+:[a-zA-Z0-9._\-]+$")
+
+
+def _validate_base_image(image: str) -> None:
+    """Validate Docker image name to prevent arbitrary registry pulls."""
+    if not _IMAGE_TAG_RE.match(image):
+        raise HTTPException(
+            status_code=422,
+            detail="Image must use format 'registry/name:tag' (no :latest allowed)",
+        )
 
 
 def _to_response(orm) -> EnvironmentResponse:
@@ -88,6 +100,7 @@ async def create_environment(
     _perm=require_project_permission(Action.CONFIG_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
+    _validate_base_image(body.base_image)
 
     resource_limits = {
         "max_artifact_size_mb": body.max_artifact_size_mb,
@@ -159,6 +172,8 @@ async def update_environment(
 
     before = _to_response(env)
     update_data = body.model_dump(exclude_unset=True)
+    if "base_image" in update_data:
+        _validate_base_image(update_data["base_image"])
     limits_fields = {"max_artifact_size_mb", "max_artifacts_count"}
     limits_update = {k: update_data.pop(k) for k in list(update_data) if k in limits_fields}
     if limits_update:
