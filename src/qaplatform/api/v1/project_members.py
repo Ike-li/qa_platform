@@ -78,7 +78,7 @@ async def add_project_member(
     if candidate is None or candidate.tenant_id != user.tenant_id:
         raise HTTPException(status_code=422, detail="User not in this tenant")
 
-    existing = await repos.project_member.get_existing(project_id, body.user_id)
+    existing = await repos.project_member.get_existing(project_id, body.user_id, user.tenant_id)
     if existing is not None:
         raise HTTPException(status_code=409, detail="User already a project member")
 
@@ -150,8 +150,8 @@ async def remove_project_member(
 ):
     await _verify_project_access(project_id, repos, user)
 
-    member = await repos.project_member.get_existing(project_id, user_id)
-    if member is None or member.tenant_id != user.tenant_id:
+    member = await repos.project_member.get_existing(project_id, user_id, user.tenant_id)
+    if member is None:
         raise HTTPException(status_code=404, detail="Member not found")
 
     before_role = member.role

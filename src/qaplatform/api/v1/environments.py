@@ -22,6 +22,7 @@ router = APIRouter(
 )
 
 _IMAGE_TAG_RE = re.compile(r"^[a-zA-Z0-9._/\-]+:[a-zA-Z0-9._\-]+$")
+_BLOCKED_TAGS = {"latest", "stable", "edge"}
 
 
 def _validate_base_image(image: str) -> None:
@@ -30,6 +31,12 @@ def _validate_base_image(image: str) -> None:
         raise HTTPException(
             status_code=422,
             detail="Image must use format 'registry/name:tag' (no :latest allowed)",
+        )
+    tag = image.rsplit(":", 1)[-1]
+    if tag in _BLOCKED_TAGS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Tag ':{tag}' is not allowed; pin a specific version",
         )
 
 

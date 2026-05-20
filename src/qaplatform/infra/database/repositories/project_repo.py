@@ -195,11 +195,12 @@ class ProjectMemberRepository(BaseRepository[ProjectMember]):
         return result.scalar_one_or_none()
 
     async def get_existing(
-        self, project_id: UUID, user_id: UUID
+        self, project_id: UUID, user_id: UUID, tenant_id: UUID
     ) -> ProjectMember | None:
         stmt = select(ProjectMember).where(
             ProjectMember.project_id == project_id,
             ProjectMember.user_id == user_id,
+            ProjectMember.tenant_id == tenant_id,
             ProjectMember.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
