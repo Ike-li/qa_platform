@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -102,7 +103,7 @@ async def _authenticate_jwt(token: str, container: DependencyContainer) -> Curre
 
         async with container.db_session_factory() as session:
             result = await session.execute(
-                select(AppUser.is_platform_admin).where(AppUser.id == payload["sub"])
+                select(AppUser.is_platform_admin).where(AppUser.id == UUID(payload["sub"]))
             )
             row = result.scalar_one_or_none()
             is_admin_verified = bool(row) if row is not None else False
