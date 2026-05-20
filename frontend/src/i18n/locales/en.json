@@ -302,6 +302,12 @@
   "time.seconds": "{{count}}s",
   "time.minutes": "{{count}}m",
 
+  "priority.high": "High",
+  "priority.medium": "Medium",
+  "priority.low": "Low",
+  "trigger.priority": "Priority",
+  "trigger.priorityPlaceholder": "Select priority",
+
   "language.zh-CN": "中文",
   "language.en": "English"
 }

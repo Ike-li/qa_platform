@@ -8,6 +8,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { useRuns } from "../../hooks/use-runs";
 import { RunStatusBadge } from "../../components/run-status-badge";
+import { PriorityBadge } from "../../components/priority-badge";
 import { BranchBadge } from "../../components/branch-badge";
 import { DurationDisplay } from "../../components/duration-display";
 import { RelativeTime } from "../../components/relative-time";
@@ -58,6 +59,7 @@ export default function Runs() {
           <thead>
             <tr className="border-b border-hairline bg-surface-2/50 text-ink-muted">
               <th className="px-6 py-3 font-medium">{t('runs.table.status')}</th>
+              <th className="px-6 py-3 font-medium">{t('trigger.priority')}</th>
               <th className="px-6 py-3 font-medium">{t('runs.table.pipeline')}</th>
               <th className="px-6 py-3 font-medium">{t('runs.table.branch')}</th>
               <th className="px-6 py-3 font-medium">{t('runs.table.triggeredBy')}</th>
@@ -71,6 +73,7 @@ export default function Runs() {
               [1, 2, 3, 4, 5].map(i => (
                 <tr key={i}>
                   <td className="px-6 py-4"><Skeleton className="h-5 w-20 rounded-full" /></td>
+                  <td className="px-6 py-4"><Skeleton className="h-5 w-16 rounded-full" /></td>
                   <td className="px-6 py-4"><Skeleton className="h-4 w-36" /></td>
                   <td className="px-6 py-4"><Skeleton className="h-4 w-24" /></td>
                   <td className="px-6 py-4"><Skeleton className="h-4 w-28" /></td>
@@ -83,7 +86,7 @@ export default function Runs() {
               ))
             ) : data?.data.length === 0 ? (
               <tr>
-                <td colSpan={7} className="p-0">
+                <td colSpan={8} className="p-0">
                   <EmptyState
                     title={t('runs.noRuns')}
                     description={t('runs.noRunsDescription')}
@@ -96,6 +99,9 @@ export default function Runs() {
                 <tr key={run.id} className="group hover:bg-surface-2/50 transition-colors">
                   <td className="px-6 py-4">
                     <RunStatusBadge status={run.status} />
+                  </td>
+                  <td className="px-6 py-4">
+                    <PriorityBadge priority={run.priority} />
                   </td>
                   <td className="px-6 py-4 font-medium text-ink">
                     <Link to={`/runs/${run.id}`} className="hover:text-primary transition-colors">
