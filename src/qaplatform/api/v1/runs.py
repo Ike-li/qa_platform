@@ -80,17 +80,7 @@ def _to_result_response(orm: TestResultORM) -> TestResultResponse:
 
 
 def _to_artifact_response(orm: ArtifactORM) -> ArtifactResponse:
-    return ArtifactResponse(
-        id=orm.id,
-        run_id=orm.run_id,
-        type=orm.type,
-        name=orm.name,
-        storage_path=orm.storage_path,
-        size_bytes=orm.size_bytes,
-        mime_type=orm.mime_type,
-        expires_at=orm.expires_at,
-        created_at=orm.created_at,
-    )
+    return ArtifactResponse.model_validate(orm)
 
 
 @router.post(

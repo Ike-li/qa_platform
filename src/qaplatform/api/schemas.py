@@ -13,7 +13,7 @@ from qaplatform.domain.models.common import PaginatedResponse, PaginationParams
 # ── Unified error ────────────────────────────────────────────────────────────
 
 class ErrorDetail(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     code: str
     message: str
@@ -21,7 +21,7 @@ class ErrorDetail(BaseModel):
 
 
 class ErrorResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     error: ErrorDetail
 
@@ -57,7 +57,7 @@ class ProjectUpdate(BaseModel):
 
 
 class ProjectResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     tenant_id: UUID
@@ -107,7 +107,7 @@ class EnvironmentUpdate(BaseModel):
 
 
 class EnvironmentResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     project_id: UUID
@@ -179,7 +179,7 @@ class PipelineUpdate(BaseModel):
 
 
 class PipelineResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     project_id: UUID
@@ -206,7 +206,7 @@ class RunCancel(BaseModel):
 
 
 class RunResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     tenant_id: UUID
@@ -231,7 +231,7 @@ class RunResponse(BaseModel):
 
 
 class RunListFilter(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     status: str | None = None
     page: int = Field(default=1, ge=1)
@@ -240,7 +240,7 @@ class RunListFilter(BaseModel):
 
 
 class TestResultResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     run_id: UUID
@@ -255,7 +255,7 @@ class TestResultResponse(BaseModel):
 
 
 class ArtifactResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     run_id: UUID
@@ -281,7 +281,7 @@ class ProjectMemberUpdate(BaseModel):
 
 
 class ProjectMemberResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     project_id: UUID
     user_id: UUID
@@ -307,7 +307,7 @@ class CredentialUpdate(BaseModel):
 class CredentialResponse(BaseModel):
     """Credential metadata. The plaintext ``value`` is never returned by the API."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     project_id: UUID
@@ -345,7 +345,7 @@ class ScheduleUpdate(BaseModel):
 
 
 class ScheduleResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     project_id: UUID
@@ -380,7 +380,7 @@ class NotificationRuleUpdate(BaseModel):
 
 
 class NotificationRuleResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     project_id: UUID
@@ -393,7 +393,7 @@ class NotificationRuleResponse(BaseModel):
 
 
 class NotificationLogResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     id: UUID
     project_id: UUID
@@ -420,7 +420,7 @@ class BatchRunRequest(BaseModel):
 
 
 class BatchRunResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     processed: int
     failed: int
@@ -430,7 +430,7 @@ class BatchRunResponse(BaseModel):
 # ── Analytics schemas ───────────────────────────────────────────────────────
 
 class TrendDataPoint(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     date: str
     total_runs: int
@@ -440,7 +440,7 @@ class TrendDataPoint(BaseModel):
 
 
 class FlakyTest(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     suite: str
     name: str
@@ -453,7 +453,7 @@ class FlakyTest(BaseModel):
 # ── Analytics paginated wrappers ─────────────────────────────────────────────
 
 class AnalyticsPaginationMeta(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     offset: int
     limit: int
@@ -461,14 +461,14 @@ class AnalyticsPaginationMeta(BaseModel):
 
 
 class TrendsResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     data: list[TrendDataPoint]
     pagination: AnalyticsPaginationMeta
 
 
 class FlakyResponse(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, from_attributes=True)
 
     data: list[FlakyTest]
     pagination: AnalyticsPaginationMeta

@@ -29,20 +29,7 @@ router = APIRouter(
 
 
 def _to_response(orm) -> ScheduleResponse:
-    return ScheduleResponse(
-        id=orm.id,
-        project_id=orm.project_id,
-        pipeline_id=orm.pipeline_id,
-        cron_expr=orm.cron_expr,
-        timezone=orm.timezone,
-        missed_fire_policy=orm.missed_fire_policy,
-        quiet_windows=orm.quiet_windows or [],
-        enabled=orm.enabled,
-        last_run_at=orm.last_run_at,
-        next_run_at=orm.next_run_at,
-        last_error=orm.last_error,
-        created_at=orm.created_at,
-    )
+    return ScheduleResponse.model_validate(orm)
 
 
 @router.get(
