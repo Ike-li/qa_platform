@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 from qaplatform.domain.models.run import RunStatus, TERMINAL_STATUSES
-
-if TYPE_CHECKING:
-    from qaplatform.domain.models.run import Run
+from qaplatform.domain.ports import RunRepositoryProtocol
 
 
 # Valid status transitions
@@ -38,12 +35,6 @@ def is_valid_transition(current: RunStatus, target: RunStatus) -> bool:
 # Repository protocol for conditional updates
 # --------------------------------------------------------------------------- #
 
-
-class RunRepositoryProtocol(Protocol):
-    """Run repository interface for conditional state updates."""
-
-    async def get(self, run_id: UUID | str) -> Run | None: ...
-    async def update_status(self, run_id: UUID | str, status: RunStatus, **kwargs) -> bool: ...
 
 
 # --------------------------------------------------------------------------- #

@@ -7,10 +7,11 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Collection, Protocol
+from typing import Any, Collection
 from uuid import UUID
 
 from qaplatform.domain.models.run import Run, RunStatus
+from qaplatform.domain.ports import RunRepositoryProtocol
 from qaplatform.engine.cancel import watch_for_cancel
 from qaplatform.engine.docker_backend import (
     DockerBackend,
@@ -53,38 +54,6 @@ _LOG_DRAIN_TIMEOUT = 5
 # Repository protocol (dependency injection, avoids ORM coupling)
 # --------------------------------------------------------------------------- #
 
-
-class RunRepositoryProtocol(Protocol):
-    """Minimal run repository interface needed by the executor."""
-
-    async def get(self, run_id: UUID | str) -> Run | None: ...
-    async def mark_running(self, run_id: UUID | str) -> bool: ...
-    async def mark_collecting(self, run_id: UUID | str) -> bool: ...
-    async def finish_if_current(
-        self,
-        run_id: UUID | str,
-        *,
-        status: RunStatus,
-        expected_in: Collection[RunStatus] | None = None,
-        summary: dict[str, Any] | None = None,
-    ) -> bool: ...
-    async def fail_if_current(
-        self,
-        run_id: UUID | str,
-        *,
-        expected_in: Collection[RunStatus] | None = None,
-        message: str = "",
-    ) -> bool: ...
-    async def cancel_if_current(
-        self,
-        run_id: UUID | str,
-        *,
-        expected_in: Collection[RunStatus] | None = None,
-    ) -> bool: ...
-    async def is_cancel_requested(self, run_id: UUID | str) -> bool: ...
-    async def update_execution_id(self, run_id: UUID | str, execution_id: str) -> None: ...
-    async def update_git_sha(self, run_id: UUID | str, sha: str) -> None: ...
-    async def commit(self) -> None: ...
 
 
 # --------------------------------------------------------------------------- #
