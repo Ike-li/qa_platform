@@ -593,7 +593,7 @@ class RunExecutor:
             resource_limits=pipeline.resource_limits,
             network_policy=pipeline.network_policy,
             security=SandboxSecurity(readonly_rootfs=False),
-            user="root",
+            user="1000:1000",
             labels={"run_id": run_id, "phase": "setup"},
         )
 
