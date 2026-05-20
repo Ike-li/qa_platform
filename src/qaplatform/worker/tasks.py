@@ -219,9 +219,12 @@ async def execute_run(ctx: dict, run_id: str) -> None:
             status = await executor.execute(run, config)
 
             # 3. Write terminal state (conditional update)
+            # Explicit conversion: domain RunStatus → ORM RunStatusEnum
+            from qaplatform.infra.database.models import RunStatusEnum
+            orm_status = RunStatusEnum(status.value)
             updated = await run_repo.finish_if_current(
                 run.id,
-                status=status,
+                status=orm_status,
             )
             if updated:
                 log.info("run %s completed with status: %s", run_id, status.value)
