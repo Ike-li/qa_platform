@@ -32,7 +32,7 @@ export function ArtifactPreview({ url, onClose }: ArtifactPreviewProps) {
         {/* Toolbar */}
         <div className="flex items-center justify-between border-b border-hairline px-4 py-2">
           <span className="text-sm font-medium text-ink">Allure Report</span>
-          <Button variant="ghost" size="icon" onClick={onClose}>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close preview">
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -48,6 +48,8 @@ export function ArtifactPreview({ url, onClose }: ArtifactPreviewProps) {
             src={url}
             title="Allure Report Preview"
             className="h-full w-full border-0"
+            sandbox="allow-scripts allow-same-origin"
+            referrerPolicy="no-referrer"
             onLoad={() => setLoading(false)}
           />
         </div>
