@@ -72,8 +72,8 @@ api.interceptors.response.use(
 );
 
 export async function getArtifactDownloadUrl(artifactId: string): Promise<string> {
-  const { data } = await api.get<{ url: string }>(`/artifacts/${artifactId}/download`);
-  return data.url;
+  const { data } = await api.get<{ download_url: string }>(`/artifacts/${artifactId}/download`);
+  return data.download_url;
 }
 
 export default api;
