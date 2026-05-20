@@ -614,7 +614,7 @@ async def list_tokens(
 
 # --- SSE Ticket ---
 
-SSE_TICKET_TTL = 30  # seconds
+SSE_TICKET_TTL = 90  # seconds (increased for slow networks; GETDEL prevents replay)
 
 
 class SSETicketResponse(BaseModel):

@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     jwt_refresh_token_ttl: int = 604800  # 7d
     encryption_key: str  # 32 bytes hex
     encryption_keys: dict[int, str] | None = None  # {version: key_hex}, overrides encryption_key
-    enable_hsts: bool = False
+    enable_hsts: bool = True
 
     # Execution engine
     max_concurrent_runs: int = 5

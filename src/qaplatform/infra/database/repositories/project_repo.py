@@ -165,6 +165,7 @@ class ScheduleRepository(BaseRepository[Schedule]):
         schedule.last_run_at = last_run_at
         schedule.next_run_at = next_run_at
         schedule.last_error = last_error
+        await self.session.flush()
 
 
 class NotificationRuleRepository(BaseRepository[NotificationRule]):
