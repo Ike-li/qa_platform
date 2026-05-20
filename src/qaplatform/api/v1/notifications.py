@@ -29,29 +29,11 @@ router = APIRouter(
 
 
 def _to_rule_response(orm) -> NotificationRuleResponse:
-    return NotificationRuleResponse(
-        id=orm.id,
-        project_id=orm.project_id,
-        name=orm.name,
-        enabled=orm.enabled,
-        conditions=orm.conditions or [],
-        channels=orm.channels or [],
-        template=orm.template,
-        created_at=orm.created_at,
-    )
+    return NotificationRuleResponse.model_validate(orm)
 
 
 def _to_log_response(orm) -> NotificationLogResponse:
-    return NotificationLogResponse(
-        id=orm.id,
-        project_id=orm.project_id,
-        run_id=orm.run_id,
-        rule_id=orm.rule_id,
-        channel_type=orm.channel_type,
-        status=orm.status.value if hasattr(orm.status, "value") else orm.status,
-        error_message=orm.error_message,
-        sent_at=orm.sent_at,
-    )
+    return NotificationLogResponse.model_validate(orm)
 
 
 @router.get(

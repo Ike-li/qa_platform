@@ -30,14 +30,7 @@ def _aad(project_id: UUID, name: str) -> str:
 
 
 def _to_response(orm) -> CredentialResponse:
-    return CredentialResponse(
-        id=orm.id,
-        project_id=orm.project_id,
-        name=orm.name,
-        type=orm.type,
-        created_by=orm.created_by,
-        created_at=orm.created_at,
-    )
+    return CredentialResponse.model_validate(orm)
 
 
 async def _verify_project_access(project_id: UUID, repos: Repos, user: CurrentUser):

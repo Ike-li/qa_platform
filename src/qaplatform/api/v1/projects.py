@@ -22,25 +22,7 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 def _to_response(orm: ProjectORM) -> ProjectResponse:
-    return ProjectResponse(
-        id=orm.id,
-        tenant_id=orm.tenant_id,
-        name=orm.name,
-        slug=orm.slug,
-        description=orm.description,
-        git_url=orm.git_url,
-        git_auth_method=orm.git_auth_method,
-        credential_id=orm.credential_id,
-        default_branch=orm.default_branch,
-        root_path=orm.root_path,
-        shallow_clone=orm.shallow_clone,
-        default_env_id=orm.default_env_id,
-        settings=orm.settings or {},
-        status=orm.status,
-        created_by=orm.created_by,
-        created_at=orm.created_at,
-        updated_at=orm.updated_at,
-    )
+    return ProjectResponse.model_validate(orm)
 
 
 @router.get(
