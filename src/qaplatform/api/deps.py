@@ -8,6 +8,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qaplatform.api.auth.jwt_service import JWTService
 from qaplatform.api.auth.middleware import (
     get_current_user as _mw_get_current_user,
 )
@@ -50,6 +51,25 @@ async def _get_repos(request: Request, session: AsyncSession = Depends(_get_db_s
 async def get_redis(request: Request):
     """Return the Redis client from the dependency container."""
     return request.app.state.container.redis_client
+
+
+def get_jwt_service(request: Request) -> JWTService:
+    """Return a JWTService instance from the dependency container."""
+    container = request.app.state.container
+    return JWTService(container.settings, redis=container.redis_client)
+
+
+def get_session_factory(request: Request):
+    """Return the async_sessionmaker from the dependency container."""
+    container = request.app.state.container
+    if container.db_session_factory is None:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+    return container.db_session_factory
+
+
+def get_settings(request: Request):
+    """Return application settings from the dependency container."""
+    return request.app.state.container.settings
 
 
 # ── Authentication ───────────────────────────────────────────────────────────
@@ -109,6 +129,9 @@ Container = Annotated[Any, Depends(lambda r: r.app.state.container)]
 Repos = Annotated[RepositoryBundle, Depends(_get_repos)]
 RedisClient = Annotated[object, Depends(get_redis)]
 CurrentUser = Annotated[UserIdentity, Depends(get_current_user)]
+JwtService = Annotated[JWTService, Depends(get_jwt_service)]
+SessionFactory = Annotated[object, Depends(get_session_factory)]
+AppSettings = Annotated[Any, Depends(get_settings)]
 
 
 def require_permission(action: "Action"):

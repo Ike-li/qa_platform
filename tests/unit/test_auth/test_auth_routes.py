@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from qaplatform.api import deps as auth_deps
 from qaplatform.api.auth.jwt_service import JWTService
 from qaplatform.api.auth.middleware import CurrentUser, get_current_user
 from qaplatform.api.v1.auth import router
@@ -26,17 +27,16 @@ def _settings(jwt_secret="test-secret-key-for-jwt-32bytes!"):
 
 
 def _session_mock():
-    """Return (mock_session, async_context_manager) for patching _new_session."""
-    mock_session = AsyncMock()
-    mock_session.commit = AsyncMock()
-    mock_session.rollback = AsyncMock()
-    mock_session.close = AsyncMock()
+    """Create a mock session and its async context manager factory."""
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
 
     @asynccontextmanager
-    async def _cm():
-        yield mock_session
+    async def _factory():
+        yield session
 
-    return mock_session, _cm()
+    return session, _factory()
 
 
 def _make_orm_user(**overrides):
@@ -73,17 +73,26 @@ def _make_orm_token(**overrides):
     return token
 
 
-def _session_mock():
-    """Create a mock session and its async context manager factory."""
-    session = AsyncMock()
-    session.commit = AsyncMock()
-    session.rollback = AsyncMock()
+def _make_session_factory(session_cm):
+    """Return a mock async_sessionmaker that returns session_cm when called."""
+    return MagicMock(return_value=session_cm)
 
-    @asynccontextmanager
-    async def _factory():
-        yield session
 
-    return session, _factory()
+def _multi_session_factory():
+    """Return a factory callable that yields a fresh AsyncMock session each call."""
+    def _make_fresh_session():
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.rollback = AsyncMock()
+        session.flush = AsyncMock()
+
+        @asynccontextmanager
+        async def _cm():
+            yield session
+
+        return _cm()
+
+    return MagicMock(side_effect=lambda: _make_fresh_session())
 
 
 @pytest.fixture
@@ -100,14 +109,26 @@ async def client(app):
         yield c
 
 
+def _setup_overrides(app: FastAPI, *, session_factory=None, jwt_svc=None, settings=None):
+    """Install dependency overrides on the app for auth deps."""
+    if session_factory is not None:
+        app.dependency_overrides[auth_deps.get_session_factory] = lambda: session_factory
+    if jwt_svc is not None:
+        app.dependency_overrides[auth_deps.get_jwt_service] = lambda: jwt_svc
+    if settings is not None:
+        app.dependency_overrides[auth_deps.get_settings] = lambda: settings
+
+
 # --- Login tests ---
 
 
 class TestLogin:
     @pytest.mark.asyncio
-    async def test_login_success(self, client: AsyncClient):
+    async def test_login_success(self, app: FastAPI, client: AsyncClient):
         from argon2 import PasswordHasher
 
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         ph = PasswordHasher()
         user = _make_orm_user(password_hash=ph.hash("correct-password"))
         user_repo = AsyncMock()
@@ -116,16 +137,12 @@ class TestLogin:
 
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
         with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
         ):
             mock_resolve.return_value = uuid4()
+            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/login",
                 json={"username": "alice", "password": "correct-password"},
@@ -139,25 +156,23 @@ class TestLogin:
         assert "refresh_token" in resp.cookies
 
     @pytest.mark.asyncio
-    async def test_login_wrong_password(self, client: AsyncClient):
+    async def test_login_wrong_password(self, app: FastAPI, client: AsyncClient):
         from argon2 import PasswordHasher
 
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         ph = PasswordHasher()
         user = _make_orm_user(password_hash=ph.hash("correct-password"))
         user_repo = AsyncMock()
         user_repo.get_by_username.return_value = user
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = _multi_session_factory()
-
         with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
             patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=_make_audit_repo_mock()),
         ):
             mock_resolve.return_value = uuid4()
+            _setup_overrides(app, session_factory=_multi_session_factory(), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/login",
                 json={"username": "alice", "password": "wrong"},
@@ -166,21 +181,19 @@ class TestLogin:
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_login_user_not_found(self, client: AsyncClient):
+    async def test_login_user_not_found(self, app: FastAPI, client: AsyncClient):
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         user_repo = AsyncMock()
         user_repo.get_by_username.return_value = None
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = _multi_session_factory()
-
         with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
             patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=_make_audit_repo_mock()),
         ):
             mock_resolve.return_value = uuid4()
+            _setup_overrides(app, session_factory=_multi_session_factory(), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/login",
                 json={"username": "nobody", "password": "x"},
@@ -189,25 +202,23 @@ class TestLogin:
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_login_inactive_user(self, client: AsyncClient):
+    async def test_login_inactive_user(self, app: FastAPI, client: AsyncClient):
         from argon2 import PasswordHasher
 
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         ph = PasswordHasher()
         user = _make_orm_user(password_hash=ph.hash("pw"), is_active=False)
         user_repo = AsyncMock()
         user_repo.get_by_username.return_value = user
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = _multi_session_factory()
-
         with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
             patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=_make_audit_repo_mock()),
         ):
             mock_resolve.return_value = uuid4()
+            _setup_overrides(app, session_factory=_multi_session_factory(), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/login",
                 json={"username": "alice", "password": "pw"},
@@ -245,21 +256,20 @@ def _register_session_mock(existing_tenant=None):
 
 class TestRegister:
     @pytest.mark.asyncio
-    async def test_register_success(self, client: AsyncClient):
+    async def test_register_success(self, app: FastAPI, client: AsyncClient):
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         _, session_cm = _register_session_mock()
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
 
-        with patch("qaplatform.api.v1.auth._get_container", return_value=container):
-            resp = await client.post(
-                "/api/v1/auth/register",
-                json={
-                    "username": "alice",
-                    "email": "alice@example.com",
-                    "password": "secure-password-1",
-                },
-            )
+        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+        resp = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "alice",
+                "email": "alice@example.com",
+                "password": "secure-password-1",
+            },
+        )
 
         assert resp.status_code == 201, resp.text
         data = resp.json()
@@ -270,23 +280,22 @@ class TestRegister:
         assert "refresh_token" in resp.cookies
 
     @pytest.mark.asyncio
-    async def test_register_username_conflict(self, client: AsyncClient):
+    async def test_register_username_conflict(self, app: FastAPI, client: AsyncClient):
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         existing = MagicMock()
         existing.name = "alice"
         _, session_cm = _register_session_mock(existing_tenant=existing)
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
 
-        with patch("qaplatform.api.v1.auth._get_container", return_value=container):
-            resp = await client.post(
-                "/api/v1/auth/register",
-                json={
-                    "username": "alice",
-                    "email": "alice@example.com",
-                    "password": "secure-password-1",
-                },
-            )
+        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+        resp = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": "alice",
+                "email": "alice@example.com",
+                "password": "secure-password-1",
+            },
+        )
 
         assert resp.status_code == 409
         assert "already taken" in resp.json()["detail"].lower()
@@ -296,7 +305,8 @@ class TestRegister:
         "username",
         ["ab", "x" * 33, "has space", "with-dash", "umlautü"],
     )
-    async def test_register_rejects_invalid_username(self, client: AsyncClient, username):
+    async def test_register_rejects_invalid_username(self, app: FastAPI, client: AsyncClient, username):
+        _setup_overrides(app, session_factory=_make_session_factory(AsyncMock()), jwt_svc=JWTService(_settings()), settings=_settings())
         resp = await client.post(
             "/api/v1/auth/register",
             json={
@@ -308,7 +318,8 @@ class TestRegister:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_register_rejects_short_password(self, client: AsyncClient):
+    async def test_register_rejects_short_password(self, app: FastAPI, client: AsyncClient):
+        _setup_overrides(app, session_factory=_make_session_factory(AsyncMock()), jwt_svc=JWTService(_settings()), settings=_settings())
         resp = await client.post(
             "/api/v1/auth/register",
             json={
@@ -320,7 +331,8 @@ class TestRegister:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_register_rejects_bad_email(self, client: AsyncClient):
+    async def test_register_rejects_bad_email(self, app: FastAPI, client: AsyncClient):
+        _setup_overrides(app, session_factory=_make_session_factory(AsyncMock()), jwt_svc=JWTService(_settings()), settings=_settings())
         resp = await client.post(
             "/api/v1/auth/register",
             json={
@@ -337,7 +349,7 @@ class TestRegister:
 
 class TestRefresh:
     @pytest.mark.asyncio
-    async def test_refresh_success(self, client: AsyncClient):
+    async def test_refresh_success(self, app: FastAPI, client: AsyncClient):
         settings = _settings()
         jwt_svc = JWTService(settings)
         user_id = uuid4()
@@ -349,15 +361,8 @@ class TestRefresh:
 
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = settings
-        container.redis_client = None  # no blacklist in this test
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
-        with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo):
+            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/refresh",
                 cookies={"refresh_token": refresh_token},
@@ -370,45 +375,45 @@ class TestRefresh:
         assert "refresh_token" in resp.cookies
 
     @pytest.mark.asyncio
-    async def test_refresh_missing_cookie(self, client: AsyncClient):
+    async def test_refresh_missing_cookie(self, app: FastAPI, client: AsyncClient):
+        settings = _settings()
+        jwt_svc = JWTService(settings)
+        _, session_cm = _session_mock()
+        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
         resp = await client.post("/api/v1/auth/refresh")
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_refresh_with_access_token_rejected(self, client: AsyncClient):
+    async def test_refresh_with_access_token_rejected(self, app: FastAPI, client: AsyncClient):
         settings = _settings()
         jwt_svc = JWTService(settings)
         access_token = jwt_svc.create_access_token("user-1", "viewer", "t1")
+        _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = settings
-
-        with patch("qaplatform.api.v1.auth._get_container", return_value=container):
-            resp = await client.post(
-                "/api/v1/auth/refresh",
-                cookies={"refresh_token": access_token},
-            )
+        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+        resp = await client.post(
+            "/api/v1/auth/refresh",
+            cookies={"refresh_token": access_token},
+        )
 
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_refresh_expired_token(self, client: AsyncClient):
+    async def test_refresh_expired_token(self, app: FastAPI, client: AsyncClient):
         settings = _settings()
         settings.jwt_refresh_token_ttl = 0
         jwt_svc = JWTService(settings)
         import time
+        _, session_cm = _session_mock()
 
         refresh_token = jwt_svc.create_refresh_token("user-1")
         time.sleep(0.01)
 
-        container = MagicMock()
-        container.settings = settings
-
-        with patch("qaplatform.api.v1.auth._get_container", return_value=container):
-            resp = await client.post(
-                "/api/v1/auth/refresh",
-                cookies={"refresh_token": refresh_token},
-            )
+        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+        resp = await client.post(
+            "/api/v1/auth/refresh",
+            cookies={"refresh_token": refresh_token},
+        )
 
         assert resp.status_code == 401
 
@@ -436,21 +441,15 @@ async def auth_client(authenticated_app):
 
 class TestTokenRoutes:
     @pytest.mark.asyncio
-    async def test_create_token(self, auth_client: AsyncClient):
+    async def test_create_token(self, authenticated_app: FastAPI, auth_client: AsyncClient):
         fake_record = _make_orm_token(token_id="tok123", name="ci")
         api_token_repo = AsyncMock()
         api_token_repo.create.return_value = fake_record
 
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
-        with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo):
+            _setup_overrides(authenticated_app, session_factory=_make_session_factory(session_cm))
             resp = await auth_client.post(
                 "/api/v1/auth/tokens",
                 json={"name": "ci", "scopes": ["*"], "expires_days": 90},
@@ -470,7 +469,7 @@ class TestTokenRoutes:
         assert resp.status_code in (401, 403)
 
     @pytest.mark.asyncio
-    async def test_revoke_token(self, auth_client: AsyncClient):
+    async def test_revoke_token(self, authenticated_app: FastAPI, auth_client: AsyncClient):
         fake_token = _make_orm_token(
             token_id="tok123",
             user_id=UUID("a0000000-0000-0000-0000-000000000001"),
@@ -481,39 +480,27 @@ class TestTokenRoutes:
 
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
-        with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo):
+            _setup_overrides(authenticated_app, session_factory=_make_session_factory(session_cm))
             resp = await auth_client.delete("/api/v1/auth/tokens/tok123")
 
         assert resp.status_code == 204
 
     @pytest.mark.asyncio
-    async def test_revoke_token_not_found(self, auth_client: AsyncClient):
+    async def test_revoke_token_not_found(self, authenticated_app: FastAPI, auth_client: AsyncClient):
         api_token_repo = AsyncMock()
         api_token_repo.get_by_token_id.return_value = None
 
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
-        with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo):
+            _setup_overrides(authenticated_app, session_factory=_make_session_factory(session_cm))
             resp = await auth_client.delete("/api/v1/auth/tokens/nonexistent")
 
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_list_tokens(self, auth_client: AsyncClient):
+    async def test_list_tokens(self, authenticated_app: FastAPI, auth_client: AsyncClient):
         now = datetime.now(timezone.utc)
         fake_token = _make_orm_token(
             token_id="tok1",
@@ -525,14 +512,8 @@ class TestTokenRoutes:
 
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
-        with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo):
+            _setup_overrides(authenticated_app, session_factory=_make_session_factory(session_cm))
             resp = await auth_client.get("/api/v1/auth/tokens")
 
         assert resp.status_code == 200
@@ -567,7 +548,7 @@ def _make_redis_mock(revoked_jtis: set[str] | None = None):
 
 class TestRefreshRevokesOldToken:
     @pytest.mark.asyncio
-    async def test_refresh_revokes_old_refresh_token(self, client: AsyncClient):
+    async def test_refresh_revokes_old_refresh_token(self, app: FastAPI, client: AsyncClient):
         """After refresh, the old refresh token jti must be in the blacklist."""
         settings = _settings()
         redis_mock, store = _make_redis_mock()
@@ -589,15 +570,8 @@ class TestRefreshRevokesOldToken:
 
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = settings
-        container.redis_client = redis_mock
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
-        with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo):
+            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/refresh",
                 cookies={"refresh_token": old_refresh_token},
@@ -608,7 +582,7 @@ class TestRefreshRevokesOldToken:
         assert f"jwt:revoked:{old_jti}" in store
 
     @pytest.mark.asyncio
-    async def test_refresh_with_revoked_token_returns_401(self, client: AsyncClient):
+    async def test_refresh_with_revoked_token_returns_401(self, app: FastAPI, client: AsyncClient):
         """After refresh, calling revoke() on the old jti is verified via mock."""
         settings = _settings()
         redis_mock, store = _make_redis_mock()
@@ -628,15 +602,8 @@ class TestRefreshRevokesOldToken:
 
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = settings
-        container.redis_client = redis_mock
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
-        with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo):
+            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/refresh",
                 cookies={"refresh_token": refresh_token},
@@ -649,7 +616,7 @@ class TestRefreshRevokesOldToken:
 
 class TestLogoutRevokesTokens:
     @pytest.mark.asyncio
-    async def test_logout_revokes_access_token(self, client: AsyncClient):
+    async def test_logout_revokes_access_token(self, app: FastAPI, client: AsyncClient):
         """logout must add the access token jti to the blacklist."""
         settings = _settings()
         redis_mock, store = _make_redis_mock()
@@ -660,25 +627,19 @@ class TestLogoutRevokesTokens:
         payload = _jwt.decode(access_token, settings.jwt_secret, algorithms=["HS256"])
         access_jti = payload["jti"]
 
-        container = MagicMock()
-        container.settings = settings
-        container.redis_client = redis_mock
+        _, session_cm = _session_mock()
 
-        with patch(
-            "qaplatform.api.v1.auth._get_jwt_service",
-            return_value=jwt_svc,
-        ):
-            with patch("qaplatform.api.v1.auth._get_container", return_value=container):
-                resp = await client.post(
-                    "/api/v1/auth/logout",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
+        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
+        resp = await client.post(
+            "/api/v1/auth/logout",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
 
         assert resp.status_code == 204
         assert f"jwt:revoked:{access_jti}" in store
 
     @pytest.mark.asyncio
-    async def test_logout_revokes_refresh_token(self, client: AsyncClient):
+    async def test_logout_revokes_refresh_token(self, app: FastAPI, client: AsyncClient):
         """logout must add the refresh token jti to the blacklist."""
         settings = _settings()
         redis_mock, store = _make_redis_mock()
@@ -689,25 +650,19 @@ class TestLogoutRevokesTokens:
         payload = _jwt.decode(refresh_token, settings.jwt_secret, algorithms=["HS256"])
         refresh_jti = payload["jti"]
 
-        container = MagicMock()
-        container.settings = settings
-        container.redis_client = redis_mock
+        _, session_cm = _session_mock()
 
-        with patch(
-            "qaplatform.api.v1.auth._get_jwt_service",
-            return_value=jwt_svc,
-        ):
-            with patch("qaplatform.api.v1.auth._get_container", return_value=container):
-                resp = await client.post(
-                    "/api/v1/auth/logout",
-                    cookies={"refresh_token": refresh_token},
-                )
+        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
+        resp = await client.post(
+            "/api/v1/auth/logout",
+            cookies={"refresh_token": refresh_token},
+        )
 
         assert resp.status_code == 204
         assert f"jwt:revoked:{refresh_jti}" in store
 
     @pytest.mark.asyncio
-    async def test_logout_revokes_both_tokens(self, client: AsyncClient):
+    async def test_logout_revokes_both_tokens(self, app: FastAPI, client: AsyncClient):
         """logout with both tokens present must revoke both jtis."""
         settings = _settings()
         redis_mock, store = _make_redis_mock()
@@ -719,42 +674,30 @@ class TestLogoutRevokesTokens:
         a_payload = _jwt.decode(access_token, settings.jwt_secret, algorithms=["HS256"])
         r_payload = _jwt.decode(refresh_token, settings.jwt_secret, algorithms=["HS256"])
 
-        container = MagicMock()
-        container.settings = settings
-        container.redis_client = redis_mock
+        _, session_cm = _session_mock()
 
-        with patch(
-            "qaplatform.api.v1.auth._get_jwt_service",
-            return_value=jwt_svc,
-        ):
-            with patch("qaplatform.api.v1.auth._get_container", return_value=container):
-                resp = await client.post(
-                    "/api/v1/auth/logout",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    cookies={"refresh_token": refresh_token},
-                )
+        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
+        resp = await client.post(
+            "/api/v1/auth/logout",
+            headers={"Authorization": f"Bearer {access_token}"},
+            cookies={"refresh_token": refresh_token},
+        )
 
         assert resp.status_code == 204
         assert f"jwt:revoked:{a_payload['jti']}" in store
         assert f"jwt:revoked:{r_payload['jti']}" in store
 
     @pytest.mark.asyncio
-    async def test_logout_no_tokens_still_returns_204(self, client: AsyncClient):
+    async def test_logout_no_tokens_still_returns_204(self, app: FastAPI, client: AsyncClient):
         """logout with no tokens at all must still succeed (idempotent)."""
         settings = _settings()
         redis_mock, _ = _make_redis_mock()
         jwt_svc = JWTService(settings, redis=redis_mock)
 
-        container = MagicMock()
-        container.settings = settings
-        container.redis_client = redis_mock
+        _, session_cm = _session_mock()
 
-        with patch(
-            "qaplatform.api.v1.auth._get_jwt_service",
-            return_value=jwt_svc,
-        ):
-            with patch("qaplatform.api.v1.auth._get_container", return_value=container):
-                resp = await client.post("/api/v1/auth/logout")
+        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
+        resp = await client.post("/api/v1/auth/logout")
 
         assert resp.status_code == 204
 
@@ -873,46 +816,13 @@ def _make_audit_repo_mock():
     return repo
 
 
-def _session_mock_with_audit(audit_repo_mock):
-    """Session mock that also supports AuditEventRepository instantiation via patch."""
-    session = AsyncMock()
-    session.commit = AsyncMock()
-    session.rollback = AsyncMock()
-    session.flush = AsyncMock()
-
-    @asynccontextmanager
-    async def factory():
-        yield session
-
-    return session, factory()
-
-
-def _multi_session_factory():
-    """Return a factory callable that yields a fresh AsyncMock session each call.
-
-    Use this when a route calls _new_session() more than once (e.g. failure paths
-    that open a second session for the audit write).
-    """
-    def _make_fresh_session():
-        session = AsyncMock()
-        session.commit = AsyncMock()
-        session.rollback = AsyncMock()
-        session.flush = AsyncMock()
-
-        @asynccontextmanager
-        async def _cm():
-            yield session
-
-        return _cm()
-
-    return MagicMock(side_effect=lambda: _make_fresh_session())
-
-
 class TestAuditLogin:
     @pytest.mark.asyncio
-    async def test_login_success_emits_audit(self, client: AsyncClient):
+    async def test_login_success_emits_audit(self, app: FastAPI, client: AsyncClient):
         from argon2 import PasswordHasher
 
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         ph = PasswordHasher()
         user = _make_orm_user(password_hash=ph.hash("correct-password"))
         user_repo = AsyncMock()
@@ -922,16 +832,12 @@ class TestAuditLogin:
         audit_repo = _make_audit_repo_mock()
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
         with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock, return_value=uuid4()),
             patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
         ):
+            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/login",
                 json={"username": "alice", "password": "correct-password"},
@@ -946,22 +852,20 @@ class TestAuditLogin:
         assert "ip_address" in call_kwargs
 
     @pytest.mark.asyncio
-    async def test_login_failed_emits_audit(self, client: AsyncClient):
+    async def test_login_failed_emits_audit(self, app: FastAPI, client: AsyncClient):
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         user_repo = AsyncMock()
-        user_repo.get_by_username.return_value = None  # user not found
+        user_repo.get_by_username.return_value = None
 
         audit_repo = _make_audit_repo_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = _multi_session_factory()
-
         with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock, return_value=uuid4()),
             patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
         ):
+            _setup_overrides(app, session_factory=_multi_session_factory(), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/login",
                 json={"username": "nobody", "password": "wrong"},
@@ -975,9 +879,11 @@ class TestAuditLogin:
         assert call_kwargs["after_state"]["reason"] == "invalid_credentials"
 
     @pytest.mark.asyncio
-    async def test_login_failed_wrong_password_emits_audit(self, client: AsyncClient):
+    async def test_login_failed_wrong_password_emits_audit(self, app: FastAPI, client: AsyncClient):
         from argon2 import PasswordHasher
 
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         ph = PasswordHasher()
         user = _make_orm_user(password_hash=ph.hash("correct-password"))
         user_repo = AsyncMock()
@@ -985,16 +891,12 @@ class TestAuditLogin:
 
         audit_repo = _make_audit_repo_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = _multi_session_factory()
-
         with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock, return_value=uuid4()),
             patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
         ):
+            _setup_overrides(app, session_factory=_multi_session_factory(), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/login",
                 json={"username": "alice", "password": "wrong-password"},
@@ -1009,18 +911,14 @@ class TestAuditLogin:
 
 class TestAuditRegister:
     @pytest.mark.asyncio
-    async def test_register_success_emits_audit(self, client: AsyncClient):
+    async def test_register_success_emits_audit(self, app: FastAPI, client: AsyncClient):
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         audit_repo = _make_audit_repo_mock()
         _, session_cm = _register_session_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
-        with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo):
+            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/register",
                 json={
@@ -1041,11 +939,10 @@ class TestAuditRegister:
 
 class TestAuditLogout:
     @pytest.mark.asyncio
-    async def test_logout_emits_audit(self, client: AsyncClient):
+    async def test_logout_emits_audit(self, app: FastAPI, client: AsyncClient):
         settings = _settings()
         redis_mock, _ = _make_redis_mock()
         jwt_svc = JWTService(settings, redis=redis_mock)
-        # Use a valid UUID so the logout handler can parse it from the token payload.
         user_uuid = uuid4()
         tenant_uuid = uuid4()
         access_token = jwt_svc.create_access_token(
@@ -1053,17 +950,10 @@ class TestAuditLogout:
         )
 
         audit_repo = _make_audit_repo_mock()
+        _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = settings
-        container.redis_client = redis_mock
-        container.db_session_factory = _multi_session_factory()
-
-        with (
-            patch("qaplatform.api.v1.auth._get_jwt_service", return_value=jwt_svc),
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo):
+            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
             resp = await client.post(
                 "/api/v1/auth/logout",
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -1074,28 +964,20 @@ class TestAuditLogout:
         call_kwargs = audit_repo.create.call_args.kwargs
         assert call_kwargs["action"] == "auth.logout"
         assert call_kwargs["resource_type"] == "auth"
-        # user_id extracted from access token sub claim (valid UUID)
         assert call_kwargs["user_id"] == user_uuid
 
     @pytest.mark.asyncio
-    async def test_logout_without_token_still_emits_audit(self, client: AsyncClient):
+    async def test_logout_without_token_still_emits_audit(self, app: FastAPI, client: AsyncClient):
         """Logout with no token still writes an audit record with user_id=None."""
         settings = _settings()
         redis_mock, _ = _make_redis_mock()
         jwt_svc = JWTService(settings, redis=redis_mock)
 
         audit_repo = _make_audit_repo_mock()
+        _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = settings
-        container.redis_client = redis_mock
-        container.db_session_factory = _multi_session_factory()
-
-        with (
-            patch("qaplatform.api.v1.auth._get_jwt_service", return_value=jwt_svc),
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo):
+            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
             resp = await client.post("/api/v1/auth/logout")
 
         assert resp.status_code == 204
@@ -1107,7 +989,7 @@ class TestAuditLogout:
 
 class TestAuditRefresh:
     @pytest.mark.asyncio
-    async def test_refresh_success_emits_audit_with_jti(self, client: AsyncClient):
+    async def test_refresh_success_emits_audit_with_jti(self, app: FastAPI, client: AsyncClient):
         settings = _settings()
         redis_mock, _ = _make_redis_mock()
         jwt_svc = JWTService(settings, redis=redis_mock)
@@ -1125,16 +1007,11 @@ class TestAuditRefresh:
         audit_repo = _make_audit_repo_mock()
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = settings
-        container.redis_client = redis_mock
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
         with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
             patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
         ):
+            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/refresh",
                 cookies={"refresh_token": old_refresh_token},
@@ -1148,18 +1025,14 @@ class TestAuditRefresh:
         assert call_kwargs["user_id"] == user.id
 
     @pytest.mark.asyncio
-    async def test_refresh_failed_emits_audit(self, client: AsyncClient):
+    async def test_refresh_failed_emits_audit(self, app: FastAPI, client: AsyncClient):
+        settings = _settings()
+        jwt_svc = JWTService(settings)
         audit_repo = _make_audit_repo_mock()
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
-        with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
-        ):
+        with patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo):
+            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
             resp = await client.post(
                 "/api/v1/auth/refresh",
                 cookies={"refresh_token": "not-a-valid-token"},
@@ -1174,7 +1047,7 @@ class TestAuditRefresh:
 
 class TestAuditApiTokens:
     @pytest.mark.asyncio
-    async def test_create_token_emits_audit(self, auth_client: AsyncClient):
+    async def test_create_token_emits_audit(self, authenticated_app: FastAPI, auth_client: AsyncClient):
         fake_record = _make_orm_token(token_id="tok123", name="ci")
         api_token_repo = AsyncMock()
         api_token_repo.create.return_value = fake_record
@@ -1182,15 +1055,11 @@ class TestAuditApiTokens:
         audit_repo = _make_audit_repo_mock()
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
         with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
             patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
         ):
+            _setup_overrides(authenticated_app, session_factory=_make_session_factory(session_cm))
             resp = await auth_client.post(
                 "/api/v1/auth/tokens",
                 json={"name": "ci", "scopes": ["*"], "expires_days": 90},
@@ -1204,7 +1073,7 @@ class TestAuditApiTokens:
         assert call_kwargs["user_id"] == UUID("a0000000-0000-0000-0000-000000000001")
 
     @pytest.mark.asyncio
-    async def test_revoke_token_emits_audit(self, auth_client: AsyncClient):
+    async def test_revoke_token_emits_audit(self, authenticated_app: FastAPI, auth_client: AsyncClient):
         fake_token = _make_orm_token(
             token_id="tok123",
             user_id=UUID("a0000000-0000-0000-0000-000000000001"),
@@ -1217,15 +1086,11 @@ class TestAuditApiTokens:
         audit_repo = _make_audit_repo_mock()
         _, session_cm = _session_mock()
 
-        container = MagicMock()
-        container.settings = _settings()
-        container.db_session_factory = MagicMock(return_value=session_cm)
-
         with (
-            patch("qaplatform.api.v1.auth._get_container", return_value=container),
             patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
             patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
         ):
+            _setup_overrides(authenticated_app, session_factory=_make_session_factory(session_cm))
             resp = await auth_client.delete("/api/v1/auth/tokens/tok123")
 
         assert resp.status_code == 204
