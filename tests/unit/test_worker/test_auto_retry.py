@@ -288,11 +288,12 @@ class TestAttemptRetry:
             patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo),
             patch("qaplatform.worker.scheduler.FairScheduler", return_value=scheduler),
             patch("qaplatform.worker.tasks._should_retry", return_value=True),
-            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
             session = AsyncMock()
             sf = MagicMock(return_value=session)
             await _attempt_retry(str(original.id), ConnectionError("fail"), ctx, sf)
 
-        # attempt=2: delay = 30 * 2^(2-1) = 60
-        mock_sleep.assert_awaited_once_with(60)
+        # attempt=2: delay = 30 * 2^(2-1) = 60, passed as _defer_by to scheduler
+        scheduler.enqueue.assert_awaited_once()
+        call_kwargs = scheduler.enqueue.call_args
+        assert call_kwargs.kwargs.get("_defer_by") == 60 or call_kwargs[1].get("_defer_by") == 60
