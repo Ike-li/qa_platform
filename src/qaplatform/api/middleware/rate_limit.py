@@ -1,5 +1,6 @@
 import hashlib
 import ipaddress
+import re
 import time
 from typing import Callable, Union
 
@@ -146,7 +147,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             limit = self.settings.rate_limit_auth_failure
             window = self.settings.rate_limit_auth_failure_window
 
-        key = f"rate_limit:{bucket}:{path}"
+        # Normalize UUIDs in path to prevent per-resource rate limit bypass
+        normalized_path = re.sub(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            "{id}",
+            path,
+        )
+        key = f"rate_limit:{bucket}:{normalized_path}"
         now = time.time()
 
         try:
@@ -179,6 +186,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 )
         except Exception as e:
             logger.error("rate_limit_error", error=str(e))
+            # Fail-closed for auth endpoints during Redis outage
+            if any(p in path for p in _STRICT_PATHS):
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": {
+                            "code": "SERVICE_UNAVAILABLE",
+                            "message": "Service temporarily unavailable",
+                        }
+                    },
+                    headers={"Retry-After": "5"},
+                )
             return await call_next(request)
 
         return await call_next(request)
