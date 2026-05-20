@@ -35,8 +35,13 @@ import { toast } from "sonner";
 import { cn } from "../../lib/utils";
 
 import { usePageTitle } from "../../hooks/use-page-title";
+import { getArtifactDownloadUrl } from "../../lib/api";
+import { ArtifactPreview } from "../../components/runs/artifact-preview";
+import { Eye } from "lucide-react";
+import { useState } from "react";
 
 export default function RunDetail() {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const { data: run, isLoading: isRunLoading } = useRun(id!);
@@ -192,15 +197,47 @@ export default function RunDetail() {
                       <p className="text-xs text-ink-muted">{(artifact.size_bytes / 1024 / 1024).toFixed(2)} MB • {artifact.type}</p>
                     </div>
                   </div>
-                  <Button variant="ghost" size="icon" className="text-ink-subtle hover:text-primary">
-                    <Download className="h-4 w-4" />
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    {artifact.type === "allure-report" && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-ink-subtle hover:text-primary"
+                        onClick={async () => {
+                          try {
+                            const url = await getArtifactDownloadUrl(artifact.id);
+                            setPreviewUrl(url);
+                          } catch {
+                            toast.error(t('runs.artifacts.previewFailed'));
+                          }
+                        }}
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="text-ink-subtle hover:text-primary"
+                      onClick={async () => {
+                        try {
+                          const url = await getArtifactDownloadUrl(artifact.id);
+                          window.open(url, "_blank");
+                        } catch {
+                          toast.error(t('runs.artifacts.downloadFailed'));
+                        }
+                      }}
+                    >
+                      <Download className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
               ))
             )}
           </div>
         </TabsContent>
       </Tabs>
+      {previewUrl && <ArtifactPreview url={previewUrl} onClose={() => setPreviewUrl(null)} />}
     </div>
   );
 }

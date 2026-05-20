@@ -198,6 +198,8 @@
   "runs.results.noResults": "No test results reported yet.",
   "runs.results.unknownError": "Unknown error",
   "runs.artifacts.noArtifacts": "No artifacts generated for this run.",
+  "runs.artifacts.downloadFailed": "Failed to download artifact",
+  "runs.artifacts.previewFailed": "Failed to load preview",
   "runs.toast.cancelSent": "Cancel request sent",
   "runs.toast.cancelFailed": "Failed to cancel run",
 
