@@ -60,12 +60,12 @@ class FairScheduler:
         self.max_total = settings.max_concurrent_runs
         self.max_per_project = settings.max_concurrent_per_project
 
-    async def enqueue(self, run: Any) -> bool:
+    async def enqueue(self, run: Any, _defer_by: float = 0) -> bool:
         """Try to enqueue a run. Returns True if enqueued immediately, False if queued waiting."""
         async with self.run_repo.scheduler_lock():
-            return await self._enqueue_if_capacity(run)
+            return await self._enqueue_if_capacity(run, _defer_by=_defer_by)
 
-    async def _enqueue_if_capacity(self, run: Any) -> bool:
+    async def _enqueue_if_capacity(self, run: Any, _defer_by: float = 0) -> bool:
         """Check quotas under the scheduler lock, then enqueue or mark waiting."""
         if await self._active_or_enqueued_count() >= self.max_total:
             await self.run_repo.mark_waiting(run.id)
@@ -75,9 +75,9 @@ class FairScheduler:
             await self.run_repo.mark_waiting(run.id)
             return False
 
-        return await self._enqueue_run(run)
+        return await self._enqueue_run(run, _defer_by=_defer_by)
 
-    async def _enqueue_run(self, run: Any) -> bool:
+    async def _enqueue_run(self, run: Any, _defer_by: float = 0) -> bool:
         """Perform the actual arq enqueue and persist queue metadata."""
         priority = TRIGGER_PRIORITY.get(run.trigger_type, Priority.MEDIUM)
         queue = PRIORITY_QUEUES[priority]
@@ -88,6 +88,7 @@ class FairScheduler:
             str(run.id),
             _queue_name=queue,
             _job_id=job_id,
+            _defer_by=_defer_by if _defer_by > 0 else 0,
         )
         if job is None:
             # arq dedup: check if this is the same run idempotently re-enqueued

@@ -109,12 +109,9 @@ async def _attempt_retry(
         # Enqueue while session is still open — scheduler uses run_repo
         arq = ctx["arq_pool"]
         settings = ctx["settings"]
-        if delay > 0:
-            import asyncio
-            await asyncio.sleep(delay)
 
         scheduler = FairScheduler(arq, run_repo, settings)
-        enqueued = await scheduler.enqueue(retry_run)
+        enqueued = await scheduler.enqueue(retry_run, _defer_by=delay)
         if enqueued:
             log.info(
                 "retry_scheduled",
