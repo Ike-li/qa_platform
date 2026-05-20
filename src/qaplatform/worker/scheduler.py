@@ -79,13 +79,12 @@ class FairScheduler:
 
     async def _enqueue_run(self, run: Any, _defer_by: float = 0) -> bool:
         """Perform the actual arq enqueue and persist queue metadata."""
-        # If run has a non-default priority (set via API), use it; otherwise
-        # fall back to the trigger-type mapping.
-        default_priority = TRIGGER_PRIORITY.get(run.trigger_type, Priority.MEDIUM)
-        if getattr(run, "priority", 1) != 1:
-            priority = Priority(run.priority)
+        # Manual/API triggers: honor user-set priority directly.
+        # Other triggers (schedule, webhook, event): use trigger-type default.
+        if run.trigger_type in ("manual", "api"):
+            priority = Priority(getattr(run, "priority", 1))
         else:
-            priority = default_priority
+            priority = TRIGGER_PRIORITY.get(run.trigger_type, Priority.MEDIUM)
         queue = PRIORITY_QUEUES[priority]
         job_id = f"run:{run.id}"
 
