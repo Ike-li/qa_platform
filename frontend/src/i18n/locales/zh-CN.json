@@ -198,6 +198,8 @@
   "runs.results.noResults": "暂无测试结果。",
   "runs.results.unknownError": "未知错误",
   "runs.artifacts.noArtifacts": "此运行未生成产物。",
+  "runs.artifacts.downloadFailed": "下载产物失败",
+  "runs.artifacts.previewFailed": "加载预览失败",
   "runs.toast.cancelSent": "取消请求已发送",
   "runs.toast.cancelFailed": "取消运行失败",
 
