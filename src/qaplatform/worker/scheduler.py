@@ -29,11 +29,11 @@ PRIORITY_QUEUES: dict[Priority, str] = {
 }
 
 TRIGGER_PRIORITY: dict[str, Priority] = {
-    "manual": Priority.MEDIUM,
+    "manual": Priority.MEDIUM,    # 用户可通过 API priority 覆盖
     "webhook": Priority.MEDIUM,
     "api": Priority.MEDIUM,
     "event": Priority.MEDIUM,
-    "schedule": Priority.MEDIUM,
+    "schedule": Priority.LOW,
 }
 
 
@@ -79,7 +79,13 @@ class FairScheduler:
 
     async def _enqueue_run(self, run: Any, _defer_by: float = 0) -> bool:
         """Perform the actual arq enqueue and persist queue metadata."""
-        priority = TRIGGER_PRIORITY.get(run.trigger_type, Priority.MEDIUM)
+        # If run has a non-default priority (set via API), use it; otherwise
+        # fall back to the trigger-type mapping.
+        default_priority = TRIGGER_PRIORITY.get(run.trigger_type, Priority.MEDIUM)
+        if getattr(run, "priority", 1) != 1:
+            priority = Priority(run.priority)
+        else:
+            priority = default_priority
         queue = PRIORITY_QUEUES[priority]
         job_id = f"run:{run.id}"
 

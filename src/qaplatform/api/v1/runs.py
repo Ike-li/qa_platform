@@ -142,6 +142,7 @@ async def trigger_run(
         git_ref=git_ref,
         triggered_by=user.user_id,
         trigger_type="manual",
+        priority=body.priority,
         metadata_=metadata,
     )
     # Set retry_group_id to the run's own id so retries share the same group.

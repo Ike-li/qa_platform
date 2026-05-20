@@ -395,3 +395,104 @@ async def test_list_runs_single_status_uses_equality(client, mock_run_repo):
     ]
     assert any("= 'queued'" in r for r in rendered), rendered
     assert not any("IN" in r and "queued" in r for r in rendered), rendered
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_with_high_priority(client, mock_pipeline_repo, mock_project_repo, mock_run_repo, tenant_id, app):
+    """priority=0 should create a run with priority=0 (HIGH)."""
+    project_id = uuid.uuid4()
+    pipeline_id = uuid.uuid4()
+    env_id = uuid.uuid4()
+    run = _make_orm_run(project_id=project_id, pipeline_id=pipeline_id, environment_id=env_id, tenant_id=tenant_id, priority=0)
+
+    pl = MagicMock()
+    pl.id = pipeline_id
+    pl.project_id = project_id
+    mock_pipeline_repo.get_by_id.return_value = pl
+
+    proj = MagicMock()
+    proj.id = project_id
+    proj.tenant_id = tenant_id
+    proj.default_branch = "main"
+    proj.default_env_id = env_id
+    mock_project_repo.get_for_tenant.return_value = proj
+    mock_run_repo.create.return_value = run
+
+    mock_arq = AsyncMock()
+    mock_arq.enqueue_job.return_value = MagicMock(job_id=f"run:{run.id}")
+    app.state.container.arq_pool = mock_arq
+    app.state.container.settings = MagicMock(max_concurrent_runs=5, max_concurrent_per_project=3)
+    mock_run_repo.count_active_or_enqueued.return_value = 0
+    mock_run_repo.count_active_or_enqueued_by_project.return_value = 0
+
+    @asynccontextmanager
+    async def _fake_lock():
+        yield
+
+    mock_run_repo.scheduler_lock = _fake_lock
+
+    resp = await client.post(
+        "/api/v1/runs",
+        json={"pipeline_id": str(pipeline_id), "priority": 0},
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["priority"] == 0
+    create_kwargs = mock_run_repo.create.call_args.kwargs
+    assert create_kwargs["priority"] == 0
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_priority_validation(client):
+    """priority=3 is out of range (0-2) and must return 422."""
+    resp = await client.post(
+        "/api/v1/runs",
+        json={"pipeline_id": str(uuid.uuid4()), "priority": 3},
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_default_priority(client, mock_pipeline_repo, mock_project_repo, mock_run_repo, tenant_id, app):
+    """Omitting priority should default to 1 (MEDIUM)."""
+    project_id = uuid.uuid4()
+    pipeline_id = uuid.uuid4()
+    env_id = uuid.uuid4()
+    run = _make_orm_run(project_id=project_id, pipeline_id=pipeline_id, environment_id=env_id, tenant_id=tenant_id, priority=1)
+
+    pl = MagicMock()
+    pl.id = pipeline_id
+    pl.project_id = project_id
+    mock_pipeline_repo.get_by_id.return_value = pl
+
+    proj = MagicMock()
+    proj.id = project_id
+    proj.tenant_id = tenant_id
+    proj.default_branch = "main"
+    proj.default_env_id = env_id
+    mock_project_repo.get_for_tenant.return_value = proj
+    mock_run_repo.create.return_value = run
+
+    mock_arq = AsyncMock()
+    mock_arq.enqueue_job.return_value = MagicMock(job_id=f"run:{run.id}")
+    app.state.container.arq_pool = mock_arq
+    app.state.container.settings = MagicMock(max_concurrent_runs=5, max_concurrent_per_project=3)
+    mock_run_repo.count_active_or_enqueued.return_value = 0
+    mock_run_repo.count_active_or_enqueued_by_project.return_value = 0
+
+    @asynccontextmanager
+    async def _fake_lock():
+        yield
+
+    mock_run_repo.scheduler_lock = _fake_lock
+
+    resp = await client.post(
+        "/api/v1/runs",
+        json={"pipeline_id": str(pipeline_id)},
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["priority"] == 1
+    create_kwargs = mock_run_repo.create.call_args.kwargs
+    assert create_kwargs["priority"] == 1

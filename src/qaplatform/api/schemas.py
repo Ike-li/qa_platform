@@ -199,6 +199,7 @@ class PipelineResponse(BaseModel):
 class RunTrigger(BaseModel):
     pipeline_id: UUID
     git_ref: str | None = None
+    priority: int = Field(default=1, ge=0, le=2, description="0=HIGH, 1=MEDIUM, 2=LOW")
 
 
 class RunCancel(BaseModel):
