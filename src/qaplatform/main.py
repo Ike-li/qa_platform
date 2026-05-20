@@ -114,8 +114,17 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     # HTTP request duration histogram — wraps all routes including /metrics itself
     @app.middleware("http")
     async def _record_request_duration(request: Request, call_next):
-        import time as _time
-        route = request.url.path
+        import re, time as _time
+        # Use route template if available, else normalize UUIDs in path
+        route_obj = request.scope.get("route")
+        if route_obj and hasattr(route_obj, "path"):
+            route = route_obj.path
+        else:
+            route = re.sub(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                "{id}",
+                request.url.path,
+            )
         start = _time.perf_counter()
         response = await call_next(request)
         duration = _time.perf_counter() - start

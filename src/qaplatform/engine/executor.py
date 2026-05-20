@@ -294,9 +294,6 @@ class RunExecutor:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            import traceback
-            log.error("EXECUTION FAILED for run %s: %s", run_id, exc)
-            log.error("Traceback: %s", traceback.format_exc())
             log.exception("execution failed for run %s", run_id)
             failed = await self.run_repo.fail_if_current(
                 run_id, message=redact_url_userinfo(str(exc))
@@ -471,10 +468,7 @@ class RunExecutor:
             
             try:
                 runner = self.plugin_registry.get_runner(stage.plugin)
-                if hasattr(runner, 'build_command'):
-                    cmd = runner.build_command(stage.config)
-                else:
-                    cmd = stage.config.get('command', 'echo "missing command"')
+                cmd = runner.build_command(stage.config)
             except Exception as e:
                 log.warning("failed to get runner for %s: %s", stage.plugin, e)
                 cmd = stage.config.get('command', 'echo "missing command"')
@@ -651,11 +645,6 @@ class RunExecutor:
         if exit_result.exit_code != 0:
             raise RuntimeError(f"Setup script failed (exit {exit_result.exit_code})")
 
-        if exit_result.timed_out:
-            raise RuntimeError(f"Setup script timed out after {setup_timeout}s")
-        if exit_result.exit_code != 0:
-            raise RuntimeError(f"Setup script failed (exit {exit_result.exit_code})")
-
 
     async def _stream_container_logs(self, run_id: str, execution_id: str) -> None:
         """Stream container logs to Redis. Runs as a background task."""
@@ -690,8 +679,7 @@ class RunExecutor:
                 ext = artifact_path.suffix.lower()
                 artifact_type = _ARTIFACT_TYPE_BY_EXT.get(ext, "other")
                 # Allure report/results directories get a dedicated type
-                path_str = str(artifact_path)
-                if "allure-report" in path_str or "allure-results" in path_str:
+                if artifact_path.parent.name in ("allure-report", "allure-results"):
                     artifact_type = "allure-report"
                 mime_type, _ = mimetypes.guess_type(artifact_path.name)
                 try:
