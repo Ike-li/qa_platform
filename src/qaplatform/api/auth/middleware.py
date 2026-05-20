@@ -93,11 +93,25 @@ async def _authenticate_jwt(token: str, container: DependencyContainer) -> Curre
                 detail="Token has been revoked",
             )
 
+    # Verify is_platform_admin against database to handle stale tokens
+    is_admin_claim = bool(payload.get("is_platform_admin", False))
+    is_admin_verified = False
+    if is_admin_claim and container.db_session_factory is not None:
+        from sqlalchemy import select
+        from qaplatform.infra.database.models import AppUser
+
+        async with container.db_session_factory() as session:
+            result = await session.execute(
+                select(AppUser.is_platform_admin).where(AppUser.id == payload["sub"])
+            )
+            row = result.scalar_one_or_none()
+            is_admin_verified = bool(row) if row is not None else False
+
     return CurrentUser(
         user_id=payload["sub"],
         role=payload.get("role", "viewer"),
         tenant_id=payload["tenant_id"],
-        is_platform_admin=bool(payload.get("is_platform_admin", False)),
+        is_platform_admin=is_admin_verified,
     )
 
 
