@@ -96,8 +96,8 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
             "name": "MIT",
         },
         lifespan=lifespan,
-        docs_url="/docs" if container.settings.debug else None,
-        redoc_url="/redoc" if container.settings.debug else None,
+        docs_url="/docs" if container and container.settings.debug else None,
+        redoc_url="/redoc" if container and container.settings.debug else None,
     )
 
     # Store container on app state
