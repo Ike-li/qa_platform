@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, Request
 
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
 from qaplatform.api.deps import (
     CurrentUser,
     Repos,
-    _get_db_session,
     require_project_permission,
 )
 from qaplatform.api.schemas import (
@@ -21,7 +17,6 @@ from qaplatform.api.schemas import (
     CredentialUpdate,
     ErrorResponse,
 )
-from qaplatform.infra.database.models import Credential as CredentialORM
 
 router = APIRouter(
     prefix="/projects/{project_id}/credentials",
@@ -34,7 +29,7 @@ def _aad(project_id: UUID, name: str) -> str:
     return f"credential:{project_id}:{name}"
 
 
-def _to_response(orm: CredentialORM) -> CredentialResponse:
+def _to_response(orm) -> CredentialResponse:
     return CredentialResponse(
         id=orm.id,
         project_id=orm.project_id,
@@ -61,19 +56,10 @@ async def list_credentials(
     project_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
     _perm=require_project_permission(Action.CREDENTIAL_READ),
 ):
     await _verify_project_access(project_id, repos, user)
-    rows = (
-        await session.execute(
-            select(CredentialORM).where(
-                CredentialORM.project_id == project_id,
-                CredentialORM.tenant_id == user.tenant_id,
-                CredentialORM.deleted_at.is_(None),
-            )
-        )
-    ).scalars().all()
+    rows = await repos.credential.list_by_project_tenant(project_id, user.tenant_id)
     return [_to_response(c) for c in rows]
 
 
@@ -90,21 +76,11 @@ async def create_credential(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
     _perm=require_project_permission(Action.CREDENTIAL_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
 
-    duplicate = (
-        await session.execute(
-            select(CredentialORM.id).where(
-                CredentialORM.project_id == project_id,
-                CredentialORM.name == body.name,
-                CredentialORM.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
-    if duplicate is not None:
+    if await repos.credential.get_name_exists(project_id, body.name):
         raise HTTPException(status_code=409, detail="Credential name already exists")
 
     crypto = request.app.state.container.crypto_service
@@ -112,7 +88,7 @@ async def create_credential(
         raise HTTPException(status_code=503, detail="Crypto service not initialised")
     encrypted = crypto.encrypt(body.value, context_id=_aad(project_id, body.name))
 
-    cred = CredentialORM(
+    cred = await repos.credential.create(
         tenant_id=user.tenant_id,
         project_id=project_id,
         name=body.name,
@@ -120,9 +96,6 @@ async def create_credential(
         encrypted_value=encrypted,
         created_by=user.user_id,
     )
-    session.add(cred)
-    await session.flush()
-    await session.refresh(cred, ["created_at"])
 
     response = _to_response(cred)
     await write_audit(
@@ -146,20 +119,10 @@ async def get_credential(
     credential_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
     _perm=require_project_permission(Action.CREDENTIAL_READ),
 ):
     await _verify_project_access(project_id, repos, user)
-    cred = (
-        await session.execute(
-            select(CredentialORM).where(
-                CredentialORM.id == credential_id,
-                CredentialORM.project_id == project_id,
-                CredentialORM.tenant_id == user.tenant_id,
-                CredentialORM.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    cred = await repos.credential.get_by_project_tenant(credential_id, project_id, user.tenant_id)
     if cred is None:
         raise HTTPException(status_code=404, detail="Credential not found")
     return _to_response(cred)
@@ -178,28 +141,18 @@ async def update_credential(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
     _perm=require_project_permission(Action.CREDENTIAL_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
-    cred = (
-        await session.execute(
-            select(CredentialORM).where(
-                CredentialORM.id == credential_id,
-                CredentialORM.project_id == project_id,
-                CredentialORM.tenant_id == user.tenant_id,
-                CredentialORM.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    cred = await repos.credential.get_by_project_tenant(credential_id, project_id, user.tenant_id)
     if cred is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
     crypto = request.app.state.container.crypto_service
     if crypto is None:
         raise HTTPException(status_code=503, detail="Crypto service not initialised")
-    cred.encrypted_value = crypto.encrypt(body.value, context_id=_aad(project_id, cred.name))
-    await session.flush()
+    encrypted = crypto.encrypt(body.value, context_id=_aad(project_id, cred.name))
+    await repos.credential.update(cred, encrypted_value=encrypted)
 
     response = _to_response(cred)
     await write_audit(
@@ -223,20 +176,10 @@ async def delete_credential(
     credential_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
     _perm=require_project_permission(Action.CREDENTIAL_EDIT),
 ):
     project = await _verify_project_access(project_id, repos, user)
-    cred = (
-        await session.execute(
-            select(CredentialORM).where(
-                CredentialORM.id == credential_id,
-                CredentialORM.project_id == project_id,
-                CredentialORM.tenant_id == user.tenant_id,
-                CredentialORM.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    cred = await repos.credential.get_by_project_tenant(credential_id, project_id, user.tenant_id)
     if cred is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
@@ -247,8 +190,7 @@ async def delete_credential(
         )
 
     before = _to_response(cred)
-    cred.deleted_at = datetime.now(timezone.utc)
-    await session.flush()
+    await repos.credential.delete(cred)
     await write_audit(
         repos, user,
         action="credential.delete",
