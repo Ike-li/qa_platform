@@ -217,7 +217,7 @@ class TestRateLimitMiddlewareDispatch:
             s3_endpoint="http://localhost:9000",
             s3_access_key="key",
             s3_secret_key="secret",
-            jwt_secret="secret",
+            jwt_secret="a" * 32,
             encryption_key="0" * 64,
             rate_limit_per_minute=5,
             rate_limit_window_seconds=60,

@@ -18,7 +18,7 @@ from qaplatform.api.v1.auth import router
 # --- Helpers ---
 
 
-def _settings(jwt_secret="test-secret-key-for-jwt-32bytes!"):
+def _settings(jwt_secret="test-secret-key-for-jwt-32bytes!!"):
     s = MagicMock()
     s.jwt_secret = jwt_secret
     s.jwt_access_token_ttl = 1800

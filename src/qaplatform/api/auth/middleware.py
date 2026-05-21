@@ -168,12 +168,16 @@ async def _authenticate_api_token(
         except Exception:
             await session.rollback()
 
-    # user is eagerly loaded via relationship
+        # Eagerly read ORM relationship attributes before session closes
+        user_role = token.user.role
+        user_tenant_id = str(token.user.tenant_id)
+        user_is_platform_admin = bool(getattr(token.user, "is_platform_admin", False))
+
     return CurrentUser(
         user_id=str(token.user_id),
-        role=token.user.role,
-        tenant_id=str(token.user.tenant_id),
-        is_platform_admin=bool(getattr(token.user, "is_platform_admin", False)),
+        role=user_role,
+        tenant_id=user_tenant_id,
+        is_platform_admin=user_is_platform_admin,
         scopes=list(token.scopes) if token.scopes else None,
     )
 

@@ -45,7 +45,7 @@ def test_settings(pg_container, redis_container) -> Settings:
         s3_access_key="minioadmin",
         s3_secret_key="minioadmin",
         s3_bucket="qa-platform-test",
-        jwt_secret="test-secret",
+        jwt_secret="test-secret-key-at-least-32bytes!",
         encryption_key="0" * 64,
         debug=True,
         environment="test",

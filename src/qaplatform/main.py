@@ -84,6 +84,9 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
         if hasattr(container, "close"):
             await container.close()
 
+    _settings_obj = settings or (container.settings if container else Settings())
+    _debug = _settings_obj.debug
+
     app = FastAPI(
         title="QA Platform API",
         version="0.1.0",
@@ -96,16 +99,14 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
             "name": "MIT",
         },
         lifespan=lifespan,
-        docs_url="/docs" if container and container.settings.debug else None,
-        redoc_url="/redoc" if container and container.settings.debug else None,
+        docs_url="/docs" if _debug else None,
+        redoc_url="/redoc" if _debug else None,
     )
 
     # Store container on app state
     if container is not None:
         _ensure_plugin_registry(container)
         app.state.container = container
-
-    _settings_obj = settings or (container.settings if container else Settings())
 
     # ── Middlewares ──────────────────────────────────────────────────────
     app.add_middleware(SecurityHeadersMiddleware, settings=_settings_obj)

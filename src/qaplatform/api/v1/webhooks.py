@@ -87,6 +87,7 @@ async def webhook_trigger(
             raise HTTPException(status_code=409, detail="No environment configured for project")
 
     RESERVED_KEYS = {"git_url", "credential_id", "shallow_clone", "default_branch"}
+    _RESERVED_LOWER = {k.lower() for k in RESERVED_KEYS}
     metadata = {"git_url": project.git_url}
     if project.git_auth_method != "none" and project.credential_id:
         metadata["credential_id"] = str(project.credential_id)
@@ -94,7 +95,7 @@ async def webhook_trigger(
         metadata["shallow_clone"] = True
     if project.default_branch:
         metadata["default_branch"] = project.default_branch
-    metadata.update({k: v for k, v in body.metadata.items() if k not in RESERVED_KEYS})
+    metadata.update({k: v for k, v in body.metadata.items() if k.lower() not in _RESERVED_LOWER})
 
     run = await repos.run.create(
         tenant_id=user.tenant_id,
