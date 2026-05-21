@@ -643,7 +643,7 @@ class ProjectMember(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
-    project: Mapped[Project] = relationship("Project", back_populates="members")
+    project: Mapped[Project] = relationship("Project", back_populates="members", overlaps="user")
     user: Mapped[AppUser] = relationship("AppUser", lazy="joined", overlaps="members,project")
 
 
