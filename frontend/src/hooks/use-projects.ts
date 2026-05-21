@@ -1,10 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../lib/api";
+import { unwrapPaginated } from "../lib/utils";
 import type { Project, PaginatedResponse, Pipeline, Environment } from "../types/api";
-
-function unwrapPaginated<T>(value: T[] | PaginatedResponse<T>): T[] {
-  return Array.isArray(value) ? value : value.data;
-}
 
 export function useProjects(params?: { page?: number; per_page?: number; search?: string; status?: string }) {
   return useQuery({

@@ -630,12 +630,12 @@ class RunExecutor:
                 continue
             s3_key = f"reports/{run_id}/{artifact_path.name}"
             try:
-                content = artifact_path.read_bytes()
-                await self.s3_client.put_object(
-                    Bucket=self.s3_bucket,
-                    Key=s3_key,
-                    Body=content,
-                )
+                with open(artifact_path, "rb") as f:
+                    await self.s3_client.put_object(
+                        Bucket=self.s3_bucket,
+                        Key=s3_key,
+                        Body=f,
+                    )
             except Exception:
                 log.warning("failed to upload artifact %s", artifact_path)
                 continue
@@ -653,7 +653,7 @@ class RunExecutor:
                         type=artifact_type,
                         name=artifact_path.name,
                         storage_path=s3_key,
-                        size_bytes=len(content),
+                        size_bytes=artifact_path.stat().st_size,
                         mime_type=mime_type or "application/octet-stream",
                     )
                 except Exception:
