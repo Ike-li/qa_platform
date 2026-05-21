@@ -428,6 +428,7 @@ class Run(Base):
         foreign_keys=[pipeline_id, project_id],
         back_populates="runs",
         lazy="joined",
+        overlaps="project",
     )
     environment: Mapped[Environment] = relationship(
         "Environment",
@@ -643,7 +644,7 @@ class ProjectMember(Base):
     )
 
     project: Mapped[Project] = relationship("Project", back_populates="members")
-    user: Mapped[AppUser] = relationship("AppUser", lazy="joined")
+    user: Mapped[AppUser] = relationship("AppUser", lazy="joined", overlaps="members,project")
 
 
 # ---------- Audit schema table ----------
