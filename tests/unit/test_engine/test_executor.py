@@ -20,6 +20,11 @@ def mock_backend():
     backend.start.return_value = None
     backend.wait.return_value = MagicMock(exit_code=0, timed_out=False)
     backend.cleanup.return_value = None
+
+    async def _empty_stream_logs(_execution_id):
+        if False:
+            yield  # async generator, never yields
+    backend.stream_logs = _empty_stream_logs
     return backend
 
 
