@@ -435,12 +435,8 @@ class RunExecutor:
                 break
             await self.log_stream.write_log(str(run.id), f"Starting stage: {stage.name}")
             
-            try:
-                runner = self.plugin_registry.get_runner(stage.plugin)
-                cmd = runner.build_command(stage.config)
-            except Exception as e:
-                log.warning("failed to get runner for %s: %s", stage.plugin, e)
-                cmd = stage.config.get('command', 'echo "missing command"')
+            runner = self.plugin_registry.get_runner(stage.plugin)
+            cmd = runner.build_command(stage.config)
                 
             spec = ExecutionSpec(
                 image=pipeline.image,

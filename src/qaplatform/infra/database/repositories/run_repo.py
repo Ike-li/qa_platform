@@ -111,6 +111,16 @@ class RunRepository(BaseRepository[Run]):
             await self.session.refresh(run)
         return run
 
+    async def set_retry_group_id(self, run_id: UUID | str, group_id: UUID | str) -> None:
+        """Set retry_group_id for a run (typically to its own id)."""
+        stmt = (
+            update(Run)
+            .where(Run.id == run_id)
+            .values(retry_group_id=group_id, updated_at=_utcnow())
+        )
+        await self.session.execute(stmt)
+        await self.session.flush()
+
     async def finish_if_current(
         self,
         run_id: UUID,

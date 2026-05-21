@@ -169,6 +169,7 @@ class DockerBackend:
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
                 oom_killed=False,
+                timed_out=True,
             )
 
         finished_at = datetime.now(timezone.utc)
