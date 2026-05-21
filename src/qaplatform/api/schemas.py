@@ -80,6 +80,22 @@ class ProjectResponse(BaseModel):
 
 # ── Environment schemas ─────────────────────────────────────────────────────
 
+_BLOCKED_ENV_KEYS = frozenset({
+    "PATH", "HOME", "USER", "SHELL", "LD_PRELOAD", "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "PYTHONPATH",
+    "NODE_PATH", "GOPATH", "GOROOT", "CLASSPATH",
+    "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+    "no_proxy", "NO_PROXY",
+})
+
+
+def _validate_blocked_env_keys(v: dict[str, str]) -> dict[str, str]:
+    blocked = _BLOCKED_ENV_KEYS & v.keys()
+    if blocked:
+        raise ValueError(f"Blocked env var keys: {', '.join(sorted(blocked))}")
+    return v
+
+
 class EnvironmentCreate(BaseModel):
     name: str = Field(..., max_length=100)
     base_image: str = Field(..., max_length=255)
@@ -91,6 +107,11 @@ class EnvironmentCreate(BaseModel):
     network_policy: Literal["allow", "deny", "restricted"] = "deny"
     env_vars: dict[str, str] = Field(default_factory=dict)
     cache_key: str | None = Field(None, max_length=100)
+
+    @field_validator("env_vars")
+    @classmethod
+    def _check_env_keys(cls, v: dict[str, str]) -> dict[str, str]:
+        return _validate_blocked_env_keys(v)
 
 
 class EnvironmentUpdate(BaseModel):
@@ -104,6 +125,13 @@ class EnvironmentUpdate(BaseModel):
     network_policy: Literal["allow", "deny", "restricted"] | None = None
     env_vars: dict[str, str] | None = None
     cache_key: str | None = Field(None, max_length=100)
+
+    @field_validator("env_vars")
+    @classmethod
+    def _check_env_keys(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        if v is None:
+            return v
+        return _validate_blocked_env_keys(v)
 
 
 class EnvironmentResponse(BaseModel):

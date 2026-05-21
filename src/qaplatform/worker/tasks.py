@@ -217,17 +217,8 @@ async def execute_run(ctx: dict, run_id: str) -> None:
             # 2. Execute the pipeline
             config = _build_pipeline_config(run, run.pipeline, run.environment)
             status = await executor.execute(run, config)
-
-            # 3. Write terminal state (conditional update)
-            # Explicit conversion: domain RunStatus → ORM RunStatusEnum
-            from qaplatform.infra.database.models import RunStatusEnum
-            orm_status = RunStatusEnum(status.value)
-            updated = await run_repo.finish_if_current(
-                run.id,
-                status=orm_status,
-            )
-            if updated:
-                log.info("run %s completed with status: %s", run_id, status.value)
+            # Terminal state (finish_if_current / fail_if_current) is written
+            # inside executor.execute() with summary; no redundant write here.
 
             # Retry is handled in the except branch below — when the executor
             # returns FAILED the real infra exception is already swallowed

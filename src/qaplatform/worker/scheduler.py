@@ -82,7 +82,10 @@ class FairScheduler:
         # Manual/API triggers: honor user-set priority directly.
         # Other triggers (schedule, webhook, event): use trigger-type default.
         if run.trigger_type in ("manual", "api"):
-            priority = Priority(getattr(run, "priority", 1))
+            try:
+                priority = Priority(getattr(run, "priority", 1))
+            except ValueError:
+                priority = Priority.MEDIUM
         else:
             priority = TRIGGER_PRIORITY.get(run.trigger_type, Priority.MEDIUM)
         queue = PRIORITY_QUEUES[priority]

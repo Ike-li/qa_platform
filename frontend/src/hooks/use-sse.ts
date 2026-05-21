@@ -80,7 +80,7 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
         return;
       }
 
-      const sseUrl = `${url}${url.includes('?') ? '&' : '?'}ticket=${ticket}`;
+      const sseUrl = `${url}${url.includes('?') ? '&' : '?'}ticket=${encodeURIComponent(ticket)}`;
       const es = new EventSource(sseUrl);
       eventSourceRef.current = es;
 

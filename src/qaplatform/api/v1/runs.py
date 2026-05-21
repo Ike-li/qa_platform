@@ -146,7 +146,7 @@ async def trigger_run(
         metadata_=metadata,
     )
     # Set retry_group_id to the run's own id so retries share the same group.
-    run.retry_group_id = run.id
+    await repos.run.set_retry_group_id(run.id, run.id)
 
     container = request.app.state.container
     arq_pool = getattr(container, "arq_pool", None)
@@ -335,10 +335,10 @@ async def batch_retry_runs(
                 triggered_by=user.user_id,
                 trigger_type="manual",
                 metadata_=dict(original.metadata_ or {}),
+                source_run_id=original.id,
+                chain_depth=(original.chain_depth or 0) + 1,
             )
-            new_run.retry_group_id = new_run.id
-            new_run.source_run_id = original.id
-            new_run.chain_depth = (original.chain_depth or 0) + 1
+            await repos.run.set_retry_group_id(new_run.id, new_run.id)
 
             if arq_pool is not None:
                 from qaplatform.worker.scheduler import enqueue_run
