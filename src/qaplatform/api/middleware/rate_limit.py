@@ -1,7 +1,7 @@
 import hashlib
 import ipaddress
 import re
-import time
+
 from typing import Callable, Union
 
 import structlog
@@ -154,9 +154,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             path,
         )
         key = f"rate_limit:{bucket}:{normalized_path}"
-        now = time.time()
 
         try:
+            # Use Redis TIME to avoid clock skew between app servers and Redis
+            redis_time = await redis.time()
+            now = redis_time[0] + redis_time[1] / 1_000_000
+
             pipe = redis.pipeline()
             pipe.zremrangebyscore(key, 0, now - window)
             pipe.zadd(key, {str(now): now})

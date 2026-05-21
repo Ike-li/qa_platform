@@ -205,6 +205,7 @@ class TestRateLimitMiddlewareDispatch:
 
         redis = MagicMock()
         redis.pipeline = MagicMock(return_value=fake_pipe)
+        redis.time = AsyncMock(return_value=(1_700_000_000, 0))
         return redis
 
     def _make_middleware(self, redis_mock, trusted_proxies=None):
