@@ -100,6 +100,8 @@ npm run dev   # 默认 http://localhost:5173
 make up   # 启动全部 6 个服务（postgres, redis, minio, api, frontend, worker）
 ```
 
+> **安全提示**: Worker 容器挂载 `/var/run/docker.sock` 以执行测试容器。这意味着 Worker 被攻陷可获取宿主 root 权限。生产环境建议使用 `tecnativa/docker-socket-proxy` 限制 API 暴露范围，或迁移到 K8s Job 后端。
+
 ## 项目结构
 
 ```
