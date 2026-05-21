@@ -86,7 +86,7 @@ export default async function globalSetup(_config: FullConfig) {
   run(PYTHON, ["scripts/seed_admin.py"], {
     ...process.env,
     ADMIN_USERNAME: "admin",
-    ADMIN_PASSWORD: "admin123",
+    ADMIN_PASSWORD: process.env.E2E_ADMIN_PASSWORD || "admin123",
     ADMIN_EMAIL: "admin@qaplatform.local",
   });
 }
