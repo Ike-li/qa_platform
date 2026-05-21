@@ -83,11 +83,13 @@ async def client(test_settings) -> AsyncIterator[AsyncClient]:
 
 @pytest_asyncio.fixture
 async def admin_user(db_session: AsyncSession):
-    from qaplatform.domain.models.user import User
+    from qaplatform.infra.database.models import AppUser
 
-    user = User(
+    user = AppUser(
+        tenant_id=UUID("00000000-0000-0000-0000-000000000001"),
         username="admin",
         email="admin@test.local",
+        password_hash="",
         role="platform_admin",
         is_active=True,
     )
