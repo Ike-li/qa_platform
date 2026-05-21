@@ -12,7 +12,7 @@ from qaplatform.config import Settings
 @pytest.fixture
 def mock_settings():
     settings = MagicMock(spec=Settings)
-    settings.jwt_secret = 'test-secret'
+    settings.jwt_secret = 'test-secret-at-least-32bytes!'
     settings.jwt_access_token_ttl = 3600
     settings.jwt_refresh_token_ttl = 86400
     return settings

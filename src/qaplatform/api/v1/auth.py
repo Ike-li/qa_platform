@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import secrets
 import time
+
+log = logging.getLogger(__name__)
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -56,7 +59,7 @@ class LoginResponse(BaseModel):
 class CreateTokenRequest(BaseModel):
     name: str
     scopes: list[str] = Field(default_factory=lambda: ["*"])
-    expires_days: int = 90
+    expires_days: int = Field(default=90, ge=1, le=365)
 
 
 class ApiTokenResponse(BaseModel):
@@ -252,7 +255,7 @@ async def login(
                 await audit_session.commit()
             except Exception:
                 await audit_session.rollback()
-                raise
+                log.warning("audit_write_failed", action="auth.login_failed", exc_info=True)
 
     async with session_factory() as session:
         try:
@@ -366,7 +369,7 @@ async def refresh(
                 await audit_session.commit()
             except Exception:
                 await audit_session.rollback()
-                raise
+                log.warning("audit_write_failed", action="auth.refresh_failed", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
@@ -388,7 +391,7 @@ async def refresh(
                 await audit_session.commit()
             except Exception:
                 await audit_session.rollback()
-                raise
+                log.warning("audit_write_failed", action="auth.refresh_failed", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token type",
@@ -491,7 +494,10 @@ async def logout(
             exp = payload.get("exp")
             if jti and exp:
                 ttl = max(0, int(exp) - int(time.time()))
-                await jwt_svc.revoke(jti, ttl)
+                try:
+                    await jwt_svc.revoke(jti, ttl)
+                except Exception:
+                    log.warning("token_revoke_failed", jti=jti, exc_info=True)
         except Exception:
             pass
 
@@ -511,7 +517,7 @@ async def logout(
             await audit_session.commit()
         except Exception:
             await audit_session.rollback()
-            raise
+            log.warning("audit_write_failed", action="auth.logout", exc_info=True)
 
 
 @router.post("/tokens", response_model=ApiTokenResponse, status_code=201)

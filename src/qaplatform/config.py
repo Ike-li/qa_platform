@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -29,6 +30,20 @@ class Settings(BaseSettings):
     jwt_access_token_ttl: int = 3600  # 1h
     jwt_refresh_token_ttl: int = 604800  # 7d
     encryption_key: str  # 32 bytes hex
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def _jwt_secret_long_enough(cls, v: str) -> str:
+        if len(v.encode()) < 32:
+            raise ValueError("jwt_secret must be >= 32 bytes (RFC 7518 Section 3.2)")
+        return v
+
+    @field_validator("encryption_key")
+    @classmethod
+    def _enc_key_is_64_hex(cls, v: str) -> str:
+        if len(v) != 64 or not all(c in "0123456789abcdefABCDEF" for c in v):
+            raise ValueError("encryption_key must be 64 hex chars (32 bytes)")
+        return v
     encryption_keys: dict[int, str] | None = None  # {version: key_hex}, overrides encryption_key
     enable_hsts: bool = True
 

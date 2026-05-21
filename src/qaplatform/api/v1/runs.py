@@ -332,6 +332,7 @@ async def batch_retry_runs(
                 environment_id=original.environment_id,
                 git_ref=original.git_ref,
                 git_sha=original.git_sha,
+                priority=original.priority,
                 triggered_by=user.user_id,
                 trigger_type="manual",
                 metadata_=dict(original.metadata_ or {}),

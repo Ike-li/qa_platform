@@ -65,7 +65,7 @@ jobs:
       QAP_S3_ENDPOINT: http://localhost:9000
       QAP_S3_ACCESS_KEY: minioadmin
       QAP_S3_SECRET_KEY: minioadmin
-      QAP_JWT_SECRET: test-secret
+      QAP_JWT_SECRET: test-secret-at-least-32bytes!
       QAP_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     steps:
       - name: Checkout
