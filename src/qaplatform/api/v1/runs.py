@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.audit import write_audit
@@ -283,7 +284,7 @@ async def batch_cancel_runs(
                 await publish_status_event(redis, run_id, "cancelled", previous=previous)
 
             processed += 1
-        except Exception as exc:
+        except (SQLAlchemyError, ValueError) as exc:
             errors.append(f"{run_id}: {exc}")
             failed += 1
 
@@ -347,7 +348,7 @@ async def batch_retry_runs(
                 await enqueue_run(arq_pool, repos.run, new_run, "manual", container.settings)
 
             processed += 1
-        except Exception as exc:
+        except (SQLAlchemyError, ValueError) as exc:
             errors.append(f"{run_id}: {exc}")
             failed += 1
 

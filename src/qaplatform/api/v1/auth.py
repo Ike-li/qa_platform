@@ -16,6 +16,7 @@ from sqlalchemy import select
 from qaplatform.api import deps as auth_deps
 from qaplatform.api.auth.jwt_service import JWTService
 from qaplatform.api.auth.middleware import CurrentUser, get_current_user
+from qaplatform.api.auth.permissions import Role
 from qaplatform.api.auth.token_service import TokenService
 from qaplatform.infra.database.models import AppUser, Tenant
 from qaplatform.infra.database.repositories.audit_repo import AuditEventRepository
@@ -145,8 +146,7 @@ async def register(
     """
     from argon2 import PasswordHasher
 
-    ph = PasswordHasher()
-    password_hash = ph.hash(body.password)
+    password_hash = PasswordHasher().hash(body.password)
 
     async with session_factory() as session:
         try:
@@ -168,7 +168,7 @@ async def register(
                 username=body.username,
                 email=body.email,
                 password_hash=password_hash,
-                role="owner",
+                role=Role.OWNER.value,
             )
             session.add(user)
             await session.flush()
