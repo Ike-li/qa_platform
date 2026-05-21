@@ -397,13 +397,8 @@ async def refresh(
             detail="Invalid token type",
         )
 
-    # Revoke the old refresh token so it cannot be reused
     old_jti = payload.get("jti")
     old_exp = payload.get("exp")
-    if old_jti and old_exp:
-        ttl = max(0, int(old_exp) - int(time.time()))
-        await jwt_svc.revoke(old_jti, ttl)
-
     user_id = payload["sub"]
 
     async with session_factory() as session:
@@ -417,6 +412,11 @@ async def refresh(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="User not found or deactivated",
                 )
+
+            # Revoke the old refresh token only after confirming user is valid
+            if old_jti and old_exp:
+                ttl = max(0, int(old_exp) - int(time.time()))
+                await jwt_svc.revoke(old_jti, ttl)
 
             new_jti_placeholder = None
             audit_repo = AuditEventRepository(session)
