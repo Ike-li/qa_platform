@@ -42,9 +42,15 @@ async def list_projects(
     if status:
         filters.append(ProjectORM.status == status)
     if q:
-        pattern = f"%{q}%"
+        def _escape_like(s: str) -> str:
+            return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+        pattern = f"%{_escape_like(q)}%"
         filters.append(
-            or_(ProjectORM.name.ilike(pattern), ProjectORM.description.ilike(pattern))
+            or_(
+                ProjectORM.name.ilike(pattern, escape="\\"),
+                ProjectORM.description.ilike(pattern, escape="\\"),
+            )
         )
 
     items, total = await repos.project.list(
