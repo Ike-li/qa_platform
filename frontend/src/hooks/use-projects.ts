@@ -3,13 +3,15 @@ import api from "../lib/api";
 import { unwrapPaginated } from "../lib/utils";
 import type { Project, PaginatedResponse, Pipeline, Environment } from "../types/api";
 
-export function useProjects(params?: { page?: number; per_page?: number; search?: string; status?: string }) {
+export function useProjects(params?: { page?: number; per_page?: number; search?: string; status?: string; enabled?: boolean }) {
+  const { enabled, ...apiParams } = params ?? {};
   return useQuery({
-    queryKey: ["projects", params],
+    queryKey: ["projects", apiParams],
     queryFn: async () => {
-      const { data } = await api.get<PaginatedResponse<Project>>("/projects", { params });
+      const { data } = await api.get<PaginatedResponse<Project>>("/projects", { params: apiParams });
       return data;
     },
+    enabled,
     staleTime: 30_000,
   });
 }
