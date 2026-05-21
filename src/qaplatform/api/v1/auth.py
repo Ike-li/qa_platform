@@ -13,11 +13,16 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 
+from argon2 import PasswordHasher as _PasswordHasher
+from argon2.exceptions import VerifyMismatchError as _VerifyMismatchError
+
 from qaplatform.api import deps as auth_deps
 from qaplatform.api.auth.jwt_service import JWTService
 from qaplatform.api.auth.middleware import CurrentUser, get_current_user
 from qaplatform.api.auth.permissions import Role
 from qaplatform.api.auth.token_service import TokenService
+
+_password_hasher = _PasswordHasher()
 from qaplatform.infra.database.models import AppUser, Tenant
 from qaplatform.infra.database.repositories.audit_repo import AuditEventRepository
 from qaplatform.infra.database.repositories.user_repo import (
@@ -144,9 +149,7 @@ async def register(
     The registrant becomes that tenant's Owner; cross-tenant super-user
     privileges are gated separately via ``app_user.is_platform_admin``.
     """
-    from argon2 import PasswordHasher
-
-    password_hash = PasswordHasher().hash(body.password)
+    password_hash = _password_hasher.hash(body.password)
 
     async with session_factory() as session:
         try:
@@ -226,9 +229,6 @@ async def login(
     settings=Depends(auth_deps.get_settings),
     session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
 ) -> LoginResponse:
-    from argon2 import PasswordHasher
-    from argon2.exceptions import VerifyMismatchError
-
     client_ip = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
 
@@ -279,10 +279,10 @@ async def login(
                     detail="Account is deactivated",
                 )
 
-            ph = PasswordHasher()
+            ph = _password_hasher
             try:
                 ph.verify(user.password_hash, body.password)
-            except VerifyMismatchError:
+            except _VerifyMismatchError:
                 await _write_failed_audit(
                     "invalid_credentials", tenant_id=user.tenant_id, user_id=user.id
                 )
@@ -416,7 +416,10 @@ async def refresh(
             # Revoke the old refresh token only after confirming user is valid
             if old_jti and old_exp:
                 ttl = max(0, int(old_exp) - int(time.time()))
-                await jwt_svc.revoke(old_jti, ttl)
+                try:
+                    await jwt_svc.revoke(old_jti, ttl)
+                except Exception:
+                    log.warning("token_revoke_failed", jti=old_jti, exc_info=True)
 
             new_jti_placeholder = None
             audit_repo = AuditEventRepository(session)
@@ -471,7 +474,10 @@ async def logout(
             exp = payload.get("exp")
             if jti and exp:
                 ttl = max(0, int(exp) - int(time.time()))
-                await jwt_svc.revoke(jti, ttl)
+                try:
+                    await jwt_svc.revoke(jti, ttl)
+                except Exception:
+                    log.warning("token_revoke_failed", jti=jti, exc_info=True)
             sub = payload.get("sub")
             tid = payload.get("tenant_id")
             if sub:
