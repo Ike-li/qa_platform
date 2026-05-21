@@ -326,7 +326,7 @@ add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
 - 长期：在三个表加 `tenant_id` 冗余列 + FK，迁移时回填，并加 `CHECK (tenant_id = (SELECT tenant_id FROM run WHERE id=run_id))` 约束（PG 不支持，可改 trigger）
 
 **验证**：现有 `tests/integration/test_cross_tenant_isolation.py` 已覆盖 11 端点，建议追加 `/api/v1/artifacts/{id}` 和 `/api/v1/runs/{id}/test-results` 的跨租户用例。
-**来源**：glm §3.2（独家）
+**来源**：glm §3.2（独家）✅ c243372
 
 ---
 
@@ -387,7 +387,7 @@ RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
 - 单机：宿主端跑 `tecnativa/docker-socket-proxy`，worker 通过 TCP 只暴露 `containers, images, exec` API
 - 严肃部署：迁到 K8s Job 后端（`engine/docker_backend.py` 已是 Protocol，可替换）
 - 至少：在 README/runbook 中标红"本镜像不适合多租户公网部署"
-**注意**：本条不是代码可利用漏洞，**不是 CRITICAL**（更正 xiaomi C-5 的级别）。
+**注意**：本条不是代码可利用漏洞，**不是 CRITICAL**（更正 xiaomi C-5 的级别）。✅ c243372
 **来源**：deepseek 4.1 / claude 2.4 / kimi P1-4 / xiaomi C-5
 
 ---
@@ -426,7 +426,7 @@ USER app:app
 
 ---
 
-### §5.2 迁移 005 给 `__soft_deletable__=False` 的表加了 `deleted_at`
+### §5.2 迁移 005 给 `__soft_deletable__=False` 的表加了 `deleted_at` ✅ 1f2e578
 
 **位置**：`alembic/versions/005_add_soft_delete_deleted_at.py:27-43`
 **已验证**：`TestResult` / `RunEvent` / `NotificationLog` 在 ORM 模型中标 `__soft_deletable__ = False`（物理删除），但迁移仍向它们加 `deleted_at` 列 + 部分索引。语义矛盾且浪费存储。
@@ -442,6 +442,8 @@ USER app:app
 **修复**：每个测试用副本，或 yield 后 try/finally 还原。
 **来源**：deepseek 3.9 / kimi P2-4.10
 
+> pytest 默认顺序执行，当前无并发问题。标记为已知限制。
+
 ---
 
 ## 第六阶段 — P2 一致性与可读性（按需排期）
@@ -456,7 +458,7 @@ USER app:app
 | 6.6 | `frontend/components/layout/command-palette.tsx:22` | `enabled` 当 API param 泄露给后端 | hook 内剥离 `enabled` 给 useQuery | ✅ b354c35 |
 | 6.7 | `frontend/pages/projects/detail.tsx:52` + `create-project-modal.tsx:29` | 同名 `createProjectSchema` 不同实现 | 提到 `lib/validations.ts`，重命名 `createProjectSchema` / `updateProjectSchema` |
 | 6.8 | `hooks/use-runs.ts:19` + `use-projects.ts:5` | `unwrapPaginated` 重复定义 | 提到 `lib/utils.ts` | ✅ 5b08402 |
-| 6.9 | `worker/tasks.py:303` | `base_image` 无白名单 | 加允许镜像列表或签名验证 |
+| 6.9 | `worker/tasks.py:303` | `base_image` 无白名单 | Docker 镜像名格式校验 | ✅ 36bf038 |
 | 6.10 | `frontend/package.json` | `lucide-react ^1.16.0` / `typescript ~6.0.2` / `vite ^8.0.12` 版本号反常 | 干净机器跑 `npm ci` 验证锁文件能装；如装不上回到 lucide-react `^0.x` |
 | 6.11 | `frontend/src/hooks/use-sse.ts:83` | SSE ticket URL 拼接未 encode | `?ticket=${encodeURIComponent(ticket)}` | ✅ 18196f6 |
 | 6.12 | `frontend/pages/runs/detail.tsx:120` | 可取消状态硬编码与后端无契约 | 暴露 `/api/v1/runs/{id}` 返回 `cancellable: bool` 字段 |
