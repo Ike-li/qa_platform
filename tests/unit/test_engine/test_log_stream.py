@@ -52,6 +52,7 @@ class TestLogStream:
         ]
         pipeline_mock = AsyncMock()
         pipeline_mock.execute = AsyncMock(return_value=[])
+        pipeline_mock.xadd = MagicMock(return_value=pipeline_mock)
         self.redis.pipeline = MagicMock(return_value=pipeline_mock)
 
         await self.stream.write_batch(self.run_id, lines)
@@ -183,6 +184,7 @@ class TestLogStreamLineTruncation:
         long = "y" * 10000
         pipeline_mock = AsyncMock()
         pipeline_mock.execute = AsyncMock(return_value=[])
+        pipeline_mock.xadd = MagicMock(return_value=pipeline_mock)
         self.redis.pipeline = MagicMock(return_value=pipeline_mock)
 
         await self.stream.write_batch(
