@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._\-/:]*(:[a-zA-Z0-9._\-]+)?(@sha256:[a-f0-9]+)?$")
 
 # Re-export domain common schemas for convenience
 from qaplatform.domain.models.common import PaginatedResponse, PaginationParams
@@ -108,6 +111,13 @@ class EnvironmentCreate(BaseModel):
     env_vars: dict[str, str] = Field(default_factory=dict)
     cache_key: str | None = Field(None, max_length=100)
 
+    @field_validator("base_image")
+    @classmethod
+    def _validate_base_image(cls, v: str) -> str:
+        if not _IMAGE_RE.match(v):
+            raise ValueError(f"Invalid Docker image name: {v!r}")
+        return v
+
     @field_validator("env_vars")
     @classmethod
     def _check_env_keys(cls, v: dict[str, str]) -> dict[str, str]:
@@ -125,6 +135,13 @@ class EnvironmentUpdate(BaseModel):
     network_policy: Literal["allow", "deny", "restricted"] | None = None
     env_vars: dict[str, str] | None = None
     cache_key: str | None = Field(None, max_length=100)
+
+    @field_validator("base_image")
+    @classmethod
+    def _validate_base_image(cls, v: str | None) -> str | None:
+        if v is not None and not _IMAGE_RE.match(v):
+            raise ValueError(f"Invalid Docker image name: {v!r}")
+        return v
 
     @field_validator("env_vars")
     @classmethod
