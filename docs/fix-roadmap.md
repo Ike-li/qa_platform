@@ -373,7 +373,7 @@ RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
 3. CI 中持续保留 `-W error::RuntimeWarning`
 
 **重点检查**：`test_executor.py`、`test_log_stream.py`、`test_projects.py`（Antigravity 提名）
-**来源**：Antigravity 4.3（独家）
+**来源**：Antigravity 4.3（独家）✅ 88962f0
 
 ---
 
@@ -449,11 +449,11 @@ USER app:app
 | # | 文件 | 问题 | 修复要点 |
 |---|---|---|---|
 | 6.1 | `engine/executor.py:637` | artifact 上传将整个文件读入内存 | `put_object(Body=open(path, "rb"))` 流式上传 | ✅ 5b08402 |
-| 6.2 | `engine/executor.py:443` | runner 加载失败回退到 `stage.config["command"]` 注入 `sh -c` | 用固定 `echo "missing runner"; exit 2` 而不是用户输入 |
-| 6.3 | `auth.py:398-416` | refresh 端点在用户查找前撤销旧 token | 撤销移到用户验证成功后 |
-| 6.4 | `rate_limit.py:157` | 用 `time.time()` 作 Redis score，时钟回拨重置限流 | 改 Redis `TIME` |
+| 6.2 | `engine/executor.py:443` | runner 加载失败回退到 `stage.config["command"]` 注入 `sh -c` | get_runner 直接 raise，无 fallback | ✅ 18196f6 |
+| 6.3 | `auth.py:398-416` | refresh 端点在用户查找前撤销旧 token | 撤销移到用户验证成功后 | ✅ d08ff3c |
+| 6.4 | `rate_limit.py:157` | 用 `time.time()` 作 Redis score，时钟回拨重置限流 | 改 Redis `TIME` | ✅ acdc2fc |
 | 6.5 | `frontend/components/ui/switch.tsx:11` | `data-[state=state=unchecked]` 笔误（unchecked 状态背景失效） | 改 `data-[state=unchecked]` | ✅ 5b08402 |
-| 6.6 | `frontend/components/layout/command-palette.tsx:22` | `enabled` 当 API param 泄露给后端 | hook 内剥离 `enabled` 给 useQuery |
+| 6.6 | `frontend/components/layout/command-palette.tsx:22` | `enabled` 当 API param 泄露给后端 | hook 内剥离 `enabled` 给 useQuery | ✅ b354c35 |
 | 6.7 | `frontend/pages/projects/detail.tsx:52` + `create-project-modal.tsx:29` | 同名 `createProjectSchema` 不同实现 | 提到 `lib/validations.ts`，重命名 `createProjectSchema` / `updateProjectSchema` |
 | 6.8 | `hooks/use-runs.ts:19` + `use-projects.ts:5` | `unwrapPaginated` 重复定义 | 提到 `lib/utils.ts` | ✅ 5b08402 |
 | 6.9 | `worker/tasks.py:303` | `base_image` 无白名单 | 加允许镜像列表或签名验证 |
@@ -467,12 +467,12 @@ USER app:app
 
 | # | 内容 |
 |---|---|
-| 7.1 | 同步 `docs/TODO.md`：F-AU-02（API Token）已实现，标记从 ❌ 改 ✅ |
-| 7.2 | 修正 `README.md` 架构图："Vue 3" → "React 19" |
-| 7.3 | `auth.py` 内函数 `from argon2 import PasswordHasher` 提到模块级单例 |
-| 7.4 | `runs.py:286-287` 裸 `except Exception` 收窄为 `(SQLAlchemyError, ValueError)` |
-| 7.5 | `engine/executor.py` 673 行 / `auth.py` 642 行可拆分（stages.py / login.py + tokens.py） |
-| 7.6 | 注册端点用 `Role.OWNER.value` 替代硬编码 `"owner"` 字符串 |
+| 7.1 | 同步 `docs/TODO.md`：F-AU-02（API Token）已实现，标记从 ❌ 改 ✅ | ✅ 9915d94 |
+| 7.2 | 修正 `README.md` 架构图："Vue 3" → "React 19" | 已无 Vue 引用，跳过 |
+| 7.3 | `auth.py` 内函数 `from argon2 import PasswordHasher` 提到模块级单例 | ✅ 9915d94 |
+| 7.4 | `runs.py:286-287` 裸 `except Exception` 收窄为 `(SQLAlchemyError, ValueError)` | ✅ 9915d94 |
+| 7.5 | `engine/executor.py` 673 行 / `auth.py` 642 行可拆分（stages.py / login.py + tokens.py） | 重构，不阻塞发版 |
+| 7.6 | 注册端点用 `Role.OWNER.value` 替代硬编码 `"owner"` 字符串 | ✅ 9915d94 |
 
 ---
 
