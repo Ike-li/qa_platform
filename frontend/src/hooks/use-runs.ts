@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../lib/api";
+import { unwrapPaginated } from "../lib/utils";
 import type { Run, PaginatedResponse, TestResult, Artifact } from "../types/api";
 
 type BackendRun = Omit<Run, "pipeline_name" | "branch" | "duration_seconds" | "total_tests" | "passed_tests" | "failed_tests" | "skipped_tests" | "env_overrides" | "params"> & {
@@ -15,10 +16,6 @@ type BackendRun = Omit<Run, "pipeline_name" | "branch" | "duration_seconds" | "t
     skipped?: number;
   } | null;
 };
-
-function unwrapPaginated<T>(value: T[] | PaginatedResponse<T>): T[] {
-  return Array.isArray(value) ? value : value.data;
-}
 
 const VALID_RUN_STATUSES = new Set(["queued", "preparing", "running", "collecting", "passed", "failed", "cancelled", "timed_out"]);
 
