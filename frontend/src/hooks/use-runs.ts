@@ -55,13 +55,15 @@ function normalizeRun(run: Run | BackendRun): Run {
   };
 }
 
-export function useRuns(params?: { page?: number; per_page?: number; status?: string; sort?: string }) {
+export function useRuns(params?: { page?: number; per_page?: number; status?: string; sort?: string; enabled?: boolean }) {
+  const { enabled, ...apiParams } = params ?? {};
   return useQuery({
-    queryKey: ["runs", params],
+    queryKey: ["runs", apiParams],
     queryFn: async () => {
-      const { data } = await api.get<PaginatedResponse<Run | BackendRun>>("/runs", { params });
+      const { data } = await api.get<PaginatedResponse<Run | BackendRun>>("/runs", { params: apiParams });
       return { ...data, data: data.data.map(normalizeRun) };
     },
+    enabled,
   });
 }
 
