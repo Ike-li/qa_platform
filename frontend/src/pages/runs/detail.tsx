@@ -222,7 +222,18 @@ export default function RunDetail() {
                       onClick={async () => {
                         try {
                           const url = await getArtifactDownloadUrl(artifact.id);
-                          window.open(url, "_blank");
+                          let parsed: URL;
+                          try {
+                            parsed = new URL(url);
+                          } catch {
+                            toast.error(t('runs.artifacts.downloadFailed'));
+                            return;
+                          }
+                          if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+                            toast.error(t('runs.artifacts.downloadFailed'));
+                            return;
+                          }
+                          window.open(url, "_blank", "noopener,noreferrer");
                         } catch {
                           toast.error(t('runs.artifacts.downloadFailed'));
                         }

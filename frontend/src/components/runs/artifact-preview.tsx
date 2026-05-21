@@ -48,7 +48,7 @@ export function ArtifactPreview({ url, onClose }: ArtifactPreviewProps) {
             src={url}
             title="Allure Report Preview"
             className="h-full w-full border-0"
-            sandbox="allow-scripts allow-same-origin"
+            sandbox="allow-scripts"
             referrerPolicy="no-referrer"
             onLoad={() => setLoading(false)}
           />
