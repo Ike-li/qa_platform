@@ -1,0 +1,5 @@
+from __future__ import annotations
+
+
+def escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

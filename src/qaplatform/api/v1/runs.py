@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,7 @@ from qaplatform.api.deps import (
     _get_db_session,
     enforce_project_action,
 )
+from qaplatform.api.v1._filters import escape_like
 from qaplatform.api.schemas import (
     ArtifactResponse,
     BatchRunRequest,
@@ -443,6 +444,8 @@ async def get_run_results(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     status: str | None = Query(None, description="passed / failed / error / skipped / xfail"),
+    suite: str | None = Query(None, description="精确匹配 suite 名称"),
+    q: str | None = Query(None, description="按用例名称/错误信息搜索"),
     session: AsyncSession = Depends(_get_db_session),
 ):
     run = await repos.run.get_for_tenant(run_id, user.tenant_id)
@@ -453,6 +456,16 @@ async def get_run_results(
     filters = [TestResultORM.run_id == run_id]
     if status:
         filters.append(TestResultORM.status == status)
+    if suite:
+        filters.append(TestResultORM.suite == suite)
+    if q:
+        pattern = f"%{escape_like(q)}%"
+        filters.append(
+            or_(
+                TestResultORM.name.ilike(pattern, escape="\\"),
+                TestResultORM.error_message.ilike(pattern, escape="\\"),
+            )
+        )
 
     items, total = await repos.test_result.list(
         offset=(page - 1) * per_page,
@@ -538,5 +551,3 @@ async def get_run_notifications(
         per_page=per_page,
         total=total,
     )
-
-
