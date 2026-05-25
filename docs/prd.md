@@ -165,7 +165,7 @@ QA 自动化执行平台是一个专注于"测试执行"环节的内部工具。
 | 容量 | Redis Stream 单 Run 日志缓冲 | 最近 10000 条（MAXLEN） |
 | 安全 | 凭证存储 | AES-256-GCM 加密；内存中不留明文 |
 | 安全 | 执行隔离 | 容器级隔离；不可访问宿主网络 |
-| 安全 | API 防护 | 认证失败 rate limit：10 次/分钟/IP；连续失败 5 次锁定账户 15 分钟；通用 API：100 次/分钟/用户 |
+| 安全 | API 防护 | 认证失败 rate limit：5 次/分钟/IP；通用 API：100 次/分钟/IP |
 | 可扩展 | Worker 水平扩展 | 加节点即加容量，无需停机 |
 
 ---
@@ -236,7 +236,7 @@ Git push → Webhook 自动触发执行 → 收到通知（或主动查看）
 Phase 1 范围说明：
 - F-AU-03 角色权限：Phase 1 实现租户级四角色（Owner/Admin/Member/Viewer）+ 项目成员关联 + 基础项目级权限（Admin 管理配置、Developer 触发执行、Viewer 只读）；双层权限交集解析在 Phase 1 实现
 - F-RE-04 产物管理：Phase 1 实现预签名 URL 下载；HTML 报告在线预览延至 Phase 3
-- 前端：Phase 1 仅交付 API + OpenAPI 文档 + 基础 Vue 管理界面（项目列表、执行触发、结果查看）
+- 前端：Phase 1 仅交付 API + OpenAPI 文档 + 基础 React 19 管理界面（项目列表、执行触发、结果查看）
 - 注册流程：Phase 1 注册即可用，无邮箱验证（Phase 2 补充）
 
 ### Phase 2: 自动化与通知
