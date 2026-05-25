@@ -405,12 +405,13 @@ USER app:app
 
 ---
 
-### §4.3 E2E 测试在 CI 中被禁用 ✅ abbbccd
+### §4.3 E2E 测试在 CI 中被禁用 ⚠️ abbbccd（部分完成）
 
 **位置**：`.github/workflows/ci.yml:138-139`（`if: false`）
 **当前**：`tests/e2e/` 已有 3 个 spec + 完整 playwright config 但不跑。
 **修复**：先把 `auth-flow.spec.ts` 启用（最稳定），其余暂时改 `if: github.event_name == 'workflow_dispatch'` 以便手工拉起。
 **配套**：修复 `tests/e2e/global-setup.ts:88-90` 硬编码 `admin:admin123`，改用 `E2E_ADMIN_PASSWORD` 环境变量。
+**实际状态（2026-05-25 复核）**：`ci.yml:139` 全部 E2E spec 改为 `workflow_dispatch` 手动触发；`auth-flow.spec.ts` 的 push 触发**未启用**。视为部分完成，剩余工作记入 `feature-catalog.md` §4.2。
 **来源**：claude 2.8 / kimi P1-7 / deepseek 4.3 / xiaomi M-15
 
 ---
