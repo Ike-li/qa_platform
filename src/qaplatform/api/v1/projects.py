@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
 from qaplatform.api.deps import CurrentUser, Repos, _get_db_session, require_permission, require_project_permission
+from qaplatform.api.v1._filters import escape_like
 from qaplatform.api.schemas import (
     ErrorResponse,
     PaginatedResponse,
@@ -42,10 +43,7 @@ async def list_projects(
     if status:
         filters.append(ProjectORM.status == status)
     if q:
-        def _escape_like(s: str) -> str:
-            return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-        pattern = f"%{_escape_like(q)}%"
+        pattern = f"%{escape_like(q)}%"
         filters.append(
             or_(
                 ProjectORM.name.ilike(pattern, escape="\\"),
