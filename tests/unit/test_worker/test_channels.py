@@ -15,6 +15,7 @@ from qaplatform.worker.notifications.channels import (
     ChannelRouter,
     DingtalkChannel,
     EmailChannel,
+    WecomChannel,
     WebhookChannel,
     route_channel,
 )
@@ -392,6 +393,130 @@ class TestDingtalkChannel:
 
 
 # --------------------------------------------------------------------------- #
+# WecomChannel
+# --------------------------------------------------------------------------- #
+
+
+class TestWecomChannel:
+    @pytest.mark.asyncio
+    async def test_success_text_message(self):
+        channel = WecomChannel()
+        config = {"webhook_key": "key-123"}
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"errcode": 0, "errmsg": "ok"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+            result = await channel.send(config, "构建完成")
+
+        assert result.success is True
+        mock_client.post.assert_awaited_once()
+        call_args = mock_client.post.call_args
+        assert call_args.args[0] == "https://qyapi.weixin.qq.com/cgi-bin/webhook/send"
+        assert call_args.kwargs["params"] == {"key": "key-123"}
+        assert call_args.kwargs["json"] == {
+            "msgtype": "text",
+            "text": {"content": "构建完成"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_failure_without_webhook_key(self):
+        channel = WecomChannel()
+        config = {"webhook_key": "key-123"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+            result = await channel.send(config, "构建完成")
+
+        assert result.success is False
+        assert "timeout" in result.error
+        assert "key-123" not in result.error
+
+    @pytest.mark.asyncio
+    async def test_api_errcode_returns_failure_without_webhook_key(self):
+        channel = WecomChannel()
+        config = {"webhook_key": "key-123"}
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "errcode": 93000,
+            "errmsg": "invalid key-123",
+        }
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+            result = await channel.send(config, "构建完成")
+
+        assert result.success is False
+        assert "93000" in result.error
+        assert "key-123" not in result.error
+        assert "invalid" not in result.error
+
+    @pytest.mark.asyncio
+    async def test_markdown_message(self):
+        channel = WecomChannel()
+        config = {
+            "webhook_key": "key-123",
+            "msgtype": "markdown",
+        }
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"errcode": 0, "errmsg": "ok"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+            result = await channel.send(config, "### 构建完成")
+
+        assert result.success is True
+        assert mock_client.post.call_args.kwargs["json"] == {
+            "msgtype": "markdown",
+            "markdown": {"content": "### 构建完成"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_http_error_status_returns_failure_without_webhook_key(self):
+        channel = WecomChannel()
+        config = {"webhook_key": "key-123"}
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "upstream key-123 failed"
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+            result = await channel.send(config, "构建完成")
+
+        assert result.success is False
+        assert "500" in result.error
+        assert "key-123" not in result.error
+        assert "upstream" not in result.error
+
+
+# --------------------------------------------------------------------------- #
 # ChannelRouter
 # --------------------------------------------------------------------------- #
 
@@ -432,6 +557,18 @@ class TestChannelRouter:
         result = await router.route_channel("dingtalk", {"access_token": "x"}, "msg")
         assert result.success is True
         dt_channel.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_route_wecom(self):
+        """Verify routing to wecom channel."""
+        router = ChannelRouter()
+        wecom_channel = MagicMock()
+        wecom_channel.send = AsyncMock(return_value=ChannelResult(success=True))
+        router._channels = {"wecom": wecom_channel}
+
+        result = await router.route_channel("wecom", {"webhook_key": "x"}, "msg")
+        assert result.success is True
+        wecom_channel.send.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_route_unknown(self):
