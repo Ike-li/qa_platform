@@ -7,11 +7,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-# Re-export domain common schemas for convenience
 from qaplatform.domain.models.common import (
     PaginatedResponse as PaginatedResponse,
     PaginationParams as PaginationParams,
 )
+from qaplatform.domain.models.project import SilentWindow
 
 _IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._\-/:]*(:[a-zA-Z0-9._\-]+)?(@sha256:[a-f0-9]+)?$")
 
@@ -39,20 +39,33 @@ def _validate_project_settings(settings: dict | None) -> dict | None:
         return None
 
     allowed = settings.get("allowed_branches")
-    if allowed is None:
+    if allowed is not None:
+        if not isinstance(allowed, list):
+            raise ValueError("settings.allowed_branches must be a list of strings")
+        if len(allowed) > 50:
+            raise ValueError("settings.allowed_branches must contain at most 50 entries")
+        for pattern in allowed:
+            if not isinstance(pattern, str):
+                raise ValueError("settings.allowed_branches entries must be strings")
+            if not pattern.strip():
+                raise ValueError("settings.allowed_branches entries must be non-empty")
+            if len(pattern) > 200:
+                raise ValueError("settings.allowed_branches entries must be at most 200 characters")
+
+    silent_windows = settings.get("silent_windows")
+    if silent_windows is None:
         return settings
-    if not isinstance(allowed, list):
-        raise ValueError("settings.allowed_branches must be a list of strings")
-    if len(allowed) > 50:
-        raise ValueError("settings.allowed_branches must contain at most 50 entries")
-    for pattern in allowed:
-        if not isinstance(pattern, str):
-            raise ValueError("settings.allowed_branches entries must be strings")
-        if not pattern.strip():
-            raise ValueError("settings.allowed_branches entries must be non-empty")
-        if len(pattern) > 200:
-            raise ValueError("settings.allowed_branches entries must be at most 200 characters")
-    return settings
+    if not isinstance(silent_windows, list):
+        raise ValueError("settings.silent_windows must be a list")
+    if len(silent_windows) > 20:
+        raise ValueError("settings.silent_windows must contain at most 20 entries")
+    return {
+        **settings,
+        "silent_windows": [
+            SilentWindow.model_validate(window).model_dump(mode="json")
+            for window in silent_windows
+        ],
+    }
 
 
 class ProjectCreate(BaseModel):
@@ -85,6 +98,7 @@ class ProjectUpdate(BaseModel):
     shallow_clone: bool | None = None
     default_env_id: UUID | None = None
     settings: dict | None = None
+    silent_windows: list[SilentWindow] | None = Field(None, max_length=20)
     status: Literal["active", "archived"] | None = None
 
     @field_validator("settings")
@@ -109,6 +123,7 @@ class ProjectResponse(BaseModel):
     shallow_clone: bool = True
     default_env_id: UUID | None = None
     settings: dict = Field(default_factory=dict)
+    silent_windows: list[SilentWindow] = Field(default_factory=list, max_length=20)
     status: Literal["active", "archived"] = "active"
     created_by: UUID
     created_at: datetime
