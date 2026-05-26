@@ -46,6 +46,9 @@ class AuditEventRepository:
         await self.session.refresh(event)
         return event
 
+    async def commit(self) -> None:
+        await self.session.commit()
+
     async def list_by_resource(
         self,
         resource_type: str,

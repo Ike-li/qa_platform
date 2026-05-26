@@ -8,11 +8,13 @@ on other connections aren't blocked for the duration of the run.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+
+from qaplatform.dependencies import CryptoService
+from qaplatform.domain.services.env_vars_crypto import encrypt_env_vars
 
 
 @pytest.fixture
@@ -32,6 +34,42 @@ def fake_run():
     run.environment.network_policy = "deny"
     run.environment.setup_script = None
     return run
+
+
+def test_build_pipeline_config_decrypts_environment_env_vars(fake_run):
+    from qaplatform.worker.tasks import _build_pipeline_config
+
+    crypto = CryptoService({0: b"\x00" * 32})
+    fake_run.environment.id = uuid4()
+    fake_run.environment.env_vars = encrypt_env_vars(
+        {"API_TOKEN": "secret-value"},
+        environment_id=fake_run.environment.id,
+        crypto=crypto,
+    )
+
+    config = _build_pipeline_config(
+        fake_run,
+        fake_run.pipeline,
+        fake_run.environment,
+        crypto,
+    )
+
+    assert config.env_vars == {"API_TOKEN": "secret-value"}
+
+
+def test_build_pipeline_config_requires_crypto_for_encrypted_env_vars(fake_run):
+    from qaplatform.worker.tasks import _build_pipeline_config
+
+    crypto = CryptoService({0: b"\x00" * 32})
+    fake_run.environment.id = uuid4()
+    fake_run.environment.env_vars = encrypt_env_vars(
+        {"API_TOKEN": "secret-value"},
+        environment_id=fake_run.environment.id,
+        crypto=crypto,
+    )
+
+    with pytest.raises(RuntimeError, match="Crypto service not initialised"):
+        _build_pipeline_config(fake_run, fake_run.pipeline, fake_run.environment)
 
 
 @pytest.fixture

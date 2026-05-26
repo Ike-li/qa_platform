@@ -4,11 +4,11 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID
 
-from qaplatform.domain.models.run import RunStatus, TERMINAL_STATUSES
-from qaplatform.infra.database.models import Project
 from sqlalchemy import select as _select
+
+from qaplatform.domain.models.run import RunStatus
+from qaplatform.infra.database.models import Project
 
 log = logging.getLogger(__name__)
 
@@ -215,7 +215,8 @@ async def execute_run(ctx: dict, run_id: str) -> None:
         status = None
         try:
             # 2. Execute the pipeline
-            config = _build_pipeline_config(run, run.pipeline, run.environment)
+            crypto = getattr(ctx.get("container"), "crypto_service", None)
+            config = _build_pipeline_config(run, run.pipeline, run.environment, crypto)
             status = await executor.execute(run, config)
             # Terminal state (finish_if_current / fail_if_current) is written
             # inside executor.execute() with summary; no redundant write here.
@@ -276,9 +277,13 @@ async def execute_run(ctx: dict, run_id: str) -> None:
 
             await session.commit()
 
-def _build_pipeline_config(run, pipeline_orm, environment_orm):
+def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
     from qaplatform.engine.executor import PipelineConfig, StageDefinition
     from qaplatform.engine.docker_backend import ResourceLimits
+    from qaplatform.domain.services.env_vars_crypto import (
+        decrypt_env_vars,
+        is_encrypted_env_vars,
+    )
     
     stages = []
     for stage_dict in pipeline_orm.stages:
@@ -290,10 +295,22 @@ def _build_pipeline_config(run, pipeline_orm, environment_orm):
             continue_on_error=stage_dict.get('continue_on_error', False),
         ))
     
+    raw_env_vars = environment_orm.env_vars or {}
+    if is_encrypted_env_vars(raw_env_vars):
+        if crypto is None:
+            raise RuntimeError("Crypto service not initialised")
+        env_vars = decrypt_env_vars(
+            raw_env_vars,
+            environment_id=environment_orm.id,
+            crypto=crypto,
+        )
+    else:
+        env_vars = dict(raw_env_vars)
+
     return PipelineConfig(
         image=environment_orm.base_image,
         stages=stages,
-        env_vars=dict(environment_orm.env_vars or {}),
+        env_vars=env_vars,
         resource_limits=ResourceLimits(
             memory_bytes=environment_orm.memory_mb * 1024 * 1024,
             cpu_cores=environment_orm.cpu_cores,
