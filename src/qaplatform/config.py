@@ -1,4 +1,4 @@
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -71,7 +71,10 @@ class Settings(BaseSettings):
     retention_audit_days: int = 1095  # 3 years
 
     # Observability
+    otel_enabled: bool = False
     otel_exporter_endpoint: str | None = None
+    otel_service_name: str = "qa-platform"
+    otel_sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     log_level: str = "INFO"
     log_format: str = "json"  # json / console
 
