@@ -1,3 +1,9 @@
+export interface SilentWindow {
+  start_at: string;
+  end_at: string;
+  reason: string;
+}
+
 export interface Project {
   id: string;
   tenant_id: string;
@@ -12,6 +18,7 @@ export interface Project {
   shallow_clone: boolean;
   default_env_id: string | null;
   settings: Record<string, unknown>;
+  silent_windows: SilentWindow[];
   status: "active" | "archived";
   created_by: string;
   created_at: string;
