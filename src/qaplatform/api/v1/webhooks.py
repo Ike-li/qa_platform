@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+from fnmatch import fnmatch
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.auth.permissions import Action
@@ -21,6 +25,63 @@ from qaplatform.api.schemas import (
 from qaplatform.infra.webhook_signature import verify_webhook_signature
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+log = logging.getLogger(__name__)
+_INTEGRITY_ERRORS = (
+    SQLAlchemyIntegrityError,
+)
+
+
+def _branch_name_from_ref(git_ref: str) -> str:
+    heads_prefix = "refs/heads/"
+    if git_ref.startswith(heads_prefix):
+        return git_ref[len(heads_prefix):]
+    return git_ref
+
+
+def _allowed_branch_patterns(settings: dict | None) -> list[str]:
+    allowed = (settings or {}).get("allowed_branches", [])
+    if not isinstance(allowed, list):
+        return []
+    return [pattern for pattern in allowed if isinstance(pattern, str) and pattern]
+
+
+def _branch_allowed(branch_name: str, allowed_patterns: list[str]) -> bool:
+    if not allowed_patterns:
+        return True
+    return any(fnmatch(branch_name, pattern) for pattern in allowed_patterns)
+
+
+def _dedup_key(metadata: dict, repo_url: str, commit_sha: str | None, branch_name: str) -> str | None:
+    if not commit_sha:
+        return None
+    provider = str(metadata.get("provider") or "webhook")
+    return f"{provider}:{repo_url}:{commit_sha}:{branch_name}"
+
+
+def _exception_chain(exc: Exception):
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        pending.extend(
+            (
+                getattr(current, "orig", None),
+                current.__cause__,
+                current.__context__,
+            )
+        )
+
+
+def _is_integrity_error(exc: Exception) -> bool:
+    return any(
+        isinstance(candidate, _INTEGRITY_ERRORS)
+        or candidate.__class__.__name__ in {"IntegrityError", "UniqueViolationError"}
+        for candidate in _exception_chain(exc)
+    )
 
 
 def _to_run_response(orm) -> RunResponse:
@@ -71,6 +132,15 @@ async def webhook_trigger(
 
     await enforce_project_action(session, user, project.id, Action.RUN_TRIGGER)
 
+    branch_name = _branch_name_from_ref(body.git_ref)
+    allowed_branches = _allowed_branch_patterns(project.settings)
+    if not _branch_allowed(branch_name, allowed_branches):
+        log.info("webhook branch filtered for project %s branch %s", project.id, branch_name)
+        return JSONResponse(
+            status_code=200,
+            content={"status": "filtered", "reason": "branch_not_allowed"},
+        )
+
     # Resolve pipeline — use the first active pipeline for the project
     pipelines, _ = await repos.pipeline.list_by_project(project.id, limit=1)
     if not pipelines:
@@ -97,17 +167,26 @@ async def webhook_trigger(
         metadata["default_branch"] = project.default_branch
     metadata.update({k: v for k, v in body.metadata.items() if k.lower() not in _RESERVED_LOWER})
 
-    run = await repos.run.create(
-        tenant_id=user.tenant_id,
-        project_id=project.id,
-        pipeline_id=pipeline.id,
-        environment_id=environment_id,
-        git_ref=body.git_ref,
-        git_sha=body.git_sha,
-        triggered_by=user.user_id,
-        trigger_type="webhook",
-        metadata_=metadata,
-    )
+    dedup_key = _dedup_key(body.metadata, project.git_url, body.git_sha, branch_name)
+    try:
+        run = await repos.run.create(
+            tenant_id=user.tenant_id,
+            project_id=project.id,
+            pipeline_id=pipeline.id,
+            environment_id=environment_id,
+            git_ref=body.git_ref,
+            git_sha=body.git_sha,
+            triggered_by=user.user_id,
+            trigger_type="webhook",
+            metadata_=metadata,
+            dedup_key=dedup_key,
+        )
+    except Exception as exc:
+        if dedup_key is None or not _is_integrity_error(exc):
+            raise
+        await session.rollback()
+        log.info("webhook duplicate run for project %s branch %s", project_id, branch_name)
+        return JSONResponse(status_code=200, content={"status": "duplicate"})
     run.retry_group_id = run.id
 
     container = request.app.state.container
