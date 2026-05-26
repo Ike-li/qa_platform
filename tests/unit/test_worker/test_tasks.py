@@ -115,6 +115,49 @@ class TestClaimReleasesRowLock:
     the long execute() phase so PREPARING row lock is released early."""
 
     @pytest.mark.asyncio
+    async def test_execute_run_emits_parent_span(self, ctx):
+        from qaplatform.worker import tasks as worker_tasks
+
+        spans: list[tuple[str, dict | None]] = []
+
+        class _SpanContext:
+            def __init__(self, name: str, attributes: dict | None):
+                self.name = name
+                self.attributes = attributes
+
+            def __enter__(self):
+                spans.append((self.name, self.attributes))
+                return MagicMock()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class _Tracer:
+            def start_as_current_span(self, name: str, attributes=None):
+                return _SpanContext(name, attributes)
+
+        run_repo = AsyncMock()
+        run_repo.claim_for_worker = AsyncMock(return_value=None)
+
+        with patch.object(
+            worker_tasks.trace,
+            "get_tracer",
+            return_value=_Tracer(),
+        ), patch(
+            "qaplatform.infra.database.repositories.run_repo.RunRepository",
+            return_value=run_repo,
+        ), patch(
+            "qaplatform.infra.database.repositories.run_repo.ArtifactRepository",
+            return_value=AsyncMock(),
+        ), patch(
+            "qaplatform.engine.executor.RunExecutor",
+            return_value=AsyncMock(),
+        ):
+            await worker_tasks.execute_run(ctx, "run-123")
+
+        assert spans == [("execute_run", {"run.id": "run-123"})]
+
+    @pytest.mark.asyncio
     async def test_commit_called_immediately_after_successful_claim(
         self, ctx, mock_session, fake_run
     ):
