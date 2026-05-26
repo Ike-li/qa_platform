@@ -284,4 +284,4 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 
 ### 已知偏移
 
-- 详见 [`doc-conflict-audit.md`](doc-conflict-audit.md) 的审计证据。当前主要偏移包括：审计日志查询 API 仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净、若干 feature 分支已推送但未合入 `main`。
+- 详见 [`doc-conflict-audit.md`](doc-conflict-audit.md) 的审计证据。当前主要偏移包括：审计日志查询 API 仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净、首批 8 个 `feature/T*` 分支已推送但未合入 `main`。

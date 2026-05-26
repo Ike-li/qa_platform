@@ -3,7 +3,7 @@
 > 完整功能盘子与状态见 [`feature-catalog.md`](feature-catalog.md)
 > **首批可交付任务包见 [`tasks/`](tasks/README.md)**（codex-ready，含规格 + 起点 + 验收 + 约束）；本轮审计新增的待办若进入实施，需要后续补任务包。
 > 本文件按优先级排序"近期要做什么 / 不做什么"，与 catalog §4 保持同步。
-> 更新于 2026-05-27（PRD / catalog / tasks 与代码仍有已知偏移，审计证据见 [`doc-conflict-audit.md`](doc-conflict-audit.md)；8 个任务包已起草，部分 feature 分支已推送但未合入 `main`）
+> 更新于 2026-05-27（PRD / catalog / tasks 与代码仍有已知偏移，审计证据见 [`doc-conflict-audit.md`](doc-conflict-audit.md)；首批 8 个任务包与对应 `feature/T*` 分支均已推送但未合入 `main`）
 
 ---
 
