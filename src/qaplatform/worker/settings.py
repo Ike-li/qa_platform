@@ -9,6 +9,7 @@ import aiodocker
 from arq import cron, func
 from arq.connections import RedisSettings
 
+from qaplatform.observability.tracing import instrument_infra, setup_tracing
 from qaplatform.worker.tasks import execute_run
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,9 @@ async def on_startup(ctx: dict) -> None:
     await container.init_arq()
     await container.init_s3()
     container.init_crypto()
+    provider = setup_tracing(settings)
+    if provider is not None:
+        instrument_infra(container, provider)
 
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
 
