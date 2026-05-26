@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -80,6 +81,60 @@ class AuditEventRepository:
         return await self._list(
             offset=offset, limit=limit, filters=[AuditEvent.tenant_id == tenant_id]
         )
+
+    async def list(
+        self,
+        *,
+        tenant_id: UUID,
+        actor_id: UUID | None = None,
+        action: str | None = None,
+        resource_type: str | None = None,
+        resource_id: UUID | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[AuditEvent], int]:
+        filters = [AuditEvent.tenant_id == tenant_id]
+        if actor_id is not None:
+            filters.append(AuditEvent.user_id == actor_id)
+        if action:
+            filters.append(AuditEvent.action == action)
+        if resource_type:
+            filters.append(AuditEvent.resource_type == resource_type)
+        if resource_id is not None:
+            filters.append(AuditEvent.resource_id == resource_id)
+        if start_at is not None:
+            filters.append(AuditEvent.created_at >= start_at)
+        if end_at is not None:
+            filters.append(AuditEvent.created_at <= end_at)
+
+        return await self._list(offset=offset, limit=limit, filters=filters)
+
+    async def has_cross_tenant_match(
+        self,
+        *,
+        tenant_id: UUID,
+        actor_id: UUID | None = None,
+        resource_type: str | None = None,
+        resource_id: UUID | None = None,
+    ) -> bool:
+        if actor_id is None and resource_id is None:
+            return False
+
+        filters = [AuditEvent.tenant_id != tenant_id]
+        if actor_id is not None:
+            filters.append(AuditEvent.user_id == actor_id)
+        if resource_type:
+            filters.append(AuditEvent.resource_type == resource_type)
+        if resource_id is not None:
+            filters.append(AuditEvent.resource_id == resource_id)
+
+        stmt = select(func.count()).select_from(AuditEvent)
+        for f in filters:
+            stmt = stmt.where(f)
+        result = await self.session.execute(stmt)
+        return result.scalar_one() > 0
 
     async def _list(
         self,
