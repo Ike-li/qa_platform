@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Plus, Trash2, Eye, EyeOff, Save, X } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -86,7 +86,7 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
         ) : (
           environments?.map(env => (
             <EnvironmentCard
-              key={env.id}
+              key={`${env.id}:${JSON.stringify(env.variables)}`}
               env={env}
               projectId={projectId}
             />
@@ -102,9 +102,6 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
   const [variables, setVariables] = useState(env.variables);
   const [isEditing, setIsEditing] = useState(false);
 
-  useEffect(() => {
-    setVariables(env.variables);
-  }, [env.variables]);
   const [showValues, setShowValues] = useState<Record<string, boolean>>({});
 
   const { mutateAsync: updateEnv } = useUpdateEnvironment(projectId, env.id);
