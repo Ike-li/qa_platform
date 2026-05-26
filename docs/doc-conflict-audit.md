@@ -13,12 +13,13 @@
 当前最重要的事实：
 
 - 当前分支：`main`。
-- 当前工作树：审计前为 clean；本轮修复产生未提交改动，详见实际 `git status`。
-- 当前本地 `main` 未设置 upstream；本地 `main` 为 `34937a3`，远端 `origin/main` 为 `302ede0`，且 `origin/main` 是本地 `main` 的祖先。本地 `main` 目前比 `origin/main` 多 5 个 docs commit，远端没有反向领先提交。
-- 当前 `origin/HEAD` 指向 `origin/phase1-release-prep`，不是 `origin/main`；后续脚本或人工操作不要把 `origin/HEAD` 当作 main。
+- 本文是审计证据档案，不是实时 git 状态源；分支、SHA、ahead/behind 数均为审计时快照，后续请用 `git status --short --branch`、`git rev-parse --short HEAD`、`git rev-list --count origin/main..main` 和 `git rev-list --count main..origin/main` 现场确认。
+- 最近一次已提交的审计收口以 `git log -1 --oneline` 为准；本文不硬编码当前 `HEAD`，避免提交后立即过期。
+- 审计期间观察到 `origin/HEAD` 曾指向 `origin/phase1-release-prep` 而非 `origin/main`；后续脚本或人工操作应显式使用 `main` / `origin/main`，不要依赖 `origin/HEAD`。
 - `feature/T01-env-vars-encryption`、`feature/T02-audit-query-api`、`feature/T03-dingtalk-notify`、`feature/T04-wecom-notify`、`feature/T05-silent-windows`、`feature/T06-webhook-branch-dedup`、`feature/T07-test-results-filter`、`feature/T10-opentelemetry` 均未合入 `main`。
 - 因此，文档里凡是描述“已完成并合并”的状态，必须区分“`main` 已有”与“feature 分支已推送/验收”。
 - `docs/fix-roadmap.md` 是历史 review 合并路线图，不应当作为当前实现状态的唯一真相源。
+- `docs/doc-conflict-audit.md` 本身也是审计证据档案；当前执行真源仍是 `docs/feature-catalog.md`、`docs/TODO.md` 和 `docs/tasks/`。
 
 建议的真相源边界：
 
@@ -27,6 +28,7 @@
 | `docs/prd.md` | 产品目标与验收意图。只描述目标，不应误报当前实现状态。 |
 | `docs/feature-catalog.md` | 当前 `main` 的功能盘点和近期 backlog。已完成第一轮状态与路径修正，后续要继续区分 `main` 已有与 feature 分支已推送。 |
 | `docs/tasks/*.md` | 可执行任务包。应跟随 `main` 代码现状和 maintainer 最新验收口径。 |
+| `docs/doc-conflict-audit.md` | 本轮文档冲突审计证据档案。可查为什么改，但不作为实时 git 状态或 backlog 排期真源。 |
 | `docs/fix-roadmap.md` | 历史 review 档案和决策记录。建议加醒目说明：非当前 backlog。 |
 | `frontend/FRONTEND_PROMPT.md` | 前端初始实现提示/历史提示词。已标为历史资料，不应作为 API 契约真相源。 |
 | `DESIGN.md` | 当前 QA Platform 产品设计系统。应跟随前端实现和后台工具体验约束维护。 |
@@ -73,7 +75,7 @@
 | 资源限制 / 产物 / Allure 预览闭环对照 | 有已知偏移，CPU/内存/超时已实现；`worker/tasks.py` 构造 `ResourceLimits` 时只传 memory/cpu，`disk_bytes` 未进入 Docker HostConfig；OOM/timeout 能映射为 `timeout`，但未发现资源用量记录闭环；`api/v1/artifacts.py` 已返回 `download_url` / `expires_in`；`engine/executor.py::_upload_artifacts` 只上传 `results/` 下直接文件并跳过目录；`frontend` 仅对 `artifact.type === "allure-report"` 展示预览按钮；环境级产物数量/大小限制未发现上传侧强制校验 |
 | Playwright / E2E 配置对照 | 通过，根目录 `package.json` 提供 `npm run test:e2e`；`playwright.config.ts` 的 `testDir` 为 `tests/e2e`，会启动 `frontend` dev server 和 `.venv/bin/python -m uvicorn qaplatform.main:create_app --factory --app-dir src`，`global-setup.ts` 会启动 postgres/redis/minio、执行 alembic upgrade 与 seed |
 | E2E 辅助脚本入口复核 | 发现 `scripts/run-e2e.sh` 仍直接用 `ADMIN_PASSWORD=admin123` seed 后运行 `tests/e2e/real-*.spec.ts`；默认值与 real specs 的 `E2E_ADMIN_PASSWORD || "admin123"` fallback 一致，但若调用者显式设置 `E2E_ADMIN_PASSWORD`，该脚本不会同步 seed 密码。当前 README/development/CI 的推荐入口仍是根目录 `npm run test:e2e`，不受此脚本偏差影响；若后续保留脚本，应让它透传 `E2E_ADMIN_PASSWORD`。 |
-| Git refs / merge state 对照 | 通过，本地 8 个 `feature/T*` 分支与对应 `origin/feature/T*` SHA 一致且均未合入本地 `main`；本地 `main` 比 `origin/main` 多 5 个 docs commit，`origin/HEAD` 当前指向 `origin/phase1-release-prep` |
+| Git refs / merge state 对照 | 审计快照通过：本地 8 个 `feature/T*` 分支与对应 `origin/feature/T*` SHA 一致且均未合入本地 `main`；审计时本地 `main` 比 `origin/main` 多 5 个 docs commit，`origin/HEAD` 指向 `origin/phase1-release-prep`。该行保留为快照，实时状态以现场 git 命令为准。 |
 | Alembic 迁移链对照 | 通过，源码迁移链为单 head `006`；本地数据库当前版本为 `005`，需要在运行依赖真实 DB 的测试前执行 `.venv/bin/alembic upgrade head` |
 | 通知 / Webhook 当前实现对照 | 通过，`main` 的 `ChannelRouter` 仅注册 `email` / `webhook`；T03/T04 钉钉/企微仍是未合入 feature 分支能力；`api/v1/webhooks.py` 当前仅做项目级触发与 HMAC 验签，T06 分支过滤/去重仍未合入 `main` |
 | 通知规则 / 模板能力对照 | 有已知偏移，当前通知条件只支持 `status` / `pass_rate` / `failed` 的 AND 组合；模板是规则级 `NotificationRule.template`，变量仅 `run_id/status/passed/failed/total/pass_rate`，PRD 中的连续失败次数、每渠道模板、项目名与失败用例变量未闭环 |
@@ -129,8 +131,8 @@
 | E2E 辅助脚本承接续扫 | 发现 `scripts/run-e2e.sh` 仍固定 `ADMIN_PASSWORD=admin123` seed，而标准 `tests/e2e/global-setup.ts` 已透传 `E2E_ADMIN_PASSWORD || "admin123"`；此偏差此前只写在本报告，现已补到 `docs/TODO.md` #24 与 `docs/feature-catalog.md` §4.2 的 E2E CI 覆盖扩展备注中。 |
 | 内部章节引用复核 | 通过，`architecture §8.4`、`architecture §9.6`、`runbook §7` 和本文 `§17` 均存在；旧 `PRD §9.6` 仅保留在历史冲突说明或“旧引用不存在”语境 |
 | feature 分支合并状态复核 | 通过，8 个 `feature/T*` 分支本地/远端 SHA 一致且均未合入 `main`；`origin/main` 仍是本地 `main` 的祖先，本地 `main` 未落后远端 |
-| Git refs 续扫 | 通过，当前分支仍为 `main` 且无 upstream；本地 `main=34937a3`、`origin/main=302ede0`，`origin/main...main` 为 `0 5`；`origin/HEAD` 仍指向 `origin/phase1-release-prep`。T01/T02/T03/T04/T05/T06/T07/T10 的本地 feature 分支与对应 `origin/feature/*` SHA 均一致，且 `git merge-base --is-ancestor <feature> main` 均为 no。 |
-| Git refs 当前复跑 | 通过，`docs/tasks/` 当前仍只有 T01/T02/T03/T04/T05/T06/T07/T10 这 8 个任务包；本地 T01/T02/T03/T04/T05/T06/T07/T10 对应首批任务分支与 `origin/feature/*` SHA 一致，且本地/远端 feature 均未合入 `main`；`origin/main...main` 仍为 `0 5`，`origin/HEAD` 仍指向 `origin/phase1-release-prep`。 |
+| Git refs 续扫 | 审计快照通过：审计时分支为 `main` 且无 upstream；本地 `main=34937a3`、`origin/main=302ede0`，`origin/main...main` 为 `0 5`；`origin/HEAD` 指向 `origin/phase1-release-prep`。T01/T02/T03/T04/T05/T06/T07/T10 的本地 feature 分支与对应 `origin/feature/*` SHA 均一致，且 `git merge-base --is-ancestor <feature> main` 均为 no。该行不表达提交后的实时状态。 |
+| Git refs 当前复跑 | 审计快照通过：`docs/tasks/` 当时只有 T01/T02/T03/T04/T05/T06/T07/T10 这 8 个任务包；本地 T01/T02/T03/T04/T05/T06/T07/T10 对应首批任务分支与 `origin/feature/*` SHA 一致，且本地/远端 feature 均未合入 `main`；`origin/main...main` 当时为 `0 5`，`origin/HEAD` 指向 `origin/phase1-release-prep`。实时状态以现场 git 命令为准。 |
 | 任务包索引语义复核 | 已把 `docs/tasks/README.md` 表格的 `是否需 alembic` 改成 `Alembic / 数据迁移`，并用“需要/不需要”替代 ✅/❌，避免误读为任务完成状态 |
 | 路径/命令引用复核 | Makefile 引用、npm scripts 和 Compose 服务数量均对齐；已把当前 TODO/catalog 中的 `runs.py`、`auth-flow.spec.ts` 短名补成 `api/v1/runs.py`、`tests/e2e/auth-flow.spec.ts` |
 | CI / E2E 待办语义复核 | `E2E 测试 CI 自动触发` 已更名为 `E2E CI 覆盖扩展`；当前事实是 push / PR 已跑稳定 `tests/e2e/auth-flow.spec.ts`，剩余待办仅是是否扩大自动覆盖。 |
@@ -196,7 +198,7 @@
 | PRD 日志容量口径复核 | 发现 PRD §4 把 `MAXLEN 10000 条 + 单条 4KB` 写成 50MB，和当前 `engine/log_stream.py` 的 `_MAXLEN = 10_000`、`_MAX_LINE_BYTES = 4096` 不严格一致；该约束对应约 40MB 日志 payload，且 Redis Stream 使用 approximate auto-trim，不是精确硬上限。已把 PRD 非功能表改为“约 40MB / 最近约 10000 条”。 |
 | F-AU-04 跨租户 404 细化复核 | 发现 catalog 把租户隔离标为 ✅ 过强。当前聚合根查询、Owner/Admin 主要路径、run/artifact/SSE 等路径通过 `get_for_tenant` 或 tenant filter 返回 404；但 `api/deps.py::require_project_permission` 对非 Owner/Admin 的 path `project_id` 路由会先查 `ProjectMember`，无成员关系时直接 403，路由体内的 `get_for_tenant` 还未执行。现有 `tests/integration/test_cross_tenant_isolation.py` 主要用 owner 身份验证 404，部分路由还把 403 分支标成 xfail，因此不能证明“所有跨租户 ID 访问返回 404”。已把 catalog `F-AU-04` 降为 ⚠️，新增 catalog/TODO 项 `F-AU-04 跨租户 404 完整收敛`。 |
 | 项目质量仪表盘状态复核 | 发现 catalog 扩展项 `项目质量仪表盘` 原标 ✅ 过强。当前 `api/v1/analytics.py` 的 trends / flaky API、`frontend/src/hooks/use-analytics.ts`、项目详情 analytics tab 和 `AnalyticsPanel` 均存在；但当前 `cd frontend && npm run build 2>&1 | grep "error TS"` 仍显示 `frontend/src/components/projects/analytics-panel.tsx` 有 2 个 TS2322 错误，属于已知 `T-FRONTEND-TS` 债务。已把该扩展项降为 ⚠️，说明“功能入口存在，但生产 build 需先清 TS 债”。 |
-| 扩展功能与非功能 ✅ 续扫 | 通过，`api/v1/runs.py` 的 batch cancel / retry 有单元测试覆盖，审计缺口已由 TODO #5 承接；`api/v1/notifications.py` 提供通知规则 list/create/get/update/delete 且写 audit，前端 paginated response 适配问题已归入 `T-FRONTEND-API`；`api/v1/admin.py` + `frontend/src/pages/admin/status.tsx` 对齐 `/api/v1/admin/status`；Jest / Playwright / Go runner 插件文件均存在并实现 `RunnerProtocol` 风格的 `build_command` / `run_tests`；`engine/log_stream.py` 使用 `_MAXLEN = 10_000` + Redis Stream `maxlen` auto-trim 和 `_MAX_LINE_BYTES = 4096`，已把 catalog 非功能表的日志缓冲措辞从精确“10000 条”改为“近似 10000 条”。 |
+| 扩展功能与非功能 ✅ 续扫 | 通过，`api/v1/runs.py` 的 batch cancel / retry 有单元测试覆盖，审计缺口已由 TODO 中的“审计写入覆盖补齐”承接；`api/v1/notifications.py` 提供通知规则 list/create/get/update/delete 且写 audit，前端 paginated response 适配问题已归入 `T-FRONTEND-API`；`api/v1/admin.py` + `frontend/src/pages/admin/status.tsx` 对齐 `/api/v1/admin/status`；Jest / Playwright / Go runner 插件文件均存在并实现 `RunnerProtocol` 风格的 `build_command` / `run_tests`；`engine/log_stream.py` 使用 `_MAXLEN = 10_000` + Redis Stream `maxlen` auto-trim 和 `_MAX_LINE_BYTES = 4096`，已把 catalog 非功能表的日志缓冲措辞从精确“10000 条”改为“近似 10000 条”。 |
 | T01 加密服务命名复核 | 发现 T01 / catalog / TODO 仍写旧 `CredentialCipher` 名称；当前源码为 `dependencies.py::CryptoService`，凭据路由经 `container.crypto_service` 调用。已修正文档引用和 T01 中的迁移示例，避免后续按不存在的类实施。 |
 | T02 权限口径复核 | 发现 T02 同时参考 `api/v1/admin.py` 和要求租户 Owner/Admin 访问，容易误抄 `admin.py::_require_platform_admin` 的平台管理员校验。T02 已补充说明：`admin.py` 只作路由组织参考，权限应按租户 Owner/Admin 实现；响应也应新增 `AuditEventResponse` schema，而不是直接暴露 SQLAlchemy ORM。 |
 | T03/T04 通知渠道安全口径复核 | 发现 T03 写“用 redact”，但当前仓库只有 URL userinfo 脱敏 helper，没有通用 token/key redaction helper；T03/T04 已改为要求不在日志或错误信息中构造完整 URL、签名串或配置，并明确新渠道单独使用 10s 超时，不改既有 `WebhookChannel.TIMEOUT = 30`。 |
@@ -221,7 +223,7 @@
 | 章节引用深扫 | 通过，显式章节引用已和对应文档标题编号对照；唯一特殊项仍是刻意保留的旧 `PRD §9.6` 负向/历史说明。非历史文档中裸 `§x` 引用已无无法归属的问题；T05/T10 顶部的“设计见 §4.3”、TODO 的 `PRD §3.2 / §3.4` 和 feature-catalog 的 architecture 章节来源已补成完整目标文档名。 |
 | backlog / 任务包必要性复核 | 发现 `feature-catalog.md` 第 4.1 节的 F-LS-04 待办写成 P1，但 `feature-catalog.md` 第 1.7 节与 T07 任务包均为 P0；已把第 4.1 节行修正为 P0。复核结果：首批任务包的必要性与 PRD 功能表一致，catalog 第 4.1 节的 F-* 待办必要性也与 `feature-catalog.md` 第 1 节 PRD 功能表一致。 |
 | catalog 状态承接复核 | 通过，`feature-catalog.md` 中 ⚠️/❌/⏳ 状态项均已在 catalog backlog 或 TODO 中承接；其中非 F-ID 别名按当前文档语义映射：`API Token 吊销 + scope` → F-AU-02，`审计日志（who/what/when/from）` → 审计日志查询 API + 审计写入覆盖补齐，`OpenTelemetry 追踪` → OpenTelemetry 装配，`项目质量仪表盘` → T-FRONTEND-TS。 |
-| TODO 编号映射复核 | 发现新增 F-AU-04 后 TODO 编号整体漂移，但 `T-EXEC-RETRY` / `T-QUEUE-PRIORITY` / `T-NOTIFICATION-TEMPLATE` / `T-RETENTION-OPS` 和 Maintainer 决策表仍引用旧编号；已把映射更新到当时 TODO #1-#24；后续新增 F-EX-01、Git 凭证执行闭环与 F-PL-01 collector 配置待办后再次更新为 TODO #1-#27。 |
+| TODO 编号映射复核 | 发现新增 F-AU-04 后 TODO 编号整体漂移，但 `T-EXEC-RETRY` / `T-QUEUE-PRIORITY` / `T-NOTIFICATION-TEMPLATE` / `T-RETENTION-OPS` 和 Maintainer 决策表仍引用旧编号；当时先同步到最新编号。2026-05-27 稳定性复核后，`docs/TODO.md` 已改为稳定标题映射，不再依赖会随排序变化的编号。 |
 | F-EX-01 手动触发验收复核 | 发现 PRD §3.3 要求手动触发可指定分支/commit/管道/环境且触发后 < 5s 入队；当前 `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`，`api/v1/runs.py::trigger_run` 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定，且入队时延未纳入自动验收。已把 catalog 的 F-EX-01 降为 ⚠️，并在 TODO 新增 `F-EX-01 手动触发参数与入队验收补齐`。 |
 | F-EX-07 重试次数边界复核 | 发现 PRD §3.3 要求最大重试次数 1-5；当前 `RetryPolicyInput.max_attempts` 是裸 `int = 1`，没有 `ge=1/le=5` 校验，同时 worker 仍读取 `max_retries`。已把 1-5 边界缺口补进 feature-catalog 与 TODO 的 F-EX-07 待办。 |
 | F-RE-02 摘要生成时延复核 | 通过并补验收归属，`engine/executor.py` 在 collector 产出结果后同步汇总 `total/passed/failed/skipped/error/pass_rate`，随后写入终态 Run；未发现单独的后台摘要任务缺口。但 PRD §3.4 的“执行结束后 < 3s 生成摘要”属于性能验收，已并入 TODO / catalog 的“非功能性能压测”。 |
@@ -229,14 +231,15 @@
 | F-PM-01 / F-PM-02 Git 凭证执行链路复核 | 发现项目 schema 与 API 可保存 `git_auth_method` / `credential_id`，凭证 CRUD 已加密存储并支持轮换；manual/webhook 创建 Run 时也会把 `credential_id` 放进 metadata。但 `engine/executor.py::_clone_repo` 只读取 `git_url` 并调用 `GitSource.clone(git_url, run.git_ref, dest)`，没有解密 token / SSH key，也没有将凭证安全注入 Git clone。因此私有 HTTPS/SSH 仓库执行链路未达 PRD §3.1 验收。已把 F-PM-01 / F-PM-02 降为 ⚠️，新增 Git 凭证执行闭环 TODO。 |
 | Git source / 凭证文档口径复核 | 发现 architecture 内置插件表写“Git clone（HTTPS/SSH）”容易被误读为私有 HTTPS token / SSH key 执行链路已闭环；实际 `GitSource` 只校验/执行 `https://` 或 SSH URL 形态并默认 shallow clone，不解密项目凭证。已把 README 与 architecture 改为“凭据存储已就位，私有仓库凭据注入 clone 待补”。 |
 | F-PL-01 collector 配置复核 | 发现 PRD §3.2 要求 Pipeline 可配置测试运行器、结果收集器、超时、重试策略；当前 `PipelineCreate/Update` 与 ORM 只有 `stages`、`selector`、`trigger_config`、`timeout_seconds`、`retry_policy`，`worker/tasks.py::_build_pipeline_config` 也没有 collector 字段，`RunExecutor.execute()` 固定 `self.plugin_registry.get_collector("junit")`。因此“多 Pipeline / runner stage / timeout / retry”已部分实现，但结果收集器配置未达验收。已把 F-PL-01 降为 ⚠️，新增 collector 配置 TODO 与 maintainer 决策项。 |
-| 任务包 / 分支状态续扫 | 通过，`docs/tasks/` 仍为 T01/T02/T03/T04/T05/T06/T07/T10 这 8 个首批任务包；本地 8 个 `feature/T*` 分支与 `origin/feature/T*` SHA 一致，且均未合入本地 `main`。本地 `main` 仍为 `34937a3`，`origin/main` 为 `302ede0` 且是本地 `main` 祖先，`origin/HEAD` 仍指向 `origin/phase1-release-prep`。任务包旧全量 `make lint` / `npm run build` 验收口径仅保留在本文历史冲突说明中，执行性任务 README 已改为改动文件干净口径。 |
+| 任务包 / 分支状态续扫 | 审计快照通过：`docs/tasks/` 当时为 T01/T02/T03/T04/T05/T06/T07/T10 这 8 个首批任务包；本地 8 个 `feature/T*` 分支与 `origin/feature/T*` SHA 一致，且均未合入本地 `main`。本地 `main=34937a3`，`origin/main=302ede0` 且是本地 `main` 祖先，`origin/HEAD` 指向 `origin/phase1-release-prep`。任务包旧全量 `make lint` / `npm run build` 验收口径仅保留在本文历史冲突说明中，执行性任务 README 已改为改动文件干净口径。 |
 | 配置 / 命令 / 前端 API 当前续扫 | 通过，`Settings` 仍有 39 个 `QAP_` 字段且 `.env.example` 缺失 0，额外 `QAP_DB_USER` / `QAP_DB_PASSWORD` / `QAP_DB_NAME` 仍只服务 Compose；Makefile 目标为 `up/down/infra-up/logs/migrate/migrate-create/test/lint/format/seed`，根目录 npm script 仍只有 `test:e2e`，frontend scripts 为 `dev/build/lint/preview`。前端源码当前抽取到 24 个 API 字面量调用；除 `frontend/src/hooks/use-pipelines.ts` 的 3 个 `/pipelines/{id}` 旧路径外，其余路径形状均能映射到当前 `/api/v1` backend 路由或已知 SSE / auth / artifact 入口；该旧路径仍由 `T-FRONTEND-API` 承接。 |
 | 最终机器校验复跑 | 通过，`git diff --check` 无输出；`docs/TODO.md` 编号 1-27 连续；`feature-catalog` §4.1 为 22 个必做项、§4.2 为 5 个增强项；PRD 与 catalog 均含 30 个 `F-*` 功能 ID 且无缺失/额外；catalog 非绿色项均能在 TODO 中找到承接；本文 §15 当前有 21 个 `T-*` 后续任务别名且均有 TODO / catalog 落点；Markdown 相对链接检查 20 个链接、缺失 0；旧计数/旧编号残留扫描无命中。 |
-| Git refs / 配置命令最终复跑 | 通过，本地 `main` 仍为 `34937a3`、`origin/main` 仍为 `302ede0` 且是本地 `main` 祖先，`origin/HEAD` 仍指向 `origin/phase1-release-prep`；8 个 `feature/T*` 分支本地 SHA 与对应 `origin/feature/*` 一致且均未合入 `main`。`Settings` 仍为 39 个 `QAP_` 字段，`.env.example` 缺失 0，额外 `QAP_DB_USER` / `QAP_DB_PASSWORD` / `QAP_DB_NAME` 仍只服务 Compose；Makefile 与 npm scripts 仍与 README / development / frontend README 当前引用一致。 |
+| Git refs / 配置命令最终复跑 | 审计快照通过：本地 `main=34937a3`、`origin/main=302ede0` 且 `origin/main` 是本地 `main` 祖先，`origin/HEAD` 指向 `origin/phase1-release-prep`；8 个 `feature/T*` 分支本地 SHA 与对应 `origin/feature/*` 一致且均未合入 `main`。配置命令部分仍按当时源码复核：`Settings` 为 39 个 `QAP_` 字段，`.env.example` 缺失 0，额外 `QAP_DB_USER` / `QAP_DB_PASSWORD` / `QAP_DB_NAME` 只服务 Compose；Makefile 与 npm scripts 与 README / development / frontend README 引用一致。 |
 | Runbook 变量命名最终复跑 | 发现 `docs/runbook.md` 轮换章节标题和正文仍使用无前缀 `JWT_SECRET` / `ENCRYPTION_KEY`，而当前 `Settings` 使用 `QAP_` 前缀；已改为 `QAP_JWT_SECRET` / `QAP_ENCRYPTION_KEY`，并同步 `.env.example` 注释。 |
 | 前端依赖安装口径复跑 | 发现 README / frontend README 快速启动仍写 `npm install`，但仓库有 `package-lock.json`，CI、E2E 与 development 文档均使用 `npm ci`；已统一快速启动为 `npm ci`，减少本地依赖树与 CI 锁文件漂移。 |
 | 依赖与 Alembic 最终复跑 | 通过，`pyproject.toml` 的 `dev` extra 仍包含 pytest / pytest-asyncio / pytest-cov / httpx / testcontainers / ruff，可支撑 README / development 的后端本地命令；根目录与 frontend 均有 `package-lock.json`，执行性文档已统一用 `npm ci`。Alembic 源码迁移链仍为单 head `006`，本地数据库 current 仍为 `005`，因此真实 DB 测试前需先 `alembic upgrade head` 的提醒仍成立。 |
 | 非历史真源文档旧 PRD 章节引用复跑 | 发现 `docs/feature-catalog.md` / `docs/TODO.md` 仍直接提到不存在的旧 `PRD §9.6`；已改为当前事实口径：审计日志查询 API 以 catalog/T02 为执行来源，正式 PRD 章节仍待补。历史细节继续保留在本文冲突记录中。 |
+| 文档真源稳定性复跑 | 2026-05-27 review 发现本文的 git SHA / ahead 计数、`docs/feature-catalog.md` 的同步源说明、`docs/fix-roadmap.md` 的当前真源列表和 `docs/TODO.md` 的 `TODO #n` 映射存在易漂移风险；已改为审计快照、证据档案与稳定标题映射。 |
 
 结论：本轮“十多轮”审计结果已经落到本文和相关真相源文档中；剩余事项不是文档漏写，而是需要后续产品/实现任务继续处理的 backlog。
 
@@ -270,9 +273,19 @@
 - 后续任务输出汇总继续单独列“已推送分支”和“已合入 main”。
 - 后续自动化脚本应显式使用 `main` / `origin/main`，不要依赖当前 `origin/HEAD`。
 
-### 1.2 本地 main 与远端 main 不是同一个 ref 状态
+### 1.2 本地 main 与远端 main 的审计快照
 
-本轮 git refs 复核确认：本地 `main` 没有 upstream 配置；`git ls-remote --heads origin main` 返回 `302ede0`，本地 `main` 是 `34937a3`。`origin/main` 是本地 `main` 的祖先，本地多出的 5 个提交均为 docs commit：
+本节记录的是 2026-05-26 审计时的 git refs 快照，不是实时状态源。实时状态请现场执行：
+
+```bash
+git status --short --branch
+git rev-parse --short HEAD
+git rev-list --count origin/main..main
+git rev-list --count main..origin/main
+git symbolic-ref --short refs/remotes/origin/HEAD || true
+```
+
+当时复核确认：本地 `main` 没有 upstream 配置；`git ls-remote --heads origin main` 返回 `302ede0`，本地 `main` 是 `34937a3`。`origin/main` 是本地 `main` 的祖先，本地多出的 5 个提交均为 docs commit：
 
 ```text
 34937a3 docs(roadmap): 修正 §4.3 E2E 实际状态
@@ -284,8 +297,8 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 影响：
 
-- 在当前工作树未清理前，不应尝试 `git pull` / `git push` / 分支重置来“修正”这个状态。
-- 后续若需要让远端 main 包含这 5 个 docs commit，应由 maintainer 明确决定推送或通过 PR 合入。
+- 不应根据本文内的 SHA 或 ahead/behind 数直接判断当前是否可 push / pull / reset；必须先用上方 git 命令复核。
+- 后续若需要让远端 main 包含本地 docs commit，应由 maintainer 明确决定推送或通过 PR 合入。
 
 ## 2. PRD / catalog / TODO / tasks 之间的冲突
 

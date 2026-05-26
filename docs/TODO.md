@@ -3,7 +3,7 @@
 > 完整功能盘子与状态见 [`feature-catalog.md`](feature-catalog.md)
 > **首批可交付任务包见 [`tasks/`](tasks/README.md)**（codex-ready，含规格 + 起点 + 验收 + 约束）；本轮审计新增的待办若进入实施，需要后续补任务包。
 > 本文件按优先级排序"近期要做什么 / 不做什么"，与 catalog §4 保持同步。
-> 更新于 2026-05-26（PRD / catalog / tasks 与代码仍有已知偏移，详见 [`doc-conflict-audit.md`](doc-conflict-audit.md)；8 个任务包已起草，部分 feature 分支已推送但未合入 `main`）
+> 更新于 2026-05-27（PRD / catalog / tasks 与代码仍有已知偏移，审计证据见 [`doc-conflict-audit.md`](doc-conflict-audit.md)；8 个任务包已起草，部分 feature 分支已推送但未合入 `main`）
 
 ---
 
@@ -61,7 +61,7 @@
 
 ### 审计报告任务 ID 对照
 
-`doc-conflict-audit.md` §15 使用 `T-*` 别名记录本轮审计拆出的后续任务；当前 TODO 的优先级与验收来源仍以上方编号项为准。映射如下：
+`doc-conflict-audit.md` §15 使用 `T-*` 别名记录本轮审计拆出的后续任务；当前 TODO 的优先级与验收来源仍以上方表格为准。映射使用稳定标题，避免依赖会随排序变化的编号：
 
 | 审计任务 ID | TODO / catalog 落点 |
 |---|---|
@@ -70,17 +70,17 @@
 | `T-DOC-03` | 已完成第一轮文档修复，见 `doc-conflict-audit.md` §15 |
 | `T-DOC-04` | 已完成第一轮文档修复，见 `doc-conflict-audit.md` §15 |
 | `T-DOC-05` | 已完成第一轮文档修复，见 `doc-conflict-audit.md` §15 |
-| `T-GIT-CREDENTIALS` | TODO #2 F-PM-01 / F-PM-02 Git 凭证执行闭环 |
-| `T-PIPELINE-COLLECTOR` | TODO #3 F-PL-01 collector 配置补齐 |
-| `T-AUDIT-COVERAGE` | TODO #5 审计写入覆盖补齐 |
-| `T-ARTIFACT-PREVIEW` | TODO #6 F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 |
-| `T-LOG-REPLAY` | TODO #7 F-EX-05 日志归档回看闭环 |
-| `T-AUTH-SCOPE` | TODO #8 F-AU-02 API Token scope enforcement 补齐 |
-| `T-MANUAL-TRIGGER` | TODO #10 F-EX-01 手动触发参数与入队验收补齐 |
-| `T-EXEC-RETRY` | TODO #15 F-EX-07 自动重试端到端补齐 |
-| `T-QUEUE-PRIORITY` | TODO #16 F-EX-08 优先级队列消费闭环 |
-| `T-NOTIFICATION-TEMPLATE` | TODO #22 F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
-| `T-RETENTION-OPS` | TODO #25 数据保留清理闭环 |
+| `T-GIT-CREDENTIALS` | F-PM-01 / F-PM-02 Git 凭证执行闭环 |
+| `T-PIPELINE-COLLECTOR` | F-PL-01 collector 配置补齐 |
+| `T-AUDIT-COVERAGE` | 审计写入覆盖补齐 |
+| `T-ARTIFACT-PREVIEW` | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 |
+| `T-LOG-REPLAY` | F-EX-05 日志归档回看闭环 |
+| `T-AUTH-SCOPE` | F-AU-02 API Token scope enforcement 补齐 |
+| `T-MANUAL-TRIGGER` | F-EX-01 手动触发参数与入队验收补齐 |
+| `T-EXEC-RETRY` | F-EX-07 自动重试端到端补齐 |
+| `T-QUEUE-PRIORITY` | F-EX-08 优先级队列消费闭环 |
+| `T-NOTIFICATION-TEMPLATE` | F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
+| `T-RETENTION-OPS` | 数据保留清理闭环 |
 | `T-LINT` | 技术债专项 |
 | `T-FRONTEND-TS` | 技术债专项 |
 | `T-FRONTEND-API` | 技术债专项 |
@@ -91,20 +91,20 @@
 
 `doc-conflict-audit.md` §17 汇总的是不能只靠文档修字完成的产品/架构决策；进入对应 TODO 实施前需先确认下表口径：
 
-| 决策项 | TODO / catalog 落点 |
+| 决策项 | 稳定落点 |
 |---|---|
-| 是否在 PRD 正式补审计日志查询章节 | TODO #4 审计日志查询 API；当前执行依据为 catalog §4.1 |
-| `Schedule.quiet_windows` 与 `Project.settings.silent_windows` 是否长期共存 | TODO #13 F-EX-02 静默窗口；catalog §4.3 已记录当前双机制边界 |
-| T10 是否允许新增 OTLP HTTP exporter 依赖 | TODO #26 OpenTelemetry 装配 |
-| 是否需要独立审计日志清理任务 | TODO #25 数据保留清理闭环 |
-| 是否实现 `retry_failed_archives` 自动补偿与 DB 行冷归档 | TODO #25 数据保留清理闭环 |
-| `/auth/sse-ticket` 临时凭证写入是否必须纳入审计 | TODO #5 审计写入覆盖补齐 |
-| Pipeline collector 配置是补实现还是将 JUnit-only 写成正式产品限制 | TODO #3 F-PL-01 collector 配置补齐 |
-| Allure/HTML 报告预览采用目录入口还是 zip/html 单产物 | TODO #6 F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 |
-| `worker_lost` 是否进入自动重试 | TODO #15 F-EX-07 自动重试端到端补齐 |
-| F-EX-08 采用单 worker 多队列还是多 worker 部署 | TODO #16 F-EX-08 优先级队列消费闭环 |
-| F-NT-03 每渠道模板是否嵌入 `channels[]` | TODO #22 F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
-| F-EX-05 归档日志回看走流式 API 还是 artifact 复用 | TODO #7 F-EX-05 日志归档回看闭环 |
+| 是否在 PRD 正式补审计日志查询章节 | 审计日志查询 API；当前执行依据为 catalog §4.1 |
+| `Schedule.quiet_windows` 与 `Project.settings.silent_windows` 是否长期共存 | F-EX-02 静默窗口；catalog §4.3 已记录当前双机制边界 |
+| T10 是否允许新增 OTLP HTTP exporter 依赖 | OpenTelemetry 装配 |
+| 是否需要独立审计日志清理任务 | 数据保留清理闭环 |
+| 是否实现 `retry_failed_archives` 自动补偿与 DB 行冷归档 | 数据保留清理闭环 |
+| `/auth/sse-ticket` 临时凭证写入是否必须纳入审计 | 审计写入覆盖补齐 |
+| Pipeline collector 配置是补实现还是将 JUnit-only 写成正式产品限制 | F-PL-01 collector 配置补齐 |
+| Allure/HTML 报告预览采用目录入口还是 zip/html 单产物 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 |
+| `worker_lost` 是否进入自动重试 | F-EX-07 自动重试端到端补齐 |
+| F-EX-08 采用单 worker 多队列还是多 worker 部署 | F-EX-08 优先级队列消费闭环 |
+| F-NT-03 每渠道模板是否嵌入 `channels[]` | F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
+| F-EX-05 归档日志回看走流式 API 还是 artifact 复用 | F-EX-05 日志归档回看闭环 |
 
 ## 5. 当前范围不做
 
