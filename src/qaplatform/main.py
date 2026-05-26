@@ -13,6 +13,7 @@ from sqlalchemy import text
 from qaplatform.api.schemas import ErrorDetail, ErrorResponse
 from qaplatform.config import Settings
 from qaplatform.logging import configure_logging
+from qaplatform.observability.tracing import instrument_fastapi, instrument_infra, setup_tracing
 from qaplatform.api.middleware.request_id import RequestIdMiddleware
 from qaplatform.api.middleware.rate_limit import RateLimitMiddleware
 from qaplatform.api.middleware.security_headers import SecurityHeadersMiddleware
@@ -56,7 +57,10 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
             container.init_crypto()
             _ensure_plugin_registry(container)
             app.state.container = container
-        
+            provider = setup_tracing(_settings)
+            if provider is not None:
+                instrument_infra(container, provider)
+
         logger.info("application_started", version="0.1.0")
         yield
         # Shutdown
@@ -100,11 +104,16 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
         docs_url="/docs" if _debug else None,
         redoc_url="/redoc" if _debug else None,
     )
+    provider = setup_tracing(_settings_obj)
+    if provider is not None:
+        instrument_fastapi(app, provider)
 
     # Store container on app state
     if container is not None:
         _ensure_plugin_registry(container)
         app.state.container = container
+        if provider is not None:
+            instrument_infra(container, provider)
 
     # ── Middlewares ──────────────────────────────────────────────────────
     app.add_middleware(SecurityHeadersMiddleware, settings=_settings_obj)
