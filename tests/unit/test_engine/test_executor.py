@@ -74,6 +74,7 @@ def executor(mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry)
 def sample_run():
     run = MagicMock(spec=Run)
     run.id = uuid4()
+    run.project_id = uuid4()
     run.git_ref = "main"
     run.metadata = {"git_url": "https://github.com/org/repo.git"}
     return run
@@ -536,8 +537,6 @@ class TestRunStagesTimeoutGracePeriod:
         """End-to-end: a timeout in _run_stages should propagate so execute()
         writes RunStatus.TIMEOUT (not FAILED) via finish_if_current."""
         from qaplatform.domain.models.run import RunStatus
-        from qaplatform.engine.docker_backend import ExitResult
-        from datetime import datetime, timezone
 
         # Skip the clone step and stub setup-related dependencies.
         timeout_executor.run_repo.finish_if_current = AsyncMock(return_value=True)
@@ -636,6 +635,49 @@ class TestExecutorCommitsAfterStateTransitions:
 
         mock_run_repo.mark_collecting.assert_awaited_once()
         assert mock_run_repo.commit.await_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_execute_emits_manual_phase_spans(
+        self, happy_executor, sample_run, monkeypatch
+    ):
+        """Execution traces should expose the four PRD-defined child phases."""
+        from qaplatform.engine import executor as executor_module
+
+        spans: list[tuple[str, dict | None]] = []
+
+        class _SpanContext:
+            def __init__(self, name: str, attributes: dict | None):
+                self.name = name
+                self.attributes = attributes
+
+            def __enter__(self):
+                spans.append((self.name, self.attributes))
+                return MagicMock()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class _Tracer:
+            def start_as_current_span(self, name: str, attributes=None):
+                return _SpanContext(name, attributes)
+
+        monkeypatch.setattr(
+            executor_module.trace,
+            "get_tracer",
+            lambda name: _Tracer(),
+        )
+
+        sample_run.metadata = {}
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        span_names = [name for name, _attrs in spans]
+        assert span_names == [
+            "source_clone",
+            "container_run",
+            "collect_results",
+            "upload_artifacts",
+        ]
+        assert spans[0][1]["run.id"] == str(sample_run.id)
 
     @pytest.mark.asyncio
     async def test_commit_ordering_running_then_collecting(
@@ -856,10 +898,6 @@ class TestMarkRunningSkippedLog:
         )
 
         # _publish should NOT be called with RUNNING status
-        publish_calls = [
-            call for call in mock_log_stream.method_calls
-            if "publish" in str(call).lower()
-        ]
         # Check that no RUNNING status was published
         for call in mock_log_stream.method_calls:
             if "_publish" in str(call):

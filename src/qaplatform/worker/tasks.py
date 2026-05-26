@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from opentelemetry import trace
 from sqlalchemy import select as _select
 
 from qaplatform.domain.models.run import RunStatus
@@ -134,6 +135,12 @@ async def _attempt_retry(
 
 
 async def execute_run(ctx: dict, run_id: str) -> None:
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span("execute_run", attributes={"run.id": str(run_id)}):
+        return await _execute_run(ctx, run_id)
+
+
+async def _execute_run(ctx: dict, run_id: str) -> None:
     """arq task entry point: execute a QA pipeline run.
 
     Flow:
