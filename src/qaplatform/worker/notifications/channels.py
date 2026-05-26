@@ -255,6 +255,64 @@ class DingtalkChannel:
         return ChannelResult(success=True)
 
 
+# -- WeCom channel ---------------------------------------------------------- #
+
+
+class WecomChannel:
+    """Send messages through WeCom group robot webhooks.
+
+    Config keys:
+        webhook_key, msgtype (text/markdown)
+    """
+
+    ENDPOINT = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send"
+    TIMEOUT = 10  # seconds
+
+    @staticmethod
+    def _build_payload(msgtype: str, message: str) -> dict:
+        if msgtype == "text":
+            return {"msgtype": "text", "text": {"content": message}}
+        if msgtype == "markdown":
+            return {"msgtype": "markdown", "markdown": {"content": message}}
+        raise ValueError(f"unsupported wecom msgtype: {msgtype}")
+
+    async def send(self, config: dict, message: str) -> ChannelResult:
+        webhook_key = config.get("webhook_key")
+        if not webhook_key:
+            return ChannelResult(success=False, error="missing wecom webhook_key")
+
+        msgtype = config.get("msgtype", "text")
+        try:
+            payload = self._build_payload(msgtype, message)
+        except ValueError as exc:
+            return ChannelResult(success=False, error=str(exc))
+
+        try:
+            async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+                response = await client.post(self.ENDPOINT, params={"key": webhook_key}, json=payload)
+        except httpx.TimeoutException:
+            return ChannelResult(success=False, error=f"wecom timeout after {self.TIMEOUT}s")
+        except httpx.HTTPError as exc:
+            return ChannelResult(
+                success=False,
+                error=f"wecom network error: {exc.__class__.__name__}",
+            )
+
+        if response.status_code >= 400:
+            return ChannelResult(success=False, error=f"wecom returned HTTP {response.status_code}")
+
+        try:
+            body = response.json()
+        except ValueError:
+            return ChannelResult(success=False, error="wecom returned invalid JSON")
+
+        errcode = body.get("errcode")
+        if errcode != 0:
+            return ChannelResult(success=False, error=f"wecom API error {errcode}")
+
+        return ChannelResult(success=True)
+
+
 # -- Router ------------------------------------------------------------------ #
 
 
@@ -264,6 +322,7 @@ class ChannelRouter:
     _channels = {
         "dingtalk": DingtalkChannel(),
         "email": EmailChannel(),
+        "wecom": WecomChannel(),
         "webhook": WebhookChannel(),
     }
 
