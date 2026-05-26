@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
+from fnmatch import fnmatch
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.auth.permissions import Action
@@ -21,6 +24,27 @@ from qaplatform.api.schemas import (
 from qaplatform.infra.webhook_signature import verify_webhook_signature
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+log = logging.getLogger(__name__)
+
+
+def _branch_name_from_ref(git_ref: str) -> str:
+    heads_prefix = "refs/heads/"
+    if git_ref.startswith(heads_prefix):
+        return git_ref[len(heads_prefix):]
+    return git_ref
+
+
+def _allowed_branch_patterns(settings: dict | None) -> list[str]:
+    allowed = (settings or {}).get("allowed_branches", [])
+    if not isinstance(allowed, list):
+        return []
+    return [pattern for pattern in allowed if isinstance(pattern, str) and pattern]
+
+
+def _branch_allowed(branch_name: str, allowed_patterns: list[str]) -> bool:
+    if not allowed_patterns:
+        return True
+    return any(fnmatch(branch_name, pattern) for pattern in allowed_patterns)
 
 
 def _to_run_response(orm) -> RunResponse:
@@ -70,6 +94,15 @@ async def webhook_trigger(
             )
 
     await enforce_project_action(session, user, project.id, Action.RUN_TRIGGER)
+
+    branch_name = _branch_name_from_ref(body.git_ref)
+    allowed_branches = _allowed_branch_patterns(project.settings)
+    if not _branch_allowed(branch_name, allowed_branches):
+        log.info("webhook branch filtered for project %s branch %s", project.id, branch_name)
+        return JSONResponse(
+            status_code=200,
+            content={"status": "filtered", "reason": "branch_not_allowed"},
+        )
 
     # Resolve pipeline — use the first active pipeline for the project
     pipelines, _ = await repos.pipeline.list_by_project(project.id, limit=1)
