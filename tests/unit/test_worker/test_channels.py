@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -10,6 +13,7 @@ import pytest
 from qaplatform.worker.notifications.channels import (
     ChannelResult,
     ChannelRouter,
+    DingtalkChannel,
     EmailChannel,
     WebhookChannel,
     route_channel,
@@ -229,6 +233,165 @@ class TestWebhookChannel:
 
 
 # --------------------------------------------------------------------------- #
+# DingtalkChannel
+# --------------------------------------------------------------------------- #
+
+
+class TestDingtalkChannel:
+    @pytest.mark.asyncio
+    async def test_success_text_message(self):
+        channel = DingtalkChannel()
+        config = {"access_token": "token-123"}
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"errcode": 0, "errmsg": "ok"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+            result = await channel.send(config, "构建完成")
+
+        assert result.success is True
+        mock_client.post.assert_awaited_once()
+        call_args = mock_client.post.call_args
+        assert call_args.args[0] == "https://oapi.dingtalk.com/robot/send"
+        assert call_args.kwargs["params"] == {"access_token": "token-123"}
+        assert call_args.kwargs["json"] == {
+            "msgtype": "text",
+            "text": {"content": "构建完成"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_signs_request_when_secret_configured(self):
+        channel = DingtalkChannel()
+        config = {"access_token": "token-123", "secret": "SECabc"}
+        timestamp = 1_700_000_000_123
+        string_to_sign = f"{timestamp}\nSECabc".encode("utf-8")
+        expected_sign = base64.b64encode(
+            hmac.new(b"SECabc", string_to_sign, hashlib.sha256).digest()
+        ).decode("utf-8")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"errcode": 0, "errmsg": "ok"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("qaplatform.worker.notifications.channels.time.time", return_value=timestamp / 1000),
+            patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client),
+        ):
+            result = await channel.send(config, "构建完成")
+
+        assert result.success is True
+        params = mock_client.post.call_args.kwargs["params"]
+        assert params["access_token"] == "token-123"
+        assert params["timestamp"] == timestamp
+        assert params["sign"] == expected_sign
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_failure_without_secret_values(self):
+        channel = DingtalkChannel()
+        config = {"access_token": "token-123", "secret": "SECabc"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+            result = await channel.send(config, "构建完成")
+
+        assert result.success is False
+        assert "timeout" in result.error
+        assert "token-123" not in result.error
+        assert "SECabc" not in result.error
+
+    @pytest.mark.asyncio
+    async def test_api_errcode_returns_failure_without_secret_values(self):
+        channel = DingtalkChannel()
+        config = {"access_token": "token-123", "secret": "SECabc"}
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "errcode": 310000,
+            "errmsg": "token-123 keyword missing SECabc",
+        }
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+            result = await channel.send(config, "构建完成")
+
+        assert result.success is False
+        assert "310000" in result.error
+        assert "token-123" not in result.error
+        assert "SECabc" not in result.error
+        assert "keyword missing" not in result.error
+
+    @pytest.mark.asyncio
+    async def test_markdown_message(self):
+        channel = DingtalkChannel()
+        config = {
+            "access_token": "token-123",
+            "msgtype": "markdown",
+            "title": "流水线通知",
+        }
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"errcode": 0, "errmsg": "ok"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+            result = await channel.send(config, "### 构建完成")
+
+        assert result.success is True
+        assert mock_client.post.call_args.kwargs["json"] == {
+            "msgtype": "markdown",
+            "markdown": {"title": "流水线通知", "text": "### 构建完成"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_http_error_status_returns_failure(self):
+        channel = DingtalkChannel()
+        config = {"access_token": "token-123", "secret": "SECabc"}
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "upstream token-123 failed SECabc"
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+            result = await channel.send(config, "构建完成")
+
+        assert result.success is False
+        assert "500" in result.error
+        assert "token-123" not in result.error
+        assert "SECabc" not in result.error
+        assert "upstream" not in result.error
+
+
+# --------------------------------------------------------------------------- #
 # ChannelRouter
 # --------------------------------------------------------------------------- #
 
@@ -257,6 +420,18 @@ class TestChannelRouter:
         result = await router.route_channel("webhook", {"url": "https://x"}, "msg")
         assert result.success is True
         wh_channel.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_route_dingtalk(self):
+        """Verify routing to dingtalk channel."""
+        router = ChannelRouter()
+        dt_channel = MagicMock()
+        dt_channel.send = AsyncMock(return_value=ChannelResult(success=True))
+        router._channels = {"dingtalk": dt_channel}
+
+        result = await router.route_channel("dingtalk", {"access_token": "x"}, "msg")
+        assert result.success is True
+        dt_channel.send.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_route_unknown(self):
