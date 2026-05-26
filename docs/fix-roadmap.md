@@ -1,9 +1,10 @@
 # QA Platform 修复路线图（合并多 review 共识版）
 
+> **历史档案说明**：本文是 2026-05-21 的 review 汇总与修复路线图，不是当前 `main` 实现状态的真相源。当前 backlog / 状态以 `docs/feature-catalog.md`、`docs/TODO.md` 和 `docs/tasks/` 为准；`docs/doc-conflict-audit.md` 仅作审计证据档案。
 > 生成日期：2026-05-21
 > 输入来源：claude / kimi / glm / xiaomi / deepseek / Antigravity / minimax 共 7 份 review
 > 编排原则：每条问题都已通过一手代码验证（grep / sed 已确认存在），剔除误判项；按"安全可利用 → 数据正确性 → 可用性 → 容器/部署 → 测试与一致性"的顺序排布
-> 验证基线：`ruff check` 干净；单元测试 608 通过；分支 `main @ a34ced4`
+> 当时验证基线：`ruff check` 干净；单元测试 608 通过；分支 `main @ a34ced4`。该基线已过期，勿据此判断当前 `main`。
 
 ---
 
@@ -133,7 +134,7 @@ if (win) win.opener = null;
 ### §2.1 审计写入失败异常向用户传播（19 处 `raise`）✅ 55228e8
 
 **位置**：`src/qaplatform/api/v1/auth.py` — 254、310、368、390、433、513、551、596 等共 9 处 `raise`（含登录失败审计、refresh、logout、token 创建/吊销 等）
-**问题**：`api/audit.py:write_audit` 已正确实现 best-effort（log + 吞），但 auth.py 的 `_write_failed_audit` 与各审计 try 块全部在 `rollback` 后 `raise`，把审计 IO 抖动升级成用户 500。
+**问题**：`api/audit.py:write_audit` 已正确实现 best-effort（log + 吞），但 `src/qaplatform/api/v1/auth.py` 的 `_write_failed_audit` 与各审计 try 块全部在 `rollback` 后 `raise`，把审计 IO 抖动升级成用户 500。
 **修复**：所有审计 except 路径统一改为：
 ```python
 except Exception:
@@ -405,12 +406,14 @@ USER app:app
 
 ---
 
-### §4.3 E2E 测试在 CI 中被禁用 ✅ abbbccd
+### §4.3 E2E 测试在 CI 中被禁用 ⚠️ abbbccd（部分完成）
 
 **位置**：`.github/workflows/ci.yml:138-139`（`if: false`）
 **当前**：`tests/e2e/` 已有 3 个 spec + 完整 playwright config 但不跑。
 **修复**：先把 `auth-flow.spec.ts` 启用（最稳定），其余暂时改 `if: github.event_name == 'workflow_dispatch'` 以便手工拉起。
 **配套**：修复 `tests/e2e/global-setup.ts:88-90` 硬编码 `admin:admin123`，改用 `E2E_ADMIN_PASSWORD` 环境变量。
+**实际状态（2026-05-25 复核）**：`ci.yml:139` 全部 E2E spec 改为 `workflow_dispatch` 手动触发；`auth-flow.spec.ts` 的 push 触发**未启用**。视为部分完成，剩余工作记入 `feature-catalog.md` §4.2。
+**后续更新（2026-05-26 文档审计修正）**：`.github/workflows/ci.yml` 已增加 `workflow_dispatch`；push / pull_request 自动运行稳定的 `tests/e2e/auth-flow.spec.ts`，workflow_dispatch 手动运行全量 E2E。当前剩余工作是是否扩大 push / PR 的 E2E 覆盖范围，已在 `feature-catalog.md` / `TODO.md` 记录为“E2E CI 覆盖扩展”。
 **来源**：claude 2.8 / kimi P1-7 / deepseek 4.3 / xiaomi M-15
 
 ---

@@ -101,7 +101,6 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
   const { t } = useTranslation();
   const [variables, setVariables] = useState(env.variables);
   const [isEditing, setIsEditing] = useState(false);
-
   const [showValues, setShowValues] = useState<Record<string, boolean>>({});
 
   const { mutateAsync: updateEnv } = useUpdateEnvironment(projectId, env.id);

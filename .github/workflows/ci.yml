@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   lint-and-type-check:
@@ -172,7 +173,6 @@ jobs:
           echo "Only known T-FRONTEND-TS debt files produced TypeScript errors."
 
   e2e-test:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -221,6 +221,7 @@ jobs:
 
       - name: Run E2E tests
         env:
+          E2E_ADMIN_PASSWORD: admin123
           QAP_DATABASE_URL: postgresql+asyncpg://qaplatform:qaplatform@localhost:5432/qaplatform
           QAP_REDIS_URL: redis://localhost:6379/0
           QAP_S3_ENDPOINT: http://localhost:9000
@@ -229,4 +230,9 @@ jobs:
           QAP_S3_BUCKET: qa-platform
           QAP_JWT_SECRET: ci-test-jwt-secret-not-for-production-use
           QAP_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        run: npm run test:e2e
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            npm run test:e2e
+          else
+            npm run test:e2e -- tests/e2e/auth-flow.spec.ts
+          fi
