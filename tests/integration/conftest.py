@@ -256,6 +256,7 @@ async def integration_app(test_settings, integration_db_schema, seed_run):
     container = init_container(test_settings)
     await container.init_db()
     await container.init_redis()
+    container.init_crypto()
     # plugin_registry is needed for executor; we don't run the executor through
     # the API in these tests but the lifespan in main.py expects it. Pre-fill
     # so create_app's lifespan _ensure_plugin_registry no-ops.
