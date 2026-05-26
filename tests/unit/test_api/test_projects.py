@@ -138,6 +138,33 @@ async def test_create_project_duplicate_slug(client, mock_project_repo):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"allowed_branches": "main"},
+        {"allowed_branches": [""]},
+        {"allowed_branches": [123]},
+        {"allowed_branches": ["main"] * 51},
+        {"allowed_branches": ["x" * 201]},
+    ],
+)
+async def test_create_project_rejects_invalid_allowed_branches(client, mock_project_repo, settings):
+    resp = await client.post(
+        "/api/v1/projects",
+        json={
+            "name": "test-project",
+            "slug": "test-project",
+            "git_url": "https://github.com/example/repo.git",
+            "settings": settings,
+        },
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 422
+    mock_project_repo.create.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_create_project_adds_creator_as_project_admin(
     app, mock_project_repo, tenant_id, mock_user
 ):
@@ -231,6 +258,18 @@ async def test_update_project_not_found(client, mock_project_repo):
         headers={"Authorization": "Bearer fake"},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_project_rejects_invalid_allowed_branches(client, mock_project_repo):
+    resp = await client.put(
+        f"/api/v1/projects/{uuid.uuid4()}",
+        json={"settings": {"allowed_branches": "main"}},
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 422
+    mock_project_repo.update.assert_not_called()
 
 
 @pytest.mark.asyncio
