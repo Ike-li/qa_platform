@@ -273,6 +273,63 @@ async def test_update_project_rejects_invalid_allowed_branches(client, mock_proj
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"silent_windows": [{"start_at": "2026-06-01T09:00:00", "end_at": "2026-06-01T10:00:00Z", "reason": "freeze"}]},
+        {"silent_windows": [{"start_at": "2026-06-01T10:00:00Z", "end_at": "2026-06-01T09:00:00Z", "reason": "freeze"}]},
+        {"silent_windows": [{"start_at": "2026-06-01T09:00:00Z", "end_at": "2026-06-01T10:00:00Z", "reason": "freeze"}] * 21},
+        {"settings": {"silent_windows": "nope"}},
+        {"settings": {"silent_windows": [{"start_at": "2026-06-01T09:00:00", "end_at": "2026-06-01T10:00:00Z", "reason": "freeze"}]}},
+    ],
+)
+async def test_update_project_rejects_invalid_silent_windows(client, mock_project_repo, payload):
+    resp = await client.put(
+        f"/api/v1/projects/{uuid.uuid4()}",
+        json=payload,
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 422
+    mock_project_repo.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_project_serializes_silent_windows_into_settings(client, mock_project_repo, tenant_id):
+    project = _make_orm_project(
+        tenant_id=tenant_id,
+        settings={"allowed_branches": ["main"], "webhook_secret": "secret"},
+    )
+    mock_project_repo.get_for_tenant.return_value = project
+
+    async def _update(_project, **kwargs):
+        return _make_orm_project(tenant_id=tenant_id, settings=kwargs["settings"])
+
+    mock_project_repo.update.side_effect = _update
+
+    resp = await client.put(
+        f"/api/v1/projects/{project.id}",
+        json={
+            "silent_windows": [
+                {
+                    "start_at": "2026-06-01T09:00:00+08:00",
+                    "end_at": "2026-06-01T10:00:00+08:00",
+                    "reason": "Release freeze",
+                }
+            ]
+        },
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 200
+    settings = mock_project_repo.update.call_args.kwargs["settings"]
+    assert settings["allowed_branches"] == ["main"]
+    assert settings["webhook_secret"] == "secret"
+    assert settings["silent_windows"][0]["reason"] == "Release freeze"
+    assert resp.json()["silent_windows"][0]["reason"] == "Release freeze"
+
+
+@pytest.mark.asyncio
 async def test_delete_project(client, mock_project_repo, tenant_id):
     project = _make_orm_project(tenant_id=tenant_id)
     mock_project_repo.get_for_tenant.return_value = project
