@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -113,7 +112,10 @@ class TestWebhookChannel:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch.object(WebhookChannel, "_validate_webhook_url", return_value=None),
+            patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client),
+        ):
             result = await channel.send(config, "test message")
 
         assert result.success is True
@@ -138,7 +140,10 @@ class TestWebhookChannel:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch.object(WebhookChannel, "_validate_webhook_url", return_value=None),
+            patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client),
+        ):
             result = await channel.send(config, "test message")
 
         assert result.success is False
@@ -155,7 +160,10 @@ class TestWebhookChannel:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch.object(WebhookChannel, "_validate_webhook_url", return_value=None),
+            patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client),
+        ):
             result = await channel.send(config, "test message")
 
         assert result.success is False
@@ -182,7 +190,10 @@ class TestWebhookChannel:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch.object(WebhookChannel, "_validate_webhook_url", return_value=None),
+            patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client),
+        ):
             result = await channel.send(config, "test message")
 
         assert result.success is True
@@ -206,7 +217,10 @@ class TestWebhookChannel:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch.object(WebhookChannel, "_validate_webhook_url", return_value=None),
+            patch("qaplatform.worker.notifications.channels.httpx.AsyncClient", return_value=mock_client),
+        ):
             result = await channel.send(config, "test message")
 
         assert result.success is True
