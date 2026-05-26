@@ -315,6 +315,77 @@ async def test_get_run_results(client, mock_run_repo, mock_result_repo, tenant_i
 
 
 @pytest.mark.asyncio
+async def test_get_run_results_filters_by_suite(client, mock_run_repo, mock_result_repo, tenant_id):
+    mock_run_repo.get_for_tenant.return_value = _make_orm_run(tenant_id=tenant_id)
+    mock_result_repo.list.return_value = ([], 0)
+
+    resp = await client.get(
+        f"/api/v1/runs/{uuid.uuid4()}/results?suite=checkout",
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 200
+    filters = mock_result_repo.list.call_args.kwargs["filters"]
+    rendered = [str(f.compile(compile_kwargs={"literal_binds": True})) for f in filters]
+    assert any("suite = 'checkout'" in r for r in rendered), rendered
+
+
+@pytest.mark.asyncio
+async def test_get_run_results_filters_by_keyword(client, mock_run_repo, mock_result_repo, tenant_id):
+    mock_run_repo.get_for_tenant.return_value = _make_orm_run(tenant_id=tenant_id)
+    mock_result_repo.list.return_value = ([], 0)
+
+    resp = await client.get(
+        f"/api/v1/runs/{uuid.uuid4()}/results?q=timeout",
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 200
+    filters = mock_result_repo.list.call_args.kwargs["filters"]
+    rendered = [str(f.compile(compile_kwargs={"literal_binds": True})) for f in filters]
+    q_filter = next(r for r in rendered if "timeout" in r)
+    assert "name" in q_filter
+    assert "error_message" in q_filter
+    assert "ESCAPE" in q_filter
+
+
+@pytest.mark.asyncio
+async def test_get_run_results_combines_suite_and_keyword(client, mock_run_repo, mock_result_repo, tenant_id):
+    mock_run_repo.get_for_tenant.return_value = _make_orm_run(tenant_id=tenant_id)
+    mock_result_repo.list.return_value = ([], 0)
+
+    resp = await client.get(
+        f"/api/v1/runs/{uuid.uuid4()}/results?status=failed&suite=checkout&q=timeout",
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 200
+    filters = mock_result_repo.list.call_args.kwargs["filters"]
+    rendered = [str(f.compile(compile_kwargs={"literal_binds": True})) for f in filters]
+    assert any("status = 'failed'" in r for r in rendered), rendered
+    assert any("suite = 'checkout'" in r for r in rendered), rendered
+    assert any("timeout" in r and "error_message" in r for r in rendered), rendered
+
+
+@pytest.mark.asyncio
+async def test_get_run_results_escapes_keyword_like_wildcards(client, mock_run_repo, mock_result_repo, tenant_id):
+    mock_run_repo.get_for_tenant.return_value = _make_orm_run(tenant_id=tenant_id)
+    mock_result_repo.list.return_value = ([], 0)
+
+    resp = await client.get(
+        f"/api/v1/runs/{uuid.uuid4()}/results?q=case%25_%5C",
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 200
+    filters = mock_result_repo.list.call_args.kwargs["filters"]
+    rendered = [str(f.compile(compile_kwargs={"literal_binds": True})) for f in filters]
+    q_filter = next(r for r in rendered if "case" in r)
+    assert "%case\\%\\_\\\\%" in q_filter
+    assert "ESCAPE" in q_filter
+
+
+@pytest.mark.asyncio
 async def test_get_run_artifacts(client, mock_run_repo, mock_artifact_repo, tenant_id):
     mock_run_repo.get_for_tenant.return_value = _make_orm_run(tenant_id=tenant_id)
     mock_artifact_repo.list_by_run.return_value = ([], 0)
