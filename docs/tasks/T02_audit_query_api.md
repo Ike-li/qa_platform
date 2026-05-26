@@ -34,7 +34,7 @@ GET /api/v1/audit-events
   ?start_at=<iso8601>
   ?end_at=<iso8601>
   ?page=1&per_page=20        # 默认 20，最大 100
-  
+
 Response: PaginatedResponse[AuditEventResponse]
 ```
 

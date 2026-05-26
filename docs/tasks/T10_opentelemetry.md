@@ -38,7 +38,7 @@ env var 命名：`QAP_OTEL_ENABLED` / `QAP_OTEL_EXPORTER_ENDPOINT` / etc.
 def setup_tracing(settings: Settings) -> TracerProvider | None:
     if not settings.otel_enabled:
         return None
-    
+
     resource = Resource.create({"service.name": settings.otel_service_name})
     provider = TracerProvider(
         resource=resource,
