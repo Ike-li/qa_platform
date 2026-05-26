@@ -29,6 +29,7 @@ async def on_startup(ctx: dict) -> None:
     await container.init_redis()
     await container.init_arq()
     await container.init_s3()
+    container.init_crypto()
 
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
 
