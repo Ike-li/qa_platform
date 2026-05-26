@@ -17,13 +17,26 @@ from qaplatform.api.schemas import (
     ProjectResponse,
     ProjectUpdate,
 )
+from qaplatform.domain.models.project import SilentWindow
 from qaplatform.infra.database.models import Project as ProjectORM
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 def _to_response(orm: ProjectORM) -> ProjectResponse:
-    return ProjectResponse.model_validate(orm)
+    settings = orm.settings or {}
+    return ProjectResponse.model_validate(orm).model_copy(
+        update={
+            "silent_windows": [
+                SilentWindow.model_validate(window)
+                for window in settings.get("silent_windows", [])
+            ]
+        }
+    )
+
+
+def _serialize_silent_windows(windows: list[SilentWindow]) -> list[dict]:
+    return [window.model_dump(mode="json") for window in windows]
 
 
 @router.get(
@@ -150,6 +163,11 @@ async def update_project(
 
     before = _to_response(project)
     update_data = body.model_dump(exclude_unset=True)
+    if body.silent_windows is not None:
+        update_data.pop("silent_windows", None)
+        settings = dict(update_data.pop("settings", None) or project.settings or {})
+        settings["silent_windows"] = _serialize_silent_windows(body.silent_windows)
+        update_data["settings"] = settings
     updated = await repos.project.update(project, **update_data)
     after = _to_response(updated)
     await write_audit(

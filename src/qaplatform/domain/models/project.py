@@ -4,7 +4,28 @@ from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class SilentWindow(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    start_at: datetime
+    end_at: datetime
+    reason: str = Field(..., min_length=1, max_length=200)
+
+    @field_validator("start_at", "end_at")
+    @classmethod
+    def _require_tz_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("datetime must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def _require_positive_window(self) -> "SilentWindow":
+        if self.end_at <= self.start_at:
+            raise ValueError("end_at must be greater than start_at")
+        return self
 
 
 class Project(BaseModel):
@@ -23,6 +44,7 @@ class Project(BaseModel):
     shallow_clone: bool = True
     default_env_id: UUID | None = None
     settings: dict = Field(default_factory=dict)
+    silent_windows: list[SilentWindow] = Field(default_factory=list, max_length=20)
     status: Literal["active", "archived"] = "active"
     created_by: UUID
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
