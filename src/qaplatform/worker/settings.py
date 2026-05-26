@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 import os
 import uuid
 
 import aiodocker
-
-log = logging.getLogger(__name__)
 from arq import cron, func
 from arq.connections import RedisSettings
 
 from qaplatform.worker.tasks import execute_run
+
+log = logging.getLogger(__name__)
 
 
 async def on_startup(ctx: dict) -> None:
@@ -144,15 +145,23 @@ async def retry_failed_archives(ctx: dict) -> None:
 
 async def check_schedules(ctx: dict) -> None:
     """Periodic task: fire due schedules by creating runs and enqueueing them."""
-    from datetime import datetime, timezone
+    from types import SimpleNamespace
 
+    from qaplatform.api.audit import write_audit
+    from qaplatform.domain.services.schedule import (
+        ScheduleSkippedSilentWindowAudit,
+        is_in_silent_window,
+        silent_windows_from_settings,
+    )
     from qaplatform.domain.services.scheduling import (
         compute_next_run_at,
         should_fire,
     )
+    from qaplatform.infra.database.repositories.audit_repo import AuditEventRepository
     from qaplatform.infra.database.repositories.project_repo import (
         EnvironmentRepository,
         PipelineRepository,
+        ProjectRepository,
         ScheduleRepository,
     )
     from qaplatform.infra.database.repositories.run_repo import RunRepository
@@ -169,8 +178,10 @@ async def check_schedules(ctx: dict) -> None:
     async with session_factory() as session:
         schedule_repo = ScheduleRepository(session)
         run_repo = RunRepository(session)
+        project_repo = ProjectRepository(session)
         pipeline_repo = PipelineRepository(session)
         env_repo = EnvironmentRepository(session)
+        audit_repo = AuditEventRepository(session)
 
         due = await schedule_repo.find_due_schedules(now)
         if not due:
@@ -193,15 +204,46 @@ async def check_schedules(ctx: dict) -> None:
                     )
                     continue
 
+                project = await project_repo.get_by_id(schedule.project_id)
+                if project is None:
+                    await schedule_repo.update_after_fire(
+                        schedule.id,
+                        last_run_at=now,
+                        next_run_at=compute_next_run_at(schedule.cron_expr, schedule.timezone, now),
+                        last_error="project not found",
+                    )
+                    continue
+
+                silent_window = is_in_silent_window(
+                    silent_windows_from_settings(project.settings),
+                    now,
+                )
+                if silent_window is not None:
+                    audit_repos = SimpleNamespace(audit=audit_repo)
+                    audit_user = SimpleNamespace(tenant_id=project.tenant_id, user_id=None)
+                    await write_audit(
+                        audit_repos,
+                        audit_user,
+                        action="schedule_skipped_silent_window",
+                        resource_type="schedule",
+                        resource_id=schedule.id,
+                        after=ScheduleSkippedSilentWindowAudit(
+                            schedule_id=schedule.id,
+                            window=silent_window,
+                        ),
+                    )
+                    await session.commit()
+                    continue
+
                 # Resolve environment
                 envs, _ = await env_repo.list_by_project(schedule.project_id, limit=1)
                 environment_id = envs[0].id if envs else None
 
                 # Determine git_ref from pipeline's project default
-                git_ref = getattr(pipeline.project, "default_branch", None) or "main"
+                git_ref = project.default_branch or "main"
 
                 run = await run_repo.create(
-                    tenant_id=pipeline.project.tenant_id if pipeline.project else None,
+                    tenant_id=project.tenant_id,
                     project_id=schedule.project_id,
                     pipeline_id=schedule.pipeline_id,
                     environment_id=environment_id,
