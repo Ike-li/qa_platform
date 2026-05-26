@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import IntegrityError
 from types import SimpleNamespace
 
 
@@ -104,6 +105,27 @@ async def _make_client(app):
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize(
+    ("settings", "git_ref", "expected"),
+    [
+        ({}, "refs/heads/feature/foo", True),
+        ({"allowed_branches": ["main"]}, "refs/heads/main", True),
+        ({"allowed_branches": ["release/*"]}, "refs/heads/release/2026.05", True),
+        ({"allowed_branches": ["main"]}, "refs/heads/feature/foo", False),
+    ],
+)
+def test_webhook_allowed_branches(settings, git_ref, expected):
+    from qaplatform.api.v1.webhooks import (
+        _allowed_branch_patterns,
+        _branch_allowed,
+        _branch_name_from_ref,
+    )
+
+    branch_name = _branch_name_from_ref(git_ref)
+
+    assert _branch_allowed(branch_name, _allowed_branch_patterns(settings)) is expected
+
+
 class TestWebhookTrigger:
     @pytest.mark.asyncio
     async def test_webhook_trigger_creates_run(self, app, mock_repos, project_id, mock_pipeline):
@@ -135,13 +157,16 @@ class TestWebhookTrigger:
             async with await _make_client(app) as client:
                 resp = await client.post(
                     f"/api/v1/webhooks/{project_id}/trigger",
-                    json={"git_ref": "main"},
+                    json={"git_ref": "refs/heads/main", "git_sha": "abc123"},
                 )
 
         assert resp.status_code == 201
         mock_repos.run.create.assert_awaited_once()
         call_kwargs = mock_repos.run.create.call_args.kwargs
         assert call_kwargs["trigger_type"] == "webhook"
+        assert call_kwargs["dedup_key"] == (
+            "webhook:https://github.com/org/repo.git:abc123:main"
+        )
 
     @pytest.mark.asyncio
     async def test_webhook_trigger_archived_project_409(self, app, mock_repos, project_id):
@@ -156,6 +181,46 @@ class TestWebhookTrigger:
             )
 
         assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_webhook_trigger_filtered_branch_returns_200_without_run(
+        self,
+        app,
+        mock_project,
+        mock_repos,
+        project_id,
+    ):
+        mock_project.settings = {"allowed_branches": ["main"]}
+
+        async with await _make_client(app) as client:
+            resp = await client.post(
+                f"/api/v1/webhooks/{project_id}/trigger",
+                json={"git_ref": "refs/heads/feature/foo", "git_sha": "abc123"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "filtered"
+        mock_repos.run.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_webhook_trigger_dedup_integrity_error_returns_duplicate(
+        self,
+        app,
+        mock_repos,
+        project_id,
+    ):
+        mock_repos.run.create = AsyncMock(
+            side_effect=IntegrityError("insert run", {}, Exception("duplicate"))
+        )
+
+        async with await _make_client(app) as client:
+            resp = await client.post(
+                f"/api/v1/webhooks/{project_id}/trigger",
+                json={"git_ref": "refs/heads/main", "git_sha": "abc123"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "duplicate"}
 
 
 # --------------------------------------------------------------------------- #

@@ -7,10 +7,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._\-/:]*(:[a-zA-Z0-9._\-]+)?(@sha256:[a-f0-9]+)?$")
-
 # Re-export domain common schemas for convenience
-from qaplatform.domain.models.common import PaginatedResponse, PaginationParams
+from qaplatform.domain.models.common import (
+    PaginatedResponse as PaginatedResponse,
+    PaginationParams as PaginationParams,
+)
+
+_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._\-/:]*(:[a-zA-Z0-9._\-]+)?(@sha256:[a-f0-9]+)?$")
 
 
 # ── Unified error ────────────────────────────────────────────────────────────
@@ -31,6 +34,27 @@ class ErrorResponse(BaseModel):
 
 # ── Project schemas ──────────────────────────────────────────────────────────
 
+def _validate_project_settings(settings: dict | None) -> dict | None:
+    if settings is None:
+        return None
+
+    allowed = settings.get("allowed_branches")
+    if allowed is None:
+        return settings
+    if not isinstance(allowed, list):
+        raise ValueError("settings.allowed_branches must be a list of strings")
+    if len(allowed) > 50:
+        raise ValueError("settings.allowed_branches must contain at most 50 entries")
+    for pattern in allowed:
+        if not isinstance(pattern, str):
+            raise ValueError("settings.allowed_branches entries must be strings")
+        if not pattern.strip():
+            raise ValueError("settings.allowed_branches entries must be non-empty")
+        if len(pattern) > 200:
+            raise ValueError("settings.allowed_branches entries must be at most 200 characters")
+    return settings
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(..., max_length=100)
     slug: str = Field(..., max_length=50)
@@ -43,6 +67,11 @@ class ProjectCreate(BaseModel):
     shallow_clone: bool = True
     default_env_id: UUID | None = None
     settings: dict = Field(default_factory=dict)
+
+    @field_validator("settings")
+    @classmethod
+    def _check_settings(cls, v: dict) -> dict:
+        return _validate_project_settings(v) or {}
 
 
 class ProjectUpdate(BaseModel):
@@ -57,6 +86,11 @@ class ProjectUpdate(BaseModel):
     default_env_id: UUID | None = None
     settings: dict | None = None
     status: Literal["active", "archived"] | None = None
+
+    @field_validator("settings")
+    @classmethod
+    def _check_settings(cls, v: dict | None) -> dict | None:
+        return _validate_project_settings(v)
 
 
 class ProjectResponse(BaseModel):
