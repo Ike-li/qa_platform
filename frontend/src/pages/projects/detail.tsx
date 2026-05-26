@@ -10,6 +10,8 @@ import {
   ArrowRight,
   TrendingUp,
   Bell,
+  CalendarClock,
+  Trash2,
 } from "lucide-react";
 import * as React from "react";
 import { useForm } from "react-hook-form";
@@ -24,7 +26,7 @@ import {
   useUpdateProject,
   useDeleteProject
 } from "../../hooks/use-projects";
-import type { Pipeline } from "../../types/api";
+import type { Pipeline, SilentWindow } from "../../types/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -49,6 +51,22 @@ import { NotificationRulesPanel } from "../../components/projects/notification-r
 import { cn } from "../../lib/utils";
 import { usePageTitle } from "../../hooks/use-page-title";
 
+type SilentWindowFormValue = {
+  start_at: string;
+  end_at: string;
+  reason: string;
+};
+
+type SilentWindowState = {
+  projectKey: string;
+  windows: SilentWindowFormValue[];
+};
+
+type SilentWindowErrorState = {
+  projectKey: string;
+  message: string;
+};
+
 function createProjectSchema() {
   return z.object({
     name: z.string().min(1, i18n.t('validation.nameRequired')),
@@ -61,6 +79,40 @@ function createProjectSchema() {
 
 type ProjectFormValues = z.infer<ReturnType<typeof createProjectSchema>>;
 
+function toDateTimeLocalValue(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function normalizeSilentWindows(windows: SilentWindowFormValue[]) {
+  return windows.map((window) => {
+    const start = new Date(window.start_at);
+    const end = new Date(window.end_at);
+    const reason = window.reason.trim();
+    if (!window.start_at || !window.end_at || !reason) {
+      throw new Error("required");
+    }
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+      throw new Error("range");
+    }
+    return {
+      start_at: start.toISOString(),
+      end_at: end.toISOString(),
+      reason,
+    };
+  });
+}
+
+function toSilentWindowFormValues(windows: SilentWindow[] | undefined): SilentWindowFormValue[] {
+  return (windows ?? []).map((window) => ({
+    start_at: toDateTimeLocalValue(window.start_at),
+    end_at: toDateTimeLocalValue(window.end_at),
+    reason: window.reason,
+  }));
+}
+
 export default function ProjectDetail() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
@@ -68,8 +120,29 @@ export default function ProjectDetail() {
   const [isPipelineModalOpen, setIsPipelineModalOpen] = React.useState(false);
   const [selectedPipeline, setSelectedPipeline] = React.useState<Pipeline | undefined>(undefined);
   const [isTriggerModalOpen, setIsTriggerModalOpen] = React.useState(false);
+  const [silentWindowState, setSilentWindowState] = React.useState<SilentWindowState | null>(null);
+  const [silentWindowErrorState, setSilentWindowErrorState] = React.useState<SilentWindowErrorState | null>(null);
 
   const { data: project, isLoading: isProjectLoading } = useProject(id!);
+  const projectKey = project ? `${project.id}:${project.updated_at}` : "";
+  const projectSilentWindows = React.useMemo(
+    () => toSilentWindowFormValues(project?.silent_windows),
+    [project?.silent_windows]
+  );
+  const silentWindows = silentWindowState?.projectKey === projectKey
+    ? silentWindowState.windows
+    : projectSilentWindows;
+  const silentWindowError = silentWindowErrorState?.projectKey === projectKey
+    ? silentWindowErrorState.message
+    : null;
+
+  const setCurrentSilentWindows = (windows: SilentWindowFormValue[]) => {
+    setSilentWindowState({ projectKey, windows });
+  };
+
+  const setCurrentSilentWindowError = (message: string | null) => {
+    setSilentWindowErrorState(message ? { projectKey, message } : null);
+  };
 
   usePageTitle(project ? project.name : t("projects.detailTitle"));
 
@@ -139,6 +212,52 @@ export default function ProjectDetail() {
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } };
       toast.error(axiosError.response?.data?.detail || t('projects.toast.archiveFailed'));
+    }
+  };
+
+  const addSilentWindow = () => {
+    if (silentWindows.length >= 20) {
+      setCurrentSilentWindowError(t('projects.silentWindows.limit'));
+      return;
+    }
+    setCurrentSilentWindows([...silentWindows, { start_at: "", end_at: "", reason: "" }]);
+    setCurrentSilentWindowError(null);
+  };
+
+  const updateSilentWindow = (
+    index: number,
+    key: keyof SilentWindowFormValue,
+    value: string,
+  ) => {
+    setCurrentSilentWindows(
+      silentWindows.map((window, current) => (
+        current === index ? { ...window, [key]: value } : window
+      ))
+    );
+    setCurrentSilentWindowError(null);
+  };
+
+  const removeSilentWindow = (index: number) => {
+    setCurrentSilentWindows(silentWindows.filter((_, current) => current !== index));
+    setCurrentSilentWindowError(null);
+  };
+
+  const onSaveSilentWindows = async () => {
+    try {
+      await updateProject({ silent_windows: normalizeSilentWindows(silentWindows) });
+      toast.success(t('projects.silentWindows.saved'));
+      setCurrentSilentWindowError(null);
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message === "required") {
+        setCurrentSilentWindowError(t('projects.silentWindows.required'));
+        return;
+      }
+      if (error instanceof Error && error.message === "range") {
+        setCurrentSilentWindowError(t('projects.silentWindows.range'));
+        return;
+      }
+      const axiosError = error as { response?: { data?: { detail?: string } } };
+      toast.error(axiosError.response?.data?.detail || t('projects.silentWindows.saveFailed'));
     }
   };
 
@@ -318,6 +437,80 @@ export default function ProjectDetail() {
               </Button>
             </div>
           </form>
+
+          <div className="rounded-xl border border-hairline bg-surface-1 p-6 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="flex items-center gap-2 text-lg font-medium">
+                <CalendarClock className="h-5 w-5 text-primary" />
+                {t('projects.silentWindows.title')}
+              </h3>
+              <Button type="button" variant="outline" size="sm" onClick={addSilentWindow}>
+                <Plus className="mr-2 h-4 w-4" />
+                {t('projects.silentWindows.add')}
+              </Button>
+            </div>
+
+            <div className="space-y-3">
+              {silentWindows.length === 0 ? (
+                <div className="rounded-md border border-dashed border-hairline p-4 text-sm text-ink-tertiary">
+                  {t('projects.silentWindows.empty')}
+                </div>
+              ) : (
+                silentWindows.map((window, index) => (
+                  <div key={index} className="grid gap-3 rounded-md border border-hairline bg-canvas p-3">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor={`silent_start_${index}`}>{t('projects.silentWindows.start')}</Label>
+                        <Input
+                          id={`silent_start_${index}`}
+                          type="datetime-local"
+                          value={window.start_at}
+                          onChange={(event) => updateSilentWindow(index, "start_at", event.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor={`silent_end_${index}`}>{t('projects.silentWindows.end')}</Label>
+                        <Input
+                          id={`silent_end_${index}`}
+                          type="datetime-local"
+                          value={window.end_at}
+                          onChange={(event) => updateSilentWindow(index, "end_at", event.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-end gap-3">
+                      <div className="flex-1 space-y-2">
+                        <Label htmlFor={`silent_reason_${index}`}>{t('projects.silentWindows.reason')}</Label>
+                        <Input
+                          id={`silent_reason_${index}`}
+                          value={window.reason}
+                          maxLength={200}
+                          onChange={(event) => updateSilentWindow(index, "reason", event.target.value)}
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => removeSilentWindow(index)}
+                        aria-label={t('projects.silentWindows.remove')}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {silentWindowError && <p className="text-xs text-status-failed">{silentWindowError}</p>}
+
+            <div className="flex justify-end pt-2">
+              <Button type="button" disabled={isUpdating} onClick={onSaveSilentWindows}>
+                {isUpdating ? t('projects.settings.saving') : t('projects.settings.saveChanges')}
+              </Button>
+            </div>
+          </div>
 
           <div className="rounded-xl border border-status-failed/20 bg-status-failed/5 p-6 space-y-4">
             <h3 className="text-lg font-medium text-status-failed">{t('projects.danger.title')}</h3>
