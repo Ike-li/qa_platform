@@ -115,6 +115,42 @@ def test_defaults_retention(monkeypatch: pytest.MonkeyPatch):
     assert s.retention_audit_days == 1095
 
 
+def test_defaults_otel_disabled(monkeypatch: pytest.MonkeyPatch):
+    _set_required(monkeypatch)
+    s = Settings(_env_file=None)
+    assert s.otel_enabled is False
+    assert s.otel_exporter_endpoint is None
+    assert s.otel_service_name == "qa-platform"
+    assert s.otel_sample_rate == 1.0
+
+
+def test_otel_fields_from_env(monkeypatch: pytest.MonkeyPatch):
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_OTEL_ENABLED", "true")
+    monkeypatch.setenv("QAP_OTEL_EXPORTER_ENDPOINT", "http://tempo:4318/v1/traces")
+    monkeypatch.setenv("QAP_OTEL_SERVICE_NAME", "qa-platform-api")
+    monkeypatch.setenv("QAP_OTEL_SAMPLE_RATE", "0.5")
+
+    s = Settings()
+
+    assert s.otel_enabled is True
+    assert s.otel_exporter_endpoint == "http://tempo:4318/v1/traces"
+    assert s.otel_service_name == "qa-platform-api"
+    assert s.otel_sample_rate == 0.5
+
+
+@pytest.mark.parametrize("sample_rate", ["-0.1", "1.1"])
+def test_otel_sample_rate_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_rate: str,
+):
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_OTEL_SAMPLE_RATE", sample_rate)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
 # --- Required fields missing ---
 
 
