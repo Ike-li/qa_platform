@@ -1,6 +1,6 @@
 # QA Platform 修复路线图（合并多 review 共识版）
 
-> **历史档案说明**：本文是 2026-05-21 的 review 汇总与修复路线图，不是当前 `main` 实现状态的真相源。当前 backlog / 状态以 `docs/feature-catalog.md`、`docs/TODO.md`、`docs/tasks/` 和 `docs/doc-conflict-audit.md` 为准。
+> **历史档案说明**：本文是 2026-05-21 的 review 汇总与修复路线图，不是当前 `main` 实现状态的真相源。当前 backlog / 状态以 `docs/feature-catalog.md`、`docs/TODO.md` 和 `docs/tasks/` 为准；`docs/doc-conflict-audit.md` 仅作审计证据档案。
 > 生成日期：2026-05-21
 > 输入来源：claude / kimi / glm / xiaomi / deepseek / Antigravity / minimax 共 7 份 review
 > 编排原则：每条问题都已通过一手代码验证（grep / sed 已确认存在），剔除误判项；按"安全可利用 → 数据正确性 → 可用性 → 容器/部署 → 测试与一致性"的顺序排布

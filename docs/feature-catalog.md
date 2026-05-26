@@ -1,8 +1,8 @@
 # 功能清单 · QA 自动化执行平台
 
 > **用途**：一页看全产品功能盘子。PRD 对照 / 发版门禁 / 新人 onboarding 都从这里出发。
-> **同步源**：`docs/prd.md`（功能 ID）、`docs/architecture.md`（实现位置）、`docs/TODO.md`（排期）、`docs/doc-conflict-audit.md`（已知文档偏移）。
-> **最后更新**：2026-05-26
+> **当前真源**：`docs/prd.md` 提供产品目标与功能 ID，`docs/architecture.md` 提供当前实现边界，`docs/TODO.md` 提供排期；`docs/doc-conflict-audit.md` 仅作审计证据档案，不作为实时状态源。
+> **最后更新**：2026-05-27
 > **路径约定**：未带仓库前缀的后端路径默认相对 `src/qaplatform/`；未带仓库前缀的前端路径默认相对 `frontend/src/`。
 
 ## 图例
@@ -278,10 +278,10 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 1. **新增功能**：在 §1 或 §2 添加一行；如属于 PRD §3 范围，先在 `prd.md` 增功能 ID 再回填到此表
 2. **不得自造 PRD 子 ID**：禁止在 catalog 写 `F-XX-NNa/b/c` 这类子拆分；如确需拆分须先提 PRD 增补 PR 合并后再回填
 3. **当前范围不做**：移到 §5，写清楚理由；理由不得引用尚未实现的功能作为替代方案
-4. **状态变更**：✅ / ❌ / ⚠️ / ⏳ 与 `docs/TODO.md` 严格同步；catalog §4 是 TODO 的真相源
+4. **状态变更**：✅ / ❌ / ⚠️ / ⏳ 与 `docs/TODO.md` 严格同步；catalog §4 是 TODO 的功能 backlog 真源
 5. **代码与 catalog 冲突时**：优先信代码（grep 验证），同时更新 catalog；不能反过来用 catalog "认为"的状态去推断代码
 6. **commit 风格**（项目惯例）：中文 commit message + semantic prefix（feat/fix/test/chore/docs），单一意图、宁拆勿合
 
 ### 已知偏移
 
-- 详见 [`doc-conflict-audit.md`](doc-conflict-audit.md)。当前主要偏移包括：审计日志查询 API 仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净、若干 feature 分支已推送但未合入 `main`。
+- 详见 [`doc-conflict-audit.md`](doc-conflict-audit.md) 的审计证据。当前主要偏移包括：审计日志查询 API 仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净、若干 feature 分支已推送但未合入 `main`。
