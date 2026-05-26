@@ -41,11 +41,12 @@ def sample_schedule():
     )
 
 
-def _patch_repos(schedule_repo=None, pipeline_repo=None, env_repo=None, run_repo=None):
+def _patch_repos(schedule_repo=None, pipeline_repo=None, project_repo=None, env_repo=None, run_repo=None):
     """Return a list of patches for all repository classes used by check_schedules."""
     return [
         patch("qaplatform.infra.database.repositories.project_repo.ScheduleRepository", return_value=schedule_repo or AsyncMock()),
         patch("qaplatform.infra.database.repositories.project_repo.PipelineRepository", return_value=pipeline_repo or AsyncMock()),
+        patch("qaplatform.infra.database.repositories.project_repo.ProjectRepository", return_value=project_repo or AsyncMock()),
         patch("qaplatform.infra.database.repositories.project_repo.EnvironmentRepository", return_value=env_repo or AsyncMock()),
         patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo or AsyncMock()),
     ]
@@ -61,7 +62,7 @@ class TestCheckSchedules:
         schedule_repo.find_due_schedules = AsyncMock(return_value=[])
 
         patches = _patch_repos(schedule_repo=schedule_repo)
-        with patches[0], patches[1], patches[2], patches[3]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await check_schedules(ctx)
 
         schedule_repo.find_due_schedules.assert_awaited_once()
@@ -79,6 +80,13 @@ class TestCheckSchedules:
         pipeline_repo = AsyncMock()
         pipeline_repo.get_by_id = AsyncMock(return_value=pipeline)
 
+        project = MagicMock()
+        project.tenant_id = pipeline.project.tenant_id
+        project.default_branch = "main"
+        project.settings = {}
+        project_repo = AsyncMock()
+        project_repo.get_by_id = AsyncMock(return_value=project)
+
         env = MagicMock()
         env.id = uuid4()
         env_repo = AsyncMock()
@@ -93,11 +101,12 @@ class TestCheckSchedules:
         patches = _patch_repos(
             schedule_repo=schedule_repo,
             pipeline_repo=pipeline_repo,
+            project_repo=project_repo,
             env_repo=env_repo,
             run_repo=run_repo,
         )
         with (
-            patches[0], patches[1], patches[2], patches[3],
+            patches[0], patches[1], patches[2], patches[3], patches[4],
             patch("qaplatform.worker.scheduler.enqueue_run", new_callable=AsyncMock, return_value=True) as mock_enqueue,
             patch("qaplatform.domain.services.scheduling.should_fire", return_value=True),
             patch("qaplatform.domain.services.scheduling.compute_next_run_at", return_value=datetime.now(timezone.utc)),
@@ -117,7 +126,7 @@ class TestCheckSchedules:
 
         patches = _patch_repos(schedule_repo=schedule_repo)
         with (
-            patches[0], patches[1], patches[2], patches[3],
+            patches[0], patches[1], patches[2], patches[3], patches[4],
             patch("qaplatform.domain.services.scheduling.should_fire", return_value=False),
         ):
             await check_schedules(ctx)
@@ -136,7 +145,7 @@ class TestCheckSchedules:
 
         patches = _patch_repos(schedule_repo=schedule_repo, pipeline_repo=pipeline_repo)
         with (
-            patches[0], patches[1], patches[2], patches[3],
+            patches[0], patches[1], patches[2], patches[3], patches[4],
             patch("qaplatform.domain.services.scheduling.should_fire", return_value=True),
             patch("qaplatform.domain.services.scheduling.compute_next_run_at", return_value=datetime.now(timezone.utc)),
         ):
@@ -159,6 +168,13 @@ class TestCheckSchedules:
         pipeline_repo = AsyncMock()
         pipeline_repo.get_by_id = AsyncMock(return_value=pipeline)
 
+        project = MagicMock()
+        project.tenant_id = pipeline.project.tenant_id
+        project.default_branch = "main"
+        project.settings = {}
+        project_repo = AsyncMock()
+        project_repo.get_by_id = AsyncMock(return_value=project)
+
         env = MagicMock()
         env.id = uuid4()
         env_repo = AsyncMock()
@@ -173,11 +189,12 @@ class TestCheckSchedules:
         patches = _patch_repos(
             schedule_repo=schedule_repo,
             pipeline_repo=pipeline_repo,
+            project_repo=project_repo,
             env_repo=env_repo,
             run_repo=run_repo,
         )
         with (
-            patches[0], patches[1], patches[2], patches[3],
+            patches[0], patches[1], patches[2], patches[3], patches[4],
             patch("qaplatform.worker.scheduler.enqueue_run", new_callable=AsyncMock, return_value=False),
             patch("qaplatform.domain.services.scheduling.should_fire", return_value=True),
             patch("qaplatform.domain.services.scheduling.compute_next_run_at", return_value=datetime.now(timezone.utc)),
