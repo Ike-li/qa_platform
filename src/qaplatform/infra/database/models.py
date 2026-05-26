@@ -18,13 +18,12 @@ from sqlalchemy import (
     Integer,
     PrimaryKeyConstraint,
     SmallInteger,
-    String,
     Text,
     UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import BYTEA, INET, JSONB, UUID as PG_UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
 
 
 def _utcnow() -> datetime:
@@ -70,9 +69,11 @@ class NotificationStatusEnum(str, enum.Enum):
 class Base(DeclarativeBase):
     __soft_deletable__ = True
 
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, default=None
-    )
+    @declared_attr
+    def deleted_at(cls):
+        if cls.__dict__.get("__soft_deletable__", True):
+            return mapped_column(DateTime(timezone=True), nullable=True, default=None)
+        return None
 
 
 class AuditBase(DeclarativeBase):
