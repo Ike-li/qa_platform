@@ -25,17 +25,17 @@ QA 自动化执行平台 —— 管理项目、配置流水线、执行测试、
 | 任务队列 | arq (Redis-backed) |
 | 执行引擎 | Docker (aiodocker) 容器化执行测试 |
 | 存储 | PostgreSQL 16 · Redis 7 · MinIO (S3 兼容) |
-| 可观测性 | structlog · OpenTelemetry · Prometheus |
+| 可观测性 | structlog · Prometheus；OpenTelemetry 追踪待 T10 装配 |
 
 ## 核心功能
 
 - **多租户 RBAC** — 租户级 (Owner/Admin/Member/Viewer) + 项目级 (Admin/Developer/Viewer) 双层权限
-- **流水线管理** — 定义测试流水线，配置运行环境与凭据
-- **容器化执行** — 测试在隔离 Docker 容器中运行，支持超时、取消、OOM 检测
+- **流水线管理** — 定义测试流水线，配置运行环境与凭据存储；私有仓库凭据注入 clone 闭环见 TODO
+- **容器化执行** — 测试在隔离 Docker 容器中运行，支持超时、取消与 Docker OOMKilled 状态识别
 - **实时日志** — SSE 推送执行日志，前端实时展示
-- **插件系统** — Runner / Collector / Source 三类插件协议，内置 pytest + JUnit + Git
-- **产物管理** — 测试报告、截图、覆盖率等产物上传至 S3，支持预签名下载
-- **审计日志** — 关键操作全量审计，PII/Secret 脱敏
+- **插件系统** — Runner / Collector / Source 三类插件协议，内置 pytest、Jest、Playwright、Go test、JUnit、Git
+- **产物管理** — `results/` 下直接文件上传至 S3，支持预签名下载；Allure/HTML 预览与产物限额闭环见 TODO
+- **审计日志** — 关键操作审计；写入侧需用不含 PII/Secret 的 schema，查询 API 与部分批量操作覆盖仍在待办中
 - **定时调度** — Cron 风格定时触发测试流水线
 
 ## 快速开始
@@ -44,7 +44,7 @@ QA 自动化执行平台 —— 管理项目、配置流水线、执行测试、
 
 - Docker & Docker Compose
 - Python >= 3.12
-- Node.js >= 18
+- Node.js >= 22.13（或 20.19+；前端 Vite 8 / ESLint 10 需要）
 
 ### 1. 克隆与配置
 
@@ -57,21 +57,21 @@ cp .env.example .env
 ### 2. 启动基础设施
 
 ```bash
-make up   # 启动 PostgreSQL、Redis、MinIO
+make infra-up   # 仅启动 PostgreSQL、Redis、MinIO
 ```
 
 ### 3. 初始化数据库
 
 ```bash
 # 创建虚拟环境并安装后端依赖
-python -m venv .venv
+python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 
 # 执行迁移
 .venv/bin/alembic upgrade head
 
 # (可选) 导入种子数据
-.venv/bin/python -m qaplatform.seed
+.venv/bin/python scripts/seed_admin.py
 ```
 
 ### 4. 启动后端
@@ -84,7 +84,7 @@ python -m venv .venv
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev   # 默认 http://localhost:5173
 ```
 
@@ -124,7 +124,7 @@ qa_platform/
 │   │   └── storage/          #   S3 存储
 │   ├── plugins/              # 插件系统
 │   │   ├── protocols.py      #   Runner / Collector / Source 协议
-│   │   └── builtin/          #   内置插件 (pytest, junit, git)
+│   │   └── builtin/          #   内置插件 (pytest, Jest, Playwright, Go, JUnit, Git)
 │   ├── worker/               # arq 异步任务
 │   ├── config.py             # 配置 (Pydantic Settings)
 │   └── main.py               # FastAPI 应用工厂
@@ -158,16 +158,19 @@ qa_platform/
 |---|---|
 | `POST /api/v1/auth/login` | 登录 |
 | `GET /api/v1/projects` | 项目列表 |
-| `POST /api/v1/projects/{id}/pipelines` | 创建流水线 |
+| `POST /api/v1/projects/{project_id}/pipelines` | 创建流水线 |
 | `POST /api/v1/runs` | 触发测试运行 |
 | `GET /api/v1/runs/{id}` | 运行详情 |
 | `GET /api/v1/runs/{id}/artifacts` | 产物列表 |
-| `GET /api/v1/sse/runs/{id}/logs` | SSE 实时日志 |
+| `GET /api/v1/runs/{id}/logs?ticket=...` | SSE 实时日志 |
 
 ## 常用命令
 
+以下 Makefile 目标默认在已激活虚拟环境，或 `PATH` 已包含 `.venv/bin` 时运行。
+
 ```bash
-make up          # 启动 Docker 服务
+make infra-up    # 仅启动 PostgreSQL、Redis、MinIO
+make up          # 启动完整 Docker Compose 服务
 make down        # 停止 Docker 服务
 make logs        # 查看容器日志
 make migrate     # 执行数据库迁移
@@ -197,8 +200,12 @@ make seed        # 导入种子数据
 # 单元测试
 .venv/bin/pytest tests/unit -q
 
-# 集成测试（需要运行中的 PostgreSQL & Redis）
-.venv/bin/pytest tests/integration -q
+# 集成测试（多数重型用例需 RUN_INTEGRATION_TESTS=1；部分用例会自启 testcontainers）
+RUN_INTEGRATION_TESTS=1 .venv/bin/pytest tests/integration -q
+
+# E2E 冒烟（从仓库根目录运行；需已安装根目录和 frontend 的 npm 依赖，
+# 且已按快速开始创建 .venv；Playwright 会按配置启动 API 与前端）
+npm run test:e2e -- tests/e2e/auth-flow.spec.ts
 
 # 覆盖率
 .venv/bin/pytest --cov=qaplatform --cov-report=html
@@ -209,16 +216,21 @@ make seed        # 导入种子数据
 实现以下协议之一即可扩展平台能力：
 
 - **RunnerProtocol** — 测试运行器（如 pytest、Jest、Go test）
-- **CollectorProtocol** — 结果收集器（如 JUnit XML、Allure）
+- **CollectorProtocol** — 结果收集器（当前内置 JUnit XML；Allure JSON/TAP 等可作为后续扩展）
 - **SourceProtocol** — 代码获取（如 Git、SVN）
 
 ```python
+from pathlib import Path
+
 from qaplatform.plugins.protocols import RunnerProtocol, TestRunResult
 
 class MyRunner:
     name = "my-runner"
 
-    async def run_tests(self, working_dir, config, env_vars=None):
+    def build_command(self, config: dict) -> str:
+        return "python -m pytest --junitxml=results/junit.xml tests"
+
+    async def run_tests(self, working_dir: Path, config: dict, env_vars=None):
         # 执行测试并返回结果
         return TestRunResult(passed=10, failed=0, skipped=0, error=0, duration_ms=5000, exit_code=0)
 ```

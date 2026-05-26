@@ -1,9 +1,10 @@
 import { expect, test } from "@playwright/test";
 
 test("login against the real backend, open a project if present, then logout", async ({ page }) => {
+  const adminPassword = process.env.E2E_ADMIN_PASSWORD || "admin123";
   await page.goto("/login");
   await page.getByLabel("Username").fill("admin");
-  await page.getByLabel("Password").fill("admin123");
+  await page.getByLabel("Password").fill(adminPassword);
   await page.getByRole("button", { name: "Sign in" }).click();
 
   await expect(page).toHaveURL(/\/projects$/);

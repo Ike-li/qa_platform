@@ -3,6 +3,7 @@
 ## 前置条件
 
 - Python 3.12+
+- Node.js 22.13+（或 20.19+；前端 Vite 8 / ESLint 10 需要）
 - Docker & Docker Compose
 - Homebrew (macOS)
 
@@ -13,26 +14,30 @@
 cp .env.example .env
 
 # 2. 启动基础设施
-make up
+make infra-up
 
-# 3. 安装依赖
-pip install -e ".[test]"
+# 3. 创建虚拟环境并安装依赖
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
 
 # 4. 执行数据库迁移
-make migrate
+.venv/bin/alembic upgrade head
 
 # 5. 创建默认 admin 用户
-make seed
+.venv/bin/python scripts/seed_admin.py
 
 # 6. 启动 API
-uvicorn qaplatform.api:create_app --factory --reload
+.venv/bin/uvicorn qaplatform.main:create_app --factory --reload
 ```
 
 ## 常用命令
 
+以下 Makefile 目标默认在已激活虚拟环境，或 `PATH` 已包含 `.venv/bin` 时运行。
+
 | 命令 | 说明 |
 |------|------|
-| `make up` | 启动 PostgreSQL、Redis、MinIO |
+| `make infra-up` | 启动 PostgreSQL、Redis、MinIO |
+| `make up` | 启动完整 Docker Compose 服务 |
 | `make down` | 停止所有容器 |
 | `make logs` | 查看容器日志 |
 | `make migrate` | 执行 Alembic 迁移 |
@@ -54,17 +59,33 @@ uvicorn qaplatform.api:create_app --factory --reload
 
 ## 测试
 
-测试使用 testcontainers 自动拉起 PostgreSQL 和 Redis 容器，无需手动启动基础设施：
+单元测试建议直接限定 `tests/unit`：
 
 ```bash
-make test
+.venv/bin/pytest tests/unit -q
 ```
 
-集成测试位于 `tests/integration/`，单元测试位于 `tests/unit/`。
+`make test` 会执行仓库 pytest 默认集合；目前 `tests/integration/test_auth_audit_failure_paths.py` 这类 testcontainers 用例未被 `RUN_INTEGRATION_TESTS` gate 掉，因此本地只想跑单元测试时不要用 `make test` 代替 `pytest tests/unit -q`。
+
+集成测试位于 `tests/integration/`，单元测试位于 `tests/unit/`。集成测试分两类：部分用例会自启 testcontainers；多数重型 worker / Docker / API 栈用例需要 `RUN_INTEGRATION_TESTS=1` 才会运行，并可能需要完整 API / Worker / 基础设施栈；以后者为准时按下方步骤运行。
+
+E2E 测试脚本定义在仓库根目录 `package.json`，不要在 `frontend/` 目录运行。运行前需要安装根目录 Playwright 依赖、`frontend/` 依赖，并按快速启动步骤创建 `.venv`，因为 Playwright 配置会用 `.venv/bin/python` 启动后端并执行迁移 / seed：
+
+```bash
+# 首次运行前
+npm ci
+npm ci --prefix frontend
+
+# 稳定冒烟用例
+npm run test:e2e -- tests/e2e/auth-flow.spec.ts
+
+# 全量 E2E
+E2E_ADMIN_PASSWORD=admin123 npm run test:e2e
+```
 
 ### 运行集成测试
 
-运行集成测试需要 Docker daemon 以及数据库等基础设施服务，且需要手动启动 API 和 Worker，默认情况下执行 `pytest` 会跳过集成测试。
+运行完整集成测试需要 Docker daemon 以及数据库等基础设施服务，且需要手动启动 API 和 Worker。未设置 `RUN_INTEGRATION_TESTS=1` 时多数重型集成测试会跳过，但少数 testcontainers 回归测试仍会运行。
 
 ```bash
 # 1. 启动基础设施
