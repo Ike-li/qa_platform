@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from typing import Any
@@ -20,8 +20,6 @@ from qaplatform.api.middleware.cors import setup_cors
 from qaplatform.api.metrics import (
     http_request_duration,
     metrics_route,
-    run_queue_depth,
-    runs_in_flight,
 )
 
 logger = structlog.get_logger(__name__)
@@ -115,7 +113,6 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     # HTTP request duration histogram — wraps all routes including /metrics itself
     @app.middleware("http")
     async def _record_request_duration(request: Request, call_next):
-        import re, time as _time
         # Use route template if available, else normalize UUIDs in path
         route_obj = request.scope.get("route")
         if route_obj and hasattr(route_obj, "path"):
@@ -126,9 +123,9 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
                 "{id}",
                 request.url.path,
             )
-        start = _time.perf_counter()
+        start = time.perf_counter()
         response = await call_next(request)
-        duration = _time.perf_counter() - start
+        duration = time.perf_counter() - start
         http_request_duration.labels(
             method=request.method,
             route=route,
@@ -165,6 +162,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     from qaplatform.api.v1.admin import router as admin_router
     from qaplatform.api.v1.analytics import router as analytics_router
     from qaplatform.api.v1.artifacts import router as artifact_router
+    from qaplatform.api.v1.audit_events import router as audit_event_router
     from qaplatform.api.v1.auth import router as auth_router
     from qaplatform.api.v1.credentials import router as credential_router
     from qaplatform.api.v1.environments import router as env_router
@@ -180,6 +178,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     api_prefix = "/api/v1"
     app.include_router(admin_router, prefix=api_prefix)
     app.include_router(auth_router, prefix=api_prefix)
+    app.include_router(audit_event_router, prefix=api_prefix)
     app.include_router(analytics_router, prefix=api_prefix)
     app.include_router(project_router, prefix=api_prefix)
     app.include_router(project_member_router, prefix=api_prefix)
@@ -275,7 +274,7 @@ def _register_error_handlers(app: FastAPI) -> None:
         details: list[str] = []
         if hasattr(exc, "detail"):
             for err in exc.detail if isinstance(exc.detail, list) else []:
-                loc = " -> ".join(str(l) for l in err.get("loc", []))
+                loc = " -> ".join(str(part) for part in err.get("loc", []))
                 details.append(f"{loc}: {err.get('msg', '')}")
         body = ErrorResponse(
             error=ErrorDetail(

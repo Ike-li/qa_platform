@@ -84,6 +84,9 @@ class Action(str, Enum):
     NOTIFICATION_READ = "notification.read"
     NOTIFICATION_EDIT = "notification.edit"
 
+    # Audit
+    AUDIT_READ = "audit.read"
+
 
 # Actions whose authorisation requires both tenant-level and project-level role
 # (intersection semantics). Project-level enforcement is wired in a later
@@ -110,6 +113,7 @@ PROJECT_SCOPED_ACTIONS: frozenset[Action] = frozenset({
 })
 
 TENANT_SCOPED_ACTIONS: frozenset[Action] = frozenset({
+    Action.AUDIT_READ,
     Action.PROJECT_CREATE,
     Action.PROJECT_READ,
     Action.TOKEN_MANAGE,
