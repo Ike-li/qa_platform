@@ -29,19 +29,21 @@
 
 ---
 
-## 2. Redis 抖动 fail-open 行为
+## 2. Redis 抖动 fail-open / fail-closed 行为
 
-系统在以下场景对 Redis 瞬时故障采用 fail-open（放行）策略：
+系统在以下场景对 Redis 瞬时故障采用不同策略：
 
 | 场景 | 行为 |
 |------|------|
 | 心跳写入失败 | 记录 warning，循环继续；不终止 worker |
 | JWT 黑名单查询失败 | 放行请求（不拒绝合法用户） |
-| Rate limit Redis 不可用 | 放行请求（不误杀流量） |
+| Rate limit 中间件尚未拿到 Redis client | 放行请求（避免启动期误杀流量） |
+| 非认证高风险端点 rate limit Redis 操作异常 | 放行请求（不误杀普通流量） |
+| 认证高风险端点 rate limit Redis 操作异常 | fail-closed，返回 503 + `Retry-After: 5` |
 
-**含义**：Redis 短暂宕机不会导致服务中断，但已撤销的 JWT 在 Redis 恢复前可能被短暂接受。Redis 恢复后黑名单立即生效。
+**含义**：Redis 短暂宕机不会整体中断服务，但登录、注册、token、refresh、SSE ticket 等认证高风险端点在限流存储异常时会保守拒绝，避免绕过暴力破解防护。已撤销的 JWT 在 Redis 恢复前可能被短暂接受；Redis 恢复后黑名单立即生效。
 
-**监控**：关注 `worker_heartbeat_set_failed` 和 `jwt_blacklist_check_failed` 日志条目频率。
+**监控**：关注 `worker_heartbeat_set_failed`、`jwt_blacklist_check_failed`、`rate_limit_error` 和 `rate_limit_exceeded` 日志条目频率。
 
 ---
 
@@ -64,9 +66,9 @@
 
 ---
 
-## 4. JWT_SECRET 轮换流程
+## 4. QAP_JWT_SECRET 轮换流程
 
-`JWT_SECRET` 用于签发和验证 access/refresh token。轮换会使所有现存 token 立即失效，用户需重新登录。
+`QAP_JWT_SECRET` 用于签发和验证 access/refresh token。轮换会使所有现存 token 立即失效，用户需重新登录。
 
 **步骤**：
 
@@ -81,9 +83,9 @@
 
 ---
 
-## 5. ENCRYPTION_KEY 轮换流程
+## 5. QAP_ENCRYPTION_KEY 轮换流程
 
-`ENCRYPTION_KEY` 用于 AES-256-GCM 加密存储的凭据（`Credential.value`）。支持多版本密钥（`QAP_ENCRYPTION_KEYS`）。
+`QAP_ENCRYPTION_KEY` 用于 AES-256-GCM 加密存储的凭据密文（`Credential.encrypted_value`）。支持多版本密钥（`QAP_ENCRYPTION_KEYS`）。
 
 **步骤**：
 
@@ -129,27 +131,43 @@ QAP_DATABASE_URL=<prod_url> alembic upgrade head
 
 ## 7. S3 / MinIO 日志 Lifecycle 策略
 
-Run 日志归档到 S3 bucket（`QAP_S3_BUCKET`），路径格式：`logs/{run_id}/output.log`。
+Run 日志归档到 S3 bucket（`QAP_S3_BUCKET`），路径格式：`logs/{run_id}.jsonl`。
 
-**建议 Lifecycle 规则**（与 `QAP_RETENTION_REPORTS_DAYS` 对齐）：
+**建议 Lifecycle 规则**：
+
+- `logs/` 与 `QAP_RETENTION_RUNS_DAYS` 对齐（默认 90 天），避免数据库 Run 记录仍存在时 S3 归档对象已先过期；当前 `main` 仍缺归档日志读回 API / UI，因此不能把 lifecycle 对齐单独视为“日志已可回看”闭环。
+- `reports/` 与 `QAP_RETENTION_REPORTS_DAYS` 对齐（默认 30 天），用于 JUnit/Allure 等报告产物。
 
 ```json
 {
-  "Rules": [{
-    "ID": "expire-run-logs",
-    "Filter": {"Prefix": "logs/"},
-    "Status": "Enabled",
-    "Expiration": {"Days": 30}
-  }]
+  "Rules": [
+    {
+      "ID": "expire-run-logs",
+      "Filter": {"Prefix": "logs/"},
+      "Status": "Enabled",
+      "Expiration": {"Days": 90}
+    },
+    {
+      "ID": "expire-run-reports",
+      "Filter": {"Prefix": "reports/"},
+      "Status": "Enabled",
+      "Expiration": {"Days": 30}
+    }
+  ]
 }
 ```
 
 MinIO 配置：
 ```bash
-mc ilm rule add --expire-days 30 myminio/qa-platform --prefix "logs/"
+mc ilm rule add --expire-days 90 myminio/qa-platform --prefix "logs/"
+mc ilm rule add --expire-days 30 myminio/qa-platform --prefix "reports/"
 ```
 
-**注意**：`QAP_RETENTION_RUNS_DAYS`（默认 90）控制数据库行删除；S3 lifecycle 独立配置，两者应保持一致或 S3 保留期 ≥ DB 保留期，避免 DB 有记录但 S3 日志已删除。
+**注意**：
+
+- `QAP_RETENTION_RUNS_DAYS`（默认 90）控制数据库 Run 行清理目标；S3 lifecycle 独立配置，两者应保持一致或 S3 日志保留期 ≥ DB Run 保留期，避免 DB 有记录但 S3 日志已删除。
+- 当前 `main` 的 `cleanup_old_runs` cron 已注册，但函数缺 `datetime/timezone` 导入会导致触发失败；即使修复导入，当前仓储也只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run 与 `cancelled/timeout` 策略仍未闭环。
+- 当前 `main` 的 `retry_failed_archives` 仍是空占位；单次归档失败只会把 Redis Stream TTL 延长到 24h，不能当作自动补偿重试能力。
 
 ---
 
@@ -175,4 +193,29 @@ QAP_TRUSTED_PROXIES=["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 - 错误配置（信任了不受控的 IP）会导致攻击者伪造 `X-Forwarded-For` 绕过 rate limiting。
 - 变更后滚动重启 API 服务生效。
 
-**验证**：部署后检查 rate limit 日志中的 `client_ip` 字段是否为真实客户端 IP 而非代理 IP。
+**验证**：部署后检查 `rate_limit_exceeded` 日志中的 `bucket` 字段。未带 Bearer token 的请求应记录为 `ip:<真实客户端 IP>`，而不是代理 IP；带 Bearer token 的请求会记录为 `token:<hash>`，不会暴露原始 token。
+
+---
+
+## 9. Worker Docker Socket 暴露风险
+
+当前 `docker-compose.yml` 的 worker 服务直接挂载宿主 `/var/run/docker.sock`，用于创建测试执行容器。这是单机开发 / 内部小规模部署的便利方案，不是强隔离生产方案。
+
+**风险**：
+
+- worker 被攻陷后，攻击者可通过 Docker API 管理宿主容器，实际接近宿主 root 权限。
+- 不适合多租户公网部署，也不适合作为 untrusted code 的强沙箱边界。
+
+**生产加固选项**：
+
+1. 在宿主运行 `tecnativa/docker-socket-proxy`，只向 worker 暴露必要 Docker API。
+2. 使用 rootless Docker / gVisor 等运行时降低宿主影响面。
+3. 中长期迁移到 K8s Job 执行后端，避免 worker 直接持有宿主 Docker socket。
+
+**上线前检查**：
+
+```bash
+docker compose config | grep -n "docker.sock"
+```
+
+如果仍看到 `/var/run/docker.sock:/var/run/docker.sock`，应在部署 checklist 中显式记录风险接受人和补偿措施。

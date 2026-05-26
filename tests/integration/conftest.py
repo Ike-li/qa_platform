@@ -59,7 +59,7 @@ def integration_db_schema(pg_container, test_settings):
     env["QAP_S3_ACCESS_KEY"] = "minioadmin"
     env["QAP_S3_SECRET_KEY"] = "minioadmin"
     env["QAP_S3_BUCKET"] = "qa-platform-test"
-    env["QAP_JWT_SECRET"] = "test-secret-at-least-32bytes!"
+    env["QAP_JWT_SECRET"] = "test-secret-at-least-32bytes-long!"
     env["QAP_ENCRYPTION_KEY"] = "0" * 64
 
     repo_root = os.path.abspath(

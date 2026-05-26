@@ -1,8 +1,9 @@
 # 功能清单 · QA 自动化执行平台
 
 > **用途**：一页看全产品功能盘子。PRD 对照 / 发版门禁 / 新人 onboarding 都从这里出发。
-> **同步源**：`docs/prd.md`（功能 ID）、`docs/architecture.md`（实现位置）、`docs/TODO.md`（排期）。
-> **最后更新**：2026-05-25
+> **同步源**：`docs/prd.md`（功能 ID）、`docs/architecture.md`（实现位置）、`docs/TODO.md`（排期）、`docs/doc-conflict-audit.md`（已知文档偏移）。
+> **最后更新**：2026-05-26
+> **路径约定**：未带仓库前缀的后端路径默认相对 `src/qaplatform/`；未带仓库前缀的前端路径默认相对 `frontend/src/`。
 
 ## 图例
 
@@ -14,11 +15,11 @@
 | P2 可选 | 按需取舍，不在主路径上 |
 | P3 不做 | 明确决策不在本产品范围内 |
 | **状态** | |
-| ✅ | 完成并合并 |
+| ✅ | 当前 `main` 已完成 |
 | ⚠️ | 部分完成 |
 | ⏳ | 已排期 |
 | ❌ | 未做（且应该做） |
-| ⛔ | 已决策不做 |
+| ⛔ | 当前范围已决策不做 |
 
 ---
 
@@ -28,66 +29,66 @@
 
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
-| F-PM-01 | 创建项目 | P0 | ✅ | `api/v1/projects.py` |
-| F-PM-02 | 凭证管理 | P0 | ✅ | `api/v1/credentials.py` · AES-256-GCM 加密、AAD 绑 context_id |
+| F-PM-01 | 创建项目 | P0 | ⚠️ | `api/v1/projects.py` · 项目创建、Git URL、默认分支和 `git_auth_method` / `credential_id` 字段已实现；但私有 HTTPS token / SSH key 未接入 clone 执行链路，见 §4 |
+| F-PM-02 | 凭证管理 | P0 | ⚠️ | `api/v1/credentials.py` · AES-256-GCM 加密、AAD 绑定 `credential:{project_id}:{name}`、轮换与删除保护已实现；执行侧尚未解密并注入 Git clone，见 §4 |
 | F-PM-03 | 项目归档 | P0 | ✅ | `api/v1/projects.py` · archived 项目 `trigger_run` 返回 409 |
 
 ### 1.2 执行管道
 
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
-| F-PL-01 | 定义管道 | P0 | ✅ | `api/v1/pipelines.py` · JSONB runner_config / collector_config |
+| F-PL-01 | 定义管道 | P0 | ⚠️ | `api/v1/pipelines.py` · stages / selector / trigger_config / retry_policy 与多 Pipeline 已实现；但 PRD 要求的结果收集器配置未暴露，执行器当前固定使用 JUnit collector，见 §4 |
 | F-PL-02 | 环境配置 | P0 | ⚠️ | `api/v1/environments.py` · `env_vars` 目前明文 JSONB；只有 `credentials` 加密。PRD 验收要求"环境变量加密存储"未达，见 §4 |
-| F-PL-03 | 资源限制 | P0 | ✅ | `engine/executor.py` · CPU/内存/超时，SIGTERM → 30s → SIGKILL |
+| F-PL-03 | 资源限制 | P0 | ⚠️ | `engine/docker_backend.py` + `engine/executor.py` · CPU/内存/超时与 SIGTERM → 30s → SIGKILL 已实现；磁盘限制、产物大小/数量上传侧强制校验、OOM/timeout 资源用量记录未闭环，见 §4 |
 
 ### 1.3 测试执行
 
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
-| F-EX-01 | 手动触发 | P0 | ✅ | `api/v1/runs.py` |
-| F-EX-02 | Cron 定时触发 | P1 | ⚠️ | `api/v1/schedules.py` + `worker/scheduler.py` · timezone 已实现，PRD 验收要求的"静默窗口（发布冻结期）"未实现，见 §4 |
+| F-EX-01 | 手动触发 | P0 | ⚠️ | `api/v1/runs.py` · 当前已支持按 pipeline 触发、可指定 `git_ref` 与 priority；PRD 要求的 commit / environment 指定入参与“触发后 < 5s 入队”验收未闭环，见 §4 |
+| F-EX-02 | Cron 定时触发 | P1 | ⚠️ | `api/v1/schedules.py` + `worker/settings.py::check_schedules` · timezone 已实现；既有 schedule 级 `quiet_windows` 存在，但 PRD 验收要求的项目级"静默窗口（发布冻结期）"未实现，见 §4 |
 | F-EX-03 | Webhook 触发 | P1 | ⚠️ | `api/v1/webhooks.py` · HMAC-SHA256 签名验证已实现；PRD 验收要求"分支过滤 + 同 commit 去重"未实现（`dedup_key` 字段在 ORM 已有但 webhook 路由未传入），见 §4 |
-| F-EX-04 | 执行隔离 | P0 | ✅ | `engine/docker_backend.py` · 网络隔离、非特权容器 |
-| F-EX-05 | 实时日志 | P0 | ✅ | `engine/log_stream.py` + `api/v1/sse.py` · Redis Stream MAXLEN 10000 |
+| F-EX-04 | 执行隔离 | P0 | ✅ | `engine/docker_backend.py` · 默认 `network_policy=deny` → `NetworkMode=none`；容器以 `1000:1000`、只读 rootfs、drop all caps、no-new-privileges 运行；`allow` 会显式使用 bridge，`restricted` 需要部署侧提供 `qap-restricted` 网络 |
+| F-EX-05 | 实时日志 | P0 | ⚠️ | `engine/log_stream.py` + `api/v1/sse.py` · Redis Stream 实时日志、`Last-Event-ID` 续传与 S3 JSONL 归档写入已实现；Redis TTL 过期后的归档日志读回 API / UI 未实现，见 §4 |
 | F-EX-06 | 取消执行 | P0 | ✅ | `engine/cancel.py` |
-| F-EX-07 | 自动重试 | P1 | ✅ | `engine/reclaim.py` + `worker/tasks.py` · 仅基础设施失败重试 |
-| F-EX-08 | 优先级队列 | P2 | ✅ | `worker/scheduler.py:17-91` · 三档（high/medium/low）+ 触发类型→优先级映射 + 用户 API priority 覆盖 + per-project quota |
+| F-EX-07 | 自动重试 | P1 | ⚠️ | `worker/tasks.py` 已有 retry predicate 与重试 Run 创建；但 API schema 存 `max_attempts` 而 worker 读取 `max_retries`，`max_attempts` 也未校验 PRD 要求的 1-5；且 `RunExecutor.execute()` 会捕获多数执行期基础设施异常并返回 `FAILED`；`engine/reclaim.py` 只标记 worker_lost failed，端到端自动重试未闭环 |
+| F-EX-08 | 优先级队列 | P2 | ⚠️ | `worker/scheduler.py` 已按 priority 写入 `queue:high/medium/low` 并做 per-project quota；默认 `WorkerSettings.queue_name=queue:medium`，compose 只启动一个未设置 `QAP_WORKER_QUEUE` 的 worker，high/low 队列消费与高优先级插队需补部署/测试闭环 |
 
 ### 1.4 结果与报告
 
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
 | F-RE-01 | 结构化结果（JUnit） | P0 | ✅ | `plugins/builtin/junit_collector.py` |
-| F-RE-02 | 执行摘要 | P0 | ✅ | `engine/executor.py` · passed/failed/skipped/errors |
-| F-RE-03 | 失败详情 | P0 | ✅ | `api/v1/runs.py` test-results endpoint |
-| F-RE-04 | 产物管理 | P0 | ✅ | `api/v1/artifacts.py` · 预签名 URL 有效期 1h；含 Allure HTML 报告在线预览（`engine/executor.py:646` 识别 + `components/runs/artifact-preview.tsx` iframe） |
-| F-RE-05 | 用例级历史趋势 | P1 | ✅ | `api/v1/analytics.py` |
+| F-RE-02 | 执行摘要 | P0 | ✅ | `engine/executor.py` · `passed` / `failed` / `skipped` / `error` / `pass_rate`；PRD 的 < 3s 生成目标纳入 §4.2 性能验证 |
+| F-RE-03 | 失败详情 | P0 | ✅ | `api/v1/runs.py` · `/runs/{run_id}/results` 返回 `error_message` / `stack_trace`；前端测试结果表支持展开失败用例详情 |
+| F-RE-04 | 产物管理 | P0 | ⚠️ | `api/v1/artifacts.py` · 返回预签名 URL；`engine/executor.py` 当前仅上传 `results/` 下直接文件，目录型 Allure HTML 报告预览、产物数量/大小限制闭环待补 |
+| F-RE-05 | 历史趋势 | P1 | ⚠️ | `api/v1/analytics.py` · 项目级每日 run 趋势与 flaky 测试聚合已实现；单个用例的历史趋势视图/API 未实现 |
 
 ### 1.5 通知
 
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
-| F-NT-01 | 条件通知 | P1 | ✅ | `worker/notifications/channels.py` ChannelRouter · AND/OR 组合 |
-| F-NT-02 | 多渠道通知 | P1 | ⚠️ | `worker/notifications/channels.py` · Email (SMTP) + Webhook (HTTP) 已实现；PRD §8"中国大陆网络"硬约束的钉钉/企业微信未实现，见 §4。Slack 已决策不做（见 §5） |
-| F-NT-03 | 通知模板 | P1 | ✅ | `worker/notifications/` · 变量替换模板 |
+| F-NT-01 | 条件通知 | P1 | ⚠️ | `worker/notifications/__init__.py` · 当前支持 `status` / `pass_rate` / `failed` 多条件 AND；OR 组合与连续失败次数未实现 |
+| F-NT-02 | 多渠道通知 | P1 | ⚠️ | `worker/notifications/channels.py` · Email (SMTP) + Webhook (HTTP) 已实现；PRD §8"中国大陆网络"硬约束的钉钉/企业微信未实现，见 §4。Slack 当前范围不做（见 §5） |
+| F-NT-03 | 通知模板 | P1 | ⚠️ | `worker/notifications/` · 当前为规则级模板，变量仅 `run_id/status/passed/failed/total/pass_rate`；PRD 要求的每渠道模板、项目名、失败用例等变量未闭环 |
 
 ### 1.6 权限与多租户
 
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
-| F-AU-01 | 用户认证 | P0 | ✅ | `api/v1/auth.py` · JWT + Argon2id |
-| F-AU-02 | API Token | P1 | ✅ | `api/v1/auth.py` tokens + `api/auth/middleware.py` |
+| F-AU-01 | 用户认证 | P0 | ✅ | `api/v1/auth.py` · username/password 登录，注册时收集 email；JWT + Argon2id |
+| F-AU-02 | API Token | P1 | ⚠️ | `api/v1/auth.py` tokens + `api/auth/middleware.py` · 创建/过期/吊销/认证已实现；scope 未完整传入项目级权限依赖，见 §4 |
 | F-AU-03 | 双层 RBAC | P0 | ✅ | `api/auth/permissions.py` · 租户 × 项目角色交集 |
-| F-AU-04 | 租户隔离 | P0 | ✅ | repositories `get_for_tenant` + 跨租户返回 404 |
+| F-AU-04 | 租户隔离 | P0 | ⚠️ | 聚合根查询与 Owner/Admin 主要路径使用 `get_for_tenant` / tenant filter 并返回 404；但 `require_project_permission` 对非 Owner/Admin 的 path `project_id` 路由会在资源查询前因缺少 `ProjectMember` 返回 403，跨租户 404 硬约束需补齐 |
 
 ### 1.7 列表与搜索
 
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
-| F-LS-01 | 执行列表过滤 | P0 | ✅ | `api/v1/runs.py` · 状态/管道/分支/时间范围 |
-| F-LS-02 | 分页 | P0 | ✅ | 全局 PaginatedResponse |
-| F-LS-03 | 项目搜索 | P1 | ✅ | `api/v1/projects.py` · LIKE 转义已修复 |
-| F-LS-04 | 测试结果过滤 | P0 | ⚠️ | `api/v1/runs.py` · 仅按状态过滤已实现；PRD 验收要求的 suite 名称过滤、关键字过滤未实现，见 §4 |
+| F-LS-01 | 执行列表过滤 | P0 | ⚠️ | `api/v1/runs.py` · 当前 `main` 支持状态多选、项目过滤与创建时间排序；PRD 要求的 pipeline / git_ref / time range 过滤未实现 |
+| F-LS-02 | 分页 | P0 | ⚠️ | 主要列表已使用 `PaginatedResponse`（projects/runs/pipelines/environments/schedules/notifications/results/artifacts）；credentials、project members、auth tokens 仍返回直接 list |
+| F-LS-03 | 项目搜索 | P1 | ⚠️ | `api/v1/projects.py` · LIKE 转义已修复；当前搜索 name/description，默认仍按 `created_at desc`，PRD 要求的名称字母序未实现 |
+| F-LS-04 | 测试结果过滤 | P0 | ⚠️ | `api/v1/runs.py` · 当前 `main` 仅按状态过滤，后端状态枚举含 `passed/failed/error/skipped/xfail`；suite 名称/关键字过滤在 `feature/T07-test-results-filter` 已推送但未合入 `main` |
 
 ---
 
@@ -95,43 +96,43 @@
 
 | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|
-| 项目质量仪表盘 | P1 | ✅ | `api/v1/analytics.py` + `frontend/pages/projects/detail.tsx` |
-| Flaky test 检测 | P1 | ✅ | `api/v1/analytics.py` |
-| 多 Runner 插件（Jest / Playwright / Go test） | P2 | ✅ | `plugins/builtin/{jest,playwright,go_test}_runner.py` |
+| 项目质量仪表盘 | P1 | ⚠️ | `api/v1/analytics.py` + `pages/projects/detail.tsx` / `components/projects/analytics-panel.tsx` 已有趋势与 flaky 前端入口；但 `analytics-panel.tsx` 仍在已知 `T-FRONTEND-TS` build 债务内，生产 build 需先清该 TS 错误 |
+| Flaky test 检测 | P1 | ✅ | `api/v1/analytics.py` · 同一 suite/name 在时间窗口内既有 passed 又有 failed/error 的聚合判定 |
+| 多 Runner 插件（Jest / Playwright / Go test） | P2 | ✅ | `plugins/builtin/jest_runner.py` · `plugins/builtin/playwright_runner.py` · `plugins/builtin/go_test_runner.py` |
 | 批量操作（批量取消/重试） | P1 | ✅ | `api/v1/runs.py` batch_cancel / batch_retry |
-| 系统状态页 | P2 | ✅ | `api/v1/admin.py` + `frontend/pages/admin/status.tsx` |
+| 系统状态页 | P2 | ✅ | `api/v1/admin.py` + `pages/admin/status.tsx` |
 | 项目成员管理 | P1 | ✅ | `api/v1/project_members.py` · 双层 RBAC 配套 |
 | 通知规则 CRUD | P1 | ✅ | `api/v1/notifications.py` |
 | SSE Ticket 鉴权 | P0 | ✅ | `api/v1/sse.py` · ticket 短期凭证防 EventSource 跨域 |
-| 冒烟测试框架 | P2 | ✅ | `scripts/smoke/` · 6 页面 83 测试点 |
+| 冒烟测试框架 | P2 | ✅ | `scripts/smoke/` · 6 个页面脚本，具体检查点以脚本内 `log_step` 为准 |
 
 ---
 
-## 3. 安全与可观测（来自 `prd.md` §4 / `architecture.md` §9, §11）
+## 3. 安全与可观测（来自 PRD §4 / architecture §9 / architecture §11）
 
 | 项 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|
 | JWT access + refresh token | P0 | ✅ | `api/v1/auth.py` · 1h / 7d |
 | Argon2id 密码哈希 | P0 | ✅ | `api/v1/auth.py` |
-| API Token 吊销 + scope | P1 | ✅ | `api/auth/middleware.py` |
-| AES-256-GCM 凭据加密 | P0 | ✅ | `dependencies.py` CredentialCipher · 多版本密钥、AAD 绑 context_id |
-| 认证 rate limit（5/min/IP） | P0 | ✅ | `api/middleware/rate_limit.py` + `config.py:62` `rate_limit_auth_failure=5` · Redis `TIME`，PRD §4 已对齐到 5 |
-| 通用 API rate limit（100/min/IP） | P1 | ✅ | `api/middleware/rate_limit.py:147-148` · IP-based 滑动窗口 |
+| API Token 吊销 + scope | P1 | ⚠️ | `api/auth/middleware.py` + `api/auth/permissions.py` · token 吊销/过期/认证已实现；scope 只在 `check_permission` 层有能力，当前 `api/deps.py` 的项目级权限路径未完整传递 scopes |
+| AES-256-GCM 凭据加密 | P0 | ✅ | `dependencies.py::CryptoService` · 多版本密钥、凭据路由经 `container.crypto_service` 加密，并用 `credential:{project_id}:{name}` 做 AAD |
+| 认证高风险端点 rate limit（5/min/限流桶） | P0 | ✅ | `api/middleware/rate_limit.py` + `config.py` `rate_limit_auth_failure=5` · 覆盖 login / register / token / refresh / SSE ticket；变量名保留历史 `auth_failure`，实际是端点级 strict limit；Bearer 请求按 token hash，其他请求按可信代理解析后的 IP |
+| 通用 API rate limit（100/min/限流桶） | P1 | ✅ | `api/middleware/rate_limit.py` · Bearer 请求按 token hash，其他请求按可信代理解析后的 IP |
 | Webhook 签名验证 | P1 | ✅ | `api/v1/webhooks.py` · HMAC-SHA256 |
 | Container 安全头（X-Frame, HSTS 等） | P1 | ✅ | `api/middleware/security_headers.py`（CSP 等）+ `frontend/nginx.conf`（静态资源） |
 | iframe sandbox 加固 | P0 | ✅ | `components/runs/artifact-preview.tsx` · 仅 `allow-scripts`，去掉 `allow-same-origin` |
-| 审计日志（who/what/when/from） | P0 | ⚠️ | `api/audit.py` 写入端 best-effort + PII 脱敏 + `infra/database/repositories/audit_repo.py` 仓储已实现；**PRD §9.6 要求的查询 API 未实现**（无 `/admin/audit-events` 路由），见 §4 |
-| structlog（JSON 格式） | P1 | ✅ | 全局 |
-| OpenTelemetry 追踪 | P2 | ❌ | **未实现**。`pyproject.toml` 已声明 `opentelemetry-*` 依赖，但代码无 `TracerProvider` / `FastAPIInstrumentor` 装配，见 §4 |
+| 审计日志（who/what/when/from） | P0 | ⚠️ | `api/audit.py` 写入端 + `infra/database/repositories/audit_repo.py` 仓储已实现；查询 API 未实现，`api/v1/runs.py` 批量取消/批量重试等覆盖率仍需补齐，见 §4 |
+| structlog（JSON 格式） | P1 | ⚠️ | `qaplatform.logging.configure_logging` 已在 API app 默认 factory 路径配置 structlog / JSON renderer；worker 入口未调用该配置，worker/engine/plugin 多处仍直接使用 stdlib `logging.getLogger`，全局结构化日志待补 |
+| OpenTelemetry 追踪 | P2 | ❌ | **未实现**。`pyproject.toml` 已声明部分 OTel 依赖，但缺 OTLP HTTP exporter；代码无 `TracerProvider` / `FastAPIInstrumentor` 装配，见 §4 |
 | Prometheus 指标 | P1 | ✅ | `/metrics` endpoint |
-| 健康检查 `/health/live` `/health/ready` | P0 | ✅ | `main.py` |
+| 健康检查 `/health` `/ready` | P0 | ✅ | `main.py` |
 | Dockerfile USER 非 root | P1 | ✅ | `Dockerfile` |
 
 ---
 
 ## 4. 待办（明确要做的）
 
-> **可交付任务包见 [`tasks/`](tasks/README.md)**：每项待办都有独立的 codex-ready 任务文件（PRD 引用 + 代码起点 + 验收 + 约束），可直接分发。
+> **首批可交付任务包见 [`tasks/`](tasks/README.md)**（codex-ready，含规格 + 起点 + 验收 + 约束）；本轮审计新增的待办若进入实施，需要后续补任务包。
 
 按 PRD 验收口径分两组：未达验收的（必须做）/ 增强项（建议做）。
 
@@ -139,11 +140,26 @@
 
 | ID / 项 | 必要性 | 缺失点 | 备注 |
 |---|---|---|---|
-| F-PL-02 环境变量加密 | P0 | `env_vars` 明文 JSONB | PRD §3.2 验收"环境变量加密存储"；参考 `dependencies.py` CredentialCipher 包装 |
-| 审计日志查询 API（PRD §9.6） | P0 | 仅写入端，无 `/admin/audit-events` 查询路由 | 写入端 `api/audit.py` + 仓储 `audit_repo.py` 已就位，仅缺路由 |
+| F-PL-02 环境变量加密 | P0 | `env_vars` 明文 JSONB | PRD §3.2 验收"环境变量加密存储"；参考 `dependencies.py::CryptoService` / 凭据路由 `container.crypto_service` 包装 |
+| F-PM-01 / F-PM-02 Git 凭证执行闭环 | P0 | 项目 schema 可保存 `git_auth_method` / `credential_id`，凭证 CRUD 可加密存储；但 manual/webhook Run 只把 `credential_id` 放入 metadata，`engine/executor.py::_clone_repo` 只用原始 `git_url` / `git_ref` 调 `GitSource.clone()`，未解密 token/SSH key 并注入 clone | 需补私有 HTTPS token / SSH key clone 支持、临时文件权限、错误脱敏与认证失败测试；避免把密钥写入日志或持久化 metadata |
+| F-PL-01 collector 配置补齐 | P0 | Pipeline schema / ORM / `worker/tasks.py::_build_pipeline_config` 均无 collector 选择或配置；`RunExecutor.execute()` 固定 `get_collector("junit")` | PRD §3.2 要求可配置测试运行器、结果收集器、超时、重试策略；需决定当前 JUnit-only 是否改为正式限制，或新增 collector 配置与测试 |
+| 审计日志查询 API | P0 | 仅写入端，无 `/api/v1/audit-events` 查询路由 | 写入端 `api/audit.py` + 仓储 `infra/database/repositories/audit_repo.py` 已就位；当前执行来源以本 catalog 待办和 T02 任务包为准 |
+| 审计写入覆盖补齐 | P0 | `api/v1/runs.py` 批量取消/批量重试当前无 audit 事件；SSE ticket 等临时凭证写入是否审计需产品确认 | architecture §9.6 已改为“关键写操作主路径覆盖，覆盖率待补齐” |
+| F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | P0 | 目录型 Allure HTML report 不会被当前上传逻辑收集；环境级 `max_artifact_size_mb` / `max_artifacts_count` 未传入 worker ResourceLimits，上传侧也未发现强制校验；`disk_bytes` 字段未进入 Docker HostConfig；OOM/timeout 终止原因与资源用量记录未闭环 | PRD §3.2 要求限制产物大小并记录资源终止信息，PRD §3.4 要求预签名下载 + HTML 报告在线预览；当前 CPU/内存/超时和 `download` JSON 已实现，产物限制/预览闭环待补 |
+| F-EX-05 日志归档回看闭环 | P0 | Redis Stream 实时日志与 S3 JSONL 归档写入已实现，但 Redis TTL 过期后的归档日志读回 API / 前端回看入口未实现 | PRD §3.3 验收要求“日志持久化可回看”；当前 UI 只接 SSE 实时窗口 |
+| F-AU-02 API Token scope enforcement 补齐 | P1 | project-scoped 权限依赖未完整传递 token scopes | `api/auth/permissions.py::check_permission` 支持 scopes，但 `api/deps.py::get_current_user` / `require_project_permission` / `enforce_project_action` 当前会丢失或不传 scopes |
+| F-AU-04 跨租户 404 完整收敛 | P0 | 非 Owner/Admin 访问 path `project_id` 的项目级路由时，`require_project_permission` 可能先于 `get_for_tenant` 返回 403；跨租户硬约束要求资源 ID 访问统一 404 | 需调整项目级权限依赖或路由顺序，并补非 Owner/Admin 跨租户集成测试；当前 owner/admin 与 run/artifact 主路径已有 404 覆盖 |
+| F-EX-01 手动触发参数与入队验收补齐 | P0 | `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；PRD 要求可指定 commit 与 environment，且触发后 < 5s 入队未纳入自动验收 | 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定；前端旧 `env_overrides` / `params` 偏移仍归 `T-FRONTEND-API` |
 | F-EX-02 静默窗口 | P1 | 发布冻结期不触发 cron | PRD §3.3 验收 |
 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | P1 | 路由未传 `dedup_key`，无分支过滤逻辑 | `dedup_key` 字段在 ORM 已有，路由层接入即可 |
-| F-LS-04 测试结果 suite/关键字过滤 | P1 | 仅 status | PRD §3.7 验收 |
+| F-EX-07 自动重试端到端补齐 | P1 | `RetryPolicyInput.max_attempts` 与 worker `max_retries` 读取不一致，且 `max_attempts` 缺 PRD 1-5 边界校验；执行期 Docker/clone/setup 基础设施异常也没有传递到 `_attempt_retry` | 现有单测覆盖 `_should_retry` / `_attempt_retry` 原语，需补真实 `execute_run` 路径与 worker_lost 策略 |
+| F-EX-08 优先级队列消费闭环 | P2 | 默认 worker 只消费 `queue:medium`，`queue:high` / `queue:low` 没有 compose/文档/测试闭环 | 需决定单 worker 多队列策略或多 worker 部署方式，并验证同优先级 FIFO / 高优先级插队 |
+| F-LS-04 测试结果 suite/关键字过滤 | P0 | `main` 仅 status | PRD §3.7 验收；`feature/T07-test-results-filter` 已推送但未合入 |
+| F-LS-01 执行列表过滤补齐 | P0 | 缺 pipeline / git_ref / time range 过滤 | 当前 `main` 支持 status 多选、project_id 与创建时间排序 |
+| F-LS-02 剩余列表分页补齐 | P0 | credentials、project members、auth tokens 仍返回直接 list | 主要列表已使用 `PaginatedResponse` |
+| F-LS-03 项目搜索排序补齐 | P1 | 缺名称字母序 | LIKE 转义已修；当前仍按 `created_at desc` |
+| F-RE-05 单用例历史趋势补齐 | P1 | 缺单个用例历史趋势 API/视图 | 已有项目级趋势和 flaky 聚合 |
+| F-NT-01 / F-NT-03 通知规则与模板验收补齐 | P1 | OR 条件、连续失败次数、每渠道模板、项目名与失败用例变量未实现 | 当前 main 只有状态/pass_rate/失败数 AND 条件和规则级基础变量替换 |
 | F-NT-02 钉钉通知 | P1 | — | PRD §8 中国大陆网络硬约束 |
 | F-NT-02 企业微信通知 | P1 | — | 同上 |
 
@@ -151,9 +167,11 @@
 
 | 项 | 必要性 | 备注 |
 |---|---|---|
-| OpenTelemetry 装配 | P2 | 仅声明依赖，无 `TracerProvider` / `FastAPIInstrumentor` 代码；设计见 §4.3 |
-| 非功能性能压测 | P1 | 读/写 API p99、日志推送 < 2s 目标验证 |
-| E2E 测试 CI 自动触发 | P1 | 当前 `workflow_dispatch` 手动；启用 push 触发 `auth-flow.spec.ts` |
+| OpenTelemetry 装配 | P2 | 仅声明部分依赖，无 OTLP HTTP exporter、`TracerProvider` / `FastAPIInstrumentor` 代码；设计见 §4.3 |
+| 非功能性能压测 | P1 | 读/写 API p99、日志推送 < 2s、执行摘要生成 < 3s 等目标验证 |
+| E2E CI 覆盖扩展 | P1 | push / PR 已自动跑稳定 `tests/e2e/auth-flow.spec.ts`；`workflow_dispatch` 手动跑全量 E2E，是否扩大自动覆盖需另行决策；若继续保留 `scripts/run-e2e.sh`，需让 seed 密码透传 `E2E_ADMIN_PASSWORD` |
+| 数据保留清理闭环 | P1 | `cleanup_old_runs` cron 已注册但当前函数缺 `datetime/timezone` 导入会触发失败；`RunRepository.delete_terminal_older_than()` 只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run 与 `cancelled/timeout` 策略未闭环；`retry_failed_archives` 仍为空占位，DB 行冷归档未实现 |
+| 结构化日志全局化 | P2 | API app 默认 factory 已配置 structlog JSON renderer；worker/arq 入口未调用 `configure_logging`，engine / worker / plugin 多数模块仍经 stdlib logger 输出，需统一 worker 进程日志初始化与字段格式 |
 
 ### 4.3 设计决策（已定，可直接交付实施）
 
@@ -172,13 +190,16 @@ class SilentWindow(BaseModel):
     reason: str = Field(min_length=1, max_length=200)  # 如 "Release freeze 2026 Q2"
 ```
 
-**调度行为**（修改 `worker/scheduler.py`）：
-- 在 cron tick 创建 Run 前调用 `is_in_silent_window(project, now)`
-- 命中：**不创建 Run**，写 audit 事件 `schedule_skipped_silent_window`（含 schedule_id、window.reason）
+**既有模型注意事项**：当前代码已有 schedule 级 `quiet_windows`（`Schedule.quiet_windows` + `domain/services/scheduling.py::should_fire`）。本设计新增的是 project 级、绝对时间窗口 `silent_windows`，两者不要混用：`silent_windows` 命中时必须写 audit 且不更新 `schedule.last_run_at`；既有 `quiet_windows` 仍按当前 schedule 级逻辑处理。
+
+**调度行为**（修改 `worker/settings.py::check_schedules`）：
+- 在 cron tick 创建 Run 前，从 ORM `Project.settings["silent_windows"]` 解析窗口列表，再调用 `domain/services/scheduling.py::is_in_silent_window(windows, now)`
+- 判定区间为闭区间：`start_at <= now <= end_at`；`start_at` / `end_at` / `now` 都必须是 tz-aware，比较前统一到 UTC
+- 命中：**不创建 Run**，写 audit 事件 `schedule_skipped_silent_window`；当前 `AuditEvent` 无 `metadata` 列，静默窗口跳过详情写入 `after_state`（含 `schedule_id`、`reason`、`window_end`）
 - schedule 的 `last_run_at` 不更新（视为本次未触发）
 - 手动触发（API / Webhook）忽略 silent_windows
 
-**API**：复用 `PUT /api/v1/projects/{id}`，body 加 `silent_windows`；校验：`end_at > start_at`、单个项目 ≤ 20 条窗口。
+**API**：复用 `PUT /api/v1/projects/{project_id}`，body 加 `silent_windows`；校验：`end_at > start_at`、单个项目 ≤ 20 条窗口。
 
 **前端**：项目设置页加"静默窗口"区块（datetime 双选 + reason 文本框 + 列表删除）。
 
@@ -189,45 +210,44 @@ class SilentWindow(BaseModel):
 **协议**：OTLP/HTTP（非 gRPC，部署门槛低、所有后端兼容）。
 
 **Instrumentation**：
-- `FastAPIInstrumentor` — HTTP 入口链路（含 path、status_code、tenant_id）
-- `SQLAlchemyInstrumentor` — DB 调用
+- `FastAPIInstrumentor.instrument_app(app, ...)` — HTTP 入口链路（含 path、status_code）；只在 API 进程对实际 FastAPI app 装配。租户维度不会自动出现在 ASGI scope，若需要 `tenant.id` 属性，应在认证 dependency 解析 `UserIdentity` 后手动设置当前 span，且不得写 token/user_id 等敏感值
+- `SQLAlchemyInstrumentor(engine=container.db_engine.sync_engine)` — DB 调用；当前项目使用 async SQLAlchemy engine，要传底层 `sync_engine`
 - `RedisInstrumentor` — Redis 调用（含 arq broker、log_stream）
-- `worker/tasks.py:execute_run` — 手动 `tracer.start_as_current_span("execute_run")` 包住整个执行；子 span："source_clone" / "container_run" / "collect_results" / "upload_artifacts"
+- `worker/tasks.py::execute_run` — 手动 `tracer.start_as_current_span("execute_run")` 包住整个 arq job；`engine/executor.py::RunExecutor.execute` 内部包子 span："source_clone" / "container_run" / "collect_results" / "upload_artifacts"
 
-**配置**（`config.py` 新增）：
+**配置**（扩展 `config.py`；当前已有 `otel_exporter_endpoint`，不要重复定义）：
 ```python
 otel_enabled: bool = False  # 默认关闭，开发环境不强制依赖
-otel_exporter_endpoint: str = "http://localhost:4318/v1/traces"
+otel_exporter_endpoint: str | None = None  # 启用时配置 OTLP/HTTP endpoint
 otel_service_name: str = "qa-platform"
 otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 ```
 
 **装配位置**：
-- `main.py` lifespan 启动时调 `setup_tracing(settings)` → 装配 FastAPI/SQLAlchemy/Redis instrumentor
-- `worker/settings.py` worker 启动时同样调一次（trace context 跨进程通过 redis stream headers 传递）
+- `main.py` 创建 app 时对 FastAPI app 调 `instrument_app(app, ...)`；lifespan/container 初始化后对 `container.db_engine.sync_engine` 和 Redis 装配
+- `worker/settings.py::on_startup` 在 `container.init_db()` 后装配 SQLAlchemy/Redis；worker 进程没有 FastAPI app，不调用 FastAPI app instrumentation；跨进程 trace context 传播不在本任务范围内
 
-**敏感字段过滤**：FastAPIInstrumentor 的 `request_hook` 中剔除 `Authorization` / `X-API-Token` header，避免 token 进入 trace。
+**敏感字段过滤**：FastAPIInstrumentor 启用 header capture 时必须配置 `http_capture_headers_sanitize_fields`（至少 `authorization` / `cookie` / `x-api-token` / `set-cookie`），不要依赖一个只修改 headers copy 的 request hook；当前认证入口仍是 `Authorization: Bearer ...`。
 
 **不做**：日志-trace 关联（structlog inject trace_id）；后续 P3 优化。
 
 ---
 
-## 5. 已决策不做（⛔）
+## 5. 当前范围已决策不做（⛔）
 
 | 项 | 决策理由 |
 |---|---|
-| 跨分支/跨环境对比专属视图 | PRD §2.3 测试经理诉求可由"按 branch 手动触发执行 + 仪表盘对比通过率"覆盖；专属视图工程量大、使用频次低。注：当前 `analytics.py` **尚未支持 branch / git_ref 过滤**，若后续要做替代方案需先加这一参数 |
+| 跨分支/跨环境对比专属视图 | PRD §2.3 测试经理诉求可由"按 branch 手动触发执行 + 仪表盘对比通过率"覆盖；专属视图工程量大、使用频次低。注：当前 `api/v1/analytics.py` **尚未支持 branch / git_ref 过滤**，若后续要做替代方案需先加这一参数 |
 | 历史日志全文搜索 | 实时关键字过滤已能解决主路径；历史全文搜索需 ES/PG GIN，ROI 低 |
 | 数据导出 CSV | PRD 提及但未绑定用户旅程；REST API 已可被外部脚本导出 |
 | Slack 通知（F-NT-02e） | 国内团队优先级低；Webhook 通用通道可走 Slack incoming webhook |
 | Phase 4 Kubernetes Job 后端 | PRD §8 假设"日 < 500、用户 < 50"。单机 Compose 够用，等容量墙再做 |
 | Phase 4 多 Worker 节点管理 | arq 自身的 worker 注册够用 |
-| Phase 4 历史数据分区 | 数据量未到阈值，定期归档脚本即可 |
+| Phase 4 历史数据分区 | 数据量未到阈值；当前先补数据保留清理闭环，不上分区表 |
 | Phase 4 开放插件市场 | "远期目标"，无第二组织使用 |
 | 邮箱验证（Phase 2 列出） | 内部工具场景，注册即同事 |
 | 独立 Webhook 配置管理模块 | 合并到项目设置页即可 |
-| 审计日志 3 年保留 | 小团队无外部合规要求，缩短到 90 天对齐执行记录保留 |
-| 账户锁定（连续失败 5 次/15min） | 已与 PRD §4 同步删除。Redis 滑动窗口 rate limit（5/min/IP）已能挡住绝大多数暴力破解；小团队内部工具场景下落库锁定 + unlock 窗口 + 审计的 ROI 低 |
+| 账户锁定（连续失败 5 次/15min） | 已与 PRD §4 同步删除。Redis 认证高风险端点滑动窗口 rate limit（5/min/限流桶）已能挡住绝大多数暴力破解；小团队内部工具场景下落库锁定 + unlock 窗口 + 审计的 ROI 低 |
 
 ---
 
@@ -242,12 +262,14 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 | 吞吐量 | 单 Worker 并发 | ≥ 10 容器 | ⏳ 未测量 |
 | 可用性 | 月度可用率 | ≥ 99.5% | N/A 内部环境 |
 | 日志延迟 | 实时推送 | < 2s | ⏳ 未测量 |
-| 容量 | 单 Run 日志缓冲 | 10000 条 / MAXLEN | ✅ |
+| 容量 | 单 Run 日志缓冲 | 近似 10000 条 / Redis Stream MAXLEN auto-trim | ✅ |
 | 容量 | 单条日志大小 | 4KB 上限 | ✅ |
+| 容量 | 单次执行最大产物总大小 | 500MB | ⚠️ 有 `max_artifact_size_mb` / `max_artifacts_count` 配置字段，但上传路径未强制校验 |
 | 安全 | 凭证加密 | AES-256-GCM | ✅ |
-| 安全 | 通用 API Rate limit | 100/min/IP | ✅ |
-| 安全 | 认证 Rate limit | 5/min/IP | ✅ |
-| 数据保留 | 执行记录 | 默认 90 天 | ✅ `worker/settings.py:121` cleanup_old_runs cron |
+| 安全 | 通用 API Rate limit | 100/min/限流桶 | ✅ |
+| 安全 | 认证高风险端点 Rate limit | 5/min/限流桶 | ✅ |
+| 数据保留 | 执行记录 | 默认 90 天 | ⚠️ `worker/settings.py` 注册了 cleanup cron，但当前实现缺 `datetime/timezone` 导入测试，需补齐后再标完成 |
+| 数据保留 | 审计日志 | 默认 1095 天配置 | ⚠️ `config.py` 已有 `retention_audit_days`；当前未发现独立审计清理任务 |
 
 ---
 
@@ -255,11 +277,11 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 
 1. **新增功能**：在 §1 或 §2 添加一行；如属于 PRD §3 范围，先在 `prd.md` 增功能 ID 再回填到此表
 2. **不得自造 PRD 子 ID**：禁止在 catalog 写 `F-XX-NNa/b/c` 这类子拆分；如确需拆分须先提 PRD 增补 PR 合并后再回填
-3. **决策不做**：移到 §5，写清楚理由；理由不得引用尚未实现的功能作为替代方案
+3. **当前范围不做**：移到 §5，写清楚理由；理由不得引用尚未实现的功能作为替代方案
 4. **状态变更**：✅ / ❌ / ⚠️ / ⏳ 与 `docs/TODO.md` 严格同步；catalog §4 是 TODO 的真相源
 5. **代码与 catalog 冲突时**：优先信代码（grep 验证），同时更新 catalog；不能反过来用 catalog "认为"的状态去推断代码
 6. **commit 风格**（项目惯例）：中文 commit message + semantic prefix（feat/fix/test/chore/docs），单一意图、宁拆勿合
 
 ### 已知偏移
 
-- 无（2026-05-25 经 critic review + 用户决策同步：PRD §6 Vue→React 已修、PRD §4 rate limit 10→5 已对齐、PRD §4 账户锁定已删除）
+- 详见 [`doc-conflict-audit.md`](doc-conflict-audit.md)。当前主要偏移包括：审计日志查询 API 仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净、若干 feature 分支已推送但未合入 `main`。

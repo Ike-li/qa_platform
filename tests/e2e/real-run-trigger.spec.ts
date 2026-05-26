@@ -18,16 +18,18 @@ type Paginated<T> = {
 };
 
 async function loginViaUi(page: Page) {
+  const adminPassword = process.env.E2E_ADMIN_PASSWORD || "admin123";
   await page.goto("/login");
   await page.getByLabel("Username").fill("admin");
-  await page.getByLabel("Password").fill("admin123");
+  await page.getByLabel("Password").fill(adminPassword);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/projects$/);
 }
 
 async function apiToken(request: APIRequestContext): Promise<string> {
+  const adminPassword = process.env.E2E_ADMIN_PASSWORD || "admin123";
   const response = await request.post("/api/v1/auth/login", {
-    data: { username: "admin", password: "admin123" },
+    data: { username: "admin", password: adminPassword },
   });
   expect(response.ok()).toBeTruthy();
   const body = await response.json();
