@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import logging
 import smtplib
 import ssl
+import time
 from dataclasses import dataclass
 from email.mime.text import MIMEText
 
@@ -112,8 +116,9 @@ class WebhookChannel:
     @staticmethod
     def _validate_webhook_url(url: str) -> str | None:
         """Validate webhook URL to prevent SSRF. Returns error message or None."""
+        import ipaddress
+        import socket
         from urllib.parse import urlparse
-        import ipaddress, socket
 
         parsed = urlparse(url)
         if parsed.scheme not in ("https", "http"):
@@ -169,6 +174,87 @@ class WebhookChannel:
         return ChannelResult(success=True)
 
 
+# -- DingTalk channel ------------------------------------------------------- #
+
+
+class DingtalkChannel:
+    """Send messages through DingTalk custom robot webhooks.
+
+    Config keys:
+        access_token, secret (optional), msgtype (text/markdown)
+    """
+
+    ENDPOINT = "https://oapi.dingtalk.com/robot/send"
+    TIMEOUT = 10  # seconds
+
+    @staticmethod
+    def _sign(secret: str, timestamp: int) -> str:
+        string_to_sign = f"{timestamp}\n{secret}".encode("utf-8")
+        digest = hmac.new(secret.encode("utf-8"), string_to_sign, hashlib.sha256).digest()
+        return base64.b64encode(digest).decode("utf-8")
+
+    @classmethod
+    def _build_params(cls, access_token: str, secret: str | None) -> dict[str, str | int]:
+        params: dict[str, str | int] = {"access_token": access_token}
+        if secret:
+            timestamp = int(time.time() * 1000)
+            params["timestamp"] = timestamp
+            params["sign"] = cls._sign(secret, timestamp)
+        return params
+
+    @staticmethod
+    def _build_payload(msgtype: str, message: str, config: dict) -> dict:
+        if msgtype == "text":
+            return {"msgtype": "text", "text": {"content": message}}
+        if msgtype == "markdown":
+            return {
+                "msgtype": "markdown",
+                "markdown": {
+                    "title": config.get("title", "QA Platform Notification"),
+                    "text": message,
+                },
+            }
+        raise ValueError(f"unsupported dingtalk msgtype: {msgtype}")
+
+    async def send(self, config: dict, message: str) -> ChannelResult:
+        access_token = config.get("access_token")
+        if not access_token:
+            return ChannelResult(success=False, error="missing dingtalk access_token")
+
+        secret = config.get("secret")
+        msgtype = config.get("msgtype", "text")
+        try:
+            payload = self._build_payload(msgtype, message, config)
+        except ValueError as exc:
+            return ChannelResult(success=False, error=str(exc))
+
+        params = self._build_params(access_token, secret)
+        try:
+            async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+                response = await client.post(self.ENDPOINT, params=params, json=payload)
+        except httpx.TimeoutException:
+            return ChannelResult(success=False, error=f"dingtalk timeout after {self.TIMEOUT}s")
+        except httpx.HTTPError as exc:
+            return ChannelResult(
+                success=False,
+                error=f"dingtalk network error: {exc.__class__.__name__}",
+            )
+
+        if response.status_code >= 400:
+            return ChannelResult(success=False, error=f"dingtalk returned HTTP {response.status_code}")
+
+        try:
+            body = response.json()
+        except ValueError:
+            return ChannelResult(success=False, error="dingtalk returned invalid JSON")
+
+        errcode = body.get("errcode")
+        if errcode != 0:
+            return ChannelResult(success=False, error=f"dingtalk API error {errcode}")
+
+        return ChannelResult(success=True)
+
+
 # -- Router ------------------------------------------------------------------ #
 
 
@@ -176,6 +262,7 @@ class ChannelRouter:
     """Route a notification to the appropriate channel implementation."""
 
     _channels = {
+        "dingtalk": DingtalkChannel(),
         "email": EmailChannel(),
         "webhook": WebhookChannel(),
     }
