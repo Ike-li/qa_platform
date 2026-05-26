@@ -1,14 +1,16 @@
 # QA Platform Frontend Implementation Prompt
 
+> Historical prompt: this file captured the initial frontend implementation brief. It is not the current API contract and must not be used as implementation input without checking current source. Prefer backend OpenAPI/schemas, `frontend/README.md`, and `docs/doc-conflict-audit.md` when maintaining the app.
+
 ## Project Overview
 
-Build a complete frontend SPA for a QA Automation Execution Platform. The backend API is already implemented (FastAPI). The frontend should be a modern, dark-themed developer tool with Linear's design aesthetic.
+Build a complete frontend SPA for a QA Automation Execution Platform. The backend API is already implemented (FastAPI). The original brief referenced a Linear-like dark developer tool; current visual decisions are maintained in `../DESIGN.md`.
 
 ## Tech Stack
 
 - **Framework**: React 19 + TypeScript
-- **Build**: Vite 6
-- **Styling**: TailwindCSS 4 + shadcn/ui
+- **Build**: Vite 8
+- **Styling**: TailwindCSS 4 + Radix UI primitives + local `components/ui` wrappers
 - **Routing**: React Router v7
 - **State**: TanStack Query (React Query) for server state
 - **Forms**: React Hook Form + Zod validation
@@ -16,7 +18,7 @@ Build a complete frontend SPA for a QA Automation Execution Platform. The backen
 - **Font**: Inter (display/body) + JetBrains Mono (code/logs)
 - **Charts**: Recharts (for test result trends)
 
-## Design System — Linear Style (Dark Theme)
+## Design System — Historical Dark Theme
 
 ### Color Tokens (Tailwind CSS custom colors)
 
@@ -49,7 +51,7 @@ Build a complete frontend SPA for a QA Automation Execution Platform. The backen
 
 ### Typography
 
-- Display headings: Inter, weight 600, negative letter-spacing (-1px to -3px)
+- Display headings: Inter, weight 600, letter-spacing 0
 - Body: Inter, weight 400, 16px, line-height 1.5
 - Small/Caption: Inter, weight 400, 12-14px
 - Code/Logs: JetBrains Mono, weight 400, 13px
@@ -65,7 +67,7 @@ Build a complete frontend SPA for a QA Automation Execution Platform. The backen
 ### Border Radius
 
 - Buttons/Inputs: 8px
-- Cards: 12px
+- Cards/tool panels: 8px for new work; older `rounded-xl` instances may be retired opportunistically
 - Screenshot panels: 16px
 - Pills/Badges: 9999px
 
@@ -90,15 +92,17 @@ No drop shadows. Use surface ladder + 1px hairline borders for depth:
 
 Base URL: `/api/v1`
 
+> Historical examples below were part of the original prompt. Current code and `frontend/README.md` are authoritative when an endpoint differs.
+
 ### Authentication
-- `POST /login` → `{ access_token, refresh_token, token_type, expires_in }`
-- `POST /refresh` → `{ access_token, refresh_token }`
-- `POST /tokens` → Create API token
-- `DELETE /tokens/{token_id}` → Revoke API token
-- `GET /tokens` → List API tokens
+- `POST /auth/login` → Login and issue access token; refresh token is stored in an HttpOnly cookie
+- `POST /auth/refresh` → Refresh access token using cookie
+- `POST /auth/tokens` → Create API token
+- `DELETE /auth/tokens/{token_id}` → Revoke API token
+- `GET /auth/tokens` → List API tokens
 
 ### Projects
-- `GET /projects?page=1&per_page=20&search=&status=active` → Paginated list
+- `GET /projects?page=1&per_page=20&q=&status=active` → Paginated list
 - `POST /projects` → Create project
 - `GET /projects/{id}` → Project detail
 - `PUT /projects/{id}` → Update project
@@ -119,7 +123,7 @@ Base URL: `/api/v1`
 - `DELETE /projects/{project_id}/pipelines/{id}` → Delete
 
 ### Runs
-- `POST /runs` → Trigger run `{ pipeline_id, branch?, env_overrides?, params? }`
+- `POST /runs` → Trigger run `{ pipeline_id, git_ref?, priority? }`
 - `GET /runs?status=&page=1&per_page=20&sort=-created_at` → List runs
 - `GET /runs/{id}` → Run detail
 - `POST /runs/{id}/cancel` → Cancel run `{ reason? }`
@@ -127,13 +131,14 @@ Base URL: `/api/v1`
 - `GET /runs/{id}/artifacts` → Artifacts for a run
 
 ### Artifacts
-- `GET /artifacts/{id}/download` → Download artifact (presigned URL redirect)
+- `GET /artifacts/{id}/download` → Download artifact (returns `{ download_url, expires_in }`)
 
 ### SSE (Server-Sent Events)
-- `GET /runs/{id}/logs/stream` → Real-time log stream
-- `GET /runs/{id}/events` → Run status change events
+- `POST /auth/sse-ticket` → Create one-time SSE ticket
+- `GET /runs/{id}/logs?ticket=...` → Real-time log stream
+- `GET /runs/{id}/events?ticket=...` → Run status change events
 
-### Health
+### Health (outside `/api/v1`)
 - `GET /health` → `{ status: "ok" }`
 - `GET /ready` → `{ status: "ok"|"degraded", checks: { db, redis } }`
 
@@ -168,11 +173,35 @@ interface Pipeline {
   id: string;
   project_id: string;
   name: string;
-  stages: Stage[];
-  selector: { framework: string; pattern: string; tags?: string[] };
-  trigger_config: { on_push: boolean; on_schedule?: string; branches?: string[] };
+  stages: Array<{
+    name: string;
+    plugin: string;
+    config: Record<string, unknown>;
+    continue_on_error: boolean;
+    phase: "prepare" | "execute" | "collect" | "notify" | null;
+  }>;
+  selector: {
+    include_paths: string[];
+    exclude_paths: string[];
+    tags: string[];
+    expression: string | null;
+    regex: string | null;
+    on_empty: "fail" | "skip" | "warn";
+  };
+  trigger_config: {
+    type: string;
+    dedup_window_seconds: number | null;
+    source: Record<string, unknown>;
+    conditions: Record<string, unknown>;
+    target: Record<string, unknown>;
+  };
   timeout_seconds: number;
-  retry_policy: { max_retries: number; backoff: string } | null;
+  retry_policy: {
+    max_attempts: number;
+    retry_on: string[];
+    backoff_seconds: number;
+    scope: "pipeline" | "stage";
+  } | null;
   enabled: boolean;
   created_at: string;
   updated_at: string;
@@ -183,26 +212,23 @@ interface Pipeline {
 ```typescript
 interface Run {
   id: string;
+  tenant_id: string;
   project_id: string;
   pipeline_id: string;
   pipeline_name: string;
-  status: "queued" | "preparing" | "running" | "collecting" | "passed" | "failed" | "cancelled" | "timed_out";
-  branch: string;
+  environment_id: string;
+  status: "queued" | "preparing" | "running" | "collecting" | "done" | "failed" | "cancelled" | "timeout";
+  trigger_type: "manual" | "schedule" | "webhook" | "api";
+  priority: number;
+  triggered_by: string | null;
+  git_ref: string;
   git_sha: string | null;
-  triggered_by: string;
-  trigger_type: "manual" | "schedule" | "webhook";
-  env_overrides: Record<string, string>;
-  params: Record<string, any>;
+  attempt: number;
   started_at: string | null;
   finished_at: string | null;
-  duration_seconds: number | null;
-  total_tests: number;
-  passed_tests: number;
-  failed_tests: number;
-  skipped_tests: number;
+  duration_ms: number | null;
+  summary: Record<string, unknown> | null;
   error_message: string | null;
-  worker_id: string | null;
-  cancel_requested_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -215,7 +241,7 @@ interface TestResult {
   run_id: string;
   suite: string;
   name: string;
-  status: "passed" | "failed" | "skipped" | "error";
+  status: "passed" | "failed" | "skipped" | "error" | "xfail";
   duration_ms: number;
   error_message: string | null;
   stack_trace: string | null;
@@ -246,20 +272,21 @@ interface Artifact {
 /                               → Dashboard (redirect to /projects)
 /projects                       → Project list
 /projects/:id                   → Project detail (tabs: Runs, Pipelines, Environments, Settings)
-/projects/:id/pipelines/:pid    → Pipeline detail + run history
+/runs                           → Run list
 /runs/:id                       → Run detail (logs, test results, artifacts)
 /settings                       → User settings (API tokens)
+/admin/status                   → Admin status page
 ```
 
 ## Pages to Implement
 
 ### 1. Login Page (`/login`)
 - Centered card on canvas background
-- Email + password form
+- Username + password form
 - "Sign in" primary button
 - Error state for invalid credentials
 - Redirect to /projects on success
-- Store tokens in memory (access) + httpOnly cookie or localStorage (refresh)
+- Store the access token in memory; the backend stores the refresh token in an HttpOnly cookie
 
 ### 2. Projects List (`/projects`)
 - Top bar: page title "Projects" + "New Project" primary button
@@ -274,22 +301,22 @@ interface Artifact {
 - Tab navigation: Runs | Pipelines | Environments | Settings
 - **Runs tab** (default):
   - Filter bar: status dropdown, date range
-  - Table/list of runs with: status icon, pipeline name, branch, duration, triggered_by, created_at
+  - Table/list of runs with: status icon, pipeline name, git ref/branch label, duration, triggered_by, created_at
   - Click row → navigate to run detail
-  - "Trigger Run" button → modal with pipeline selector + branch input
+  - "Trigger Run" button → modal with pipeline selector + git ref input
 - **Pipelines tab**:
-  - List of pipelines with: name, framework, enabled toggle, last run status
+  - List of pipelines with: name, stage count, enabled toggle, trigger/retry summary, last run status
   - "New Pipeline" button → creation form/modal
-  - Click → pipeline detail
+  - Edit/view pipeline details within the project tab unless a dedicated route is added
 - **Environments tab**:
-  - List of environments with key-value pairs (values masked)
+  - List of environments with: name, base image, resource limits, env var count (values masked)
   - CRUD operations
 - **Settings tab**:
   - Project name, description, git settings edit form
   - Danger zone: archive/delete project
 
 ### 4. Run Detail (`/runs/:id`)
-- Header: run status (large badge), pipeline name, branch, git SHA, duration, triggered by
+- Header: run status (large badge), pipeline name, git ref/branch label, git SHA, duration, triggered by
 - Action bar: "Cancel" button (if running), "Re-run" button
 - Three sections (tabs or stacked):
   - **Logs**: Real-time log viewer using SSE stream
@@ -306,11 +333,11 @@ interface Artifact {
 
 ### 5. User Settings (`/settings`)
 - API Tokens management
-  - List existing tokens (name, created_at, last_used, prefix)
+  - List existing tokens (token_id, name, scopes, expires_at, last_used_at, is_revoked, created_at)
   - "Create Token" button → modal (name input, shows token ONCE)
   - Revoke button per token
 
-## Component Library (shadcn/ui based, customized to Linear theme)
+## Component Library (Radix UI primitives + local wrappers)
 
 ### Core Components Needed
 - `Button` (primary, secondary, ghost, destructive variants)
@@ -361,8 +388,8 @@ interface Artifact {
 
 1. **Phase 1 — Scaffold**
    - Vite + React + TypeScript setup
-   - TailwindCSS with Linear color tokens
-   - shadcn/ui installation + theme customization
+   - TailwindCSS with current QA Platform tokens
+   - local `components/ui` primitives and theme customization
    - React Router setup with layout
    - API client (axios/fetch wrapper with auth interceptor)
    - Auth context + protected routes
@@ -397,29 +424,39 @@ frontend/
 ├── package.json
 ├── vite.config.ts
 ├── tsconfig.json
-├── tailwind.config.ts
+├── eslint.config.js
 ├── src/
 │   ├── main.tsx
 │   ├── App.tsx
-│   ├── globals.css
+│   ├── index.css
+│   ├── App.css
 │   ├── lib/
 │   │   ├── api.ts              # Axios instance + interceptors
-│   │   ├── auth.ts             # Token management
 │   │   └── utils.ts            # cn(), formatDuration(), etc.
 │   ├── hooks/
-│   │   ├── use-auth.ts
+│   │   ├── use-auth.tsx
+│   │   ├── use-analytics.ts
+│   │   ├── use-notifications.ts
+│   │   ├── use-page-title.ts
 │   │   ├── use-projects.ts
 │   │   ├── use-runs.ts
 │   │   ├── use-pipelines.ts
 │   │   └── use-sse.ts
 │   ├── components/
-│   │   ├── ui/                 # shadcn/ui components
+│   │   ├── ui/                 # local UI primitives
 │   │   ├── layout/
 │   │   │   ├── app-layout.tsx
-│   │   │   ├── sidebar.tsx
-│   │   │   └── top-nav.tsx
+│   │   │   ├── command-palette.tsx
+│   │   │   ├── error-boundary.tsx
+│   │   │   └── protected-route.tsx
 │   │   ├── run-status-badge.tsx
-│   │   ├── log-viewer.tsx
+│   │   ├── branch-badge.tsx
+│   │   ├── priority-badge.tsx
+│   │   ├── language-switcher.tsx
+│   │   ├── runs/
+│   │   │   ├── log-viewer.tsx
+│   │   │   ├── trigger-run-modal.tsx
+│   │   │   └── artifact-preview.tsx
 │   │   ├── test-results-table.tsx
 │   │   ├── duration-display.tsx
 │   │   └── relative-time.tsx
@@ -429,8 +466,12 @@ frontend/
 │   │   │   ├── list.tsx
 │   │   │   └── detail.tsx
 │   │   ├── runs/
+│   │   │   ├── list.tsx
 │   │   │   └── detail.tsx
-│   │   └── settings.tsx
+│   │   ├── admin/
+│   │   │   └── status.tsx
+│   │   ├── settings.tsx
+│   │   └── not-found.tsx
 │   └── types/
 │       └── api.ts              # TypeScript interfaces
 ```
@@ -438,7 +479,7 @@ frontend/
 ## Key UX Details
 
 - **Optimistic updates**: When triggering a run, immediately show it in "queued" state
-- **Polling fallback**: If SSE disconnects, fall back to polling every 5s for active runs
+- **SSE recovery**: reconnect with a fresh SSE ticket; a true polling fallback needs a normal JSON endpoint and should not poll the SSE URL directly
 - **Error boundaries**: Graceful error states per section, not full-page crashes
 - **URL state**: Filters (status, page) reflected in URL query params
 - **Keyboard navigation**: Tab through tables, Enter to open, Escape to close modals
@@ -447,10 +488,10 @@ frontend/
 
 ## Authentication Flow
 
-1. User submits email + password to `POST /api/v1/login`
+1. User submits username + password to `POST /api/v1/auth/login`
 2. Store `access_token` in memory (React state/context)
-3. Store `refresh_token` in localStorage
+3. Refresh token is stored by the backend as an HttpOnly cookie
 4. Attach `Authorization: Bearer {access_token}` to all API requests
-5. On 401 response, attempt token refresh via `POST /api/v1/refresh`
+5. On 401 response, attempt token refresh via `POST /api/v1/auth/refresh`
 6. If refresh fails, redirect to /login
-7. On logout, clear tokens and redirect to /login
+7. On logout, clear in-memory auth state and redirect to /login

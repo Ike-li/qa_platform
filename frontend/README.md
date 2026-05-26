@@ -1,73 +1,58 @@
-# React + TypeScript + Vite
+# QA Platform Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + TypeScript + Vite SPA for the QA Platform.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- React 19
+- Vite 8
+- TypeScript 6
+- TailwindCSS 4
+- React Router 7
+- TanStack Query
+- Radix UI
+- Recharts
+- i18next
 
-## React Compiler
+## Requirements
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- Node.js 22.13+ or 20.19+
 
-## Expanding the ESLint configuration
+## Local Development
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd frontend
+npm ci
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+The dev server defaults to `http://localhost:5173`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Backend API calls are made under `/api/v1`; run the backend separately during local development.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Scripts
+
+```bash
+npm run dev      # start Vite dev server
+npm run build    # TypeScript project build + Vite production build
+npm run lint     # ESLint
+npm run preview  # preview production build
 ```
+
+## API Contract Notes
+
+Use backend schemas and OpenAPI as the source of truth. In particular:
+
+- Auth routes live under `/api/v1/auth/*`.
+- Refresh token is stored in an HttpOnly cookie by the backend, not in localStorage.
+- SSE logs/events use `/api/v1/runs/{run_id}/logs?ticket=...` and `/api/v1/runs/{run_id}/events?ticket=...`.
+- Artifact download returns JSON with `download_url` and `expires_in`; it is not an HTTP redirect.
+- `src/types/api.ts` currently mixes backend-shaped DTOs with UI-normalized view models in a few places. Notable gaps include Run view fields, Environment `variables` vs backend `env_vars` / resource-limit fields, and older nested Pipeline selector / retry shapes; the current environment editor and pipeline modal payloads follow those older shapes too. Some hooks also need API realignment: project search currently sends `search` while the backend expects `q`, pipeline hooks still use non-existent `/pipelines/{id}` routes, notification rule list currently expects a bare array while the backend returns `PaginatedResponse`, and the SSE fallback should not poll the SSE URL as JSON. Run triggering also still carries ignored legacy `env_overrides` / `params`, and run normalization checks `summary.errors` even though backend summaries use singular `error`. Do not treat that file or nearby hooks as the raw backend contract until `T-FRONTEND-API` splits or realigns them.
+- Backend Run statuses are `queued/preparing/running/collecting/done/failed/cancelled/timeout`; the current UI maps `done` to `passed` or `failed` from summary counts, and maps `timeout` to `timed_out`.
+- Backend TestResult statuses are `passed/failed/error/skipped/xfail`; `src/types/api.ts` currently omits `xfail`, which is part of the `T-FRONTEND-API` realignment debt.
+
+`FRONTEND_PROMPT.md` is a historical implementation prompt and is not the current API contract.
+
+## Known TypeScript Debt
+
+The current `main` branch may contain historical TypeScript errors outside new feature work. For task acceptance, follow the repository task guidance: changed frontend files must be TS-clean and must not introduce new TS errors. Clean the historical debt in a dedicated frontend TS task.

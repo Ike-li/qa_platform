@@ -1,8 +1,11 @@
-.PHONY: up down logs migrate migrate-create test lint format seed
+.PHONY: up infra-up down logs migrate migrate-create test lint format seed
 
 # --- Docker Compose ---
 up:
 	docker compose up -d
+
+infra-up:
+	docker compose up -d postgres redis minio
 
 down:
 	docker compose down
@@ -29,4 +32,4 @@ format:
 
 # --- Seed data ---
 seed:
-	python -m qaplatform.seed
+	python scripts/seed_admin.py

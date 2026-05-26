@@ -1,9 +1,9 @@
 # QA 平台 TODO
 
 > 完整功能盘子与状态见 [`feature-catalog.md`](feature-catalog.md)
-> **每项待办的可交付任务包见 [`tasks/`](tasks/README.md)**（codex-ready，含规格 + 起点 + 验收 + 约束）
+> **首批可交付任务包见 [`tasks/`](tasks/README.md)**（codex-ready，含规格 + 起点 + 验收 + 约束）；本轮审计新增的待办若进入实施，需要后续补任务包。
 > 本文件按优先级排序"近期要做什么 / 不做什么"，与 catalog §4 保持同步。
-> 更新于 2026-05-25（PRD 与代码已对齐：账户锁定从 PRD 删除、rate limit 10→5 对齐到代码默认；Vue→React 已修；8 个任务包已起草）
+> 更新于 2026-05-26（PRD / catalog / tasks 与代码仍有已知偏移，详见 [`doc-conflict-audit.md`](doc-conflict-audit.md)；8 个任务包已起草，部分 feature 分支已推送但未合入 `main`）
 
 ---
 
@@ -11,35 +11,108 @@
 
 | # | 项 | 来源 | 缺什么 |
 |---|---|---|---|
-| 1 | F-PL-02 环境变量加密 | PRD §3.2 验收 | `env_vars` 当前明文 JSONB；需复用 `dependencies.py` CredentialCipher |
-| 2 | 审计日志查询 API | PRD §9.6 | 写入端已就位，缺 `/admin/audit-events` 查询路由 |
-| 3 | F-NT-02 钉钉通知 | PRD §8 | 中国大陆网络硬约束 |
-| 4 | F-NT-02 企业微信通知 | PRD §8 | 同上 |
+| 1 | F-PL-02 环境变量加密 | PRD §3.2 验收 | `env_vars` 当前明文 JSONB；需复用 `dependencies.py::CryptoService`（凭据路由经 `container.crypto_service` 调用） |
+| 2 | F-PM-01 / F-PM-02 Git 凭证执行闭环 | PRD §3.1 验收 | 项目和凭证 API 可保存 `git_auth_method` / `credential_id` 与加密凭证，但执行侧 clone 只使用原始 `git_url`，未解密并注入 HTTPS token / SSH key |
+| 3 | F-PL-01 collector 配置补齐 | PRD §3.2 验收 | Pipeline schema / ORM / worker 拼装均无结果收集器选择或配置，`RunExecutor.execute()` 固定 `get_collector("junit")`；需决定 JUnit-only 是否改为正式限制，或补 collector 配置闭环 |
+| 4 | 审计日志查询 API | catalog §4.1 | 写入端已就位，缺 `/api/v1/audit-events` 查询路由；审计查询尚未补入正式 PRD 章节 |
+| 5 | 审计写入覆盖补齐 | architecture §9.6 | `api/v1/runs.py` 批量取消/批量重试当前无 audit 事件；SSE ticket 等临时凭证写入是否审计需产品确认 |
+| 6 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | PRD §3.2 / PRD §3.4 验收 | CPU/内存/超时已实现；当前仅上传 `results/` 下直接文件并支持预签名下载，目录型 Allure HTML 报告、产物数量/大小限制、磁盘限制、OOM/timeout 资源用量记录未闭环 |
+| 7 | F-EX-05 日志归档回看闭环 | PRD §3.3 验收 | Redis Stream 实时日志、断线续传与 S3 JSONL 归档写入已实现；Redis TTL 过期后的归档日志读回 API / 前端回看入口未实现 |
+| 8 | F-AU-02 API Token scope enforcement 补齐 | PRD §3.6 验收 | token 创建/过期/吊销/认证已实现；项目级权限依赖未完整传递 scopes |
+| 9 | F-AU-04 跨租户 404 完整收敛 | PRD §3.6 验收 | 聚合根查询与 Owner/Admin 主要路径已返回 404；但非 Owner/Admin 访问 path `project_id` 的项目级路由时，`require_project_permission` 可能先于 `get_for_tenant` 返回 403，需补依赖/路由顺序与集成测试 |
+| 10 | F-EX-01 手动触发参数与入队验收补齐 | PRD §3.3 验收 | 当前 `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；缺 commit / environment 指定入参，且“触发后 < 5s 入队”未纳入验收 |
+| 11 | F-NT-02 钉钉通知 | PRD §8 | 中国大陆网络硬约束 |
+| 12 | F-NT-02 企业微信通知 | PRD §8 | 同上 |
 
 ## 2. 中优先级 — 验收边角 + 性能验证
 
 | # | 项 | 来源 | 缺什么 |
 |---|---|---|---|
-| 5 | F-EX-02 静默窗口 | PRD §3.3 验收 | 发布冻结期不触发 cron 未实现 |
-| 6 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | PRD §3.3 验收 | `dedup_key` 字段在 ORM 已有，路由层未接入 |
-| 7 | F-LS-04 测试结果 suite/关键字过滤 | PRD §3.7 验收 | 当前仅 status |
-| 8 | 非功能性能压测 | PRD §4 | 读/写 API p99、日志推送 < 2s 目标未验证 |
-| 9 | E2E 测试 CI 自动触发 | fix-roadmap §4.3 | 当前 `workflow_dispatch`，需启用 push 触发 |
+| 13 | F-EX-02 静默窗口 | PRD §3.3 验收 | 发布冻结期不触发 cron 未实现 |
+| 14 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | PRD §3.3 验收 | `dedup_key` 字段在 ORM 已有，路由层未接入 |
+| 15 | F-EX-07 自动重试端到端补齐 | PRD §3.3 验收 | API schema 使用 `max_attempts` 且缺 1-5 边界校验，worker 读取 `max_retries`；现有 `_should_retry` / `_attempt_retry` 原语未接上真实执行期基础设施失败路径，`RunExecutor.execute()` 会捕获多数异常并返回 `FAILED` |
+| 16 | F-EX-08 优先级队列消费闭环 | PRD §3.3 验收 | 入队侧写 `queue:high/medium/low`，但默认 worker 只消费 `queue:medium`；high/low 消费、高优先级插队和同优先级 FIFO 需补部署/测试闭环 |
+| 17 | F-LS-04 测试结果 suite/关键字过滤 | PRD §3.7 验收 | 当前 `main` 仅 status（后端状态枚举含 `passed/failed/error/skipped/xfail`）；`feature/T07-test-results-filter` 已推送但未合入 |
+| 18 | F-LS-01 执行列表过滤补齐 | PRD §3.7 验收 | 当前 `main` 支持 status 多选、project_id 与创建时间排序；缺 pipeline / git_ref / time range 过滤 |
+| 19 | F-LS-02 剩余列表分页补齐 | PRD §3.7 验收 | credentials、project members、auth tokens 仍返回直接 list，未走 `PaginatedResponse` |
+| 20 | F-LS-03 项目搜索排序补齐 | PRD §3.7 验收 | LIKE 转义已修；结果仍按 `created_at desc`，缺名称字母序 |
+| 21 | F-RE-05 单用例历史趋势补齐 | PRD §3.4 验收 | 当前已有项目级趋势和 flaky 聚合；缺单个用例历史趋势 API/视图 |
+| 22 | F-NT-01 / F-NT-03 通知规则与模板验收补齐 | PRD §3.5 验收 | 当前仅状态/pass_rate/失败数 AND 条件和规则级基础变量模板；缺 OR、连续失败次数、每渠道模板、项目名与失败用例变量 |
+| 23 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 读/写 API p99、日志推送 < 2s、执行摘要生成 < 3s 等目标未验证 |
+| 24 | E2E CI 覆盖扩展 | fix-roadmap §4.3 | push / PR 已自动跑稳定 `tests/e2e/auth-flow.spec.ts`；全量 E2E 保留 `workflow_dispatch` 手动触发，是否扩大自动覆盖需另行决策；若继续保留 `scripts/run-e2e.sh`，需让 seed 密码透传 `E2E_ADMIN_PASSWORD` |
+| 25 | 数据保留清理闭环 | architecture §8.4 / runbook §7 | `cleanup_old_runs` cron 已注册但当前函数缺 `datetime/timezone` 导入会触发失败；仓储只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run 与 `cancelled/timeout` 策略未闭环；`retry_failed_archives` 为空占位；DB 行冷归档未实现 |
 
 ## 3. 低优先级 — 增强项
 
 | # | 项 | 备注 |
 |---|---|---|
-| 10 | OpenTelemetry 装配 | 仅声明依赖，无 instrumentation 代码 |
-| 11 | 部署 checklist 完善 | 密钥/CIDR/lifecycle 一键勾选；附到 `runbook.md` |
+| 26 | OpenTelemetry 装配 | 仅声明部分依赖，缺 OTLP HTTP exporter 与 instrumentation 代码 |
+| 27 | 部署 checklist 完善 | 密钥/CIDR/lifecycle/Docker socket proxy 一键勾选；附到 `runbook.md` |
 
-## 4. 明确不做
+## 4. 技术债专项
+
+| 任务 | 内容 | 备注 |
+|---|---|---|
+| T-LINT | 清理 main 既有 ruff 历史债务 | 功能任务只要求改动文件 ruff 干净且不引入新错误 |
+| T-FRONTEND-TS | 清理前端 3 个历史 TS 错误文件 | CI 目前只允许这 3 个已知文件失败；任何新 TS 错误仍阻断 |
+| T-FRONTEND-API | 拆分/对齐前端 API DTO、hook 路径/响应形状与视图模型类型 | `frontend/src/types/api.ts` 仍混合后端响应与 UI 归一化字段（如 Run 的 `git_ref/summary/duration_ms` vs `branch/total_tests/duration_seconds`）；`frontend/src/hooks/use-runs.ts` 的触发 payload 仍带后端 `RunTrigger` 不接收的 `env_overrides/params`，且 `normalizeRun` 仍读取复数 `summary.errors` 而后端 summary 使用单数 `error`；Environment 仍有 `variables` 旧字段且缺 `base_image` / `env_vars` / resource limit 字段，`frontend/src/components/projects/environment-editor.tsx` 创建和更新也仍提交旧 `variables` payload；Pipeline 嵌套 selector / retry shape 仍是旧前端形状，`frontend/src/components/projects/pipeline-modal.tsx` 也提交旧 `framework/pattern/on_push/max_retries/backoff` payload，需对齐后端 `stages/selector/trigger_config/retry_policy` schema；`frontend/src/hooks/use-projects.ts` 项目搜索传 `search`，但后端 `api/v1/projects.py::list_projects` 参数是 `q`；`frontend/src/hooks/use-pipelines.ts` 仍调用不存在的 `/pipelines/{id}`，应改为 `/projects/{project_id}/pipelines/{pipeline_id}`；`frontend/src/hooks/use-notifications.ts` 把通知规则列表当成裸数组，但后端返回 `PaginatedResponse[NotificationRuleResponse]`；`frontend/src/hooks/use-sse.ts` fallback 目前会把 SSE URL 当 JSON API 轮询，需改为重连或普通 JSON 状态端点；TestResult 后端状态含 `xfail` 但当前前端类型未列；以后端 `api/schemas.py` 为契约源 |
+| T-ARCH-LAYERS | 收敛分层 import / DB 访问偏差 | `engine` 当前仍反向依赖 `api.metrics` / `worker._redact`；部分 API 路由仍直接写 SQLAlchemy 查询，需逐步下沉到中立指标模块、`engine.redact` 和 repositories / query service |
+| T-LOGGING | 结构化日志全局化 | API app 默认 factory 已配置 structlog JSON renderer；worker/arq 入口未调用 `configure_logging`，engine / worker / plugin 多数模块仍经 stdlib logger 输出，需统一 worker 进程日志初始化与字段格式 |
+
+### 审计报告任务 ID 对照
+
+`doc-conflict-audit.md` §15 使用 `T-*` 别名记录本轮审计拆出的后续任务；当前 TODO 的优先级与验收来源仍以上方编号项为准。映射如下：
+
+| 审计任务 ID | TODO / catalog 落点 |
+|---|---|
+| `T-DOC-01` | 已完成第一轮文档修复，见 `doc-conflict-audit.md` §15 |
+| `T-DOC-02` | 已完成第一轮文档修复，见 `doc-conflict-audit.md` §15 |
+| `T-DOC-03` | 已完成第一轮文档修复，见 `doc-conflict-audit.md` §15 |
+| `T-DOC-04` | 已完成第一轮文档修复，见 `doc-conflict-audit.md` §15 |
+| `T-DOC-05` | 已完成第一轮文档修复，见 `doc-conflict-audit.md` §15 |
+| `T-GIT-CREDENTIALS` | TODO #2 F-PM-01 / F-PM-02 Git 凭证执行闭环 |
+| `T-PIPELINE-COLLECTOR` | TODO #3 F-PL-01 collector 配置补齐 |
+| `T-AUDIT-COVERAGE` | TODO #5 审计写入覆盖补齐 |
+| `T-ARTIFACT-PREVIEW` | TODO #6 F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 |
+| `T-LOG-REPLAY` | TODO #7 F-EX-05 日志归档回看闭环 |
+| `T-AUTH-SCOPE` | TODO #8 F-AU-02 API Token scope enforcement 补齐 |
+| `T-MANUAL-TRIGGER` | TODO #10 F-EX-01 手动触发参数与入队验收补齐 |
+| `T-EXEC-RETRY` | TODO #15 F-EX-07 自动重试端到端补齐 |
+| `T-QUEUE-PRIORITY` | TODO #16 F-EX-08 优先级队列消费闭环 |
+| `T-NOTIFICATION-TEMPLATE` | TODO #22 F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
+| `T-RETENTION-OPS` | TODO #25 数据保留清理闭环 |
+| `T-LINT` | 技术债专项 |
+| `T-FRONTEND-TS` | 技术债专项 |
+| `T-FRONTEND-API` | 技术债专项 |
+| `T-ARCH-LAYERS` | 技术债专项 |
+| `T-LOGGING` | 技术债专项 |
+
+### Maintainer 决策待确认
+
+`doc-conflict-audit.md` §17 汇总的是不能只靠文档修字完成的产品/架构决策；进入对应 TODO 实施前需先确认下表口径：
+
+| 决策项 | TODO / catalog 落点 |
+|---|---|
+| 是否在 PRD 正式补审计日志查询章节 | TODO #4 审计日志查询 API；当前执行依据为 catalog §4.1 |
+| `Schedule.quiet_windows` 与 `Project.settings.silent_windows` 是否长期共存 | TODO #13 F-EX-02 静默窗口；catalog §4.3 已记录当前双机制边界 |
+| T10 是否允许新增 OTLP HTTP exporter 依赖 | TODO #26 OpenTelemetry 装配 |
+| 是否需要独立审计日志清理任务 | TODO #25 数据保留清理闭环 |
+| 是否实现 `retry_failed_archives` 自动补偿与 DB 行冷归档 | TODO #25 数据保留清理闭环 |
+| `/auth/sse-ticket` 临时凭证写入是否必须纳入审计 | TODO #5 审计写入覆盖补齐 |
+| Pipeline collector 配置是补实现还是将 JUnit-only 写成正式产品限制 | TODO #3 F-PL-01 collector 配置补齐 |
+| Allure/HTML 报告预览采用目录入口还是 zip/html 单产物 | TODO #6 F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 |
+| `worker_lost` 是否进入自动重试 | TODO #15 F-EX-07 自动重试端到端补齐 |
+| F-EX-08 采用单 worker 多队列还是多 worker 部署 | TODO #16 F-EX-08 优先级队列消费闭环 |
+| F-NT-03 每渠道模板是否嵌入 `channels[]` | TODO #22 F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
+| F-EX-05 归档日志回看走流式 API 还是 artifact 复用 | TODO #7 F-EX-05 日志归档回看闭环 |
+
+## 5. 当前范围不做
 
 详见 [`feature-catalog.md`](feature-catalog.md) §5。摘要：
 - 账户锁定（已与 PRD §4 同步删除，滑动窗口 rate limit 已挡）
 - 跨分支/跨环境对比专属视图、历史日志全文搜索、数据导出 CSV、Slack 通知
 - Phase 4 全部项（K8s Job、多 Worker 管理、分区、插件市场）
-- 邮箱验证、独立 Webhook 配置模块、3 年审计保留
+- 邮箱验证、独立 Webhook 配置模块
 
 ---
 
@@ -47,9 +120,9 @@
 
 | 阶段 | 状态 |
 |---|---|
-| Phase 1 MVP | ✅ 全部完成 |
-| Phase 2 自动化与通知 | ✅ 主线完成（含 F-EX-08 优先级队列），差钉钉/企微 |
-| Phase 3 洞察与报告 | ✅ 主线完成（仪表盘/Flaky/Allure/系统状态页/趋势） |
+| Phase 1 MVP | ⚠️ 主线部分完成（项目/管道/手动执行/日志/结果主链路已就位；Git 凭证 clone 使用、Pipeline collector 配置、F-EX-01 commit/environment 指定入参与入队时延验收、F-PL-02 env_vars 加密、F-PL-03 产物/磁盘/资源记录闭环、F-LS-01~04 列表过滤/分页/搜索边角仍缺） |
+| Phase 2 自动化与通知 | ⚠️ 主线部分完成（cron/webhook/API token 基础、重试/优先级队列原语、通知规则/模板基础已就位；F-AU-02 scope enforcement、F-EX-02 静默窗口、F-EX-03 分支过滤+去重、F-EX-07 自动重试端到端、F-EX-08 队列消费闭环、通知规则/模板验收、钉钉/企微仍缺） |
+| Phase 3 洞察与报告 | ⚠️ 主线部分完成（仪表盘/Flaky/系统状态页/项目级趋势已就位；Allure/HTML 产物预览闭环和单用例历史趋势仍缺） |
 | Phase 4 规模化 | ⛔ 整体不在当前范围 |
 
 逐项细节见 [`feature-catalog.md`](feature-catalog.md)。
