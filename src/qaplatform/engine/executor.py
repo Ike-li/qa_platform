@@ -7,8 +7,10 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Collection
+from typing import Any
 from uuid import UUID
+
+from opentelemetry import trace
 
 from qaplatform.domain.models.run import Run, RunStatus
 from qaplatform.domain.ports import RunRepositoryProtocol
@@ -151,6 +153,7 @@ class RunExecutor:
     async def execute(self, run: Run, pipeline: PipelineConfig) -> RunStatus:
         """Execute a full pipeline run. Returns the terminal RunStatus."""
         run_id = str(run.id)
+        tracer = trace.get_tracer(__name__)
         working_dir = Path(tempfile.mkdtemp(prefix=f"qap-{run_id[:8]}-"))
 
         self._active_execution_id = None
@@ -167,10 +170,18 @@ class RunExecutor:
                 cancel_stop,
             )
         )
+        source_clone_attributes = {"run.id": run_id}
+        project_id = getattr(run, "project_id", None)
+        if project_id is not None:
+            source_clone_attributes["run.project_id"] = str(project_id)
 
         try:
             # 1. Clone repository
-            await self._clone_repo(run, working_dir)
+            with tracer.start_as_current_span(
+                "source_clone",
+                attributes=source_clone_attributes,
+            ):
+                await self._clone_repo(run, working_dir)
             await self.log_stream.write_log(run_id, "Repository cloned successfully")
 
             # 2. Run setup script
@@ -192,7 +203,11 @@ class RunExecutor:
             # Commit so the RUNNING transition is visible to other connections (cancel API, SSE).
             await self.run_repo.commit()
             await self._publish(run_id, RunStatus.RUNNING.value, previous=RunStatus.PREPARING.value)
-            exit_result = await self._run_stages(run, pipeline, working_dir)
+            with tracer.start_as_current_span(
+                "container_run",
+                attributes={"run.id": run_id, "stage.count": len(pipeline.stages)},
+            ):
+                exit_result = await self._run_stages(run, pipeline, working_dir)
 
             if exit_result.exit_code != 0:
                 await self.log_stream.write_log(
@@ -218,27 +233,38 @@ class RunExecutor:
             await self._publish(run_id, RunStatus.COLLECTING.value, previous=RunStatus.RUNNING.value)
             await self.log_stream.write_log(run_id, "Collecting test results...")
 
-            collector = self.plugin_registry.get_collector("junit")
+            with tracer.start_as_current_span(
+                "collect_results",
+                attributes={"run.id": run_id, "collector": "junit"},
+            ):
+                collector = self.plugin_registry.get_collector("junit")
 
-            results = await collector.collect(run.id, working_dir)
-            passed = sum(1 for r in results if r.status == "passed")
-            failed = sum(1 for r in results if r.status == "failed")
-            skipped = sum(1 for r in results if r.status == "skipped")
-            error = sum(1 for r in results if r.status == "error")
-            total = passed + failed + skipped + error
+                results = await collector.collect(run.id, working_dir)
+                passed = sum(1 for r in results if r.status == "passed")
+                failed = sum(1 for r in results if r.status == "failed")
+                skipped = sum(1 for r in results if r.status == "skipped")
+                error = sum(1 for r in results if r.status == "error")
+                total = passed + failed + skipped + error
 
-            summary = {
-                "total": total,
-                "passed": passed,
-                "failed": failed,
-                "skipped": skipped,
-                "error": error,
-                "pass_rate": passed / total if total > 0 else 0.0,
-            }
+                summary = {
+                    "total": total,
+                    "passed": passed,
+                    "failed": failed,
+                    "skipped": skipped,
+                    "error": error,
+                    "pass_rate": passed / total if total > 0 else 0.0,
+                }
 
             # 5. Upload artifacts to S3
-            if self.s3_client:
-                await self._upload_artifacts(run_id, working_dir)
+            with tracer.start_as_current_span(
+                "upload_artifacts",
+                attributes={
+                    "run.id": run_id,
+                    "artifact.upload.enabled": self.s3_client is not None,
+                },
+            ):
+                if self.s3_client:
+                    await self._upload_artifacts(run_id, working_dir)
 
             # 6. Write terminal state
             status = RunStatus.DONE
