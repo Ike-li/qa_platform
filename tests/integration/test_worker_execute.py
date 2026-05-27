@@ -236,13 +236,18 @@ def _host_reachable_presigned_request(download_url: str) -> tuple[str, dict[str,
     return request_url, {"Host": parsed.netloc}
 
 
-async def _assert_presigned_junit_download(download_url: str, *, expected_suite: str) -> None:
+async def _download_presigned_text(download_url: str) -> str:
     request_url, headers = _host_reachable_presigned_request(download_url)
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(request_url, headers=headers)
     assert response.status_code == 200, response.text[:500]
-    assert f"<testsuite name='{expected_suite}'" in response.text
-    assert "<testcase " in response.text
+    return response.text
+
+
+async def _assert_presigned_junit_download(download_url: str, *, expected_suite: str) -> None:
+    text = await _download_presigned_text(download_url)
+    assert f"<testsuite name='{expected_suite}'" in text
+    assert "<testcase " in text
 
 
 async def _wait_for_worker_heartbeat_keys(*, timeout_seconds: int = 20) -> list[str]:
@@ -407,12 +412,18 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
                 "    \"path = Path(junit)\\n\"\n"
                 "    \"path.parent.mkdir(parents=True, exist_ok=True)\\n\"\n"
                 "    \"path.write_text(\\\"<testsuite name='real-worker' tests='1' failures='0' errors='0' skipped='0'><testcase classname='real_worker' name='smoke' time='0.01'/></testsuite>\\\")\\n\"\n"
+                "    \"(path.parent / 'html').mkdir(exist_ok=True)\\n\"\n"
+                "    \"(path.parent / 'html' / 'report.html').write_text('<html>real-worker-report</html>')\\n\"\n"
+                "    \"(path.parent / 'logs').mkdir(exist_ok=True)\\n\"\n"
+                "    \"(path.parent / 'logs' / 'trace.txt').write_text('real-worker-trace')\\n\"\n"
+                "    \"(path.parent / 'allure-report').mkdir(exist_ok=True)\\n\"\n"
+                "    \"(path.parent / 'allure-report' / 'index.html').write_text('<html>real-worker-allure</html>')\\n\"\n"
                 "    \"print('===== 1 passed in 0.01s =====')\\n\"\n"
                 ")\n"
                 "PY"
             ),
             "max_artifact_size_mb": 10,
-            "max_artifacts_count": 5,
+            "max_artifacts_count": 8,
         },
     )
     assert env_resp.status_code in (200, 201), env_resp.text
@@ -465,31 +476,33 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         api_client,
         f"/api/v1/runs/{run_id}/artifacts",
         headers,
-        lambda body: body["total"] >= 1,
+        lambda body: body["total"] >= 4,
         timeout_seconds=30,
     )
-    junit_artifacts = [
-        artifact
-        for artifact in artifacts_body["data"]
-        if artifact["name"] == "junit.xml"
-    ]
-    assert junit_artifacts, artifacts_body
-    junit_artifact = junit_artifacts[0]
-    assert junit_artifact["type"] == "junit"
-    assert junit_artifact["storage_path"] == f"reports/{run_id}/junit.xml"
+    artifacts_by_name = {artifact["name"]: artifact for artifact in artifacts_body["data"]}
+    expected_artifacts = {
+        "junit.xml": ("junit", "<testsuite name='real-worker'"),
+        "html/report.html": ("report", "real-worker-report"),
+        "logs/trace.txt": ("log", "real-worker-trace"),
+        "allure-report/index.html": ("allure-report", "real-worker-allure"),
+    }
+    assert expected_artifacts.keys() <= artifacts_by_name.keys(), artifacts_body
 
-    download_resp = await api_client.get(
-        f"/api/v1/artifacts/{junit_artifact['id']}/download",
-        headers=headers,
-    )
-    assert download_resp.status_code == 200, download_resp.text
-    download_body = download_resp.json()
-    assert download_body["expires_in"] > 0
-    assert download_body["download_url"].startswith(("http://", "https://"))
-    await _assert_presigned_junit_download(
-        download_body["download_url"],
-        expected_suite="real-worker",
-    )
+    for artifact_name, (artifact_type, expected_text) in expected_artifacts.items():
+        artifact = artifacts_by_name[artifact_name]
+        assert artifact["type"] == artifact_type
+        assert artifact["storage_path"] == f"reports/{run_id}/{artifact_name}"
+
+        download_resp = await api_client.get(
+            f"/api/v1/artifacts/{artifact['id']}/download",
+            headers=headers,
+        )
+        assert download_resp.status_code == 200, download_resp.text
+        download_body = download_resp.json()
+        assert download_body["expires_in"] > 0
+        assert download_body["download_url"].startswith(("http://", "https://"))
+        downloaded_text = await _download_presigned_text(download_body["download_url"])
+        assert expected_text in downloaded_text
 
     archive_body = await _poll_json(
         api_client,
@@ -500,7 +513,8 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     )
     lines = [entry["line"] for entry in archive_body["data"]]
     assert any("Repository cloned successfully" in line for line in lines)
-    assert any("Uploaded artifact: junit.xml" in line for line in lines)
+    for artifact_name in expected_artifacts:
+        assert any(f"Uploaded artifact: {artifact_name}" in line for line in lines)
     assert any("Run completed: done" in line for line in lines)
 
 
