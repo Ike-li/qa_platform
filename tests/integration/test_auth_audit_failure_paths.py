@@ -18,6 +18,8 @@ Fixtures used
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -137,6 +139,20 @@ async def _latest_audit_row(engine, action: str):
         return result.fetchone()
 
 
+def _force_auth_audit_writes_to_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inject an audit repository outage without replacing auth/DB/Redis wiring."""
+    from qaplatform.api.v1 import auth as auth_module
+
+    async def _raise_audit_outage(self, *args, **kwargs):
+        raise RuntimeError("audit store unavailable")
+
+    monkeypatch.setattr(
+        auth_module.AuditEventRepository,
+        "create",
+        _raise_audit_outage,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Tests
 # --------------------------------------------------------------------------- #
@@ -161,6 +177,25 @@ async def test_login_nonexistent_user_returns_401_not_500(
     assert row is not None, "audit.login_failed row must be written"
     assert row.tenant_id is None, "tenant_id must be NULL for unknown-user path"
     assert "invalid_credentials" in str(row.after_state)
+
+
+@pytest.mark.asyncio
+async def test_login_nonexistent_user_returns_401_when_audit_write_fails(
+    auth_client,
+    monkeypatch,
+    caplog,
+):
+    """Audit storage outage must not turn auth failure into a 500."""
+    _force_auth_audit_writes_to_fail(monkeypatch)
+    caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+
+    resp = await auth_client.post(
+        "/api/v1/auth/login",
+        json={"username": "audit-outage-user", "password": "wrong"},
+    )
+
+    assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
+    assert "audit_write_failed" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -209,6 +244,27 @@ async def test_refresh_with_invalid_token_returns_401_not_500(
 
 
 @pytest.mark.asyncio
+async def test_refresh_invalid_token_returns_401_when_audit_write_fails(
+    auth_client,
+    monkeypatch,
+    caplog,
+):
+    """Invalid refresh tokens stay 401 even if failure audit cannot be written."""
+    _force_auth_audit_writes_to_fail(monkeypatch)
+    caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+    auth_client.cookies.set(
+        "refresh_token",
+        "this.is.not.a.valid.jwt",
+        path="/api/v1/auth",
+    )
+
+    resp = await auth_client.post("/api/v1/auth/refresh")
+
+    assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
+    assert "audit_write_failed" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_logout_without_authorization_returns_204_not_500(
     auth_client, integration_db_engine
 ):
@@ -224,3 +280,19 @@ async def test_logout_without_authorization_returns_204_not_500(
     assert row is not None, "audit.logout row must be written"
     assert row.tenant_id is None
     assert row.user_id is None
+
+
+@pytest.mark.asyncio
+async def test_logout_without_authorization_returns_204_when_audit_write_fails(
+    auth_client,
+    monkeypatch,
+    caplog,
+):
+    """Logout is idempotent and must survive an audit write outage."""
+    _force_auth_audit_writes_to_fail(monkeypatch)
+    caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+
+    resp = await auth_client.post("/api/v1/auth/logout")
+
+    assert resp.status_code == 204, f"Expected 204, got {resp.status_code}: {resp.text}"
+    assert "audit_write_failed" in caplog.text

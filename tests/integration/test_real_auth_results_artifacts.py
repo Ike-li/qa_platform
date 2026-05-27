@@ -9,6 +9,7 @@ These tests intentionally exercise production wiring where it matters:
 
 from __future__ import annotations
 
+import logging
 import os
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -367,6 +368,39 @@ async def test_real_sse_ticket_writes_audit_without_storing_ticket(
     ).scalar_one()
     assert audit.after_state == {"ttl_seconds": 90, "single_use": True}
     assert ticket not in str(audit.after_state)
+
+
+@pytest.mark.asyncio
+async def test_refresh_survives_refresh_token_revoke_outage(
+    real_auth_app,
+    real_auth_client,
+    monkeypatch,
+    caplog,
+):
+    """Refresh must issue a new token even if blacklist Redis has a blip."""
+    from qaplatform.api.auth.jwt_service import JWTService
+
+    access_token = await _register_real_user(real_auth_client, prefix="refresh_revoke")
+    jwt_svc = JWTService(real_auth_app.state.container.settings)
+    user_id = jwt_svc.decode_token(access_token)["sub"]
+    real_auth_client.cookies.set(
+        "refresh_token",
+        jwt_svc.create_refresh_token(user_id),
+        path="/api/v1/auth",
+    )
+    redis = real_auth_app.state.container.redis_client
+
+    async def _raise_revoke_outage(*args, **kwargs):
+        raise RuntimeError("redis revoke unavailable")
+
+    monkeypatch.setattr(redis, "set", _raise_revoke_outage)
+    caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+
+    resp = await real_auth_client.post("/api/v1/auth/refresh")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["access_token"]
+    assert "token_revoke_failed" in caplog.text
 
 
 @pytest.mark.asyncio
