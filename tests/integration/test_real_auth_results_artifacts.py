@@ -328,8 +328,12 @@ async def test_archived_logs_api_replays_s3_jsonl_after_real_rbac(
     s3 = _MemoryS3()
     real_auth_app.state.container.s3_client = s3
     stream = LogStream(real_auth_app.state.container.redis_client)
-    await stream.write_log(run_id, "checkout started", stream="stdout")
-    await stream.write_log(run_id, "dependency warning", stream="stderr")
+    for index in range(5):
+        await stream.write_log(
+            run_id,
+            f"archived-line-{index}",
+            stream="stderr" if index == 3 else "stdout",
+        )
 
     archived = await stream.archive_logs(
         run_id,
@@ -345,11 +349,54 @@ async def test_archived_logs_api_replays_s3_jsonl_after_real_rbac(
 
     assert replay_resp.status_code == 200, replay_resp.text
     body = replay_resp.json()
-    assert body["total"] == 2
-    assert body["data"] == [
-        {"stream": "stdout", "line": "checkout started"},
-        {"stream": "stderr", "line": "dependency warning"},
+    assert body["total"] == 5
+    assert body["data"][:2] == [
+        {"stream": "stdout", "line": "archived-line-0"},
+        {"stream": "stdout", "line": "archived-line-1"},
     ]
+
+    page_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={"page": 2, "per_page": 2},
+    )
+    assert page_resp.status_code == 200, page_resp.text
+    page_body = page_resp.json()
+    assert page_body["total"] == 5
+    assert page_body["page"] == 2
+    assert page_body["per_page"] == 2
+    assert page_body["data"] == [
+        {"stream": "stdout", "line": "archived-line-2"},
+        {"stream": "stderr", "line": "archived-line-3"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_archived_logs_api_returns_404_when_s3_object_missing(
+    real_auth_app,
+    real_auth_client,
+):
+    access_token = await _register_real_user(real_auth_client, prefix="log_missing")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    real_auth_app.state.container.s3_client = _MemoryS3()
+    replay_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+
+    assert replay_resp.status_code == 404, replay_resp.text
+    error = replay_resp.json()["error"]
+    assert error["code"] == "NOT_FOUND"
+    assert error["message"] == "Archived logs not found"
 
 
 @pytest.mark.asyncio
