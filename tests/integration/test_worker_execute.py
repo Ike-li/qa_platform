@@ -99,6 +99,17 @@ def _require_compose_priority_stack() -> None:
         )
 
 
+def _require_compose_worker_stack() -> None:
+    services = _running_compose_services()
+    required = {"api", "postgres", "redis", "minio", "worker"}
+    missing = required - services
+    if missing:
+        pytest.skip(
+            "worker failure external-stack test requires running compose services: "
+            f"{', '.join(sorted(missing))}"
+        )
+
+
 def _compose_redis_keys(pattern: str) -> list[str]:
     result = _compose(
         ["exec", "-T", "redis", "redis-cli", "--raw", "KEYS", pattern],
@@ -253,6 +264,35 @@ async def _poll_project_runs(api_client, project_id: str, headers, predicate, *,
         predicate,
         timeout_seconds=timeout_seconds,
     )
+
+
+async def _assert_project_has_no_retry_runs(
+    api_client,
+    project_id: str,
+    headers,
+    *,
+    seconds: int = 12,
+) -> None:
+    deadline = asyncio.get_event_loop().time() + seconds
+    observed_attempts: list[list[int]] = []
+    while asyncio.get_event_loop().time() < deadline:
+        response = await api_client.get(
+            f"/api/v1/runs?project_id={project_id}&per_page=20",
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text[:500]
+        body = response.json()
+        attempts = [run["attempt"] for run in body["data"]]
+        observed_attempts.append(attempts)
+        assert attempts, (
+            "expected original run while checking retry absence; "
+            f"observed_attempts={observed_attempts}"
+        )
+        assert all(attempt == 1 for attempt in attempts), (
+            "failure should not create retry runs; "
+            f"observed_attempts={observed_attempts}"
+        )
+        await asyncio.sleep(2)
 
 
 def _host_reachable_presigned_request(download_url: str) -> tuple[str, dict[str, str]]:
@@ -913,3 +953,174 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
             assert any("Run completed: done" in line for line in lines), label
     finally:
         _compose(["start", "worker-high", "worker-low"], timeout=60, check=False)
+
+
+@pytest.mark.asyncio
+async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_stack(
+    docker_available, api_client, admin_token
+):
+    """真实外部栈：clone/setup 用户失败保持 failed，不重试也不泄露 URL secret。"""
+    _require_compose_worker_stack()
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    suffix = os.urandom(4).hex()
+
+    async def _create_run(
+        *,
+        label: str,
+        git_url: str,
+        setup_script: str,
+    ) -> tuple[str, str]:
+        project_resp = await api_client.post(
+            "/api/v1/projects",
+            headers=headers,
+            json={
+                "name": f"Worker Failure {label} {suffix}",
+                "slug": f"worker-failure-{label}-{suffix}",
+                "git_url": git_url,
+                "default_branch": EXTERNAL_STACK_GIT_REF,
+            },
+        )
+        assert project_resp.status_code in (200, 201), project_resp.text
+        project_id = project_resp.json()["id"]
+
+        env_resp = await api_client.post(
+            f"/api/v1/projects/{project_id}/environments",
+            headers=headers,
+            json={
+                "name": f"Worker Failure {label} Env",
+                "base_image": "python:3.12-alpine",
+                "memory_mb": 512,
+                "cpu_cores": 1.0,
+                "network_policy": "allow",
+                "env_vars": {},
+                "setup_script": setup_script,
+                "max_artifact_size_mb": 10,
+                "max_artifacts_count": 5,
+            },
+        )
+        assert env_resp.status_code in (200, 201), env_resp.text
+
+        pipeline_resp = await api_client.post(
+            f"/api/v1/projects/{project_id}/pipelines",
+            headers=headers,
+            json={
+                "name": f"Worker Failure {label} Pipeline",
+                "stages": [
+                    {
+                        "name": "pytest",
+                        "plugin": "pytest",
+                        "phase": "execute",
+                        "config": {"test_path": "tests/"},
+                    }
+                ],
+                "timeout_seconds": 300,
+                "retry_policy": {
+                    "max_attempts": 2,
+                    "retry_on": ["infra"],
+                    "backoff_seconds": 0,
+                },
+                "selector": {"include_paths": ["tests"], "on_empty": "warn"},
+                "trigger_config": {"type": "manual"},
+                "enabled": True,
+            },
+        )
+        assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+        pipeline_id = pipeline_resp.json()["id"]
+
+        trigger_resp = await api_client.post(
+            "/api/v1/runs",
+            headers=headers,
+            json={
+                "pipeline_id": pipeline_id,
+                "git_ref": EXTERNAL_STACK_GIT_REF,
+                "priority": 1,
+            },
+        )
+        assert trigger_resp.status_code in (200, 201), trigger_resp.text
+        return project_id, trigger_resp.json()["id"]
+
+    secret = f"clone-secret-{suffix}"
+    missing_repo_url = (
+        "https://x-access-token:"
+        f"{secret}@github.com/octocat/qap-missing-{suffix}.git"
+    )
+    clone_project_id, clone_run_id = await _create_run(
+        label="clone",
+        git_url=missing_repo_url,
+        setup_script="",
+    )
+    clone_status = await _wait_for_terminal(
+        api_client,
+        headers,
+        clone_run_id,
+        timeout_seconds=180,
+    )
+    assert clone_status == "failed"
+    clone_detail_resp = await api_client.get(
+        f"/api/v1/runs/{clone_run_id}",
+        headers=headers,
+    )
+    assert clone_detail_resp.status_code == 200, clone_detail_resp.text
+    clone_detail = clone_detail_resp.json()
+    clone_error = clone_detail.get("error_message") or ""
+    assert "git clone failed" in clone_error
+    assert secret not in clone_error
+    assert "x-access-token" not in clone_error
+    await _assert_project_has_no_retry_runs(
+        api_client,
+        clone_project_id,
+        headers,
+    )
+    clone_artifacts_resp = await api_client.get(
+        f"/api/v1/runs/{clone_run_id}/artifacts",
+        headers=headers,
+    )
+    assert clone_artifacts_resp.status_code == 200, clone_artifacts_resp.text
+    clone_artifacts = clone_artifacts_resp.json()
+    assert clone_artifacts["total"] == 0
+
+    setup_project_id, setup_run_id = await _create_run(
+        label="setup",
+        git_url=EXTERNAL_STACK_GIT_URL,
+        setup_script="echo setup-boundary-failure >&2\nexit 1",
+    )
+    setup_status = await _wait_for_terminal(
+        api_client,
+        headers,
+        setup_run_id,
+        timeout_seconds=240,
+    )
+    assert setup_status == "failed"
+    setup_detail_resp = await api_client.get(
+        f"/api/v1/runs/{setup_run_id}",
+        headers=headers,
+    )
+    assert setup_detail_resp.status_code == 200, setup_detail_resp.text
+    setup_detail = setup_detail_resp.json()
+    assert "Setup script failed (exit 1)" in (
+        setup_detail.get("error_message") or ""
+    )
+    await _assert_project_has_no_retry_runs(
+        api_client,
+        setup_project_id,
+        headers,
+    )
+    setup_artifacts_resp = await api_client.get(
+        f"/api/v1/runs/{setup_run_id}/artifacts",
+        headers=headers,
+    )
+    assert setup_artifacts_resp.status_code == 200, setup_artifacts_resp.text
+    setup_artifacts = setup_artifacts_resp.json()
+    assert setup_artifacts["total"] == 0
+
+    archive_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{setup_run_id}/logs/archive",
+        headers,
+        lambda body: body["total"] >= 1,
+        timeout_seconds=60,
+    )
+    lines = [entry["line"] for entry in archive_body["data"]]
+    assert any("Repository cloned successfully" in line for line in lines)
+    assert any("Running setup script..." in line for line in lines)
+    assert any("setup-boundary-failure" in line for line in lines)
