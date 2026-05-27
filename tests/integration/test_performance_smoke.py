@@ -22,7 +22,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 import uvicorn
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 pytestmark = [
     pytest.mark.performance,
@@ -989,6 +989,83 @@ async def test_audit_events_list_api_p99_smoke(
         "audit events list API",
         samples,
         _threshold("PERF_AUDIT_EVENTS_LIST_P99_MS", 1000),
+    )
+
+
+@pytest.mark.asyncio
+async def test_audit_events_denied_queries_no_self_audit_p99_smoke(
+    integration_client_as,
+    integration_db_session,
+    seed_run,
+    seed_second_tenant,
+):
+    from qaplatform.infra.database.models import AuditEvent
+
+    tenant_a = seed_run["tenant"]
+    user_a = seed_run["user"]
+    tenant_b = seed_second_tenant["tenant"]
+    user_b = seed_second_tenant["user"]
+    project_b = seed_second_tenant["project"]
+
+    integration_db_session.add(
+        AuditEvent(
+            tenant_id=tenant_b.id,
+            user_id=user_b.id,
+            action="audit.denied_probe",
+            resource_type="project",
+            resource_id=project_b.id,
+            after_state={"tenant": "b"},
+        )
+    )
+    await integration_db_session.commit()
+
+    async def count_self_audits() -> int:
+        result = await integration_db_session.execute(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(
+                AuditEvent.tenant_id == tenant_a.id,
+                AuditEvent.user_id == user_a.id,
+                AuditEvent.action == "audit_events.list",
+                AuditEvent.resource_type == "audit_event",
+            )
+        )
+        return result.scalar_one()
+
+    before_count = await count_self_audits()
+    samples: list[float] = []
+
+    async with integration_client_as(user_a.id, tenant_a.id, role="member") as client:
+        for _ in range(7):
+            elapsed_ms, response = await _timed(client.get("/api/v1/audit-events"))
+            assert response.status_code == 403, response.text
+            samples.append(elapsed_ms)
+
+    async with integration_client_as(user_a.id, tenant_a.id, role="viewer") as client:
+        for _ in range(7):
+            elapsed_ms, response = await _timed(client.get("/api/v1/audit-events"))
+            assert response.status_code == 403, response.text
+            samples.append(elapsed_ms)
+
+    async with integration_client_as(user_a.id, tenant_a.id, role="owner") as client:
+        for _ in range(7):
+            elapsed_ms, response = await _timed(
+                client.get(
+                    "/api/v1/audit-events",
+                    params={
+                        "resource_type": "project",
+                        "resource_id": str(project_b.id),
+                    },
+                )
+            )
+            assert response.status_code == 404, response.text
+            samples.append(elapsed_ms)
+
+    assert await count_self_audits() == before_count
+    _assert_p99_under(
+        "audit events denied no-self-audit API",
+        samples,
+        _threshold("PERF_AUDIT_EVENTS_DENIED_P99_MS", 1000),
     )
 
 
