@@ -572,6 +572,72 @@ async def test_archived_log_replay_api_p99_smoke(
 
 
 @pytest.mark.asyncio
+async def test_artifact_list_api_p99_smoke(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    run_id = seed_run["run"].id
+    repo = ArtifactRepository(integration_db_session)
+    marker = f"perf-list-{uuid4().hex}"
+    expected_names: set[str] = set()
+    for index in range(80):
+        name = f"{marker}-{index:03}.html"
+        expected_names.add(name)
+        await repo.create(
+            run_id=run_id,
+            type="report",
+            name=name,
+            storage_path=f"reports/{run_id}/{name}",
+            size_bytes=1024 + index,
+            mime_type="text/html",
+        )
+    await integration_db_session.commit()
+
+    params = {"page": 1, "per_page": 100}
+    for _ in range(3):
+        response = await integration_client.get(
+            f"/api/v1/runs/{run_id}/artifacts",
+            params=params,
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["total"] >= 80
+        returned_names = {item["name"] for item in body["data"]}
+        assert expected_names <= returned_names
+
+    samples: list[float] = []
+    for _ in range(20):
+        elapsed_ms, response = await _timed(
+            integration_client.get(
+                f"/api/v1/runs/{run_id}/artifacts",
+                params=params,
+            )
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["page"] == 1
+        assert body["per_page"] == 100
+        assert body["total"] >= 80
+        returned = {item["name"]: item for item in body["data"]}
+        assert expected_names <= set(returned)
+        for name in expected_names:
+            item = returned[name]
+            assert item["run_id"] == str(run_id)
+            assert item["storage_path"] == f"reports/{run_id}/{name}"
+            assert item["size_bytes"] >= 1024
+        samples.append(elapsed_ms)
+
+    _assert_p99_under(
+        "artifact list API",
+        samples,
+        _threshold("PERF_ARTIFACT_LIST_P99_MS", 1000),
+    )
+
+
+@pytest.mark.asyncio
 async def test_artifact_download_url_api_p99_smoke(
     integration_app,
     integration_client,

@@ -20,7 +20,7 @@
 - Worker 队列：required integration 覆盖 `/api/v1/runs` 真实触发后，manual priority 0/1/2 经 FairScheduler 写入 `queue:high` / `queue:medium` / `queue:low`、`arq_job_id` 和 `enqueued_at` 到 PostgreSQL；ARQ 只以 test double 代替外部队列服务，不替代 DB/API/RBAC 链路。
 - Webhook/schedule 失败路径：required integration 断言 schedule worker 成功触发与 enqueue conflict 都会以系统身份写 `run.trigger` AuditEvent；schedule pipeline 不可见时不会创建 Run，会更新 `last_error` 并写 `schedule_skipped_missing_pipeline` AuditEvent；缺失 webhook HMAC 签名不会创建 Run；签名成功后写入真实 Run 与 `run.trigger` AuditEvent，且 payload 不能覆盖 `git_url` / `credential_id` / `shallow_clone` / `default_branch` 等保留执行配置；filtered/duplicate 这种不创建 Run 的分支会写项目级 `webhook.filtered` / `webhook.duplicate` AuditEvent，且 after_state 不落 repo URL、dedup_key 或任意 metadata；archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 也不会静默写错真实 DB 状态。
 - CI 稳定性：后端 ruff 与单测覆盖率是同一门禁；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
-- 非功能 smoke：nightly/manual 覆盖读 API、写 API、触发入队 SLO、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API、artifact 下载链接 API、audit events 查询 API、执行摘要生成 < 3s 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
+- 非功能 smoke：nightly/manual 覆盖读 API、写 API、触发入队 SLO、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API、artifact 列表元数据 API、artifact 下载链接 API、audit events 查询 API、执行摘要生成 < 3s 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
 
 ## Mock 使用口径
 
@@ -58,10 +58,10 @@ RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tes
 
 当前结果：
 
-- integration 收集：135 tests
-- PR/push 必跑 required integration：112 passed, 23 deselected
-- 完整 local integration（未启动外部 API/worker 栈）：120 passed, 15 skipped
-- performance smoke opt-in：10 passed
+- integration 收集：136 tests
+- PR/push 必跑 required integration：112 passed, 24 deselected
+- 完整 local integration（未启动外部 API/worker 栈）：120 passed, 16 skipped
+- performance smoke opt-in：11 passed
 - skipped 来自 macOS Docker Desktop OOMKilled 平台语义、未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke，以及本地未启动 external stack；CI nightly/manual 会主动启动 external stack，业务断言失败不会被 skip 或 retry 掩盖
 
 E2E 冒烟验证：
