@@ -1,15 +1,16 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../lib/api";
-import type { NotificationRule } from "../types/api";
+import { unwrapPaginated } from "../lib/utils";
+import type { NotificationRule, PaginatedResponse } from "../types/api";
 
 export function useNotificationRules(projectId: string) {
   return useQuery({
     queryKey: ["projects", projectId, "notification-rules"],
     queryFn: async () => {
-      const { data } = await api.get<NotificationRule[]>(
+      const { data } = await api.get<NotificationRule[] | PaginatedResponse<NotificationRule>>(
         `/projects/${projectId}/notification-rules`
       );
-      return data;
+      return unwrapPaginated(data);
     },
     enabled: !!projectId,
     staleTime: 30_000,
