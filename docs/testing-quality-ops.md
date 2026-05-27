@@ -1,6 +1,6 @@
 # 测试质量运营台账
 
-更新日期：2026-05-27
+更新日期：2026-05-28
 
 ## Flaky 台账
 
@@ -14,6 +14,7 @@
 
 | 日期 | required integration | unit | warning 摘要 | 处理结论 |
 | --- | --- | --- | --- | --- |
+| 2026-05-28 | collect-only 128 tests；required integration 106 passed / 22 deselected；完整 local integration 114 passed / 14 skipped；`test_real_auth_results_artifacts.py` 13 passed；`test_log_archive_retry_worker_uses_real_redis_marker` 1 passed | ruff full passed（使用 `/Users/raylee/.local/bin/ruff`；`.venv` 未安装 ruff 模块） | 无新增 warning；完整 local integration 的 skip 仍来自 macOS Docker Desktop OOM 语义、performance opt-in、未启动 external stack，业务断言未被 skip | 归档失败补偿进入真实 Redis/worker 证据：首次 S3 put 失败后真实 Redis retry set 与 24h TTL 落下，worker cron 入口重试成功后清 marker/1h TTL，并可从 JSONL 归档读回 |
 | 2026-05-28 | collect-only 127 tests；required integration 105 passed / 22 deselected；完整 local integration 113 passed / 14 skipped；performance smoke 9 passed；`test_audit_events_list_api_p99_smoke` 1 passed | ruff targeted/full passed | 无新增 warning；完整 local integration 新增 1 个 skip 为 performance opt-in，业务断言未被 skip | Audit events 查询 API 进入 nightly/manual SLO 趋势哨兵：真实 PostgreSQL 预置 120 条审计行，走真实 `/api/v1/audit-events` 权限/分页/过滤链路，失败时输出 p50/p99/max 摘要 |
 | 2026-05-27 | collect-only 126 tests；required integration 105 passed / 21 deselected；完整 local integration 113 passed / 13 skipped；`test_cross_tenant_isolation.py` 14 passed | ruff targeted/full passed | 无新增 warning；完整 local integration 的 skip 来自 macOS Docker Desktop OOM 语义、performance opt-in、未启动 external stack，业务断言未被 skip | 归档日志回看进入跨租户隔离矩阵：`GET /runs/{id}/logs/archive` 对 tenant_B 真实 Run ID 与随机 UUID 返回一致 404，避免 archived log 是否存在成为资源枚举侧信道 |
 | 2026-05-27 | collect-only 125 tests；required integration 104 passed / 21 deselected；完整 local integration 112 passed / 13 skipped；`test_real_auth_results_artifacts.py` 12 passed | ruff targeted/full passed | 无新增 warning；完整 local integration 的 skip 来自 macOS Docker Desktop OOM 语义、performance opt-in、未启动 external stack，业务断言未被 skip | Artifact S3 上传失败进入真实 DB 证据：executor 调用失败 S3 test double 后，用真实 ArtifactRepository/PostgreSQL 断言没有孤儿 Artifact 行；外部对象存储可 fake，但 DB 状态必须真实验证 |
