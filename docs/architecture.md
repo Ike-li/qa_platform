@@ -156,7 +156,7 @@ Worker 抢占 (queued → preparing)
 触发通知 (按规则)
 ```
 
-当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；但 `disk_bytes` 未进入 Docker HostConfig，OOM/timeout 的资源用量记录也未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；上传侧会递归扫描工作目录 `results/` 下文件，保留相对路径写入 S3/Artifact 行，并把 `allure-report/`、`allure-results/` 目录下文件标记为 `allure-report` 类型。前端 Allure/HTML 报告预览入口与多资源加载体验仍需后续设计。
+当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；但 `disk_bytes` 未进入 Docker HostConfig，OOM/timeout 的资源用量记录也未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；上传侧会递归扫描工作目录 `results/` 下文件，保留相对路径写入 S3/Artifact 行，并把 `allure-report/`、`allure-results/` 目录下文件标记为 `allure-report` 类型。前端 Allure/HTML 报告预览主路径已有 E2E 覆盖，多资源报告加载体验仍需后续设计。
 
 当前 collector 边界：Pipeline 的 stage `plugin` 可以选择测试运行器，但结果收集器还不是 pipeline 级配置项；`RunExecutor.execute()` 当前固定调用 JUnit collector。PRD F-PL-01 中“配置结果收集器”的验收需后续补实现，或由 maintainer 决定把 JUnit-only 写成正式产品限制。
 
@@ -429,7 +429,7 @@ Run 1──N NotificationLog
 
 - 使用 Redis Stream 作为日志缓冲（MAXLEN 10000 条/Run）
 - 客户端断线重连时通过 `Last-Event-ID` 续传
-- 执行结束后日志归档到 S3；归档成功后 Redis Stream 设置短 TTL，归档失败时保留 24h TTL 并登记到 `run:logs:archive_failed`；worker `retry_failed_archives` cron 会补偿重试并在成功后清理登记。Redis TTL 过期后的归档日志可通过 `GET /api/v1/runs/{run_id}/logs/archive` 读回，前端回看入口仍缺失
+- 执行结束后日志归档到 S3；归档成功后 Redis Stream 设置短 TTL，归档失败时保留 24h TTL 并登记到 `run:logs:archive_failed`；worker `retry_failed_archives` cron 会补偿重试并在成功后清理登记。Redis TTL 过期后的归档日志可通过 `GET /api/v1/runs/{run_id}/logs/archive` 读回，前端终态 Run 日志面板会优先使用该归档 API
 - 单条日志消息最大 4KB，超出截断
 - 执行并发由 `QAP_MAX_CONCURRENT_RUNS` / `QAP_MAX_CONCURRENT_PER_PROJECT` 控制；当前未实现 Redis 内存阈值拒绝新执行入队
 

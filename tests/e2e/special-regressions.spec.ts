@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import {
   authHeaders,
   createActiveWebhookRunViaDb,
+  createRunWithArchivedEvidenceViaDb,
   createProject,
   createRunWithResultsViaDb,
   createTenantUserViaDb,
@@ -294,5 +295,60 @@ test.describe("special regression coverage against the real app", () => {
     await expect(page.getByText(`test_checkout_ok_${suffix}`)).toBeVisible();
     await expect(page.getByText(`test_checkout_timeout_${suffix}`)).toBeVisible();
     await expect(page.getByText(`test_billing_skipped_${suffix}`)).toBeVisible();
+  });
+
+  test("run detail replays archived logs and previews stored artifacts", async ({ page, request }) => {
+    const suffix = uniqueSuffix();
+    const ownerLogin = await loginViaApi(request);
+    const project = await createProject(request, ownerLogin.token, {
+      name: `E2E Evidence ${suffix}`,
+      slug: `e2e-evidence-${suffix}`,
+    });
+    const environment = await ensureEnvironment(request, ownerLogin.token, project.id);
+    const pipeline = await ensurePipeline(request, ownerLogin.token, project.id);
+    const artifactName = `allure-report/index-${suffix}.html`;
+    const run = createRunWithArchivedEvidenceViaDb({
+      tenantId: ownerLogin.user.tenant_id,
+      userId: ownerLogin.user.id,
+      projectId: project.id,
+      pipelineId: pipeline.id,
+      environmentId: environment.id,
+      branch: `evidence-${suffix}`,
+      gitSha: `evidence-sha-${suffix}`,
+      logs: [
+        { stream: "stdout", line: `archived-log-start-${suffix}` },
+        { stream: "stdout", line: `Uploaded artifact: ${artifactName}` },
+        { stream: "stderr", line: `archived-log-stderr-${suffix}` },
+      ],
+      artifactName,
+      artifactHtml: `<html><body><h1>Artifact preview ${suffix}</h1></body></html>`,
+    });
+
+    await loginViaUi(page);
+    await page.goto(`/runs/${run.id}`);
+    await expect(page.getByRole("tab", { name: /Logs/ })).toBeVisible();
+    await page.getByRole("tab", { name: /Logs/ }).click();
+    await expect(page.getByText("Archived", { exact: true })).toBeVisible();
+    await expect(page.getByText(`archived-log-start-${suffix}`)).toBeVisible();
+    await page.getByPlaceholder("Search logs...").fill(`stderr-${suffix}`);
+    await expect(page.getByText(`archived-log-stderr-${suffix}`)).toBeVisible();
+
+    await page.getByRole("tab", { name: /Artifacts/ }).click();
+    await expect(page.getByText(artifactName)).toBeVisible();
+
+    const downloadResponsePromise = page.waitForResponse(
+      (response) =>
+        response.url().includes(`/api/v1/artifacts/${run.artifactId}/download`) &&
+        response.status() === 200,
+    );
+    await page.getByRole("button", { name: `Preview ${artifactName}` }).click();
+    const downloadResponse = await downloadResponsePromise;
+    const downloadBody = await downloadResponse.json();
+    expect(downloadBody.download_url).toContain(`/reports/${run.id}/`);
+
+    await expect(page.locator('iframe[title="Allure Report Preview"]')).toBeVisible();
+    await expect(
+      page.frameLocator('iframe[title="Allure Report Preview"]').getByText(`Artifact preview ${suffix}`),
+    ).toBeVisible();
   });
 });

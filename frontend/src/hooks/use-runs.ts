@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../lib/api";
 import { unwrapPaginated } from "../lib/utils";
-import type { Run, PaginatedResponse, TestResult, Artifact } from "../types/api";
+import type { Run, PaginatedResponse, TestResult, Artifact, RunLogEntry } from "../types/api";
 
 type BackendRun = Omit<Run, "pipeline_name" | "branch" | "duration_seconds" | "total_tests" | "passed_tests" | "failed_tests" | "skipped_tests" | "env_overrides" | "params"> & {
   tenant_id?: string;
@@ -135,5 +135,21 @@ export function useRunArtifacts(id: string) {
       return unwrapPaginated(data);
     },
     enabled: !!id,
+  });
+}
+
+export function useArchivedRunLogs(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["runs", id, "logs", "archive"],
+    queryFn: async () => {
+      const { data } = await api.get<PaginatedResponse<RunLogEntry>>(
+        `/runs/${id}/logs/archive`,
+        { params: { per_page: 1000 } },
+      );
+      return data;
+    },
+    enabled: !!id && enabled,
+    retry: false,
+    staleTime: 30_000,
   });
 }

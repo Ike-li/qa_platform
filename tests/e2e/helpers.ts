@@ -337,6 +337,115 @@ asyncio.run(main())
   );
 }
 
+export function createRunWithArchivedEvidenceViaDb(payload: {
+  tenantId: string;
+  userId: string;
+  projectId: string;
+  pipelineId: string;
+  environmentId: string;
+  branch: string;
+  gitSha: string;
+  logs: Array<{ stream?: "stdout" | "stderr"; line: string }>;
+  artifactName: string;
+  artifactHtml: string;
+}) {
+  return runPythonJson<{ id: string; artifactId: string }>(
+    `
+import asyncio
+import json
+import os
+from uuid import UUID
+
+from aiobotocore.session import get_session
+from botocore.exceptions import ClientError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from qaplatform.config import Settings
+from qaplatform.infra.database.models import Artifact, Run, RunStatusEnum
+
+async def ensure_bucket(s3_client, bucket):
+    try:
+        await s3_client.create_bucket(Bucket=bucket)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code not in {"BucketAlreadyOwnedByYou", "BucketAlreadyExists"}:
+            raise
+
+async def main():
+    data = json.loads(os.environ["E2E_PAYLOAD"])
+    settings = Settings()
+    engine = create_async_engine(settings.database_url)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        run = Run(
+            tenant_id=UUID(data["tenantId"]),
+            project_id=UUID(data["projectId"]),
+            pipeline_id=UUID(data["pipelineId"]),
+            environment_id=UUID(data["environmentId"]),
+            status=RunStatusEnum.DONE,
+            trigger_type="manual",
+            priority=1,
+            triggered_by=UUID(data["userId"]),
+            git_ref=data["branch"],
+            git_sha=data["gitSha"],
+            summary={"total": 1, "passed": 1, "failed": 0, "skipped": 0},
+            duration_ms=1000,
+            metadata_={"source": "playwright-archived-evidence"},
+        )
+        session.add(run)
+        await session.flush()
+        run.retry_group_id = run.id
+        storage_path = f"reports/{run.id}/{data['artifactName']}"
+        artifact = Artifact(
+            run_id=run.id,
+            type="allure-report",
+            name=data["artifactName"],
+            storage_path=storage_path,
+            size_bytes=len(data["artifactHtml"].encode("utf-8")),
+            mime_type="text/html",
+        )
+        session.add(artifact)
+        await session.commit()
+
+    logs_body = "\\n".join(
+        json.dumps({
+            "stream": item.get("stream", "stdout"),
+            "line": item["line"],
+        })
+        for item in data["logs"]
+    ).encode("utf-8")
+
+    s3_session = get_session()
+    async with s3_session.create_client(
+        "s3",
+        endpoint_url=settings.s3_endpoint,
+        aws_access_key_id=settings.s3_access_key,
+        aws_secret_access_key=settings.s3_secret_key,
+        region_name=settings.s3_region,
+    ) as s3_client:
+        await ensure_bucket(s3_client, settings.s3_bucket)
+        await s3_client.put_object(
+            Bucket=settings.s3_bucket,
+            Key=f"logs/{run.id}.jsonl",
+            Body=logs_body,
+            ContentType="application/x-ndjson",
+        )
+        await s3_client.put_object(
+            Bucket=settings.s3_bucket,
+            Key=storage_path,
+            Body=data["artifactHtml"].encode("utf-8"),
+            ContentType="text/html",
+        )
+
+    await engine.dispose()
+    print(json.dumps({"id": str(run.id), "artifactId": str(artifact.id)}))
+
+asyncio.run(main())
+`,
+    payload,
+  );
+}
+
 export function createActiveWebhookRunViaDb(payload: {
   tenantId: string;
   userId: string;

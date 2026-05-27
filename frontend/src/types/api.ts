@@ -119,6 +119,11 @@ export interface Artifact {
   created_at: string;
 }
 
+export interface RunLogEntry {
+  stream: string;
+  line: string;
+}
+
 export interface NotificationCondition {
   field: "status" | "pass_rate" | "failed";
   operator: "eq" | "ne" | "lt" | "gt" | "lte" | "gte";
