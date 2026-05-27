@@ -58,6 +58,10 @@ packages = ["src/qaplatform"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "heavy_docker: integration tests that require Docker image pulls or real containers; run in nightly/manual lanes when registry stability matters",
+    "external_stack: integration tests that require a separately running API/worker stack instead of the in-process ASGI test app",
+]
 
 [tool.coverage.run]
 source = ["qaplatform"]

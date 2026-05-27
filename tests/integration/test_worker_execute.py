@@ -8,23 +8,17 @@ import os
 import subprocess
 import pytest
 import httpx
-from uuid import UUID
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("RUN_INTEGRATION_TESTS") != "1",
-    reason="set RUN_INTEGRATION_TESTS=1 to run integration tests"
-)
+pytestmark = [
+    pytest.mark.skipif(
+        os.environ.get("RUN_INTEGRATION_TESTS") != "1",
+        reason="set RUN_INTEGRATION_TESTS=1 to run integration tests",
+    ),
+    pytest.mark.heavy_docker,
+    pytest.mark.external_stack,
+]
 
 BASE_URL = os.environ.get("QAP_API_URL", "http://localhost:8000")
-
-
-@pytest.fixture(scope="module")
-def docker_available():
-    try:
-        subprocess.run(["docker", "info"], check=True, capture_output=True, timeout=5)
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        pytest.skip("docker daemon not available")
-    return True
 
 
 @pytest.fixture(scope="module")
@@ -121,8 +115,6 @@ async def test_trigger_run_completes_terminal_state(
         },
     )
     assert env_resp.status_code in (200, 201), env_resp.text
-    env = env_resp.json()
-    
     # 3. 创建 pipeline（用 pytest plugin）
     pipeline_resp = await api_client.post(
         f"/api/v1/projects/{project_id}/pipelines",

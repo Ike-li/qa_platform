@@ -77,7 +77,7 @@ class TestDecodeToken:
     def test_raises_on_wrong_secret(self):
         svc = JWTService(_make_settings())
         token = svc.create_access_token("u1", "viewer", "t1")
-        other_svc = JWTService(_make_settings(jwt_secret="different-secret-key-32bytes!!!"))
+        other_svc = JWTService(_make_settings(jwt_secret="different-secret-key-32bytes!!!!"))
         with pytest.raises(jwt.InvalidSignatureError):
             other_svc.decode_token(token)
 
@@ -137,7 +137,7 @@ class TestBlacklist:
     @pytest.mark.asyncio
     async def test_revoke_ttl_floored_at_one(self):
         """ttl_seconds=0 must be stored with ex=1 (Redis rejects ex=0)."""
-        from unittest.mock import AsyncMock, call
+        from unittest.mock import AsyncMock
 
         redis = AsyncMock()
         redis.set = AsyncMock()

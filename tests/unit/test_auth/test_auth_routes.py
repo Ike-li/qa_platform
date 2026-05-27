@@ -111,6 +111,16 @@ async def client(app):
         yield c
 
 
+async def _post_with_refresh_cookie(
+    client: AsyncClient,
+    path: str,
+    refresh_token: str,
+    **kwargs,
+):
+    client.cookies.set("refresh_token", refresh_token)
+    return await client.post(path, **kwargs)
+
+
 def _setup_overrides(app: FastAPI, *, session_factory=None, jwt_svc=None, settings=None):
     """Install dependency overrides on the app for auth deps."""
     if session_factory is not None:
@@ -365,9 +375,10 @@ class TestRefresh:
 
         with patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo):
             _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
-            resp = await client.post(
+            resp = await _post_with_refresh_cookie(
+                client,
                 "/api/v1/auth/refresh",
-                cookies={"refresh_token": refresh_token},
+                refresh_token,
             )
 
         assert resp.status_code == 200
@@ -393,9 +404,10 @@ class TestRefresh:
         _, session_cm = _session_mock()
 
         _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
-        resp = await client.post(
+        resp = await _post_with_refresh_cookie(
+            client,
             "/api/v1/auth/refresh",
-            cookies={"refresh_token": access_token},
+            access_token,
         )
 
         assert resp.status_code == 401
@@ -412,9 +424,10 @@ class TestRefresh:
         time.sleep(0.01)
 
         _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
-        resp = await client.post(
+        resp = await _post_with_refresh_cookie(
+            client,
             "/api/v1/auth/refresh",
-            cookies={"refresh_token": refresh_token},
+            refresh_token,
         )
 
         assert resp.status_code == 401
@@ -574,9 +587,10 @@ class TestRefreshRevokesOldToken:
 
         with patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo):
             _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
-            resp = await client.post(
+            resp = await _post_with_refresh_cookie(
+                client,
                 "/api/v1/auth/refresh",
-                cookies={"refresh_token": old_refresh_token},
+                old_refresh_token,
             )
 
         assert resp.status_code == 200
@@ -606,9 +620,10 @@ class TestRefreshRevokesOldToken:
 
         with patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo):
             _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
-            resp = await client.post(
+            resp = await _post_with_refresh_cookie(
+                client,
                 "/api/v1/auth/refresh",
-                cookies={"refresh_token": refresh_token},
+                refresh_token,
             )
 
         assert resp.status_code == 200
@@ -655,9 +670,10 @@ class TestLogoutRevokesTokens:
         _, session_cm = _session_mock()
 
         _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
-        resp = await client.post(
+        resp = await _post_with_refresh_cookie(
+            client,
             "/api/v1/auth/logout",
-            cookies={"refresh_token": refresh_token},
+            refresh_token,
         )
 
         assert resp.status_code == 204
@@ -679,10 +695,11 @@ class TestLogoutRevokesTokens:
         _, session_cm = _session_mock()
 
         _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
-        resp = await client.post(
+        resp = await _post_with_refresh_cookie(
+            client,
             "/api/v1/auth/logout",
+            refresh_token,
             headers={"Authorization": f"Bearer {access_token}"},
-            cookies={"refresh_token": refresh_token},
         )
 
         assert resp.status_code == 204
@@ -1012,9 +1029,10 @@ class TestAuditRefresh:
             patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
         ):
             _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
-            resp = await client.post(
+            resp = await _post_with_refresh_cookie(
+                client,
                 "/api/v1/auth/refresh",
-                cookies={"refresh_token": old_refresh_token},
+                old_refresh_token,
             )
 
         assert resp.status_code == 200
@@ -1033,9 +1051,10 @@ class TestAuditRefresh:
 
         with patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo):
             _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
-            resp = await client.post(
+            resp = await _post_with_refresh_cookie(
+                client,
                 "/api/v1/auth/refresh",
-                cookies={"refresh_token": "not-a-valid-token"},
+                "not-a-valid-token",
             )
 
         assert resp.status_code == 401

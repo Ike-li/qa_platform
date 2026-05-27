@@ -12,7 +12,7 @@
 - 关键业务路径：覆盖 pipeline API、项目/成员落库、run 状态迁移、schedule/webhook/cancel、worker 调度、插件注册、日志配置。
 - 安全风险路径：覆盖 JWT/API token 中间件、真实 JWT 注册到 API token 创建/使用/撤销、审计失败路径、跨租户隔离、RBAC audit-events 拒绝路径。
 - 真实数据路径：integration suite 使用真实 PostgreSQL/Redis/Testcontainers/FastAPI ASGI app；新增测试不 mock repository 或 database session。
-- CI 稳定性：后端单测有覆盖率门槛，integration job 全量跑 `tests/integration/`，PR E2E 保留轻量 UI 冒烟，完整真实 E2E 留给手动 workflow。
+- CI 稳定性：后端单测有覆盖率门槛；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，完整真实 E2E 留给手动 workflow。
 
 ## Mock 使用口径
 
@@ -22,13 +22,14 @@
 - `auth-flow.spec.ts` 的 E2E mock API 是前端登录/导航冒烟，不能作为后端数据正确性的证据。
 - 真实后端数据正确性由 integration suite 承担：真实 PostgreSQL schema、真实事务/唯一约束/soft-delete、真实 FastAPI 路由、真实 JWT/API token、真实 audit/event 写入。
 - 部分 integration fixture 会 override 当前用户以便稳定覆盖 RBAC/API 行为；本轮新增了无 current-user override 的真实 JWT/API token 链路，补上“鉴权是否真的能走通数据库”的证据。
+- SSE 单测里的 Redis fake 只用于替代 rate-limit/SSE 单元边界的外部服务，真实 Redis/DB/API 状态由 required integration 验证。
 
 ## 覆盖率基线
 
 验证命令：
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=/tmp/qaplatform-final.coverage .venv/bin/python -m pytest tests/unit -q -p no:cacheprovider --cov=qaplatform --cov-report=term-missing --cov-report=json:/tmp/qaplatform-final-coverage.json
+PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=/tmp/qaplatform-final.coverage .venv/bin/python -m pytest tests/unit -q -p no:cacheprovider --cov=qaplatform --cov-report=term-missing --cov-report=json:/tmp/qaplatform-final-coverage.json --tb=short --durations=20
 ```
 
 当前结果：
@@ -37,24 +38,22 @@ PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=/tmp/qaplatform-final.coverage .venv/bin
 - 总覆盖率：83.24%
 - 语句覆盖率：85.88%
 - 分支覆盖率：69.16%
-- warnings：23
+- warnings：3（剩余为 testcontainers 第三方弃用提示 + SQLAlchemy mapper overlap 登记项）
 
 真实 DB / API 集成验证：
 
 ```bash
-RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration/test_real_db_persistence.py -q -p no:cacheprovider --tb=short
-RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration/test_real_db_persistence.py tests/integration/test_webhook_branch_dedup.py tests/integration/test_silent_windows.py -q -p no:cacheprovider --tb=short
-RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration/test_real_auth_results_artifacts.py -q -p no:cacheprovider --tb=short
-RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=short
+RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration --collect-only -q -p no:cacheprovider
+RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration -m "not heavy_docker and not external_stack" -q -p no:cacheprovider --tb=short --durations=20
+RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=short -rs
 ```
 
 当前结果：
 
-- 新增真实 DB 集成测试：5 passed
-- 新增 + 相邻 webhook/schedule 真实 DB 集成测试：13 passed
-- 新增真实鉴权/results/artifacts 集成测试：3 passed
-- 完整 integration suite：72 passed, 2 skipped, 9 warnings
-- 2 个 skipped：仅 macOS Docker Desktop OOM 行为不稳定的平台跳过；Linux CI 应实际执行 OOM 用例
+- integration 收集：83 tests
+- PR/push 必跑 required integration：72 passed, 11 deselected, 3 warnings
+- 完整 local integration：81 passed, 2 skipped, 9 warnings
+- skipped 只来自 macOS Docker Desktop OOMKilled 平台语义；业务断言失败不会被 skip 或 retry 掩盖
 
 E2E 冒烟验证：
 
@@ -87,19 +86,19 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 当前 CI 门禁分层：
 
 - `backend-test`：跑后端单元测试和 coverage fail-under。
-- `backend-integration-test`：设置 `RUN_INTEGRATION_TESTS=1` 后全量跑 `tests/integration/`。
+- `backend-integration-test`：PR/push 跑 `tests/integration -m "not heavy_docker and not external_stack"`；`workflow_dispatch`/nightly 额外跑 `heavy_docker` 和 `external_stack` 分组。
 - `e2e-test`：PR 跑 `auth-flow.spec.ts` UI 冒烟；`workflow_dispatch` 跑完整 Playwright E2E。
+- 更多分层细节见 `docs/testing-strategy.md`。
 
 ## 残余缺口
 
-- 数据库 repositories 已覆盖 Project/Pipeline/Run、API token、TestResult、Artifact 的真实 Postgres 行为；Audit/User 主要通过 API 真实链路覆盖，仍可继续增加 repository 直测。
+- 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade。
 - 分支覆盖率仍低于语句覆盖率：主要来自 API 路由错误分支、通知 channel 网络异常矩阵和依赖初始化分支。
-- warnings 尚未清零：剩余主要是 testcontainers 第三方弃用提示、SQLAlchemy relationship overlap 提示、Redis pubsub `close()` 弃用提示，以及单测中少量既有第三方/async mock 类 warning。
+- warnings 尚未清零：剩余主要是 testcontainers 第三方弃用提示、SQLAlchemy relationship overlap 提示、Redis pubsub `close()` 弃用提示；已清理 SSE AsyncMock、httpx per-request cookies 和 JWT key length warning。
 - PR E2E 是 mock API UI 冒烟，不证明真实后端；真实后端 E2E 已有 `real-login-flow`、`real-run-trigger`、`special-regressions`，但当前 CI 仅在手动 workflow 全量执行，避免 PR 过慢和 flaky。
 
 ## 后续优先级
 
-1. 继续扩展 Audit/User repository 直测，以及更多 run 查询和 retention 删除路径。
-2. 将 SSE 测试里的 AsyncMock session/redis 替换为更贴近真实协议的轻量 fake，减少 RuntimeWarning。
-3. 扩展 notifications、runs/schedules 的外部网络失败和错误分支测试，优先覆盖安全过滤、幂等去重和补偿路径。
-4. 在不改 API 行为的前提下逐步处理 SQLAlchemy overlap 与 Redis pubsub 弃用提示；warnings 收敛到只剩明确接受的第三方项后，再考虑把 `fail_under` 提升到 84+。
+1. 扩展 webhook/schedule 的 pipeline missing、project archived、enqueue failed 失败路径到更多真实 DB/API 场景。
+2. 为 API token scope 做更细的端到端权限矩阵，并继续补 notifications 外部 channel 网络异常。
+3. 在不改 API 行为的前提下单独评估 SQLAlchemy overlap、Redis pubsub `close()` 与 testcontainers deprecation；warnings 收敛后再考虑把 `fail_under` 提升到 84+。

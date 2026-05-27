@@ -41,6 +41,7 @@ pytestmark = [
         reason="OOM detection unreliable on GitHub Actions (cgroup v2 may not set "
         "OOMKilled=true even on exit 137); set QAP_TEST_OOM=1 on bare-metal Linux",
     ),
+    pytest.mark.heavy_docker,
 ]
 
 
@@ -64,27 +65,15 @@ def docker_available():
 
 
 @pytest.fixture(scope="module")
-def python_image_pulled(docker_available):
+def python_image_pulled(docker_available, pull_docker_image):
     """Pull python:3.12-alpine once per module so tests don't pay pull cost."""
-    subprocess.run(
-        ["docker", "pull", "python:3.12-alpine"],
-        check=True,
-        capture_output=True,
-        timeout=300,
-    )
-    return "python:3.12-alpine"
+    return pull_docker_image("python:3.12-alpine", timeout=300)
 
 
 @pytest.fixture(scope="module")
-def alpine_image_pulled(docker_available):
+def alpine_image_pulled(docker_available, pull_docker_image):
     """Pull alpine:3.19 once per module."""
-    subprocess.run(
-        ["docker", "pull", "alpine:3.19"],
-        check=True,
-        capture_output=True,
-        timeout=120,
-    )
-    return "alpine:3.19"
+    return pull_docker_image("alpine:3.19", timeout=120)
 
 
 @pytest_asyncio.fixture
