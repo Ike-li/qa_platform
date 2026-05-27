@@ -10,7 +10,7 @@
 | Required integration | `backend-integration-test` 在 PR/push 跑 `tests/integration -m "not heavy_docker and not external_stack and not performance"` | 真实 PostgreSQL/Redis/Testcontainers、FastAPI 路由、repository 约束、API 写入后的 DB 状态、RBAC/租户隔离、worker 入口异常重试、归档日志读回、artifact 限制落库 | Docker 容器执行、外部 API+worker compose 栈、平台相关 OOM 语义与 performance smoke |
 | Heavy Docker integration | nightly/manual 跑 `tests/integration -m "heavy_docker and not external_stack"` | worker/container/cancel/state visibility 等需要真实 Docker 镜像和容器生命周期的链路 | 单独启动的 API/worker compose 栈；macOS/GitHub Actions 不稳定的 OOMKilled 语义默认不作为 PR 门禁 |
 | External-stack integration | nightly/manual 先启动 compose API/worker/MinIO，再跑 `tests/integration -m "external_stack"` | 真实 API 触发后由 compose worker 消费队列、执行容器、写回终态；验证真实 worker 后的 artifact 列表/下载链接、归档日志 API，以及 worker_lost 后自动 retry 再完成的黑盒链路 | 不是 PR 门禁；不替代 required integration 的快速 DB/API/RBAC 覆盖；clone/setup/Docker daemon 等其它基础设施失败重试仍由真实 DB/worker 入口测试覆盖 |
-| Performance smoke | nightly/manual 跑 `tests/integration/test_performance_smoke.py -m performance` | 读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API 的趋势哨兵；失败时输出 p50/p99/max 摘要 | 不是 PR 阻塞性 SLO 证明；发现退化后升格专项压测 |
+| Performance smoke | nightly/manual 跑 `tests/integration/test_performance_smoke.py -m performance` | 读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API、artifact 下载链接 API 的趋势哨兵；失败时输出 p50/p99/max 摘要 | 不是 PR 阻塞性 SLO 证明；发现退化后升格专项压测 |
 | E2E | PR 跑 `auth-flow.spec.ts`，nightly 固定跑 `real-login-flow` / `real-run-trigger` / `special-regressions`，manual 跑完整 Playwright | 浏览器登录/权限/导航冒烟；nightly/manual 覆盖创建项目、触发 run、查看 result/artifact、归档日志回看、HTML artifact 预览、特殊回归 | PR 级 `auth-flow` 是 UI mock 冒烟，不作为后端真实数据正确性的证据 |
 
 ## 稳定性标准
