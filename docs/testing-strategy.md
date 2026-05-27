@@ -24,12 +24,12 @@
 
 | 风险面 | 当前证据 | 状态 |
 | --- | --- | --- |
-| RBAC：tenant role、project role、platform admin | audit events、cross-tenant API、SSE 403/404、真实 JWT/API token integration | 已覆盖主干，API token scope 细粒度矩阵仍可继续扩 |
+| RBAC：tenant role、project role、platform admin | audit events、cross-tenant API、SSE 403/404、真实 JWT/API token integration | 已覆盖主干；API token scope 已验证存储/认证/撤销，路由级细粒度 enforcement 属于行为变更，单独列为后续产品/安全决策 |
 | 数据隔离：跨 tenant/project、soft-delete、随机 UUID | `test_cross_tenant_isolation.py`、repository/API 真实 DB 测试、artifact/result 隐藏测试 | 已作为 PR integration 门禁 |
 | Repository：Audit/User/Artifact/TestResult/Run 查询、分页、唯一约束、级联/retention | `test_real_repository_matrix.py`、`test_real_auth_results_artifacts.py`、`test_real_db_persistence.py` | 已补真实 Postgres 直测 |
 | API 写入后的真实 DB 状态 | credentials、environments、notification rules、runs、schedules、auth/token 链路 | 已补 required integration |
 | Worker/queue 状态机 | 真实 PG repository 状态机、run claim、cancel、state visibility、executor/task 单测、heavy Docker cancel | 已覆盖 queued/preparing/running/collecting/done/failed/cancelled/timeout；worker 黑盒链路走 nightly/manual |
-| Webhook/schedule 幂等与失败路径 | branch filter、dedup、silent window、terminal same commit、cross-tenant 404 | 已覆盖主干；project archived/enqueue failed/pipeline missing 可继续扩 |
+| Webhook/schedule 幂等与失败路径 | branch filter、dedup、silent window、terminal same commit、cross-tenant 404、archived project、missing pipeline/environment、enqueue conflict | Webhook/API/schedule worker 主风险已进 required integration；schedule pipeline missing 仍由 unit 覆盖，因为真实 DB FK 会把硬删除变成级联，软删除路径不等价于真实缺行 |
 | 三条关键 E2E 冒烟 | 登录/权限、创建项目到触发 run、查看 run/result/artifact | 已有 Playwright 用例；PR 只跑轻量 auth-flow，完整链路 manual |
 
 ## Warning 登记

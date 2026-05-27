@@ -12,6 +12,7 @@
 - 关键业务路径：覆盖 pipeline API、项目/成员落库、run 状态迁移、schedule/webhook/cancel、worker 调度、插件注册、日志配置。
 - 安全风险路径：覆盖 JWT/API token 中间件、真实 JWT 注册到 API token 创建/使用/撤销、审计失败路径、跨租户隔离、RBAC audit-events 拒绝路径。
 - 真实数据路径：integration suite 使用真实 PostgreSQL/Redis/Testcontainers/FastAPI ASGI app；新增测试不 mock repository 或 database session。
+- Webhook/schedule 失败路径：新增 required integration 断言 archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 都不会静默写错真实 DB 状态。
 - CI 稳定性：后端单测有覆盖率门槛；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，完整真实 E2E 留给手动 workflow。
 
 ## Mock 使用口径
@@ -32,7 +33,7 @@
 PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=/tmp/qaplatform-final.coverage .venv/bin/python -m pytest tests/unit -q -p no:cacheprovider --cov=qaplatform --cov-report=term-missing --cov-report=json:/tmp/qaplatform-final-coverage.json --tb=short --durations=20
 ```
 
-当前结果：
+上轮基线结果：
 
 - 单元测试：729 passed
 - 总覆盖率：83.24%
@@ -50,10 +51,10 @@ RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tes
 
 当前结果：
 
-- integration 收集：83 tests
-- PR/push 必跑 required integration：72 passed, 11 deselected, 3 warnings
-- 完整 local integration：81 passed, 2 skipped, 9 warnings
-- skipped 只来自 macOS Docker Desktop OOMKilled 平台语义；业务断言失败不会被 skip 或 retry 掩盖
+- integration 收集：90 tests
+- PR/push 必跑 required integration：79 passed, 11 deselected, 3 warnings
+- 完整 local integration：83 passed, 7 skipped, 4 warnings
+- skipped 来自 Docker image pull/registry 前置条件和 macOS Docker Desktop OOMKilled 平台语义；业务断言失败不会被 skip 或 retry 掩盖
 
 E2E 冒烟验证：
 
@@ -93,12 +94,13 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 ## 残余缺口
 
 - 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade。
-- 分支覆盖率仍低于语句覆盖率：主要来自 API 路由错误分支、通知 channel 网络异常矩阵和依赖初始化分支。
+- Webhook/API/schedule worker 新增真实 DB 失败路径后，project archived、pipeline/environment missing、cross-project pipeline、enqueue conflict 已进 required integration；schedule pipeline missing 仍保留 unit 覆盖，因为真实 FK 下硬删除会级联，软删除不等价于真实缺行。
+- 分支覆盖率仍低于语句覆盖率：主要来自 API token scope 路由级 enforcement、通知 channel 网络异常矩阵和依赖初始化分支。
 - warnings 尚未清零：剩余主要是 testcontainers 第三方弃用提示、SQLAlchemy relationship overlap 提示、Redis pubsub `close()` 弃用提示；已清理 SSE AsyncMock、httpx per-request cookies 和 JWT key length warning。
 - PR E2E 是 mock API UI 冒烟，不证明真实后端；真实后端 E2E 已有 `real-login-flow`、`real-run-trigger`、`special-regressions`，但当前 CI 仅在手动 workflow 全量执行，避免 PR 过慢和 flaky。
 
 ## 后续优先级
 
-1. 扩展 webhook/schedule 的 pipeline missing、project archived、enqueue failed 失败路径到更多真实 DB/API 场景。
-2. 为 API token scope 做更细的端到端权限矩阵，并继续补 notifications 外部 channel 网络异常。
+1. 单独评估 API token scope 是否应进入路由级 `UserIdentity`/permission enforcement；这会改变当前 API 行为，需安全/产品口径确认后再补端到端矩阵。
+2. 继续补 notifications 外部 channel 网络异常和 template/render 失败路径，但保持外部 SMTP/webhook/DingTalk/WeCom 为 test double，DB/API/规则选择链路走真实 integration。
 3. 在不改 API 行为的前提下单独评估 SQLAlchemy overlap、Redis pubsub `close()` 与 testcontainers deprecation；warnings 收敛后再考虑把 `fail_under` 提升到 84+。

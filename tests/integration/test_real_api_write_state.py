@@ -6,7 +6,7 @@ import os
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_INTEGRATION_TESTS") != "1",
@@ -29,6 +29,19 @@ async def _audit_actions(integration_db_session, *, user_id, resource_id) -> set
         .scalars()
         .all()
     )
+
+
+async def _row_count(integration_db_session, model, *filters) -> int:
+    stmt = select(func.count()).select_from(model)
+    for clause in filters:
+        stmt = stmt.where(clause)
+    result = await integration_db_session.execute(stmt)
+    return int(result.scalar_one())
+
+
+def _error_detail(body: dict) -> str | None:
+    error = body.get("error")
+    return body.get("detail") or (error or {}).get("message")
 
 
 @pytest.mark.asyncio
@@ -91,11 +104,14 @@ async def test_credentials_api_persists_encrypted_value_rotates_and_soft_deletes
     assert credential.deleted_at is not None
 
     repo = CredentialRepository(integration_db_session)
-    assert await repo.get_by_project_tenant(
-        credential.id,
-        project_id,
-        seed_run["tenant"].id,
-    ) is None
+    assert (
+        await repo.get_by_project_tenant(
+            credential.id,
+            project_id,
+            seed_run["tenant"].id,
+        )
+        is None
+    )
     assert {"credential.create", "credential.rotate", "credential.delete"}.issubset(
         await _audit_actions(
             integration_db_session,
@@ -112,7 +128,9 @@ async def test_environment_api_persists_encrypted_env_vars_limits_and_soft_delet
     seed_run,
 ):
     from qaplatform.infra.database.models import Environment
-    from qaplatform.infra.database.repositories.project_repo import EnvironmentRepository
+    from qaplatform.infra.database.repositories.project_repo import (
+        EnvironmentRepository,
+    )
 
     project_id = seed_run["project"].id
     name = f"env-{uuid4().hex[:8]}"
@@ -221,7 +239,9 @@ async def test_notification_rule_api_persists_updates_and_hides_soft_deleted_rul
         f"/api/v1/projects/{project_id}/notification-rules/{rule_id}",
         json={
             "enabled": False,
-            "channels": [{"type": "webhook", "webhook_url": "https://example.com/hook"}],
+            "channels": [
+                {"type": "webhook", "webhook_url": "https://example.com/hook"}
+            ],
         },
     )
     assert update_resp.status_code == 200, update_resp.text
@@ -324,4 +344,90 @@ async def test_schedule_and_run_apis_persist_next_run_metadata_and_audit_rows(
         integration_db_session,
         user_id=seed_run["user"].id,
         resource_id=run.id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_schedule_api_rejects_cross_project_pipeline_without_persisting(
+    integration_client_as,
+    integration_db_session,
+    seed_run,
+    seed_second_tenant,
+):
+    from qaplatform.infra.database.models import Schedule
+
+    user = seed_run["user"]
+    tenant = seed_run["tenant"]
+    project_id = seed_run["project"].id
+    before = await _row_count(
+        integration_db_session,
+        Schedule,
+        Schedule.project_id == project_id,
+    )
+
+    async with integration_client_as(user.id, tenant.id, role="owner") as client:
+        resp = await client.post(
+            f"/api/v1/projects/{project_id}/schedules",
+            json={
+                "pipeline_id": str(seed_second_tenant["pipeline"].id),
+                "cron_expr": "*/10 * * * *",
+                "timezone": "UTC",
+                "missed_fire_policy": "skip",
+                "quiet_windows": [],
+                "enabled": True,
+            },
+        )
+
+    assert resp.status_code == 404, resp.text
+    assert _error_detail(resp.json()) == "Pipeline not found"
+    assert (
+        await _row_count(
+            integration_db_session,
+            Schedule,
+            Schedule.project_id == project_id,
+        )
+        == before
+    )
+
+
+@pytest.mark.asyncio
+async def test_manual_run_archived_project_returns_409_without_persisting(
+    integration_client_as,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Run
+
+    user = seed_run["user"]
+    tenant = seed_run["tenant"]
+    project = seed_run["project"]
+    project.status = "archived"
+    await integration_db_session.commit()
+    await integration_db_session.refresh(project)
+    before = await _row_count(
+        integration_db_session,
+        Run,
+        Run.project_id == project.id,
+        Run.trigger_type == "manual",
+    )
+
+    async with integration_client_as(user.id, tenant.id, role="owner") as client:
+        resp = await client.post(
+            "/api/v1/runs",
+            json={
+                "pipeline_id": str(seed_run["pipeline"].id),
+                "git_ref": "main",
+            },
+        )
+
+    assert resp.status_code == 409, resp.text
+    assert "archived" in resp.json()["detail"].lower()
+    assert (
+        await _row_count(
+            integration_db_session,
+            Run,
+            Run.project_id == project.id,
+            Run.trigger_type == "manual",
+        )
+        == before
     )
