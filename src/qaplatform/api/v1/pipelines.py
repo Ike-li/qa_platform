@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
@@ -18,11 +19,25 @@ from qaplatform.api.schemas import (
     TestSelectorInput,
     TriggerConfigInput,
 )
+from qaplatform.engine.redact import redact_url_userinfo
 
 router = APIRouter(
     prefix="/projects/{project_id}/pipelines",
     tags=["pipelines"],
 )
+
+_SENSITIVE_AUDIT_KEY_PARTS = (
+    "secret",
+    "password",
+    "token",
+    "credential",
+    "api_key",
+    "apikey",
+    "access_key",
+    "private_key",
+    "authorization",
+)
+_REDACTED = {"redacted": True}
 
 
 def _to_response(orm) -> PipelineResponse:
@@ -43,6 +58,28 @@ def _to_response(orm) -> PipelineResponse:
         created_at=orm.created_at,
         updated_at=orm.updated_at,
     )
+
+
+def _is_sensitive_audit_key(key: Any) -> bool:
+    normalized = str(key).lower().replace("-", "_")
+    return any(part in normalized for part in _SENSITIVE_AUDIT_KEY_PARTS)
+
+
+def _redact_pipeline_audit_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: dict(_REDACTED) if _is_sensitive_audit_key(key) else _redact_pipeline_audit_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_pipeline_audit_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_url_userinfo(value)
+    return value
+
+
+def _to_audit_state(response: PipelineResponse) -> dict[str, Any]:
+    return _redact_pipeline_audit_value(response.model_dump(mode="json"))
 
 
 async def _verify_project_access(project_id: UUID, repos: Repos, user):
@@ -110,7 +147,7 @@ async def create_pipeline(
         action="pipeline.create",
         resource_type="pipeline",
         resource_id=orm.id,
-        after=response,
+        after=_to_audit_state(response),
     )
     return response
 
@@ -174,8 +211,8 @@ async def update_pipeline(
         action="pipeline.update",
         resource_type="pipeline",
         resource_id=updated.id,
-        before=before,
-        after=after,
+        before=_to_audit_state(before),
+        after=_to_audit_state(after),
     )
     return after
 
@@ -206,5 +243,5 @@ async def delete_pipeline(
         action="pipeline.delete",
         resource_type="pipeline",
         resource_id=pipeline_id,
-        before=before,
+        before=_to_audit_state(before),
     )
