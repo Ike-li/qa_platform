@@ -506,6 +506,123 @@ async def test_webhook_trigger_enqueue_slo_smoke(
 
 
 @pytest.mark.asyncio
+async def test_schedule_tick_enqueue_slo_smoke(
+    integration_db_engine,
+    integration_db_session,
+    seed_run,
+):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from qaplatform.infra.database.models import AuditEvent, Run, Schedule
+    from qaplatform.worker.settings import check_schedules
+
+    arq = _FakeArq()
+    ctx = {
+        "db_session_factory": async_sessionmaker(
+            integration_db_engine,
+            expire_on_commit=False,
+        ),
+        "arq_pool": arq,
+        "settings": SimpleNamespace(
+            max_concurrent_runs=100,
+            max_concurrent_per_project=100,
+        ),
+    }
+    project = seed_run["project"]
+    project_id = project.id
+    tenant_id = project.tenant_id
+    project_default_branch = project.default_branch
+    pipeline_id = seed_run["pipeline"].id
+    environment_id = seed_run["environment"].id
+    samples: list[float] = []
+    run_schedule_ids: dict[UUID, UUID] = {}
+
+    for _ in range(10):
+        schedule = Schedule(
+            project_id=project_id,
+            pipeline_id=pipeline_id,
+            cron_expr="* * * * *",
+            timezone="UTC",
+            missed_fire_policy="skip",
+            quiet_windows=[],
+            enabled=True,
+            next_run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+        integration_db_session.add(schedule)
+        await integration_db_session.commit()
+        await integration_db_session.refresh(schedule)
+        schedule_id = schedule.id
+
+        started_at = datetime.now(timezone.utc)
+        await check_schedules(ctx)
+
+        integration_db_session.expire_all()
+        refreshed_schedule = await integration_db_session.get(Schedule, schedule_id)
+        assert refreshed_schedule is not None
+        assert refreshed_schedule.last_run_at is not None
+        assert refreshed_schedule.last_error is None
+        assert refreshed_schedule.next_run_at is not None
+
+        run_result = await integration_db_session.execute(
+            select(Run).where(
+                Run.project_id == project_id,
+                Run.trigger_type == "schedule",
+            )
+        )
+        schedule_runs = [
+            run
+            for run in run_result.scalars()
+            if (run.metadata_ or {}).get("schedule_id") == str(schedule_id)
+        ]
+        assert len(schedule_runs) == 1
+        run = schedule_runs[0]
+        assert run.enqueued_at is not None, "schedule run was not enqueued"
+        assert run.queue_name == "queue:low"
+        assert run.arq_job_id == f"run:{run.id}"
+        assert run.pipeline_id == pipeline_id
+        assert run.environment_id == environment_id
+        assert run.git_ref == project_default_branch
+        assert run.triggered_by is None
+        run_schedule_ids[run.id] = schedule_id
+        samples.append((run.enqueued_at - started_at).total_seconds() * 1000)
+
+    audit_result = await integration_db_session.execute(
+        select(AuditEvent).where(
+            AuditEvent.tenant_id == tenant_id,
+            AuditEvent.user_id.is_(None),
+            AuditEvent.action == "run.trigger",
+            AuditEvent.resource_type == "run",
+            AuditEvent.resource_id.in_(list(run_schedule_ids)),
+        )
+    )
+    audits_by_run_id = {event.resource_id: event for event in audit_result.scalars()}
+    assert set(audits_by_run_id) == set(run_schedule_ids)
+    for run_id, schedule_id in run_schedule_ids.items():
+        event = audits_by_run_id[run_id]
+        assert event.before_state is None
+        assert event.after_state is not None
+        assert event.after_state["id"] == str(run_id)
+        assert event.after_state["status"] == "queued"
+        assert event.after_state["trigger_type"] == "schedule"
+        assert event.after_state["triggered_by"] is None
+        assert event.after_state["git_ref"] == project_default_branch
+        assert event.after_state["project_id"] == str(project_id)
+        assert event.after_state["pipeline_id"] == str(pipeline_id)
+        assert event.after_state["environment_id"] == str(environment_id)
+        assert event.after_state["schedule_id"] == str(schedule_id)
+        assert event.after_state["metadata"]["schedule_id"] == str(schedule_id)
+        assert event.after_state["enqueued"] is True
+
+    assert len(arq.calls) == 10
+    assert {call["kwargs"]["_queue_name"] for call in arq.calls} == {"queue:low"}
+    _assert_p99_under(
+        "schedule tick enqueue SLO",
+        samples,
+        _threshold("PERF_SCHEDULE_TICK_ENQUEUE_P99_MS", 5000),
+    )
+
+
+@pytest.mark.asyncio
 async def test_cancel_run_api_p99_smoke(
     integration_app,
     integration_client,
