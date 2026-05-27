@@ -1379,6 +1379,73 @@ async def test_artifact_download_returns_503_when_storage_unconfigured_after_rba
 
 
 @pytest.mark.asyncio
+async def test_artifact_download_soft_deleted_row_returns_404_without_presign(
+    real_auth_app,
+    real_auth_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import Artifact as ArtifactModel
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    access_token = await _register_real_user(real_auth_client, prefix="artifact_deleted")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    artifact_repo = ArtifactRepository(integration_db_session)
+    artifact = await artifact_repo.create(
+        run_id=run_id,
+        type="report",
+        name="deleted-report.html",
+        storage_path=f"reports/{run_id}/deleted-report.html",
+        size_bytes=1024,
+        mime_type="text/html",
+    )
+    await artifact_repo.delete(artifact)
+    await integration_db_session.commit()
+    soft_deleted_at = (
+        await integration_db_session.execute(
+            select(ArtifactModel.deleted_at).where(ArtifactModel.id == artifact.id)
+        )
+    ).scalar_one()
+    assert soft_deleted_at is not None
+
+    run_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="deleted-artifact-run-read",
+        scopes=["run.read"],
+    )
+
+    old_s3 = real_auth_app.state.container.s3_client
+    s3 = _MemoryS3()
+    real_auth_app.state.container.s3_client = s3
+    try:
+        random_resp = await real_auth_client.get(
+            f"/api/v1/artifacts/{uuid4()}/download",
+            headers={"Authorization": f"Bearer {run_read_token}"},
+        )
+        deleted_resp = await real_auth_client.get(
+            f"/api/v1/artifacts/{artifact.id}/download",
+            headers={"Authorization": f"Bearer {run_read_token}"},
+        )
+    finally:
+        real_auth_app.state.container.s3_client = old_s3
+
+    assert random_resp.status_code == 404, random_resp.text
+    assert deleted_resp.status_code == 404, deleted_resp.text
+    assert deleted_resp.json() == random_resp.json()
+    assert s3.presign_calls == []
+    assert s3.get_calls == []
+
+
+@pytest.mark.asyncio
 async def test_artifact_download_api_token_cross_tenant_returns_same_404(
     real_auth_app,
     real_auth_client,
