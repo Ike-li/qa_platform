@@ -49,9 +49,9 @@
 | F-EX-02 | Cron 定时触发 | P1 | ⚠️ | `api/v1/schedules.py` + `worker/settings.py::check_schedules` · timezone 已实现；既有 schedule 级 `quiet_windows` 存在，但 PRD 验收要求的项目级"静默窗口（发布冻结期）"未实现，见 §4 |
 | F-EX-03 | Webhook 触发 | P1 | ⚠️ | `api/v1/webhooks.py` · HMAC-SHA256 签名验证已实现；PRD 验收要求"分支过滤 + 同 commit 去重"未实现（`dedup_key` 字段在 ORM 已有但 webhook 路由未传入），见 §4 |
 | F-EX-04 | 执行隔离 | P0 | ✅ | `engine/docker_backend.py` · 默认 `network_policy=deny` → `NetworkMode=none`；容器以 `1000:1000`、只读 rootfs、drop all caps、no-new-privileges 运行；`allow` 会显式使用 bridge，`restricted` 需要部署侧提供 `qap-restricted` 网络 |
-| F-EX-05 | 实时日志 | P0 | ⚠️ | `engine/log_stream.py` + `api/v1/sse.py` · Redis Stream 实时日志、`Last-Event-ID` 续传与 S3 JSONL 归档写入已实现；Redis TTL 过期后的归档日志读回 API / UI 未实现，见 §4 |
+| F-EX-05 | 实时日志 | P0 | ⚠️ | `engine/log_stream.py` + `api/v1/sse.py` + `api/v1/runs.py` · Redis Stream 实时日志、`Last-Event-ID` 续传、S3 JSONL 归档写入与归档日志读回 API 已实现；前端回看入口未实现，见 §4 |
 | F-EX-06 | 取消执行 | P0 | ✅ | `engine/cancel.py` |
-| F-EX-07 | 自动重试 | P1 | ⚠️ | `worker/tasks.py` 已有 retry predicate 与重试 Run 创建；但 API schema 存 `max_attempts` 而 worker 读取 `max_retries`，`max_attempts` 也未校验 PRD 要求的 1-5；且 `RunExecutor.execute()` 会捕获多数执行期基础设施异常并返回 `FAILED`；`engine/reclaim.py` 只标记 worker_lost failed，端到端自动重试未闭环 |
+| F-EX-07 | 自动重试 | P1 | ⚠️ | `worker/tasks.py` 已按 API-facing `max_attempts` / `retry_on` 创建 retry Run，execute_run 基础设施异常会先提交 failed 再调度 retry；`engine/reclaim.py` 的 worker_lost callback 也会创建 retry Run。完整外部栈 worker 黑盒自动重试仍留 nightly/manual 增强 |
 | F-EX-08 | 优先级队列 | P2 | ⚠️ | `worker/scheduler.py` 已按 priority 写入 `queue:high/medium/low` 并做 per-project quota；默认 `WorkerSettings.queue_name=queue:medium`，compose 只启动一个未设置 `QAP_WORKER_QUEUE` 的 worker，high/low 队列消费与高优先级插队需补部署/测试闭环 |
 
 ### 1.4 结果与报告
@@ -61,7 +61,7 @@
 | F-RE-01 | 结构化结果（JUnit） | P0 | ✅ | `plugins/builtin/junit_collector.py` |
 | F-RE-02 | 执行摘要 | P0 | ✅ | `engine/executor.py` · `passed` / `failed` / `skipped` / `error` / `pass_rate`；PRD 的 < 3s 生成目标纳入 §4.2 性能验证 |
 | F-RE-03 | 失败详情 | P0 | ✅ | `api/v1/runs.py` · `/runs/{run_id}/results` 返回 `error_message` / `stack_trace`；前端测试结果表支持展开失败用例详情 |
-| F-RE-04 | 产物管理 | P0 | ⚠️ | `api/v1/artifacts.py` · 返回预签名 URL；`engine/executor.py` 当前仅上传 `results/` 下直接文件，目录型 Allure HTML 报告预览、产物数量/大小限制闭环待补 |
+| F-RE-04 | 产物管理 | P0 | ⚠️ | `api/v1/artifacts.py` · 返回预签名 URL；`engine/executor.py` 当前上传 `results/` 下直接文件，并强制环境级产物数量/大小限制；目录型 Allure HTML 报告预览、递归目录上传与磁盘/资源用量闭环待补 |
 | F-RE-05 | 历史趋势 | P1 | ⚠️ | `api/v1/analytics.py` · 项目级每日 run 趋势与 flaky 测试聚合已实现；单个用例的历史趋势视图/API 未实现 |
 
 ### 1.5 通知
@@ -144,15 +144,15 @@
 | F-PM-01 / F-PM-02 Git 凭证执行闭环 | P0 | 项目 schema 可保存 `git_auth_method` / `credential_id`，凭证 CRUD 可加密存储；但 manual/webhook Run 只把 `credential_id` 放入 metadata，`engine/executor.py::_clone_repo` 只用原始 `git_url` / `git_ref` 调 `GitSource.clone()`，未解密 token/SSH key 并注入 clone | 需补私有 HTTPS token / SSH key clone 支持、临时文件权限、错误脱敏与认证失败测试；避免把密钥写入日志或持久化 metadata |
 | F-PL-01 collector 配置补齐 | P0 | Pipeline schema / ORM / `worker/tasks.py::_build_pipeline_config` 均无 collector 选择或配置；`RunExecutor.execute()` 固定 `get_collector("junit")` | PRD §3.2 要求可配置测试运行器、结果收集器、超时、重试策略；需决定当前 JUnit-only 是否改为正式限制，或新增 collector 配置与测试 |
 | 审计日志查询 API | P0 | 仅写入端，无 `/api/v1/audit-events` 查询路由 | 写入端 `api/audit.py` + 仓储 `infra/database/repositories/audit_repo.py` 已就位；当前执行来源以本 catalog 待办和 T02 任务包为准 |
-| 审计写入覆盖补齐 | P1 | 批量 cancel/retry 已补 audit 写入与真实 DB 验证；SSE ticket 等临时凭证写入是否审计需产品确认 | architecture §9.6 已改为“关键写操作主路径覆盖，覆盖率待补齐” |
-| F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | P0 | 目录型 Allure HTML report 不会被当前上传逻辑收集；环境级 `max_artifact_size_mb` / `max_artifacts_count` 未传入 worker ResourceLimits，上传侧也未发现强制校验；`disk_bytes` 字段未进入 Docker HostConfig；OOM/timeout 终止原因与资源用量记录未闭环 | PRD §3.2 要求限制产物大小并记录资源终止信息，PRD §3.4 要求预签名下载 + HTML 报告在线预览；当前 CPU/内存/超时和 `download` JSON 已实现，产物限制/预览闭环待补 |
-| F-EX-05 日志归档回看闭环 | P0 | Redis Stream 实时日志与 S3 JSONL 归档写入已实现，但 Redis TTL 过期后的归档日志读回 API / 前端回看入口未实现 | PRD §3.3 验收要求“日志持久化可回看”；当前 UI 只接 SSE 实时窗口 |
+| 审计写入覆盖补齐 | P1 | 批量 cancel/retry 与 SSE ticket 已补 audit 写入和真实 DB 验证；剩余写操作按安全风险继续补齐 | architecture §9.6 已改为“关键写操作主路径覆盖，覆盖率待补齐” |
+| F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | P0 | 目录型 Allure HTML report 不会被当前上传逻辑收集；`disk_bytes` 字段未进入 Docker HostConfig；OOM/timeout 终止原因与资源用量记录未闭环 | PRD §3.2 要求限制产物大小并记录资源终止信息，PRD §3.4 要求预签名下载 + HTML 报告在线预览；当前 CPU/内存/超时、产物数量/大小限制和 `download` JSON 已实现，目录预览/资源记录仍待补 |
+| F-EX-05 日志归档回看闭环 | P0 | Redis Stream 实时日志、S3 JSONL 归档写入与归档日志读回 API 已实现；前端回看入口未实现 | PRD §3.3 验收要求“日志持久化可回看”；当前 UI 只接 SSE 实时窗口 |
 | F-AU-02 API Token scope enforcement 补齐 | P1 | 已完成 | API token scopes 已贯通 tenant/project 权限依赖；真实 API 测试覆盖只读、run.trigger、错误/空 scope |
 | F-AU-04 跨租户 404 完整收敛 | P0 | 已完成 | Member/Viewer 的 path `project_id` 项目级权限依赖先验证当前租户可见性；跨 tenant、随机 UUID、软删除一致 404 |
 | F-EX-01 手动触发参数与入队验收补齐 | P0 | `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；PRD 要求可指定 commit 与 environment，且触发后 < 5s 入队未纳入自动验收 | 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定；前端旧 `env_overrides` / `params` 偏移仍归 `T-FRONTEND-API` |
 | F-EX-02 静默窗口 | P1 | 发布冻结期不触发 cron | PRD §3.3 验收 |
 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | P1 | 路由未传 `dedup_key`，无分支过滤逻辑 | `dedup_key` 字段在 ORM 已有，路由层接入即可 |
-| F-EX-07 自动重试端到端补齐 | P2 | API-facing `max_attempts` / `retry_on`、waiting retry run、worker_lost callback 已补单测和真实 DB 测试 | 剩余增强是把真实 worker 黑盒重试场景保留在 nightly/manual lane 持续跑 |
+| F-EX-07 自动重试端到端补齐 | P2 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 已补单测和真实 DB 测试 | 剩余增强是把完整外部栈 worker 黑盒重试场景保留在 nightly/manual lane 持续跑 |
 | F-EX-08 优先级队列消费闭环 | P2 | 已补部署/测试主干 | Compose 启动 high/medium/low worker；manual priority 队列矩阵有单测；等待队列 priority+FIFO 有真实 DB 测试 |
 | F-LS-04 测试结果 suite/关键字过滤 | P0 | `main` 仅 status | PRD §3.7 验收；`feature/T07-test-results-filter` 已推送但未合入 |
 | F-LS-01 执行列表过滤补齐 | P0 | 缺 pipeline / git_ref / time range 过滤 | 当前 `main` 支持 status 多选、project_id 与创建时间排序 |
@@ -168,9 +168,9 @@
 | 项 | 必要性 | 备注 |
 |---|---|---|
 | OpenTelemetry 装配 | P2 | 仅声明部分依赖，无 OTLP HTTP exporter、`TracerProvider` / `FastAPIInstrumentor` 代码；设计见 §4.3 |
-| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、Redis 日志写读趋势；严格产品 SLO、执行摘要 < 3s 与完整压测仍需专项环境验证 |
+| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、Redis 日志写读、归档日志读回 API 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO、执行摘要 < 3s 与完整压测仍需专项环境验证 |
 | E2E CI 覆盖扩展 | P1 | PR 保留 `auth-flow.spec.ts`；nightly 固定跑 `real-login-flow` / `real-run-trigger` / `special-regressions`；`workflow_dispatch` 手动跑全量 E2E |
-| 数据保留冷归档/读回增强 | P2 | 超期终态 Run 清理与级联删除、失败日志归档重试已闭环；当前仍缺 DB 行冷归档与归档日志读回 API / UI |
+| 数据保留冷归档/读回增强 | P2 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 已闭环；当前仍缺 DB 行冷归档与归档日志 UI |
 | 结构化日志全局化 | P2 | API app 默认 factory 已配置 structlog JSON renderer；worker/arq 入口未调用 `configure_logging`，engine / worker / plugin 多数模块仍经 stdlib logger 输出，需统一 worker 进程日志初始化与字段格式 |
 
 ### 4.3 设计决策（已定，可直接交付实施）
@@ -264,7 +264,7 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 | 日志延迟 | 实时推送 | < 2s | ⏳ 未测量 |
 | 容量 | 单 Run 日志缓冲 | 近似 10000 条 / Redis Stream MAXLEN auto-trim | ✅ |
 | 容量 | 单条日志大小 | 4KB 上限 | ✅ |
-| 容量 | 单次执行最大产物总大小 | 500MB | ⚠️ 有 `max_artifact_size_mb` / `max_artifacts_count` 配置字段，但上传路径未强制校验 |
+| 容量 | 单次执行最大产物总大小 | 500MB | ⚠️ 环境级 `max_artifact_size_mb` / `max_artifacts_count` 已传入 worker 并在上传路径强制校验；仍缺磁盘配额与资源用量记录 |
 | 安全 | 凭证加密 | AES-256-GCM | ✅ |
 | 安全 | 通用 API Rate limit | 100/min/限流桶 | ✅ |
 | 安全 | 认证高风险端点 Rate limit | 5/min/限流桶 | ✅ |

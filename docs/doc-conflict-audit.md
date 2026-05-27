@@ -70,19 +70,19 @@
 | Docker/Compose 运行时对照 | 通过，`docker-compose.yml` 当前包含 postgres、redis、minio、api、frontend、worker；`make infra-up` 只启动基础设施，`make up` 启动完整栈；Dockerfile `qaplatform.api:create_app` 入口通过 lazy shim 指向 `qaplatform.main:create_app` |
 | Docker/Compose 服务数当前复跑 | 通过，`docker compose config --services` 当前输出 6 个服务：minio、postgres、redis、api、frontend、worker；README 与 architecture 中“`make infra-up` 启动 PostgreSQL/Redis/MinIO、`make up` 启动完整 6 服务栈”的说法仍与 Makefile / Compose 一致。 |
 | Docker socket / 执行隔离文档对照 | 通过，`docker-compose.yml` worker 仍直接挂载 `/var/run/docker.sock`；Docker backend 默认 `network_policy=deny` → `NetworkMode=none`，但 `allow` 会显式使用 bridge，`restricted` 需要部署侧创建 `qap-restricted` 网络；architecture 已改成当前事实 + 生产加固建议，runbook 已新增 Docker socket 风险章节 |
-| 数据保留 / 日志归档闭环对照 | 有已知偏移，`LogStream.archive_logs` 成功后设置 1h TTL、失败后设置 24h TTL 并登记失败 Run；`worker/settings.py::retry_failed_archives` 会重试失败归档；`cleanup_old_runs` 已注册 cron 并硬删超期终态 Run（`done/failed/cancelled/timeout`）且覆盖 result/artifact/event 级联；仍未发现 Redis 内存阈值拒绝入队实现，归档日志读回 API / UI 仍缺失 |
-| F-EX-05 实时日志 / 归档回看对照 | 有已知偏移，`api/v1/sse.py` 已支持 `/runs/{run_id}/logs` 和 `Last-Event-ID`，`engine/log_stream.py` 已把日志归档到 `logs/{run_id}.jsonl`；但未发现归档日志读回 API，前端 `log-viewer.tsx` 仅接 SSE 实时窗口，Redis TTL 过期后不能证明“日志持久化可回看”闭环 |
-| 资源限制 / 产物 / Allure 预览闭环对照 | 有已知偏移，CPU/内存/超时已实现；`worker/tasks.py` 构造 `ResourceLimits` 时只传 memory/cpu，`disk_bytes` 未进入 Docker HostConfig；OOM/timeout 能映射为 `timeout`，但未发现资源用量记录闭环；`api/v1/artifacts.py` 已返回 `download_url` / `expires_in`；`engine/executor.py::_upload_artifacts` 只上传 `results/` 下直接文件并跳过目录；`frontend` 仅对 `artifact.type === "allure-report"` 展示预览按钮；环境级产物数量/大小限制未发现上传侧强制校验 |
+| 数据保留 / 日志归档闭环对照 | 有已知偏移，`LogStream.archive_logs` 成功后设置 1h TTL、失败后设置 24h TTL 并登记失败 Run；`worker/settings.py::retry_failed_archives` 会重试失败归档；`cleanup_old_runs` 已注册 cron 并硬删超期终态 Run（`done/failed/cancelled/timeout`）且覆盖 result/artifact/event 级联；归档日志读回 API 已补真实 DB/RBAC/API 测试，仍未发现 Redis 内存阈值拒绝入队实现，前端归档日志回看入口仍缺失 |
+| F-EX-05 实时日志 / 归档回看对照 | 有已知偏移，`api/v1/sse.py` 已支持 `/runs/{run_id}/logs` 和 `Last-Event-ID`，`engine/log_stream.py` 已把日志归档到 `logs/{run_id}.jsonl`；后端已提供归档日志读回 API，前端 `log-viewer.tsx` 仅接 SSE 实时窗口，Redis TTL 过期后的 UI 回看闭环仍缺失 |
+| 资源限制 / 产物 / Allure 预览闭环对照 | 有已知偏移，CPU/内存/超时已实现；worker 已把环境级产物 size/count 限制传入 executor，上传侧已在写 S3/DB 前强制校验；`disk_bytes` 未进入 Docker HostConfig；OOM/timeout 能映射为 `timeout`，但未发现资源用量记录闭环；`api/v1/artifacts.py` 已返回 `download_url` / `expires_in`；`engine/executor.py::_upload_artifacts` 只上传 `results/` 下直接文件并跳过目录；`frontend` 仅对 `artifact.type === "allure-report"` 展示预览按钮 |
 | Playwright / E2E 配置对照 | 通过，根目录 `package.json` 提供 `npm run test:e2e`；`playwright.config.ts` 的 `testDir` 为 `tests/e2e`，会启动 `frontend` dev server 和 `.venv/bin/python -m uvicorn qaplatform.main:create_app --factory --app-dir src`，`global-setup.ts` 会启动 postgres/redis/minio、执行 alembic upgrade 与 seed |
 | E2E 辅助脚本入口复核 | 发现 `scripts/run-e2e.sh` 仍直接用 `ADMIN_PASSWORD=admin123` seed 后运行 `tests/e2e/real-*.spec.ts`；默认值与 real specs 的 `E2E_ADMIN_PASSWORD || "admin123"` fallback 一致，但若调用者显式设置 `E2E_ADMIN_PASSWORD`，该脚本不会同步 seed 密码。当前 README/development/CI 的推荐入口仍是根目录 `npm run test:e2e`，不受此脚本偏差影响；若后续保留脚本，应让它透传 `E2E_ADMIN_PASSWORD`。 |
 | Git refs / merge state 对照 | 审计快照通过：本地 8 个 `feature/T*` 分支与对应 `origin/feature/T*` SHA 一致且均未合入本地 `main`；审计时本地 `main` 比 `origin/main` 多 5 个 docs commit，`origin/HEAD` 指向 `origin/phase1-release-prep`。该行保留为快照，实时状态以现场 git 命令为准。 |
 | Alembic 迁移链对照 | 通过，源码迁移链为单 head `006`；本地数据库当前版本为 `005`，需要在运行依赖真实 DB 的测试前执行 `.venv/bin/alembic upgrade head` |
 | 通知 / Webhook 当前实现对照 | 通过，`main` 的 `ChannelRouter` 仅注册 `email` / `webhook`；T03/T04 钉钉/企微仍是未合入 feature 分支能力；`api/v1/webhooks.py` 当前仅做项目级触发与 HMAC 验签，T06 分支过滤/去重仍未合入 `main` |
 | 通知规则 / 模板能力对照 | 有已知偏移，当前通知条件只支持 `status` / `pass_rate` / `failed` 的 AND 组合；模板是规则级 `NotificationRule.template`，变量仅 `run_id/status/passed/failed/total/pass_rate`，PRD 中的连续失败次数、每渠道模板、项目名与失败用例变量未闭环 |
-| 自动重试 / 优先级队列闭环对照 | 有已知偏移，`worker/tasks.py` 已有 `_should_retry` / `_attempt_retry` 原语，但 API schema 写 `max_attempts`、worker 读 `max_retries`；`RunExecutor.execute()` 又会捕获多数执行期异常并返回 `FAILED`，真实 Docker/clone/setup 基础设施失败不会进入 `_attempt_retry`；`worker/scheduler.py` 会写 `queue:high/medium/low`，但默认 `WorkerSettings.queue_name=queue:medium` 且 compose 只启动单 worker，high/low 队列消费闭环未完成 |
+| 自动重试 / 优先级队列闭环对照 | 有已知偏移，`worker/tasks.py` 已有 `_should_retry` / `_attempt_retry` 原语；当前已统一 API-facing `max_attempts` / `retry_on` 与 worker 读取口径，并覆盖 execute_run 基础设施异常真实 DB retry run；真实 Docker/clone/setup/container wait 黑盒场景仍留在 nightly/manual；`worker/scheduler.py` 会写 `queue:high/medium/low`，多队列消费闭环按当前 runbook/CI 分层继续维护 |
 | Analytics / Flaky 实现口径对照 | 通过，项目级趋势与 flaky API / 前端入口存在；flaky 当前是同一 suite/name 在窗口内既有 passed 又有 failed/error 的聚合启发式，feature-catalog 已写清该口径 |
 | smoke 脚本覆盖数对照 | 通过，`scripts/smoke/` 当前有 6 个页面脚本；原 catalog 固定写“83 测试点”已改为“检查点以脚本内 `log_step` 为准”，避免数字随脚本增长失真 |
-| 审计写入覆盖对照 | 有已知偏移，多数主路径 mutating routes 已写 audit，但 `api/v1/runs.py` 的 `/batch/cancel`、`/batch/retry` 当前无 audit；`/auth/sse-ticket` 临时票据写入是否审计需产品确认；因此文档已从“所有写操作”改为“关键写操作主路径覆盖，覆盖率待补齐” |
+| 审计写入覆盖对照 | 有已知偏移，多数主路径 mutating routes 已写 audit；`api/v1/runs.py` 的 `/batch/cancel`、`/batch/retry` 与 `/auth/sse-ticket` 临时票据创建已补审计写入；仍需按业务风险矩阵继续覆盖剩余写路径 |
 | 前端 API 类型 vs 后端 schema 对照 | 有已知偏移，`frontend/src/types/api.ts` 中 `Run` 使用 UI 归一化字段 `branch`、`duration_seconds`、`total_tests` 等，而后端 `RunResponse` 是 `git_ref`、`duration_ms`、`summary`；`use-runs.ts` 触发 payload 仍带后端不接收的 `env_overrides/params`，且归一化时读取复数 `summary.errors`；Environment 仍有 `variables` 旧字段且缺 `env_vars` / resource limit 字段，`environment-editor.tsx` 也提交旧 `variables` payload；Pipeline 嵌套 selector / retry shape 仍是旧前端形状，`pipeline-modal.tsx` 也提交旧 payload；`use-projects.ts` 搜索参数仍传 `search` 而后端使用 `q`；`use-pipelines.ts` 仍调用不存在的 `/pipelines/{id}`；`use-notifications.ts` 把 paginated 通知规则列表当成裸数组；`use-sse.ts` fallback 会把 SSE URL 当 JSON API 轮询；当前部分页面由 hook 做适配，需单独 T-FRONTEND-API 拆分 DTO / view model 并修正 hook 路径/响应形状 |
 | Run summary 字段口径对照 | 有已知偏移，当前执行摘要字段为 `total/passed/failed/skipped/error/pass_rate`，其中 `error` 为单数；feature-catalog 已从 `errors` 复数修正为 `error` 单数，但前端 `use-runs.ts::normalizeRun` 仍读取 `summary.errors`，已归入 `T-FRONTEND-API` |
 | 历史前端 prompt schema 复扫 | 通过，`frontend/FRONTEND_PROMPT.md` 虽仍是历史资料，但 Data Models 示例已把 Run status 对齐为 `done/timeout`，并把 Pipeline `retry_policy` / `selector` / `trigger_config` 对齐当前 `api/schemas.py` 字段 |
@@ -882,7 +882,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - catalog / TODO 把 F-EX-05 从“已完成”改成“实时流已完成，归档回看闭环待补”。
 - architecture §10.2 改成当前 Redis Stream / status hash 机制，不再写 Pub/Sub。
 
-修复进度：runbook 已改为 `logs/{run_id}.jsonl`；architecture 已改为归档后 Redis Stream 设置 TTL，并补充“当前仅实现归档写入，Redis TTL 过期后的读回 API / UI 仍缺失”；runbook 的 S3 lifecycle 示例已拆成 `logs/` 默认 90 天、`reports/` 默认 30 天，且不再把 lifecycle 对齐等同为日志可回看闭环；catalog / TODO 已新增 `F-EX-05 日志归档回看闭环` 待办；architecture §10.2 已改为 Redis Stream + status hash。
+修复进度：runbook 已改为 `logs/{run_id}.jsonl`；architecture 已改为归档后 Redis Stream 设置 TTL，并补充“后端归档读回 API 已实现，前端 UI 回看入口仍缺失”；runbook 的 S3 lifecycle 示例已拆成 `logs/` 默认 90 天、`reports/` 默认 30 天，且不再把 lifecycle 对齐等同为 UI 日志回看闭环；catalog / TODO 已把 `F-EX-05 日志归档回看闭环` 更新为后端 API 已补、前端入口待补；architecture §10.2 已改为 Redis Stream + status hash。
 
 ### 7.6 retry failed archive 文档与实现不完整
 
@@ -895,7 +895,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 - 文档里标为未实现，或补实现。
 
-修复进度：已补实现与测试。`archive_logs` 失败会把 Run ID 登记到 Redis retry set，`retry_failed_archives` cron 会重试并在成功后清理登记；architecture / runbook 已改为当前事实。归档日志读回 API / UI 仍归 F-EX-05。
+修复进度：已补实现与测试。`archive_logs` 失败会把 Run ID 登记到 Redis retry set，`retry_failed_archives` cron 会重试并在成功后清理登记；architecture / runbook 已改为当前事实。归档日志读回 API 已补，前端 UI 入口仍归 F-EX-05。
 
 ### 7.7 Docker socket proxy 文档与 compose 现状要分层表达
 
@@ -1131,8 +1131,8 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 - PRD F-PL-03 的描述是“限制单次执行的 CPU/内存/产物大小”。
 - 当前 CPU / 内存限制已在 `engine/docker_backend.py` HostConfig 中设置，timeout 也有 SIGTERM → 30s → SIGKILL 路径。
-- `worker/tasks.py::_build_pipeline_config` 构造 `ResourceLimits` 时只传 `memory_bytes` 和 `cpu_cores`；环境级 `max_artifact_size_mb` / `max_artifacts_count` 没有传入 worker 执行配置。
-- `engine/executor.py::_upload_artifacts` 上传前未检查单文件大小、总大小或数量。
+- `worker/tasks.py::_build_pipeline_config` 已把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入执行配置。
+- `engine/executor.py::_upload_artifacts` 已在上传和写 DB 行前检查单文件大小与数量；总大小、递归目录与 Allure HTML 入口仍未闭环。
 - `ResourceLimits.disk_bytes` 字段存在，但未进入 Docker HostConfig；architecture 原写“资源限制（CPU/内存/磁盘）”容易被误读为磁盘限制已实现。
 - PRD 还要求 OOM/timeout 记录终止原因和资源用量；当前代码可把 OOM/timeout 映射为 `timeout`，但本轮未发现资源用量写入日志或 summary 的闭环。
 
@@ -1141,7 +1141,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - catalog 中 F-PL-03 改为部分完成。
 - 将 F-PL-03 的产物大小限制与 F-RE-04 的上传/预览闭环合并成一个实施任务，避免两个任务重复改 `_upload_artifacts`。
 
-修复进度：feature-catalog 已把 F-PL-03 改为 ⚠️；TODO / catalog §4.1 已把待办改为 `F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐`；architecture §6.1 / architecture §9.3 已补 CPU/内存、磁盘、产物限制与资源用量记录边界。
+修复进度：feature-catalog 已把 F-PL-03 改为 ⚠️；TODO / catalog §4.1 已把待办改为 `F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐`；architecture §6.1 / architecture §9.3 已补 CPU/内存、磁盘、产物限制与资源用量记录边界；环境级产物 size/count 限制已补 worker 映射、executor 强制校验与真实 DB/S3 测试，剩余磁盘限制、资源用量记录、目录型 Allure/HTML 上传与预览入口。
 
 ### 9.11 通知条件 AND/OR 与模板能力过度声明
 
@@ -1360,7 +1360,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 冲突：
 
 - 文档对 resource limit、artifact report 类型、Allure 在线预览等能力描述较满。
-- 代码已实现 CPU/内存/超时、基础产物上传和预签名下载，但产物数量/大小限制只在 environment schema / domain model / `docker_backend.ResourceLimits` 中可见，未在 `_upload_artifacts` 上传路径发现强制校验。
+- 代码已实现 CPU/内存/超时、基础产物上传、预签名下载和环境级产物数量/大小上传侧强制校验。
 - Allure report 类型分支存在，但当前只扫描 `results/` 直接文件，目录型 Allure HTML 报告不会形成可预览 artifact。
 - README 插件开发段落曾把 CollectorProtocol 示例写成“JUnit XML、Allure”，容易被理解为当前已有 Allure collector；实际内置 collector 仍只有 JUnit。
 
@@ -1371,7 +1371,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
   - 部分实现。
   - 文档愿景。
 
-修复进度：architecture 已补当前资源限制与产物上传边界；feature-catalog / TODO 已把 F-PL-03 与 F-RE-04 标为部分完成，并新增待办；README 插件开发示例已改为“当前内置 JUnit XML；Allure JSON/TAP 等可作为后续扩展”。
+修复进度：architecture 已补当前资源限制与产物上传边界；feature-catalog / TODO 已把 F-PL-03 与 F-RE-04 标为部分完成，并新增待办；README 插件开发示例已改为“当前内置 JUnit XML；Allure JSON/TAP 等可作为后续扩展”；产物 size/count 已补自动化证据，Allure 目录/预览与磁盘/资源用量仍待补。
 
 ### 12.4 F-EX-07 自动重试状态过度乐观
 
@@ -1379,7 +1379,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 - `docs/feature-catalog.md` 曾把 F-EX-07 标为 ✅，并写作 `engine/reclaim.py + worker/tasks.py` 已完成“仅基础设施失败重试”。
 - `worker/tasks.py` 确实有 `_should_retry()` 和 `_attempt_retry()`，能按 pipeline `retry_policy` 创建共享 `retry_group_id`、递增 `attempt` 的 retry Run，并用 `_defer_by` 做指数退避。
-- 但 API schema `RetryPolicyInput` 写入的是 `max_attempts`、`retry_on`、`backoff_seconds`、`scope`；`_should_retry()` 当前读取 `max_retries`，测试里也用的是 `max_retries`，与实际 API 写入字段不一致。
+- 历史上 API schema `RetryPolicyInput` 写入的是 `max_attempts`、`retry_on`、`backoff_seconds`、`scope`，但 `_should_retry()` 读取 legacy `max_retries`，测试里也用的是 `max_retries`，与实际 API 写入字段不一致；当前已统一为读取 `max_attempts` 并兼容 legacy `max_retries`。
 - 但 `execute_run()` 只有在 `RunExecutor.execute()` 向外抛异常时才会调用 `_attempt_retry()`；当前 `RunExecutor.execute()` 会捕获多数 clone / setup / Docker 执行异常，调用 `fail_if_current()` 后返回 `RunStatus.FAILED`。
 - `engine/reclaim.py` 的 worker_lost 逻辑只把失联 worker 的 Run 标为 `failed` 并清理 orphan container，不会创建 retry Run。
 - `docs/prd.md` 的 worker_lost 异常路径曾直接写“如配置了自动重试，自动创建新 Run attempt”，容易被读成当前 `main` 已闭环。
@@ -1482,15 +1482,15 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 | `T-DOC-05` | 重写 frontend README / FRONTEND_PROMPT / DESIGN 定位。 | 已完成第一轮修复 |
 | `T-GIT-CREDENTIALS` | 补齐 F-PM-01 / F-PM-02 Git 凭证执行闭环：解密项目绑定的 HTTPS token / SSH key 并安全注入 Git clone，确保错误与日志脱敏，覆盖私有仓库成功、认证失败、凭证轮换后的执行路径。 | 未处理，已记录为 PRD F-PM-01/F-PM-02 缺口 |
 | `T-PIPELINE-COLLECTOR` | 补齐 F-PL-01 Pipeline collector 配置：决定当前 JUnit-only 是正式产品限制还是实现 collector 选择/配置；若补实现，需贯通 API schema、ORM/JSONB、worker `PipelineConfig`、executor `get_collector(...)` 与测试。 | 未处理，已记录为 PRD F-PL-01 缺口 |
-| `T-AUDIT-COVERAGE` | 补齐审计写入覆盖：批量取消/批量重试至少应有 audit；SSE ticket 是否审计需产品确认。 | 未处理，已记录为 PRD/安全缺口 |
-| `T-ARTIFACT-PREVIEW` | 补齐 F-PL-03 / F-RE-04 产物限制与上传/预览闭环：传递并执行上传侧 size/count 限制，决定是否实现磁盘限制，补 OOM/timeout 资源用量记录，递归或打包上传 Allure HTML 报告、明确入口 URL 并补测试。 | 未处理，已记录为 PRD F-PL-03 / F-RE-04 缺口 |
-| `T-LOG-REPLAY` | 补齐 F-EX-05 日志归档回看闭环：提供从 `logs/{run_id}.jsonl` 读取历史日志的 API / 前端入口，并处理 Redis Stream TTL 过期后的回放体验。 | 未处理，已记录为 PRD F-EX-05 缺口 |
+| `T-AUDIT-COVERAGE` | 补齐审计写入覆盖：批量取消/批量重试至少应有 audit；SSE ticket 是否审计需产品确认。 | 批量取消/批量重试与 SSE ticket 已补审计写入；剩余写路径按业务风险矩阵继续补齐 |
+| `T-ARTIFACT-PREVIEW` | 补齐 F-PL-03 / F-RE-04 产物限制与上传/预览闭环：传递并执行上传侧 size/count 限制，决定是否实现磁盘限制，补 OOM/timeout 资源用量记录，递归或打包上传 Allure HTML 报告、明确入口 URL 并补测试。 | 已补 size/count 限制映射、上传侧强制校验和真实 DB/S3 测试；磁盘限制、资源用量记录、Allure/HTML 目录上传与预览仍缺 |
+| `T-LOG-REPLAY` | 补齐 F-EX-05 日志归档回看闭环：提供从 `logs/{run_id}.jsonl` 读取历史日志的 API / 前端入口，并处理 Redis Stream TTL 过期后的回放体验。 | 后端归档日志读回 API 与真实 DB/RBAC/API 测试已补；前端入口仍缺 |
 | `T-AUTH-SCOPE` | 补齐 API token scope enforcement 在 tenant-scoped / project-scoped / token 管理端点的传递与测试。 | 未处理，已记录为 PRD F-AU-02 缺口 |
 | `T-MANUAL-TRIGGER` | 补齐 F-EX-01 手动触发参数与入队验收：让后端可指定 commit / environment，明确与前端触发 payload 的边界，并补“触发后 < 5s 入队”的可验证测试或压测口径。 | 未处理，已记录为 PRD F-EX-01 缺口 |
-| `T-EXEC-RETRY` | 补齐 F-EX-07 自动重试端到端闭环：统一 `RetryPolicyInput.max_attempts` 与 worker `max_retries` 读取口径并补 1-5 边界校验，让真实 Docker/clone/setup 基础设施异常进入 `_attempt_retry()`，并确认 worker_lost 是否自动重试。 | 已补 API-facing max_attempts/retry_on、waiting retry run、worker_lost callback 与真实 DB retry run 测试；真实 worker 黑盒重试保留 nightly/manual |
+| `T-EXEC-RETRY` | 补齐 F-EX-07 自动重试端到端闭环：统一 `RetryPolicyInput.max_attempts` 与 worker legacy `max_retries` 读取口径并补 1-5 边界校验，让真实 Docker/clone/setup 基础设施异常进入 `_attempt_retry()`，并确认 worker_lost 是否自动重试。 | 已补 API-facing max_attempts/retry_on、waiting retry run、worker_lost callback 与真实 DB retry run 测试；真实 worker 黑盒重试保留 nightly/manual |
 | `T-QUEUE-PRIORITY` | 补齐 F-EX-08 优先级队列消费闭环：决定单 worker 多队列或多 worker 部署，验证 high/low 队列消费、高优先级插队和同优先级 FIFO。 | 已补 compose high/medium/low worker、manual priority 队列矩阵单测、真实 DB priority+FIFO 排序 |
 | `T-NOTIFICATION-TEMPLATE` | 补齐 F-NT-01 / F-NT-03 通知规则与模板验收：OR、连续失败次数、每渠道模板、项目名和失败用例变量。 | 未处理，已记录为 PRD F-NT-01/F-NT-03 缺口 |
-| `T-RETENTION-OPS` | 补齐数据保留清理闭环：修复 `cleanup_old_runs` 导入/测试，明确是否先 soft-delete 超期终态 Run、是否覆盖 `cancelled/timeout`，决定是否实现 `retry_failed_archives`、artifact 对象清理与 DB 行冷归档。 | 已补超期终态硬删、result/artifact/event 级联、失败归档 retry；DB 行冷归档与归档读回仍是增强项 |
+| `T-RETENTION-OPS` | 补齐数据保留清理闭环：修复 `cleanup_old_runs` 导入/测试，明确是否先 soft-delete 超期终态 Run、是否覆盖 `cancelled/timeout`，决定是否实现 `retry_failed_archives`、artifact 对象清理与 DB 行冷归档。 | 已补超期终态硬删、result/artifact/event 级联、失败归档 retry 与归档日志 API 读回；DB 行冷归档仍是增强项 |
 | `T-ARCH-LAYERS` | 收敛分层 import / DB 访问偏差：把 `engine` 反向依赖的 `api.metrics` / `worker._redact` 迁出或改为中立模块，并逐步把 API 路由里的直接 SQLAlchemy 查询下沉到 repositories / query service。 | 未处理，已记录为技术债专项 |
 | `T-LOGGING` | 结构化日志全局化：在 worker/arq 入口调用统一日志配置，收敛 engine / worker / plugin 的 stdlib logger 输出形态，保证 API 与后台任务日志字段一致。 | 未处理，已记录为技术债专项 |
 | `T-LINT` | 清理 main 既有 ruff 历史债务。 | 已处理，CI `backend-test` 已加入 `ruff check src tests` |
@@ -1514,11 +1514,11 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 2. T05 的 `Schedule.quiet_windows` 与 `Project.settings.silent_windows` 是否共存？
 3. T10 是否允许新增 OTLP HTTP exporter 依赖？
 4. 是否需要实现独立的审计日志清理任务；当前配置有 `retention_audit_days=1095`，但本轮只发现执行记录清理 cron。
-5. 是否需要 DB 行冷归档；失败归档自动补偿已实现，但归档日志读回 API / UI 仍待产品决策。
-6. `/auth/sse-ticket` 这种短期临时凭证写入是否必须纳入审计；批量取消/批量重试已补审计写入。
+5. 是否需要 DB 行冷归档；失败归档自动补偿与归档日志读回 API 已实现，但前端归档日志 UI 入口仍待产品决策。
+6. `/auth/sse-ticket` 这种短期临时凭证写入已纳入审计；后续是否需要审计查询 UI 与告警规则仍待产品决策。
 7. Pipeline collector 配置是补实现，还是把当前 JUnit-only 写成正式产品限制并调整 PRD F-PL-01 验收口径。
 8. Allure/HTML 报告预览的产物形态：上传静态目录并预签入口 `index.html`，还是把报告打包为单个 zip/html artifact 后由前端专门渲染。
 9. 真实 worker 黑盒自动重试是否要从 nightly/manual 提升为 PR 必跑门禁。
 10. F-EX-08 采用 high/medium/low 多 worker 部署；后续如改为单 worker 多队列，需要重新补 runbook/CI 覆盖。
 11. F-NT-03 的“每渠道模板”是否必须实现为 `channels[]` 内独立模板，还是接受当前规则级模板并调整 PRD 验收口径。
-12. F-EX-05 的归档日志回看应采用流式 API 直接读取 `logs/{run_id}.jsonl`，还是把归档日志注册成 artifact 后复用现有预签名下载/预览链路。
+12. F-EX-05 的归档日志回看后端已采用 API 直接读取 `logs/{run_id}.jsonl`；前端是直接消费该 API，还是额外把归档日志注册成 artifact 复用下载/预览链路，仍需产品决策。

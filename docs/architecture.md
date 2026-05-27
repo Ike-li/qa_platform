@@ -156,7 +156,7 @@ Worker 抢占 (queued → preparing)
 触发通知 (按规则)
 ```
 
-当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；但 `disk_bytes` 未进入 Docker HostConfig，OOM/timeout 的资源用量记录也未形成验收闭环。`engine/executor.py` 只扫描工作目录 `results/` 下的直接文件并写入 S3/Artifact；目录型 Allure HTML report、递归资源目录上传，以及环境级 `max_artifact_size_mb` / `max_artifacts_count` 传递到 worker 并在上传侧强制校验仍需补齐。
+当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；但 `disk_bytes` 未进入 Docker HostConfig，OOM/timeout 的资源用量记录也未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；当前仍只扫描工作目录 `results/` 下的直接文件，目录型 Allure HTML report 与递归资源目录上传仍需后续设计。
 
 当前 collector 边界：Pipeline 的 stage `plugin` 可以选择测试运行器，但结果收集器还不是 pipeline 级配置项；`RunExecutor.execute()` 当前固定调用 JUnit collector。PRD F-PL-01 中“配置结果收集器”的验收需后续补实现，或由 maintainer 决定把 JUnit-only 写成正式产品限制。
 
@@ -187,10 +187,10 @@ queued → preparing → running → collecting → done
 - `worker/tasks.py::_should_retry()` 只允许 `ConnectionError` / `TimeoutError` / `OSError` 这类基础设施异常按 pipeline `retry_policy` 重试；测试断言失败不重试。
 - 当前 API schema 写入的 `RetryPolicyInput` 字段是 `max_attempts` / `retry_on` / `backoff_seconds` / `scope`；worker 读取 `max_attempts` 并兼容 legacy `max_retries`。
 - `worker/tasks.py::_attempt_retry()` 会创建共享 `retry_group_id`、`attempt + 1`、`source_run_id` 的新 Run，并用指数退避 `_defer_by` 重新入队。
-- `execute_run()` 只有在 `RunExecutor.execute()` 向外抛异常时才会调用 `_attempt_retry()`；真实 worker 黑盒基础设施失败路径仍保留在 nightly/manual lane 持续验证。
+- `execute_run()` 在 `RunExecutor.execute()` 向外抛基础设施异常时会先提交 failed 状态释放行锁，再调用 `_attempt_retry()`；真实 DB 集成测试覆盖该 worker 入口路径。完整 API/worker compose 黑盒场景仍保留在 nightly/manual lane 持续验证。
 - `engine/reclaim.py` 的 worker_lost 逻辑会把失联 worker 的 Run 标记为 `failed`、清理 orphan container，并通过 worker callback 对命中 retry policy 的 run 创建 retry Run。
 
-因此 F-EX-07 的 retry predicate、retry Run 创建、worker_lost callback 和真实 DB retry Run 已有测试证据；剩余增强是把真实 worker 黑盒重试场景作为 nightly/manual 持续验证。
+因此 F-EX-07 的 retry predicate、retry Run 创建、execute_run 基础设施异常、worker_lost callback 和真实 DB retry Run 已有测试证据；剩余增强是把完整外部栈 worker 黑盒重试场景作为 nightly/manual 持续验证。
 
 ### 6.5 Webhook 触发流程
 
@@ -429,7 +429,7 @@ Run 1──N NotificationLog
 
 - 使用 Redis Stream 作为日志缓冲（MAXLEN 10000 条/Run）
 - 客户端断线重连时通过 `Last-Event-ID` 续传
-- 执行结束后日志归档到 S3；归档成功后 Redis Stream 设置短 TTL，归档失败时保留 24h TTL 并登记到 `run:logs:archive_failed`；worker `retry_failed_archives` cron 会补偿重试并在成功后清理登记。Redis TTL 过期后的归档日志读回 API / UI 仍缺失
+- 执行结束后日志归档到 S3；归档成功后 Redis Stream 设置短 TTL，归档失败时保留 24h TTL 并登记到 `run:logs:archive_failed`；worker `retry_failed_archives` cron 会补偿重试并在成功后清理登记。Redis TTL 过期后的归档日志可通过 `GET /api/v1/runs/{run_id}/logs/archive` 读回，前端回看入口仍缺失
 - 单条日志消息最大 4KB，超出截断
 - 执行并发由 `QAP_MAX_CONCURRENT_RUNS` / `QAP_MAX_CONCURRENT_PER_PROJECT` 控制；当前未实现 Redis 内存阈值拒绝新执行入队
 

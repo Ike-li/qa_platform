@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from inspect import isawaitable
 from typing import Any
 from uuid import UUID
 
@@ -22,6 +23,10 @@ _ARCHIVE_RETRY_SET = "run:logs:archive_failed"
 # stalling SSE consumers.
 _MAX_LINE_BYTES = 4096
 _TRUNCATION_MARKER = "...[truncated]"
+
+
+class ArchivedLogsNotFound(Exception):
+    """Raised when an archived log object does not exist in object storage."""
 
 
 def _truncate_line(line: str) -> str:
@@ -182,6 +187,47 @@ class LogStream:
                 log.warning("failed to record log archive retry marker for run %s", run_id, exc_info=True)
             return False
 
+    async def read_archived_logs(
+        self,
+        run_id: UUID | str,
+        s3_client: Any,
+        bucket: str,
+    ) -> list[dict[str, Any]]:
+        """Read archived run logs from S3 JSONL storage.
+
+        Archive rows are intentionally normalized to the same public shape as
+        live log rows: ``{"stream": "...", "line": "..."}``. Object-storage
+        dependencies differ in how they expose ``Body`` during tests vs.
+        aiobotocore, so the body reader accepts bytes, strings, sync reads, and
+        async reads.
+        """
+        s3_key = f"logs/{run_id}.jsonl"
+
+        try:
+            response = await s3_client.get_object(Bucket=bucket, Key=s3_key)
+        except Exception as exc:
+            if _is_missing_object_error(exc):
+                raise ArchivedLogsNotFound(str(run_id)) from exc
+            raise
+
+        raw_body = await _read_s3_body(response.get("Body", b""))
+        if not raw_body:
+            return []
+
+        entries: list[dict[str, Any]] = []
+        for raw_line in raw_body.decode("utf-8").splitlines():
+            if not raw_line.strip():
+                continue
+            entry = json.loads(raw_line)
+            entries.append(
+                {
+                    **entry,
+                    "stream": entry.get("stream", "stdout"),
+                    "line": entry.get("line", ""),
+                }
+            )
+        return entries
+
     async def retry_failed_archives(
         self,
         s3_client: Any,
@@ -206,3 +252,28 @@ class LogStream:
         """Delete the Redis Stream key for a run."""
         key = self._stream_key(run_id)
         await self._redis.delete(key)
+
+
+async def _read_s3_body(body: Any) -> bytes:
+    if isinstance(body, bytes):
+        return body
+    if isinstance(body, str):
+        return body.encode("utf-8")
+    if hasattr(body, "read"):
+        value = body.read()
+        if isawaitable(value):
+            value = await value
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, str):
+            return value.encode("utf-8")
+    return bytes(body)
+
+
+def _is_missing_object_error(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        code = response.get("Error", {}).get("Code")
+        if code in {"NoSuchKey", "404", "NotFound"}:
+            return True
+    return exc.__class__.__name__ in {"NoSuchKey", "NoSuchKeyError"}

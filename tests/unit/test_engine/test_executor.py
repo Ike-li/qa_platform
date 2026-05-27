@@ -441,6 +441,76 @@ class TestUploadArtifacts:
         # S3 failed → DB row must NOT be written to avoid dangling reference
         artifact_repo.create.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_upload_skips_artifacts_over_size_limit(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
+    ):
+        from qaplatform.engine.docker_backend import ResourceLimits
+
+        s3 = AsyncMock()
+        artifact_repo = AsyncMock()
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+            s3_client=s3,
+            artifact_repo=artifact_repo,
+        )
+        (tmp_path / "results").mkdir()
+        (tmp_path / "results" / "big.txt").write_bytes(b"too-large")
+        (tmp_path / "results" / "small.txt").write_bytes(b"ok")
+
+        await executor._upload_artifacts(
+            "11111111-1111-1111-1111-111111111111",
+            tmp_path,
+            ResourceLimits(max_artifact_size_bytes=2, max_artifacts_count=10),
+        )
+
+        s3.put_object.assert_awaited_once()
+        assert s3.put_object.call_args.kwargs["Key"].endswith("/small.txt")
+        artifact_repo.create.assert_awaited_once()
+        assert artifact_repo.create.call_args.kwargs["name"] == "small.txt"
+        assert any(
+            "exceeds limit" in call.args[1]
+            for call in mock_log_stream.write_log.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_upload_skips_artifacts_over_count_limit(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
+    ):
+        from qaplatform.engine.docker_backend import ResourceLimits
+
+        s3 = AsyncMock()
+        artifact_repo = AsyncMock()
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+            s3_client=s3,
+            artifact_repo=artifact_repo,
+        )
+        (tmp_path / "results").mkdir()
+        (tmp_path / "results" / "a.txt").write_bytes(b"a")
+        (tmp_path / "results" / "b.txt").write_bytes(b"b")
+
+        await executor._upload_artifacts(
+            "11111111-1111-1111-1111-111111111111",
+            tmp_path,
+            ResourceLimits(max_artifact_size_bytes=100, max_artifacts_count=1),
+        )
+
+        s3.put_object.assert_awaited_once()
+        assert s3.put_object.call_args.kwargs["Key"].endswith("/a.txt")
+        artifact_repo.create.assert_awaited_once()
+        assert artifact_repo.create.call_args.kwargs["name"] == "a.txt"
+        assert any(
+            "count limit exceeded" in call.args[1]
+            for call in mock_log_stream.write_log.await_args_list
+        )
+
 
 # --------------------------------------------------------------------------- #
 # F-PL-03 stage timeout grace-period contract

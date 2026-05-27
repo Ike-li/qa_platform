@@ -13,10 +13,12 @@
 - 安全风险路径：覆盖 JWT/API token 中间件、真实 JWT 注册到 API token 创建/使用/撤销、API token scope 路由矩阵、审计失败路径、跨租户隔离、RBAC audit-events 拒绝路径。
 - 真实数据路径：integration suite 使用真实 PostgreSQL/Redis/Testcontainers/FastAPI ASGI app；新增测试不 mock repository 或 database session。
 - 数据保留/审计路径：retention 真实 Postgres 测试覆盖超期终态 Run 硬删与 result/artifact/event 级联；batch cancel/retry API 覆盖真实 DB 状态和 audit 行写入。
-- 日志归档补偿：归档失败登记 Redis retry set，worker cron 重试并由单测锁定成功/失败路径。
+- 日志归档补偿与回看：归档失败登记 Redis retry set，worker cron 重试由单测锁定成功/失败路径；归档 JSONL 读回 API 由真实 DB/RBAC/API 集成测试覆盖。
+- Artifact 风险：环境级产物大小/数量限制传入 worker 并在上传前强制校验，真实 DB 集成测试证明被跳过产物不会写 Artifact 行。
+- Worker 重试：真实 DB 集成测试覆盖 `execute_run` 基础设施异常路径，验证原 Run failed、retry Run 落库并入队。
 - Webhook/schedule 失败路径：新增 required integration 断言 archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 都不会静默写错真实 DB 状态。
 - CI 稳定性：后端 ruff 与单测覆盖率是同一门禁；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
-- 非功能 smoke：nightly/manual 新增读 API、写 API、Redis 日志写读趋势哨兵；不把性能环境抖动放进 PR 硬门禁。
+- 非功能 smoke：nightly/manual 覆盖读 API、写 API、Redis 日志写读、归档日志读回 API 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
 
 ## Mock 使用口径
 
@@ -38,10 +40,10 @@ PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=/tmp/qaplatform-final.coverage .venv/bin
 
 当前基线结果：
 
-- 单元测试：750 passed
-- 总覆盖率：83.47%
-- 语句覆盖率：85.99%
-- 分支覆盖率：70.23%
+- 单元测试：757 passed
+- 总覆盖率：83.32%
+- 语句覆盖率：85.88%
+- 分支覆盖率：70.02%
 - warnings：项目内 SQLAlchemy overlap 与 Redis pubsub `close()` 已清理；testcontainers 第三方弃用提示已精确过滤并登记 owner/截止条件
 
 真实 DB / API 集成验证：
@@ -54,10 +56,10 @@ RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tes
 
 当前结果：
 
-- integration 收集：103 tests
-- PR/push 必跑 required integration：89 passed, 14 deselected
-- 完整 local integration：98 passed, 5 skipped
-- performance smoke opt-in：3 passed
+- integration 收集：108 tests
+- PR/push 必跑 required integration：93 passed, 15 deselected
+- 完整 local integration：102 passed, 6 skipped
+- performance smoke opt-in：4 passed
 - skipped 来自 macOS Docker Desktop OOMKilled 平台语义，以及未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke；业务断言失败不会被 skip 或 retry 掩盖
 
 E2E 冒烟验证：
@@ -101,7 +103,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 
 - 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade；retention 已覆盖普通超期终态 Run 与 `cancelled/timeout`。
 - batch cancel/retry 已补 API 写入后真实 DB 状态和 audit 行验证。
-- log archive 失败已补 Redis retry set 与 worker cron 重试路径；当前仍缺归档日志读回 API / UI。
+- log archive 失败已补 Redis retry set 与 worker cron 重试路径；归档日志读回 API 已补真实 DB/RBAC/API 集成测试，当前仍缺前端回看入口。
 - Webhook/API/schedule worker 新增真实 DB 失败路径后，project archived、pipeline/environment missing、cross-project pipeline、enqueue conflict 已进 required integration；schedule pipeline missing 仍保留 unit 覆盖，因为真实 FK 下硬删除会级联，软删除不等价于真实缺行。
 - 分支覆盖率仍低于语句覆盖率：主要来自依赖初始化分支、外部 SDK/worker 边界和少量异常恢复路径。
 - warnings 治理：项目内 SQLAlchemy overlap、Redis pubsub `close()`、SSE AsyncMock、httpx cookies、JWT key length warning 均已清理；testcontainers 第三方弃用提示已在 `pyproject.toml` 精确过滤并登记。
@@ -109,7 +111,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 
 ## 后续优先级
 
-1. 自动重试已补 API-facing `max_attempts`、`retry_on`、waiting retry run 以及 worker_lost callback 路径；后续如要继续提高信心，可把真实 worker 黑盒场景保留在 nightly/manual lane。
-2. 严格产品 SLO、执行摘要 < 3s 与完整性能压测仍需专项环境；当前 smoke 只做趋势哨兵。
+1. 自动重试已补 API-facing `max_attempts`、`retry_on`、waiting retry run、execute_run 基础设施异常以及 worker_lost callback 路径；后续如要继续提高信心，可把完整外部栈 worker 黑盒重试场景保留在 nightly/manual lane。
+2. 严格产品 SLO、执行摘要 < 3s 与完整性能压测仍需专项环境；当前 smoke 做趋势哨兵并输出失败摘要。
 3. 通知更高级产品能力仍待补：OR 条件、连续失败次数、每渠道模板、项目名/失败用例变量；本轮已补真实 DB delivery、模板失败、发送失败与幂等。
 4. 后续提升 coverage 门槛应继续依赖真实风险路径，而不是为百分比增加无行为断言。

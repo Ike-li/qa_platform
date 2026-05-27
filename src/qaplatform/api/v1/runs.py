@@ -24,10 +24,12 @@ from qaplatform.api.schemas import (
     NotificationLogResponse,
     PaginatedResponse,
     RunCancel,
+    RunLogEntryResponse,
     RunResponse,
     RunTrigger,
     TestResultResponse,
 )
+from qaplatform.engine.log_stream import ArchivedLogsNotFound, LogStream
 from qaplatform.infra.database.models import (
     Artifact as ArtifactORM,
     NotificationLog as NotificationLogORM,
@@ -532,6 +534,56 @@ async def get_run_artifacts(
         page=page,
         per_page=per_page,
         total=total,
+    )
+
+
+@router.get(
+    "/{run_id}/logs/archive",
+    response_model=PaginatedResponse[RunLogEntryResponse],
+    responses={
+        404: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+    summary="归档日志回看",
+)
+async def get_archived_run_logs(
+    run_id: UUID,
+    request: Request,
+    repos: Repos,
+    user: CurrentUser,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(100, ge=1, le=1000),
+    session: AsyncSession = Depends(_get_db_session),
+):
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
+
+    container = request.app.state.container
+    if container.s3_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Archived logs are not available",
+        )
+
+    log_stream = LogStream(container.redis_client)
+    try:
+        entries = await log_stream.read_archived_logs(
+            run_id,
+            container.s3_client,
+            container.settings.s3_bucket,
+        )
+    except ArchivedLogsNotFound:
+        raise HTTPException(status_code=404, detail="Archived logs not found") from None
+
+    offset = (page - 1) * per_page
+    window = entries[offset : offset + per_page]
+    return PaginatedResponse(
+        data=[RunLogEntryResponse.model_validate(entry) for entry in window],
+        page=page,
+        per_page=per_page,
+        total=len(entries),
     )
 
 

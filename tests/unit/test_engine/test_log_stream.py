@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from qaplatform.engine.log_stream import LogStream
+from qaplatform.engine.log_stream import ArchivedLogsNotFound, LogStream
 
 _ARCHIVE_RETRY_SET = "run:logs:archive_failed"
 
@@ -167,6 +167,48 @@ class TestLogStream:
         assert s3_client.put_object.await_count == 1
         self.redis.srem.assert_any_await(_ARCHIVE_RETRY_SET, str(self.run_id))
         self.redis.sadd.assert_any_await(_ARCHIVE_RETRY_SET, str(failed_run))
+
+    @pytest.mark.asyncio
+    async def test_read_archived_logs_parses_jsonl_body(self):
+        class _Body:
+            async def read(self):
+                return (
+                    b'{"stream": "stdout", "line": "first"}\n'
+                    b'{"stream": "stderr", "line": "second"}\n'
+                )
+
+        s3_client = AsyncMock()
+        s3_client.get_object.return_value = {"Body": _Body()}
+
+        entries = await self.stream.read_archived_logs(
+            self.run_id,
+            s3_client,
+            "qa-platform",
+        )
+
+        assert entries == [
+            {"stream": "stdout", "line": "first"},
+            {"stream": "stderr", "line": "second"},
+        ]
+        s3_client.get_object.assert_awaited_once_with(
+            Bucket="qa-platform",
+            Key=f"logs/{self.run_id}.jsonl",
+        )
+
+    @pytest.mark.asyncio
+    async def test_read_archived_logs_missing_object_raises_not_found(self):
+        class _MissingObject(Exception):
+            response = {"Error": {"Code": "NoSuchKey"}}
+
+        s3_client = AsyncMock()
+        s3_client.get_object.side_effect = _MissingObject("missing")
+
+        with pytest.raises(ArchivedLogsNotFound):
+            await self.stream.read_archived_logs(
+                self.run_id,
+                s3_client,
+                "qa-platform",
+            )
 
     @pytest.mark.asyncio
     async def test_delete_stream(self):
