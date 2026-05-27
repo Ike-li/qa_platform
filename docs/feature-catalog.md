@@ -143,16 +143,16 @@
 | F-PL-02 环境变量加密 | P0 | `env_vars` 明文 JSONB | PRD §3.2 验收"环境变量加密存储"；参考 `dependencies.py::CryptoService` / 凭据路由 `container.crypto_service` 包装 |
 | F-PM-01 / F-PM-02 Git 凭证执行闭环 | P0 | 项目 schema 可保存 `git_auth_method` / `credential_id`，凭证 CRUD 可加密存储；但 manual/webhook Run 只把 `credential_id` 放入 metadata，`engine/executor.py::_clone_repo` 只用原始 `git_url` / `git_ref` 调 `GitSource.clone()`，未解密 token/SSH key 并注入 clone | 需补私有 HTTPS token / SSH key clone 支持、临时文件权限、错误脱敏与认证失败测试；避免把密钥写入日志或持久化 metadata |
 | F-PL-01 collector 配置补齐 | P0 | Pipeline schema / ORM / `worker/tasks.py::_build_pipeline_config` 均无 collector 选择或配置；`RunExecutor.execute()` 固定 `get_collector("junit")` | PRD §3.2 要求可配置测试运行器、结果收集器、超时、重试策略；需决定当前 JUnit-only 是否改为正式限制，或新增 collector 配置与测试 |
-| 审计日志查询 API | P0 | 仅写入端，无 `/api/v1/audit-events` 查询路由 | 写入端 `api/audit.py` + 仓储 `infra/database/repositories/audit_repo.py` 已就位；当前执行来源以本 catalog 待办和 T02 任务包为准 |
+| 审计日志查询 API | P0 | 已完成：`/api/v1/audit-events` 支持 Owner/Admin 分页查询、组合过滤、跨租户 404/空结果收敛，并写 `audit_events.list` 自审计 | 审计查询仍未补入正式 PRD 章节；T02 任务包保留为验收档案 |
 | 审计写入覆盖补齐 | P1 | 批量 cancel/retry 与 SSE ticket 已补 audit 写入和真实 DB 验证；剩余写操作按安全风险继续补齐 | architecture §9.6 已改为“关键写操作主路径覆盖，覆盖率待补齐” |
-| F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | P0 | 后端已递归上传 `results/` 目录文件并标记 Allure 目录产物；`disk_bytes` 字段未进入 Docker HostConfig；OOM/timeout 终止原因与资源用量记录未闭环；前端 Allure/HTML 预览入口仍缺 | PRD §3.2 要求限制产物大小并记录资源终止信息，PRD §3.4 要求预签名下载 + HTML 报告在线预览；当前 CPU/内存/超时、产物数量/大小限制、递归上传和 `download` JSON 已实现，前端预览/资源记录仍待补 |
-| F-EX-05 日志归档回看闭环 | P0 | Redis Stream 实时日志、S3 JSONL 归档写入与归档日志读回 API 已实现；前端回看入口未实现 | PRD §3.3 验收要求“日志持久化可回看”；当前 UI 只接 SSE 实时窗口 |
+| F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | P0 | 后端已递归上传 `results/` 目录文件并标记 Allure 目录产物；nightly/manual external-stack smoke 覆盖真实 worker 后 artifact 列表与下载链接；`disk_bytes` 字段未进入 Docker HostConfig；OOM/timeout 终止原因与资源用量记录未闭环；前端 Allure/HTML 预览入口仍缺 | PRD §3.2 要求限制产物大小并记录资源终止信息，PRD §3.4 要求预签名下载 + HTML 报告在线预览；当前 CPU/内存/超时、产物数量/大小限制、递归上传和 `download` JSON 已实现，前端预览/资源记录仍待补 |
+| F-EX-05 日志归档回看闭环 | P0 | Redis Stream 实时日志、S3 JSONL 归档写入与归档日志读回 API 已实现；nightly/manual external-stack smoke 覆盖真实 worker 完成后的归档日志读回；前端回看入口未实现 | PRD §3.3 验收要求“日志持久化可回看”；当前 UI 只接 SSE 实时窗口 |
 | F-AU-02 API Token scope enforcement 补齐 | P1 | 已完成 | API token scopes 已贯通 tenant/project 权限依赖；真实 API 测试覆盖只读、run.trigger、错误/空 scope |
 | F-AU-04 跨租户 404 完整收敛 | P0 | 已完成 | Member/Viewer 的 path `project_id` 项目级权限依赖先验证当前租户可见性；跨 tenant、随机 UUID、软删除一致 404 |
 | F-EX-01 手动触发参数与入队验收补齐 | P0 | `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；PRD 要求可指定 commit 与 environment；触发后 < 5s 入队已纳入 nightly/manual performance smoke | 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定；前端旧 `env_overrides` / `params` 偏移仍归 `T-FRONTEND-API` |
 | F-EX-02 静默窗口 | P1 | 发布冻结期不触发 cron | PRD §3.3 验收 |
 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | P1 | 路由未传 `dedup_key`，无分支过滤逻辑 | `dedup_key` 字段在 ORM 已有，路由层接入即可 |
-| F-EX-07 自动重试端到端补齐 | P2 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 已补单测和真实 DB 测试 | 剩余增强是把完整外部栈 worker 黑盒重试场景保留在 nightly/manual lane 持续跑 |
+| F-EX-07 自动重试端到端补齐 | P2 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 已补单测和真实 DB 测试；nightly/manual 已启动完整外部栈跑 worker smoke | 剩余增强是补完整外部栈 worker 黑盒自动重试场景 |
 | F-EX-08 优先级队列消费闭环 | P2 | 已补部署/测试主干 | Compose 启动 high/medium/low worker；manual priority 队列矩阵有单测；等待队列 priority+FIFO 有真实 DB 测试 |
 | F-LS-04 测试结果 suite/关键字过滤 | P0 | `main` 仅 status | PRD §3.7 验收；`feature/T07-test-results-filter` 已推送但未合入 |
 | F-LS-01 执行列表过滤补齐 | P0 | 缺 pipeline / git_ref / time range 过滤 | 当前 `main` 支持 status 多选、project_id 与创建时间排序 |
@@ -284,4 +284,4 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 
 ### 已知偏移
 
-- 详见 [`doc-conflict-audit.md`](doc-conflict-audit.md) 的审计证据。当前主要偏移包括：审计日志查询 API 仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净、首批 8 个 `feature/T*` 分支已推送但未合入 `main`。
+- 详见 [`doc-conflict-audit.md`](doc-conflict-audit.md) 的审计证据。当前主要偏移包括：审计日志查询已实现但仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净、首批 8 个 `feature/T*` 分支已推送但未合入 `main`。
