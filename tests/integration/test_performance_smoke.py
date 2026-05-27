@@ -120,6 +120,10 @@ class _MemoryBody:
         return self._data
 
 
+class _NoSuchKey(Exception):
+    response = {"Error": {"Code": "NoSuchKey"}}
+
+
 class _MemoryS3:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
@@ -139,7 +143,11 @@ class _MemoryS3:
 
     async def get_object(self, *, Bucket, Key):
         self.get_calls.append({"bucket": Bucket, "key": Key})
-        return {"Body": _MemoryBody(self.objects[(Bucket, Key)])}
+        try:
+            data = self.objects[(Bucket, Key)]
+        except KeyError:
+            raise _NoSuchKey(Key)
+        return {"Body": _MemoryBody(data)}
 
     async def generate_presigned_url(self, method, *, Params, ExpiresIn):
         self.presign_calls.append(
@@ -696,6 +704,53 @@ async def test_archived_log_replay_large_page_p99_smoke(
         "archived log large-page replay API",
         samples,
         _threshold("PERF_LOG_ARCHIVE_LARGE_PAGE_P99_MS", 1500),
+    )
+
+
+@pytest.mark.asyncio
+async def test_archived_log_missing_object_p99_smoke(
+    integration_app,
+    integration_client,
+    seed_run,
+):
+    run_id = seed_run["run"].id
+    bucket = integration_app.state.container.settings.s3_bucket
+    s3 = _MemoryS3()
+    old_s3 = integration_app.state.container.s3_client
+    integration_app.state.container.s3_client = s3
+    try:
+        for _ in range(3):
+            response = await integration_client.get(
+                f"/api/v1/runs/{run_id}/logs/archive"
+            )
+            assert response.status_code == 404, response.text
+            error = response.json()["error"]
+            assert error["code"] == "NOT_FOUND"
+            assert error["message"] == "Archived logs not found"
+
+        samples: list[float] = []
+        for _ in range(20):
+            elapsed_ms, response = await _timed(
+                integration_client.get(f"/api/v1/runs/{run_id}/logs/archive")
+            )
+            assert response.status_code == 404, response.text
+            error = response.json()["error"]
+            assert error["code"] == "NOT_FOUND"
+            assert error["message"] == "Archived logs not found"
+            samples.append(elapsed_ms)
+    finally:
+        integration_app.state.container.s3_client = old_s3
+
+    expected_get_call = {
+        "bucket": bucket,
+        "key": f"logs/{run_id}.jsonl",
+    }
+    assert s3.get_calls == [expected_get_call] * 23
+    assert s3.presign_calls == []
+    _assert_p99_under(
+        "archived log missing-object API",
+        samples,
+        _threshold("PERF_LOG_ARCHIVE_MISSING_P99_MS", 1000),
     )
 
 
