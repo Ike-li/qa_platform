@@ -49,6 +49,8 @@ async def test_webhook_same_commit_second_trigger_returns_duplicate(
     integration_client_as,
     integration_db_session,
 ):
+    from qaplatform.infra.database.models import AuditEvent
+
     project = seed_run["project"]
     user = seed_run["user"]
     tenant = seed_run["tenant"]
@@ -84,6 +86,30 @@ async def test_webhook_same_commit_second_trigger_returns_duplicate(
         )
         == 1
     )
+    audit = (
+        (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == "webhook.duplicate",
+                    AuditEvent.resource_id == project.id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert audit.user_id == user.id
+    assert audit.resource_type == "project"
+    assert audit.after_state == {
+        "project_id": str(project.id),
+        "status": "duplicate",
+        "reason": "dedup_key_conflict",
+        "git_ref": "refs/heads/main",
+        "git_sha": "abc123",
+        "branch_name": "main",
+        "provider": "github",
+    }
+    assert project.git_url not in repr(audit.after_state)
 
 
 @pytest.mark.asyncio
@@ -332,6 +358,8 @@ async def test_webhook_filtered_branch_returns_200_and_creates_no_run(
     integration_client_as,
     integration_db_session,
 ):
+    from qaplatform.infra.database.models import AuditEvent
+
     project = seed_run["project"]
     user = seed_run["user"]
     tenant = seed_run["tenant"]
@@ -346,12 +374,49 @@ async def test_webhook_filtered_branch_returns_200_and_creates_no_run(
     async with integration_client_as(user.id, tenant.id, role="owner") as client:
         resp = await client.post(
             f"/api/v1/webhooks/{project.id}/trigger",
-            json={"git_ref": "refs/heads/feature/nope", "git_sha": "def456"},
+            json={
+                "git_ref": "refs/heads/feature/nope",
+                "git_sha": "def456",
+                "metadata": {
+                    "provider": "github",
+                    "delivery_id": f"filtered-{project.id}",
+                    "git_url": "https://attacker.example/leak.git",
+                    "credential_id": "should-not-be-audited",
+                },
+            },
         )
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "filtered"
     assert await _webhook_run_count(integration_db_session, project.id) == before
+    audit = (
+        (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == "webhook.filtered",
+                    AuditEvent.resource_id == project.id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert audit.user_id == user.id
+    assert audit.resource_type == "project"
+    assert audit.after_state == {
+        "project_id": str(project.id),
+        "status": "filtered",
+        "reason": "branch_not_allowed",
+        "git_ref": "refs/heads/feature/nope",
+        "git_sha": "def456",
+        "branch_name": "feature/nope",
+        "provider": "github",
+        "delivery_id": f"filtered-{project.id}",
+    }
+    serialized_audit = repr(audit.after_state)
+    assert project.git_url not in serialized_audit
+    assert "attacker.example" not in serialized_audit
+    assert "should-not-be-audited" not in serialized_audit
 
 
 @pytest.mark.asyncio
