@@ -15,7 +15,17 @@ class _FakeArq:
         return SimpleNamespace(job_id=_job_id)
 
 
-async def _save_silent_window(session, project, *, start_at: datetime, end_at: datetime) -> None:
+class _ConflictArq:
+    async def enqueue_job(self, *_args, _job_id: str, **_kwargs):
+        return None
+
+    async def close(self):
+        return None
+
+
+async def _save_silent_window(
+    session, project, *, start_at: datetime, end_at: datetime
+) -> None:
     project.settings = {
         "silent_windows": [
             {
@@ -48,11 +58,15 @@ async def _create_due_schedule(session, seed_run, *, next_run_at: datetime):
     return schedule
 
 
-def _ctx(integration_db_engine):
+def _ctx(integration_db_engine, *, arq_pool=None):
     return {
-        "db_session_factory": async_sessionmaker(integration_db_engine, expire_on_commit=False),
-        "arq_pool": _FakeArq(),
-        "settings": SimpleNamespace(max_concurrent_runs=100, max_concurrent_per_project=100),
+        "db_session_factory": async_sessionmaker(
+            integration_db_engine, expire_on_commit=False
+        ),
+        "arq_pool": arq_pool or _FakeArq(),
+        "settings": SimpleNamespace(
+            max_concurrent_runs=100, max_concurrent_per_project=100
+        ),
     }
 
 
@@ -60,7 +74,9 @@ async def _run_count(session, project_id, *, trigger_type: str) -> int:
     from qaplatform.infra.database.models import Run
 
     result = await session.execute(
-        select(func.count()).select_from(Run).where(
+        select(func.count())
+        .select_from(Run)
+        .where(
             Run.project_id == project_id,
             Run.trigger_type == trigger_type,
         )
@@ -89,11 +105,16 @@ async def test_cron_tick_in_silent_window_skips_run_writes_audit_and_preserves_l
         start_at=now - timedelta(minutes=5),
         end_at=now + timedelta(minutes=5),
     )
-    before_runs = await _run_count(integration_db_session, project.id, trigger_type="schedule")
+    before_runs = await _run_count(
+        integration_db_session, project.id, trigger_type="schedule"
+    )
 
     await check_schedules(_ctx(integration_db_engine))
 
-    assert await _run_count(integration_db_session, project.id, trigger_type="schedule") == before_runs
+    assert (
+        await _run_count(integration_db_session, project.id, trigger_type="schedule")
+        == before_runs
+    )
 
     refreshed = await integration_db_session.get(Schedule, schedule.id)
     assert refreshed is not None
@@ -132,15 +153,74 @@ async def test_cron_tick_outside_silent_window_creates_run(
         start_at=now + timedelta(hours=1),
         end_at=now + timedelta(hours=2),
     )
-    before_runs = await _run_count(integration_db_session, project.id, trigger_type="schedule")
+    before_runs = await _run_count(
+        integration_db_session, project.id, trigger_type="schedule"
+    )
 
     await check_schedules(_ctx(integration_db_engine))
 
-    assert await _run_count(integration_db_session, project.id, trigger_type="schedule") == before_runs + 1
+    assert (
+        await _run_count(integration_db_session, project.id, trigger_type="schedule")
+        == before_runs + 1
+    )
     refreshed = await integration_db_session.get(Schedule, schedule.id)
     assert refreshed is not None
     await integration_db_session.refresh(refreshed)
     assert refreshed.last_run_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cron_tick_enqueue_conflict_records_last_error_and_waiting_run(
+    seed_run,
+    integration_db_engine,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import Run, RunStatusEnum, Schedule
+
+    now = datetime.now(timezone.utc)
+    project = seed_run["project"]
+    schedule = await _create_due_schedule(
+        integration_db_session,
+        seed_run,
+        next_run_at=now - timedelta(minutes=1),
+    )
+    before_runs = await _run_count(
+        integration_db_session, project.id, trigger_type="schedule"
+    )
+
+    await check_schedules(_ctx(integration_db_engine, arq_pool=_ConflictArq()))
+
+    assert (
+        await _run_count(integration_db_session, project.id, trigger_type="schedule")
+        == before_runs + 1
+    )
+    refreshed = await integration_db_session.get(Schedule, schedule.id)
+    assert refreshed is not None
+    await integration_db_session.refresh(refreshed)
+    assert refreshed.last_run_at is not None
+    assert refreshed.last_error == "enqueue failed"
+
+    runs = (
+        (
+            await integration_db_session.execute(
+                select(Run).where(
+                    Run.project_id == project.id,
+                    Run.trigger_type == "schedule",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    created = [
+        run
+        for run in runs
+        if (run.metadata_ or {}).get("schedule_id") == str(schedule.id)
+    ]
+    assert len(created) == 1
+    assert created[0].status == RunStatusEnum.QUEUED
+    assert created[0].enqueued_at is None
+    assert created[0].arq_job_id is None
 
 
 @pytest.mark.asyncio
@@ -161,7 +241,9 @@ async def test_manual_trigger_ignores_silent_windows(
         start_at=now - timedelta(minutes=5),
         end_at=now + timedelta(minutes=5),
     )
-    before_runs = await _run_count(integration_db_session, project.id, trigger_type="manual")
+    before_runs = await _run_count(
+        integration_db_session, project.id, trigger_type="manual"
+    )
 
     async with integration_client_as(user.id, tenant.id, role="owner") as client:
         resp = await client.post(
@@ -170,7 +252,10 @@ async def test_manual_trigger_ignores_silent_windows(
         )
 
     assert resp.status_code == 201, resp.text
-    assert await _run_count(integration_db_session, project.id, trigger_type="manual") == before_runs + 1
+    assert (
+        await _run_count(integration_db_session, project.id, trigger_type="manual")
+        == before_runs + 1
+    )
 
 
 @pytest.mark.asyncio
@@ -191,7 +276,9 @@ async def test_webhook_trigger_ignores_silent_windows(
         start_at=now - timedelta(minutes=5),
         end_at=now + timedelta(minutes=5),
     )
-    before_runs = await _run_count(integration_db_session, project.id, trigger_type="webhook")
+    before_runs = await _run_count(
+        integration_db_session, project.id, trigger_type="webhook"
+    )
 
     async with integration_client_as(user.id, tenant.id, role="owner") as client:
         resp = await client.post(
@@ -200,4 +287,7 @@ async def test_webhook_trigger_ignores_silent_windows(
         )
 
     assert resp.status_code == 201, resp.text
-    assert await _run_count(integration_db_session, project.id, trigger_type="webhook") == before_runs + 1
+    assert (
+        await _run_count(integration_db_session, project.id, trigger_type="webhook")
+        == before_runs + 1
+    )
