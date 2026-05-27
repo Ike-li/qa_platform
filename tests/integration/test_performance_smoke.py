@@ -124,6 +124,7 @@ class _MemoryS3:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self.presign_calls: list[dict] = []
+        self.get_calls: list[dict] = []
 
     async def put_object(self, *, Bucket, Key, Body, **_kwargs):
         if hasattr(Body, "read"):
@@ -137,6 +138,7 @@ class _MemoryS3:
         self.objects[(Bucket, Key)] = bytes(data)
 
     async def get_object(self, *, Bucket, Key):
+        self.get_calls.append({"bucket": Bucket, "key": Key})
         return {"Body": _MemoryBody(self.objects[(Bucket, Key)])}
 
     async def generate_presigned_url(self, method, *, Params, ExpiresIn):
@@ -548,30 +550,36 @@ async def test_archived_log_replay_api_p99_smoke(
 
     run_id = seed_run["run"].id
     s3 = _MemoryS3()
+    old_s3 = integration_app.state.container.s3_client
     integration_app.state.container.s3_client = s3
-    stream = LogStream(integration_app.state.container.redis_client)
-    for index in range(50):
-        await stream.write_log(run_id, f"archived-line-{index}", stream="stdout")
-    assert await stream.archive_logs(
-        run_id,
-        s3,
-        integration_app.state.container.settings.s3_bucket,
-    )
-
-    for _ in range(3):
-        response = await integration_client.get(f"/api/v1/runs/{run_id}/logs/archive")
-        assert response.status_code == 200, response.text
-
-    samples: list[float] = []
-    for _ in range(20):
-        elapsed_ms, response = await _timed(
-            integration_client.get(f"/api/v1/runs/{run_id}/logs/archive")
+    try:
+        stream = LogStream(integration_app.state.container.redis_client)
+        for index in range(50):
+            await stream.write_log(run_id, f"archived-line-{index}", stream="stdout")
+        assert await stream.archive_logs(
+            run_id,
+            s3,
+            integration_app.state.container.settings.s3_bucket,
         )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["total"] == 50
-        assert body["data"][-1]["line"] == "archived-line-49"
-        samples.append(elapsed_ms)
+
+        for _ in range(3):
+            response = await integration_client.get(
+                f"/api/v1/runs/{run_id}/logs/archive"
+            )
+            assert response.status_code == 200, response.text
+
+        samples: list[float] = []
+        for _ in range(20):
+            elapsed_ms, response = await _timed(
+                integration_client.get(f"/api/v1/runs/{run_id}/logs/archive")
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] == 50
+            assert body["data"][-1]["line"] == "archived-line-49"
+            samples.append(elapsed_ms)
+    finally:
+        integration_app.state.container.s3_client = old_s3
 
     _assert_p99_under(
         "archived log replay API",
@@ -649,6 +657,55 @@ async def test_archived_log_replay_large_page_p99_smoke(
         "archived log large-page replay API",
         samples,
         _threshold("PERF_LOG_ARCHIVE_LARGE_PAGE_P99_MS", 1500),
+    )
+
+
+@pytest.mark.asyncio
+async def test_archived_log_denied_no_s3_read_p99_smoke(
+    integration_app,
+    integration_client_as,
+    seed_run,
+    seed_second_tenant,
+):
+    tenant_a = seed_run["tenant"]
+    user_a = seed_run["user"]
+    run_b_id = seed_second_tenant["run"].id
+
+    s3 = _MemoryS3()
+    old_s3 = integration_app.state.container.s3_client
+    integration_app.state.container.s3_client = s3
+    samples: list[float] = []
+    try:
+        async with integration_client_as(user_a.id, tenant_a.id) as client:
+            random_response = await client.get(
+                f"/api/v1/runs/{uuid4()}/logs/archive"
+            )
+            assert random_response.status_code == 404, random_response.text
+            expected_404 = random_response.json()
+
+            for _ in range(3):
+                response = await client.get(
+                    f"/api/v1/runs/{run_b_id}/logs/archive"
+                )
+                assert response.status_code == 404, response.text
+                assert response.json() == expected_404
+
+            for _ in range(20):
+                elapsed_ms, response = await _timed(
+                    client.get(f"/api/v1/runs/{run_b_id}/logs/archive")
+                )
+                assert response.status_code == 404, response.text
+                assert response.json() == expected_404
+                assert s3.get_calls == []
+                samples.append(elapsed_ms)
+    finally:
+        integration_app.state.container.s3_client = old_s3
+
+    assert s3.get_calls == []
+    _assert_p99_under(
+        "archived log denied no-S3-read API",
+        samples,
+        _threshold("PERF_LOG_ARCHIVE_DENIED_P99_MS", 1000),
     )
 
 
