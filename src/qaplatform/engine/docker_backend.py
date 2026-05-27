@@ -132,6 +132,10 @@ class DockerBackend:
             },
         }
 
+        storage_opt = self._storage_opt(spec.resource_limits.disk_bytes)
+        if storage_opt:
+            container_config["HostConfig"]["StorageOpt"] = storage_opt
+
         run_id = spec.labels.get("run_id", "unknown")
         name = f"qap-run-{run_id}"
         container = await self.client.containers.create_or_replace(
@@ -255,6 +259,22 @@ class DockerBackend:
             mode = "ro" if m.read_only else "rw"
             binds.append(f"{m.source}:{m.target}:{mode}")
         return binds
+
+    @staticmethod
+    def _storage_opt(disk_bytes: int | None) -> dict[str, str] | None:
+        if disk_bytes is None or disk_bytes <= 0:
+            return None
+
+        units = (
+            (1024 * 1024 * 1024, "G"),
+            (1024 * 1024, "M"),
+            (1024, "K"),
+        )
+        for factor, suffix in units:
+            if disk_bytes % factor == 0:
+                return {"size": f"{disk_bytes // factor}{suffix}"}
+
+        return {"size": str(disk_bytes)}
 
     @staticmethod
     def _decode_log_frame(raw: bytes) -> tuple[str, str]:

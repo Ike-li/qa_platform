@@ -361,6 +361,8 @@ def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
     raw_resource_limits = environment_orm.resource_limits or {}
     max_artifact_size_mb = raw_resource_limits.get("max_artifact_size_mb", 100)
     max_artifacts_count = raw_resource_limits.get("max_artifacts_count", 50)
+    disk_mb = raw_resource_limits.get("disk_mb")
+    disk_bytes = disk_mb * 1024 * 1024 if disk_mb else None
 
     return PipelineConfig(
         image=environment_orm.base_image,
@@ -369,6 +371,7 @@ def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
         resource_limits=ResourceLimits(
             memory_bytes=environment_orm.memory_mb * 1024 * 1024,
             cpu_cores=environment_orm.cpu_cores,
+            disk_bytes=disk_bytes,
             max_artifact_size_bytes=max_artifact_size_mb * 1024 * 1024,
             max_artifacts_count=max_artifacts_count,
         ),

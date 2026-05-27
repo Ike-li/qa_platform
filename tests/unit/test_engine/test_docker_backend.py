@@ -114,6 +114,29 @@ class TestDockerBackend:
         assert "managed-by" in config["Labels"]
         assert config["Labels"]["run_id"] == "run-123"
         assert config["HostConfig"]["Tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=256m"}
+        assert "StorageOpt" not in config["HostConfig"]
+
+    @pytest.mark.asyncio
+    async def test_create_execution_sets_storage_opt_when_disk_limit_present(self):
+        mock_container = MagicMock()
+        mock_container.id = "disk-test"
+
+        mock_containers = MagicMock()
+        mock_containers.create_or_replace = AsyncMock(return_value=mock_container)
+        self.docker_client.containers = mock_containers
+
+        spec = ExecutionSpec(
+            image="busybox",
+            command=["true"],
+            env_vars={},
+            resource_limits=ResourceLimits(disk_bytes=64 * 1024 * 1024),
+            labels={"run_id": "r"},
+        )
+
+        await self.backend.create_execution(spec)
+
+        config = mock_containers.create_or_replace.call_args.kwargs["config"]
+        assert config["HostConfig"]["StorageOpt"] == {"size": "64M"}
 
     @pytest.mark.asyncio
     async def test_create_execution_disables_swap_to_enforce_memory_cap(self):
@@ -264,6 +287,7 @@ class TestDockerBackend:
         rl = ResourceLimits()
         assert rl.cpu_cores == 1.0
         assert rl.memory_bytes == 512 * 1024 * 1024
+        assert rl.disk_bytes is None
 
     def test_execution_spec_default_security(self):
         spec = ExecutionSpec(image="test", command=["test"], env_vars={})

@@ -72,7 +72,7 @@
 | Docker socket / 执行隔离文档对照 | 通过，`docker-compose.yml` worker 仍直接挂载 `/var/run/docker.sock`；Docker backend 默认 `network_policy=deny` → `NetworkMode=none`，但 `allow` 会显式使用 bridge，`restricted` 需要部署侧创建 `qap-restricted` 网络；architecture 已改成当前事实 + 生产加固建议，runbook 已新增 Docker socket 风险章节 |
 | 数据保留 / 日志归档闭环对照 | 有已知偏移，`LogStream.archive_logs` 成功后设置 1h TTL、失败后设置 24h TTL 并登记失败 Run；`worker/settings.py::retry_failed_archives` 会重试失败归档；`cleanup_old_runs` 已注册 cron 并硬删超期终态 Run（`done/failed/cancelled/timeout`）且覆盖 result/artifact/event 级联；归档日志读回 API 已补真实 DB/RBAC/API/API token scope 测试，前端终态 Run 已接入归档日志 API；仍未发现 Redis 内存阈值拒绝入队实现 |
 | F-EX-05 实时日志 / 归档回看对照 | 有已知偏移，`api/v1/sse.py` 已支持 `/runs/{run_id}/logs` 和 `Last-Event-ID`，`engine/log_stream.py` 已把日志归档到 `logs/{run_id}.jsonl`；后端已提供归档日志读回 API，且 required integration 覆盖分页、缺失对象、API token `run.read` scope 与跨租户 404；前端 `log-viewer.tsx` 会在终态 Run 优先读取归档 API，Redis TTL 过期后的 UI 回看主路径已有 E2E |
-| 资源限制 / 产物 / Allure 预览闭环对照 | 有已知偏移，CPU/内存/超时已实现；worker 已把环境级产物 size/count 限制传入 executor，上传侧已在写 S3/DB 前强制校验；上传侧会递归上传 `results/` 下文件并标记 Allure 目录文件；`disk_bytes` 未进入 Docker HostConfig；OOM/timeout 能映射为 `timeout`，但未发现资源用量记录闭环；`api/v1/artifacts.py` 已返回 `download_url` / `expires_in`；`frontend` 对 `artifact.type === "allure-report"` 展示预览按钮，HTML artifact 预览主路径已有 E2E |
+| 资源限制 / 产物 / Allure 预览闭环对照 | 有已知偏移，CPU/内存/超时已实现；worker 已把环境级产物 size/count 限制传入 executor，上传侧已在写 S3/DB 前强制校验；上传侧会递归上传 `results/` 下文件并标记 Allure 目录文件；内部 `disk_mb` 已能传到 Docker `StorageOpt.size`，但 API 尚未暴露磁盘配额；OOM/timeout 能映射为 `timeout`，但未发现资源用量记录闭环；`api/v1/artifacts.py` 已返回 `download_url` / `expires_in`；`frontend` 对 `artifact.type === "allure-report"` 展示预览按钮，HTML artifact 预览主路径已有 E2E |
 | Playwright / E2E 配置对照 | 通过，根目录 `package.json` 提供 `npm run test:e2e`；`playwright.config.ts` 的 `testDir` 为 `tests/e2e`，会启动 `frontend` dev server 和 `.venv/bin/python -m uvicorn qaplatform.main:create_app --factory --app-dir src`，`global-setup.ts` 会启动 postgres/redis/minio、执行 alembic upgrade 与 seed |
 | E2E 辅助脚本入口复核 | 发现 `scripts/run-e2e.sh` 仍直接用 `ADMIN_PASSWORD=admin123` seed 后运行 `tests/e2e/real-*.spec.ts`；默认值与 real specs 的 `E2E_ADMIN_PASSWORD || "admin123"` fallback 一致，但若调用者显式设置 `E2E_ADMIN_PASSWORD`，该脚本不会同步 seed 密码。当前 README/development/CI 的推荐入口仍是根目录 `npm run test:e2e`，不受此脚本偏差影响；若后续保留脚本，应让它透传 `E2E_ADMIN_PASSWORD`。 |
 | Git refs / merge state 对照 | 审计快照通过：本地 8 个 `feature/T*` 分支与对应 `origin/feature/T*` SHA 一致且均未合入本地 `main`；审计时本地 `main` 比 `origin/main` 多 5 个 docs commit，`origin/HEAD` 指向 `origin/phase1-release-prep`。该行保留为快照，实时状态以现场 git 命令为准。 |
@@ -1132,8 +1132,8 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - PRD F-PL-03 的描述是“限制单次执行的 CPU/内存/产物大小”。
 - 当前 CPU / 内存限制已在 `engine/docker_backend.py` HostConfig 中设置，timeout 也有 SIGTERM → 30s → SIGKILL 路径。
 - `worker/tasks.py::_build_pipeline_config` 已把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入执行配置。
-- `engine/executor.py::_upload_artifacts` 已在上传和写 DB 行前检查单文件大小与数量，并递归上传 `results/` 下文件；总大小、磁盘限制、资源用量记录与前端 Allure HTML 入口仍未闭环。
-- `ResourceLimits.disk_bytes` 字段存在，但未进入 Docker HostConfig；architecture 原写“资源限制（CPU/内存/磁盘）”容易被误读为磁盘限制已实现。
+- `engine/executor.py::_upload_artifacts` 已在上传和写 DB 行前检查单文件大小与数量，并递归上传 `results/` 下文件；总大小、API 磁盘配额暴露、资源用量记录与前端 Allure HTML 入口仍未闭环。
+- `ResourceLimits.disk_bytes` 字段存在，worker 已支持内部 `disk_mb` 映射，Docker backend 已能在该值存在时写入 `HostConfig.StorageOpt.size`；architecture 仍需避免把这写成已完成 API 磁盘配额。
 - PRD 还要求 OOM/timeout 记录终止原因和资源用量；当前代码可把 OOM/timeout 映射为 `timeout`，但本轮未发现资源用量写入日志或 summary 的闭环。
 
 建议：
@@ -1141,7 +1141,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - catalog 中 F-PL-03 改为部分完成。
 - 将 F-PL-03 的产物大小限制与 F-RE-04 的上传/预览闭环合并成一个实施任务，避免两个任务重复改 `_upload_artifacts`。
 
-修复进度：feature-catalog 已把 F-PL-03 改为 ⚠️；TODO / catalog §4.1 已把待办改为 `F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐`；architecture §6.1 / architecture §9.3 已补 CPU/内存、磁盘、产物限制与资源用量记录边界；环境级产物 size/count 限制与递归上传已补 worker 映射、executor 强制校验与真实 DB/S3 测试，前端 HTML artifact 预览主路径已有 E2E，剩余磁盘限制、资源用量记录和多资源报告加载体验。
+修复进度：feature-catalog 已把 F-PL-03 改为 ⚠️；TODO / catalog §4.1 已把待办改为 `F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐`；architecture §6.1 / architecture §9.3 已补 CPU/内存、磁盘、产物限制与资源用量记录边界；环境级产物 size/count 限制、内部 disk_mb 到 Docker StorageOpt 传递与递归上传已补 worker 映射、executor/backend 强制配置与真实 DB/S3/单元测试，前端 HTML artifact 预览主路径已有 E2E，剩余 API 磁盘配额暴露、资源用量记录和多资源报告加载体验。
 
 ### 9.11 通知条件 AND/OR 与模板能力过度声明
 
@@ -1483,7 +1483,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 | `T-GIT-CREDENTIALS` | 补齐 F-PM-01 / F-PM-02 Git 凭证执行闭环：解密项目绑定的 HTTPS token / SSH key 并安全注入 Git clone，确保错误与日志脱敏，覆盖私有仓库成功、认证失败、凭证轮换后的执行路径。 | 未处理，已记录为 PRD F-PM-01/F-PM-02 缺口 |
 | `T-PIPELINE-COLLECTOR` | 补齐 F-PL-01 Pipeline collector 配置：决定当前 JUnit-only 是正式产品限制还是实现 collector 选择/配置；若补实现，需贯通 API schema、ORM/JSONB、worker `PipelineConfig`、executor `get_collector(...)` 与测试。 | 未处理，已记录为 PRD F-PL-01 缺口 |
 | `T-AUDIT-COVERAGE` | 补齐审计写入覆盖：批量取消/批量重试至少应有 audit；SSE ticket 是否审计需产品确认。 | 批量取消/批量重试与 SSE ticket 已补审计写入；剩余写路径按业务风险矩阵继续补齐 |
-| `T-ARTIFACT-PREVIEW` | 补齐 F-PL-03 / F-RE-04 产物限制与上传/预览闭环：传递并执行上传侧 size/count 限制，决定是否实现磁盘限制，补 OOM/timeout 资源用量记录，递归或打包上传 Allure HTML 报告、明确入口 URL 并补测试。 | 已补 size/count 限制映射、上传侧强制校验、递归上传 Allure/HTML 目录文件和真实 DB/S3 测试，前端 HTML artifact 预览主路径已有 E2E；磁盘限制、资源用量记录、多资源加载仍缺 |
+| `T-ARTIFACT-PREVIEW` | 补齐 F-PL-03 / F-RE-04 产物限制与上传/预览闭环：传递并执行上传侧 size/count 限制，决定是否实现磁盘限制，补 OOM/timeout 资源用量记录，递归或打包上传 Allure HTML 报告、明确入口 URL 并补测试。 | 已补 size/count 限制映射、内部 disk_mb 到 Docker StorageOpt 传递、上传侧强制校验、递归上传 Allure/HTML 目录文件和真实 DB/S3 测试，前端 HTML artifact 预览主路径已有 E2E；API 磁盘配额暴露、资源用量记录、多资源加载仍缺 |
 | `T-LOG-REPLAY` | 补齐 F-EX-05 日志归档回看闭环：提供从 `logs/{run_id}.jsonl` 读取历史日志的 API / 前端入口，并处理 Redis Stream TTL 过期后的回放体验。 | 后端归档日志读回 API 与真实 DB/RBAC/API/API token scope 测试已补；前端终态 Run 回看入口已补，并用真实 DB+S3 E2E 覆盖回放/搜索 |
 | `T-AUTH-SCOPE` | 补齐 API token scope enforcement 在 tenant-scoped / project-scoped / token 管理端点的传递与测试。 | 已完成：scopes 已贯通权限依赖，真实 API 测试覆盖只读、`run.trigger`、artifact download 与 archived logs 的 `run.read`、错误/空 scope |
 | `T-MANUAL-TRIGGER` | 补齐 F-EX-01 手动触发参数与入队验收：让后端可指定 commit / environment，明确与前端触发 payload 的边界，并补“触发后 < 5s 入队”的可验证测试或压测口径。 | 未处理，已记录为 PRD F-EX-01 缺口 |
