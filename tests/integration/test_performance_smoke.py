@@ -1069,6 +1069,60 @@ async def test_artifact_download_url_api_p99_smoke(
 
 
 @pytest.mark.asyncio
+async def test_artifact_download_storage_unavailable_p99_smoke(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    run_id = seed_run["run"].id
+    repo = ArtifactRepository(integration_db_session)
+    artifact = await repo.create(
+        run_id=run_id,
+        type="report",
+        name="perf-storage-unavailable.html",
+        storage_path=f"reports/{run_id}/perf-storage-unavailable.html",
+        size_bytes=2048,
+        mime_type="text/html",
+    )
+    await integration_db_session.commit()
+
+    headers = {"Authorization": f"Bearer perf-artifact-storage-{artifact.id}"}
+    old_s3 = integration_app.state.container.s3_client
+    integration_app.state.container.s3_client = None
+    try:
+        for _ in range(3):
+            response = await integration_client.get(
+                f"/api/v1/artifacts/{artifact.id}/download",
+                headers=headers,
+            )
+            assert response.status_code == 503, response.text
+            assert response.json()["detail"] == "Artifact download is not available"
+
+        samples: list[float] = []
+        for _ in range(20):
+            elapsed_ms, response = await _timed(
+                integration_client.get(
+                    f"/api/v1/artifacts/{artifact.id}/download",
+                    headers=headers,
+                )
+            )
+            assert response.status_code == 503, response.text
+            assert response.json()["detail"] == "Artifact download is not available"
+            samples.append(elapsed_ms)
+    finally:
+        integration_app.state.container.s3_client = old_s3
+
+    _assert_p99_under(
+        "artifact download storage-unavailable API",
+        samples,
+        _threshold("PERF_ARTIFACT_DOWNLOAD_UNAVAILABLE_P99_MS", 1000),
+    )
+
+
+@pytest.mark.asyncio
 async def test_artifact_download_url_burst_p99_smoke(
     integration_app,
     integration_client,
