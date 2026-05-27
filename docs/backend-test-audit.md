@@ -14,7 +14,7 @@
 - 真实数据路径：integration suite 使用真实 PostgreSQL/Redis/Testcontainers/FastAPI ASGI app；新增测试不 mock repository 或 database session。
 - 数据保留/审计路径：retention 真实 Postgres 测试覆盖超期终态 Run 硬删与 result/artifact/event 级联；batch cancel/retry API 覆盖真实 DB 状态和 audit 行写入。
 - 日志归档补偿与回看：归档失败登记 Redis retry set，worker cron 重试由单测锁定成功/失败路径；归档 JSONL 读回 API 由真实 DB/RBAC/API 集成测试覆盖。
-- Artifact 风险：环境级产物大小/数量限制传入 worker 并在上传前强制校验，真实 DB 集成测试证明被跳过产物不会写 Artifact 行。
+- Artifact 风险：环境级产物大小/数量限制传入 worker 并在上传前强制校验，真实 DB 集成测试证明被跳过产物不会写 Artifact 行；`results/` 递归上传与 Allure 目录文件落库也有真实 DB/S3 证据。
 - Worker 重试：真实 DB 集成测试覆盖 `execute_run` 基础设施异常路径，验证原 Run failed、retry Run 落库并入队。
 - Webhook/schedule 失败路径：新增 required integration 断言 archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 都不会静默写错真实 DB 状态。
 - CI 稳定性：后端 ruff 与单测覆盖率是同一门禁；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
@@ -40,10 +40,10 @@ PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=/tmp/qaplatform-final.coverage .venv/bin
 
 当前基线结果：
 
-- 单元测试：757 passed
-- 总覆盖率：83.32%
-- 语句覆盖率：85.88%
-- 分支覆盖率：70.02%
+- 单元测试：758 passed
+- 总覆盖率：83.37%
+- 语句覆盖率：85.92%
+- 分支覆盖率：70.14%
 - warnings：项目内 SQLAlchemy overlap 与 Redis pubsub `close()` 已清理；testcontainers 第三方弃用提示已精确过滤并登记 owner/截止条件
 
 真实 DB / API 集成验证：
@@ -56,9 +56,9 @@ RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tes
 
 当前结果：
 
-- integration 收集：108 tests
-- PR/push 必跑 required integration：93 passed, 15 deselected
-- 完整 local integration：102 passed, 6 skipped
+- integration 收集：109 tests
+- PR/push 必跑 required integration：94 passed, 15 deselected
+- 完整 local integration：103 passed, 6 skipped
 - performance smoke opt-in：4 passed
 - skipped 来自 macOS Docker Desktop OOMKilled 平台语义，以及未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke；业务断言失败不会被 skip 或 retry 掩盖
 

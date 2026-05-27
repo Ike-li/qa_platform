@@ -16,7 +16,7 @@
 | 3 | F-PL-01 collector 配置补齐 | PRD §3.2 验收 | Pipeline schema / ORM / worker 拼装均无结果收集器选择或配置，`RunExecutor.execute()` 固定 `get_collector("junit")`；需决定 JUnit-only 是否改为正式限制，或补 collector 配置闭环 |
 | 4 | 审计日志查询 API | catalog §4.1 | 写入端已就位，缺 `/api/v1/audit-events` 查询路由；审计查询尚未补入正式 PRD 章节 |
 | 5 | 审计写入覆盖补齐 | architecture §9.6 | 批量取消/批量重试、SSE ticket 已补 audit 事件与真实 DB 验证；剩余写操作按安全风险继续补齐 |
-| 6 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | PRD §3.2 / PRD §3.4 验收 | CPU/内存/超时与产物数量/大小限制已实现并有真实 DB 验证；仍缺目录型 Allure HTML 报告、递归资源目录上传、磁盘限制、OOM/timeout 资源用量记录 |
+| 6 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | PRD §3.2 / PRD §3.4 验收 | CPU/内存/超时、产物数量/大小限制、`results/` 递归上传和 Allure 目录文件落库已实现并有真实 DB/S3 验证；仍缺磁盘限制、OOM/timeout 资源用量记录，以及前端 Allure/HTML 报告预览入口/资源加载口径 |
 | 7 | F-EX-05 日志归档回看闭环 | PRD §3.3 验收 | Redis Stream 实时日志、断线续传、S3 JSONL 归档写入与归档日志读回 API 已实现；前端回看入口仍缺 |
 | 8 | F-AU-02 API Token scope enforcement 补齐 | PRD §3.6 验收 | 已完成：API token scopes 已贯通 tenant/project 权限依赖，并有真实 API 矩阵覆盖只读、run.trigger、错误/空 scope |
 | 9 | F-AU-04 跨租户 404 完整收敛 | PRD §3.6 验收 | 已完成：Member/Viewer 的 path `project_id` 项目级权限依赖先验证租户可见性；跨 tenant、随机 UUID、软删除一致 404 |
@@ -100,7 +100,7 @@
 | 是否需要 DB 行冷归档 | 数据保留冷归档/读回增强；`retry_failed_archives` 自动补偿已实现 |
 | `/auth/sse-ticket` 临时凭证写入是否必须纳入审计 | 已按高风险凭证动作纳入审计；后续仅需确认产品展示口径 |
 | Pipeline collector 配置是补实现还是将 JUnit-only 写成正式产品限制 | F-PL-01 collector 配置补齐 |
-| Allure/HTML 报告预览采用目录入口还是 zip/html 单产物 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 |
+| Allure/HTML 报告前端预览采用已上传目录入口还是 zip/html 单产物 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐；后端已递归上传目录文件 |
 | 是否补完整外部栈 worker 黑盒自动重试 nightly 场景 | F-EX-07 自动重试端到端补齐；`execute_run` 真实 DB 异常路径与 `worker_lost` callback 已进入自动重试 |
 | F-EX-08 采用单 worker 多队列还是多 worker 部署 | F-EX-08 优先级队列消费闭环 |
 | F-NT-03 每渠道模板是否嵌入 `channels[]` | F-NT-01 / F-NT-03 通知规则与模板验收补齐 |

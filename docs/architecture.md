@@ -156,7 +156,7 @@ Worker 抢占 (queued → preparing)
 触发通知 (按规则)
 ```
 
-当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；但 `disk_bytes` 未进入 Docker HostConfig，OOM/timeout 的资源用量记录也未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；当前仍只扫描工作目录 `results/` 下的直接文件，目录型 Allure HTML report 与递归资源目录上传仍需后续设计。
+当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；但 `disk_bytes` 未进入 Docker HostConfig，OOM/timeout 的资源用量记录也未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；上传侧会递归扫描工作目录 `results/` 下文件，保留相对路径写入 S3/Artifact 行，并把 `allure-report/`、`allure-results/` 目录下文件标记为 `allure-report` 类型。前端 Allure/HTML 报告预览入口与多资源加载体验仍需后续设计。
 
 当前 collector 边界：Pipeline 的 stage `plugin` 可以选择测试运行器，但结果收集器还不是 pipeline 级配置项；`RunExecutor.execute()` 当前固定调用 JUnit collector。PRD F-PL-01 中“配置结果收集器”的验收需后续补实现，或由 maintainer 决定把 JUnit-only 写成正式产品限制。
 

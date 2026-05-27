@@ -399,6 +399,43 @@ class TestUploadArtifacts:
         assert recorded["extra.bin"]["mime_type"] == "application/octet-stream"
 
     @pytest.mark.asyncio
+    async def test_upload_recurses_allure_report_directories(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
+    ):
+        s3 = AsyncMock()
+        artifact_repo = AsyncMock()
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+            s3_client=s3,
+            s3_bucket="test-bucket",
+            artifact_repo=artifact_repo,
+        )
+        results_dir = tmp_path / "results"
+        (results_dir / "allure-report" / "assets").mkdir(parents=True)
+        (results_dir / "allure-report" / "index.html").write_text("<html/>")
+        (results_dir / "allure-report" / "assets" / "app.js").write_text("ok")
+
+        run_id = "11111111-1111-1111-1111-111111111111"
+        await executor._upload_artifacts(run_id, tmp_path)
+
+        uploaded_keys = {call.kwargs["Key"] for call in s3.put_object.await_args_list}
+        assert uploaded_keys == {
+            f"reports/{run_id}/allure-report/assets/app.js",
+            f"reports/{run_id}/allure-report/index.html",
+        }
+        recorded = {call.kwargs["name"]: call.kwargs for call in artifact_repo.create.call_args_list}
+        assert set(recorded) == {
+            "allure-report/assets/app.js",
+            "allure-report/index.html",
+        }
+        assert recorded["allure-report/index.html"]["type"] == "allure-report"
+        assert recorded["allure-report/index.html"]["mime_type"] == "text/html"
+        assert recorded["allure-report/assets/app.js"]["type"] == "allure-report"
+
+    @pytest.mark.asyncio
     async def test_upload_skips_artifact_row_when_repo_missing(
         self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
     ):

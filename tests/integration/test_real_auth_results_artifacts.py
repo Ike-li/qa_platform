@@ -404,6 +404,58 @@ async def test_artifact_upload_enforces_limits_before_real_db_rows(
 
 
 @pytest.mark.asyncio
+async def test_artifact_upload_recurses_allure_report_with_real_db_rows(
+    integration_db_session,
+    seed_run,
+    tmp_path,
+):
+    from qaplatform.engine.docker_backend import ResourceLimits
+    from qaplatform.engine.executor import RunExecutor
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    run_id = seed_run["run"].id
+    results_dir = tmp_path / "results"
+    (results_dir / "allure-report" / "assets").mkdir(parents=True)
+    (results_dir / "allure-report" / "index.html").write_text("<html/>")
+    (results_dir / "allure-report" / "assets" / "app.js").write_text("ok")
+
+    s3 = _MemoryS3()
+    artifact_repo = ArtifactRepository(integration_db_session)
+    executor = RunExecutor(
+        backend=AsyncMock(),
+        log_stream=AsyncMock(),
+        run_repo=AsyncMock(),
+        s3_client=s3,
+        s3_bucket="qa-platform-test",
+        artifact_repo=artifact_repo,
+    )
+
+    await executor._upload_artifacts(
+        str(run_id),
+        tmp_path,
+        ResourceLimits(max_artifact_size_bytes=1024, max_artifacts_count=10),
+    )
+    await integration_db_session.commit()
+
+    rows, total = await artifact_repo.list_by_run(run_id, limit=10)
+    by_name = {row.name: row for row in rows}
+    assert total == 2
+    assert set(by_name) == {
+        "allure-report/assets/app.js",
+        "allure-report/index.html",
+    }
+    assert by_name["allure-report/index.html"].type == "allure-report"
+    assert by_name["allure-report/index.html"].mime_type == "text/html"
+    assert by_name["allure-report/assets/app.js"].type == "allure-report"
+    assert {
+        key for _bucket, key in s3.objects
+    } == {
+        f"reports/{run_id}/allure-report/assets/app.js",
+        f"reports/{run_id}/allure-report/index.html",
+    }
+
+
+@pytest.mark.asyncio
 async def test_api_token_scope_matrix_enforced_by_real_routes(
     real_auth_client,
 ):
