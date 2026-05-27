@@ -280,6 +280,12 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
             if updated:
                 log.info("run %s marked as failed: %s", run_id, exc)
 
+            # Release the failed-row update before the retry scheduler opens a
+            # fresh session to inspect the original run and create the child
+            # retry. Without this commit, PostgreSQL can make the retry path
+            # wait on the worker's own uncommitted row lock.
+            await session.commit()
+
             # Auto-retry on infrastructure exception
             await _attempt_retry(run_id, exc, ctx, session_factory)
 
@@ -352,6 +358,10 @@ def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
     else:
         env_vars = dict(raw_env_vars)
 
+    raw_resource_limits = environment_orm.resource_limits or {}
+    max_artifact_size_mb = raw_resource_limits.get("max_artifact_size_mb", 100)
+    max_artifacts_count = raw_resource_limits.get("max_artifacts_count", 50)
+
     return PipelineConfig(
         image=environment_orm.base_image,
         stages=stages,
@@ -359,6 +369,8 @@ def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
         resource_limits=ResourceLimits(
             memory_bytes=environment_orm.memory_mb * 1024 * 1024,
             cpu_cores=environment_orm.cpu_cores,
+            max_artifact_size_bytes=max_artifact_size_mb * 1024 * 1024,
+            max_artifacts_count=max_artifacts_count,
         ),
         network_policy=environment_orm.network_policy,
         timeout_seconds=pipeline_orm.timeout_seconds or 1800,

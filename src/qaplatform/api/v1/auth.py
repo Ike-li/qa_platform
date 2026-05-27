@@ -643,6 +643,7 @@ class SSETicketResponse(BaseModel):
 async def create_sse_ticket(
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
+    session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
 ) -> SSETicketResponse:
     """Issue a short-lived, single-use ticket for SSE authentication."""
     redis = request.app.state.container.redis_client
@@ -650,4 +651,28 @@ async def create_sse_ticket(
     key = f"sse_ticket:{ticket}"
     payload = f"{current_user.user_id}:{current_user.role}:{current_user.tenant_id}"
     await redis.setex(key, SSE_TICKET_TTL, payload)
+
+    async with session_factory() as audit_session:
+        try:
+            await AuditEventRepository(audit_session).create(
+                tenant_id=UUID(current_user.tenant_id),
+                user_id=UUID(current_user.user_id),
+                action="auth.sse_ticket_create",
+                resource_type="auth",
+                resource_id=None,
+                after_state={
+                    "ttl_seconds": SSE_TICKET_TTL,
+                    "single_use": True,
+                },
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
+            )
+            await audit_session.commit()
+        except Exception:
+            await audit_session.rollback()
+            log.warning(
+                "audit_write_failed",
+                extra={"action": "auth.sse_ticket_create"},
+                exc_info=True,
+            )
     return SSETicketResponse(ticket=ticket)

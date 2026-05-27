@@ -399,6 +399,52 @@ async def test_get_run_artifacts(client, mock_run_repo, mock_artifact_repo, tena
 
 
 @pytest.mark.asyncio
+async def test_get_archived_run_logs_reads_s3_jsonl(
+    client, mock_run_repo, tenant_id, app
+):
+    run = _make_orm_run(tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.return_value = run
+
+    s3_client = AsyncMock()
+    s3_client.get_object.return_value = {
+        "Body": b'{"stream": "stdout", "line": "first"}\n'
+        b'{"stream": "stderr", "line": "second"}\n'
+    }
+    app.state.container.redis_client = AsyncMock()
+    app.state.container.s3_client = s3_client
+    app.state.container.settings.s3_bucket = "qa-platform"
+
+    resp = await client.get(
+        f"/api/v1/runs/{run.id}/logs/archive",
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 2
+    assert body["data"] == [
+        {"stream": "stdout", "line": "first"},
+        {"stream": "stderr", "line": "second"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_archived_run_logs_returns_503_without_s3(
+    client, mock_run_repo, tenant_id, app
+):
+    run = _make_orm_run(tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.return_value = run
+    app.state.container.s3_client = None
+
+    resp = await client.get(
+        f"/api/v1/runs/{run.id}/logs/archive",
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_trigger_run_archived_project_returns_409(
     client, mock_pipeline_repo, mock_project_repo, tenant_id
 ):

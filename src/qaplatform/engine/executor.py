@@ -264,7 +264,11 @@ class RunExecutor:
                 },
             ):
                 if self.s3_client:
-                    await self._upload_artifacts(run_id, working_dir)
+                    await self._upload_artifacts(
+                        run_id,
+                        working_dir,
+                        pipeline.resource_limits,
+                    )
 
             # 6. Write terminal state
             status = RunStatus.DONE
@@ -645,14 +649,40 @@ class RunExecutor:
         except Exception:
             log.debug("log streaming ended for container %s", execution_id)
 
-    async def _upload_artifacts(self, run_id: str, working_dir: Path) -> None:
+    async def _upload_artifacts(
+        self,
+        run_id: str,
+        working_dir: Path,
+        resource_limits: ResourceLimits | None = None,
+    ) -> None:
         """Upload result artifacts from working directory to S3 and record rows."""
         results_dir = working_dir / "results"
         if not results_dir.exists():
             return
+        limits = resource_limits or ResourceLimits()
+        uploaded_count = 0
 
-        for artifact_path in results_dir.iterdir():
+        for artifact_path in sorted(results_dir.iterdir()):
             if not artifact_path.is_file():
+                continue
+            if uploaded_count >= limits.max_artifacts_count:
+                await self.log_stream.write_log(
+                    run_id,
+                    f"Skipped artifact {artifact_path.name}: artifact count limit exceeded",
+                    stream="stderr",
+                )
+                continue
+            size_bytes = artifact_path.stat().st_size
+            if size_bytes > limits.max_artifact_size_bytes:
+                await self.log_stream.write_log(
+                    run_id,
+                    (
+                        f"Skipped artifact {artifact_path.name}: size "
+                        f"{size_bytes} exceeds limit "
+                        f"{limits.max_artifact_size_bytes} bytes"
+                    ),
+                    stream="stderr",
+                )
                 continue
             s3_key = f"reports/{run_id}/{artifact_path.name}"
             try:
@@ -679,7 +709,7 @@ class RunExecutor:
                         type=artifact_type,
                         name=artifact_path.name,
                         storage_path=s3_key,
-                        size_bytes=artifact_path.stat().st_size,
+                        size_bytes=size_bytes,
                         mime_type=mime_type or "application/octet-stream",
                     )
                 except Exception:
@@ -693,3 +723,4 @@ class RunExecutor:
                 run_id,
                 f"Uploaded artifact: {artifact_path.name}",
             )
+            uploaded_count += 1

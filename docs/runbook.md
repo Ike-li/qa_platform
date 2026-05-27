@@ -135,7 +135,7 @@ Run 日志归档到 S3 bucket（`QAP_S3_BUCKET`），路径格式：`logs/{run_i
 
 **建议 Lifecycle 规则**：
 
-- `logs/` 与 `QAP_RETENTION_RUNS_DAYS` 对齐（默认 90 天），避免数据库 Run 记录仍存在时 S3 归档对象已先过期；当前 `main` 仍缺归档日志读回 API / UI，因此不能把 lifecycle 对齐单独视为“日志已可回看”闭环。
+- `logs/` 与 `QAP_RETENTION_RUNS_DAYS` 对齐（默认 90 天），避免数据库 Run 记录仍存在时 S3 归档对象已先过期；后端已提供归档日志读回 API，当前仍缺前端回看入口，因此不能把 lifecycle 对齐单独视为“用户可在 UI 回看归档日志”闭环。
 - `reports/` 与 `QAP_RETENTION_REPORTS_DAYS` 对齐（默认 30 天），用于 JUnit/Allure 等报告产物。
 
 ```json
@@ -167,7 +167,7 @@ mc ilm rule add --expire-days 30 myminio/qa-platform --prefix "reports/"
 
 - `QAP_RETENTION_RUNS_DAYS`（默认 90）控制数据库 Run 行清理目标；`cleanup_old_runs` 每小时硬删超期终态 Run（`done/failed/cancelled/timeout`）并依赖数据库 FK 级联清理 result/artifact/event。S3 lifecycle 独立配置，两者应保持一致或 S3 日志保留期 ≥ DB Run 保留期，避免 DB 有记录但 S3 日志已删除。
 - 归档失败时 `LogStream.archive_logs` 会把 Redis Stream TTL 延长到 24h，并把 Run ID 登记到 `run:logs:archive_failed`；worker 的 `retry_failed_archives` cron 会重试这些失败项，成功后清理登记。
-- 当前仍缺归档日志读回 API / UI；因此 lifecycle 与 retry 只能证明“写入和补偿归档”，不能单独视为“用户可回看归档日志”闭环。
+- 当前后端已支持归档日志读回 API，但仍缺前端 UI 入口；因此 lifecycle、retry 与 API 测试能证明“写入、补偿与后端回放”，还不能单独视为“用户可在 UI 回看归档日志”闭环。
 
 ---
 

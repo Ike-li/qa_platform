@@ -363,6 +363,13 @@ class ArtifactResponse(BaseModel):
     created_at: datetime
 
 
+class RunLogEntryResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    stream: str
+    line: str
+
+
 # ── Project member schemas ───────────────────────────────────────────────────
 
 
