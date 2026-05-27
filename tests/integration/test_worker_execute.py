@@ -6,6 +6,8 @@
 import asyncio
 import os
 import subprocess
+from pathlib import Path
+
 import pytest
 import httpx
 
@@ -24,7 +26,78 @@ EXTERNAL_STACK_GIT_URL = os.environ.get(
     "https://github.com/octocat/Hello-World.git",
 )
 EXTERNAL_STACK_GIT_REF = os.environ.get("QAP_EXTERNAL_STACK_GIT_REF", "master")
+REPO_ROOT = Path(__file__).resolve().parents[2]
 TERMINAL_STATUSES = {"done", "failed", "cancelled", "timeout"}
+
+
+def _compose(args: list[str], *, timeout: int = 60, check: bool = True) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            ["docker", "compose", *args],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError:
+        pytest.skip("docker compose is not available")
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(f"docker compose {' '.join(args)} timed out after {timeout}s: {exc}")
+
+    if check and result.returncode != 0:
+        pytest.fail(
+            "docker compose "
+            f"{' '.join(args)} failed with {result.returncode}\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    return result
+
+
+def _running_compose_services() -> set[str]:
+    result = _compose(
+        ["ps", "--services", "--filter", "status=running"],
+        check=False,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        pytest.skip("docker compose services are not available for this external stack")
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def _require_compose_worker_lost_stack() -> None:
+    services = _running_compose_services()
+    required = {"api", "postgres", "redis", "worker"}
+    missing = required - services
+    if missing:
+        pytest.skip(
+            "worker-lost external-stack test requires running compose services: "
+            f"{', '.join(sorted(missing))}"
+        )
+    if not ({"worker-high", "worker-low"} & services):
+        pytest.skip(
+            "worker-lost external-stack test requires worker-high or worker-low "
+            "to keep the reclaimer cron alive while worker is stopped"
+        )
+
+
+def _compose_redis_keys(pattern: str) -> list[str]:
+    result = _compose(
+        ["exec", "-T", "redis", "redis-cli", "--raw", "KEYS", pattern],
+        timeout=30,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _compose_redis_delete(keys: list[str]) -> int:
+    if not keys:
+        return 0
+    result = _compose(
+        ["exec", "-T", "redis", "redis-cli", "--raw", "DEL", *keys],
+        timeout=30,
+    )
+    return int((result.stdout or "0").strip() or "0")
 
 
 @pytest.fixture(scope="module")
@@ -96,6 +169,30 @@ async def _wait_for_terminal(api_client, headers, run_id: str, *, timeout_second
     return final_status
 
 
+async def _wait_for_run_status(
+    api_client,
+    headers,
+    run_id: str,
+    statuses: set[str],
+    *,
+    timeout_seconds: int = 90,
+) -> dict:
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    last_seen = None
+    while asyncio.get_event_loop().time() < deadline:
+        response = await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
+        last_seen = f"{response.status_code}: {response.text[:500]}"
+        if response.status_code == 200:
+            body = response.json()
+            if body["status"] in statuses:
+                return body
+        await asyncio.sleep(1)
+    pytest.fail(
+        f"run {run_id} did not reach {sorted(statuses)} within "
+        f"{timeout_seconds}s; last={last_seen}"
+    )
+
+
 async def _poll_json(api_client, url: str, headers, predicate, *, timeout_seconds: int = 30):
     deadline = asyncio.get_event_loop().time() + timeout_seconds
     last_seen = None
@@ -108,6 +205,30 @@ async def _poll_json(api_client, url: str, headers, predicate, *, timeout_second
                 return body
         await asyncio.sleep(2)
     pytest.fail(f"{url} did not satisfy predicate within {timeout_seconds}s; last={last_seen}")
+
+
+async def _poll_project_runs(api_client, project_id: str, headers, predicate, *, timeout_seconds: int = 90):
+    return await _poll_json(
+        api_client,
+        f"/api/v1/runs?project_id={project_id}&per_page=20",
+        headers,
+        predicate,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+async def _wait_for_worker_heartbeat_keys(*, timeout_seconds: int = 20) -> list[str]:
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    last_seen: list[str] = []
+    while asyncio.get_event_loop().time() < deadline:
+        last_seen = await asyncio.to_thread(
+            _compose_redis_keys,
+            "worker:*:heartbeat",
+        )
+        if last_seen:
+            return last_seen
+        await asyncio.sleep(1)
+    pytest.fail(f"worker heartbeat key was not written; last keys={last_seen}")
 
 
 @pytest.mark.asyncio
@@ -340,3 +461,189 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     assert any("Repository cloned successfully" in line for line in lines)
     assert any("Uploaded artifact: junit.xml" in line for line in lines)
     assert any("Run completed: done" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
+    docker_available, api_client, admin_token
+):
+    """真实外部栈：worker 失联后由 reclaimer 创建 retry run，重启 worker 后完成产物/日志闭环。"""
+    _require_compose_worker_lost_stack()
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    suffix = os.urandom(4).hex()
+
+    try:
+        project_resp = await api_client.post(
+            "/api/v1/projects",
+            headers=headers,
+            json={
+                "name": f"Worker Lost Retry {suffix}",
+                "slug": f"worker-lost-retry-{suffix}",
+                "git_url": EXTERNAL_STACK_GIT_URL,
+                "default_branch": EXTERNAL_STACK_GIT_REF,
+            },
+        )
+        assert project_resp.status_code in (200, 201), project_resp.text
+        project_id = project_resp.json()["id"]
+
+        env_resp = await api_client.post(
+            f"/api/v1/projects/{project_id}/environments",
+            headers=headers,
+            json={
+                "name": "Worker Lost Retry Env",
+                "base_image": "python:3.12-alpine",
+                "memory_mb": 512,
+                "cpu_cores": 1.0,
+                "network_policy": "allow",
+                "env_vars": {"QAP_WORKER_LOST_RETRY_SLEEP": "20"},
+                "setup_script": (
+                    "python - <<'PY'\n"
+                    "from pathlib import Path\n"
+                    "workspace = Path('/workspace')\n"
+                    "(workspace / 'tests').mkdir(exist_ok=True)\n"
+                    "(workspace / 'tests' / 'test_worker_lost_retry.py').write_text(\n"
+                    "    'def test_worker_lost_retry():\\n    assert True\\n'\n"
+                    ")\n"
+                    "(workspace / 'pytest.py').write_text(\n"
+                    "    \"from pathlib import Path\\n\"\n"
+                    "    \"import os\\n\"\n"
+                    "    \"import sys\\n\"\n"
+                    "    \"import time\\n\"\n"
+                    "    \"time.sleep(float(os.environ.get('QAP_WORKER_LOST_RETRY_SLEEP', '20')))\\n\"\n"
+                    "    \"junit = 'results/junit.xml'\\n\"\n"
+                    "    \"for arg in sys.argv[1:]:\\n\"\n"
+                    "    \"    if arg.startswith('--junitxml='):\\n\"\n"
+                    "    \"        junit = arg.split('=', 1)[1]\\n\"\n"
+                    "    \"path = Path(junit)\\n\"\n"
+                    "    \"path.parent.mkdir(parents=True, exist_ok=True)\\n\"\n"
+                    "    \"path.write_text(\\\"<testsuite name='worker-lost-retry' tests='1' failures='0' errors='0' skipped='0'><testcase classname='worker_lost_retry' name='smoke' time='0.01'/></testsuite>\\\")\\n\"\n"
+                    "    \"print('===== 1 passed in 0.01s =====')\\n\"\n"
+                    ")\n"
+                    "PY"
+                ),
+                "max_artifact_size_mb": 10,
+                "max_artifacts_count": 5,
+            },
+        )
+        assert env_resp.status_code in (200, 201), env_resp.text
+
+        pipeline_resp = await api_client.post(
+            f"/api/v1/projects/{project_id}/pipelines",
+            headers=headers,
+            json={
+                "name": "Worker Lost Retry Pipeline",
+                "stages": [
+                    {
+                        "name": "pytest",
+                        "plugin": "pytest",
+                        "phase": "execute",
+                        "config": {"test_path": "tests/"},
+                    }
+                ],
+                "timeout_seconds": 300,
+                "retry_policy": {
+                    "max_attempts": 2,
+                    "retry_on": ["infra"],
+                    "backoff_seconds": 0,
+                },
+                "selector": {"include_paths": ["tests"], "on_empty": "warn"},
+                "trigger_config": {"type": "manual"},
+                "enabled": True,
+            },
+        )
+        assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+        pipeline_id = pipeline_resp.json()["id"]
+
+        trigger_resp = await api_client.post(
+            "/api/v1/runs",
+            headers=headers,
+            json={
+                "pipeline_id": pipeline_id,
+                "git_ref": EXTERNAL_STACK_GIT_REF,
+                "priority": 1,
+            },
+        )
+        assert trigger_resp.status_code in (200, 201), trigger_resp.text
+        original_run_id = trigger_resp.json()["id"]
+
+        await _wait_for_run_status(
+            api_client,
+            headers,
+            original_run_id,
+            {"running"},
+            timeout_seconds=120,
+        )
+        heartbeat_keys = await _wait_for_worker_heartbeat_keys()
+
+        _compose(["stop", "--timeout", "0", "worker"], timeout=45)
+        deleted = _compose_redis_delete(heartbeat_keys)
+        assert deleted >= 1, f"expected to delete worker heartbeat keys: {heartbeat_keys}"
+
+        await _wait_for_run_status(
+            api_client,
+            headers,
+            original_run_id,
+            {"failed"},
+            timeout_seconds=120,
+        )
+        original_detail = (
+            await api_client.get(f"/api/v1/runs/{original_run_id}", headers=headers)
+        ).json()
+        assert "worker_lost" in (original_detail.get("error_message") or "")
+
+        retry_runs_body = await _poll_project_runs(
+            api_client,
+            project_id,
+            headers,
+            lambda body: any(run["attempt"] == 2 for run in body["data"]),
+            timeout_seconds=120,
+        )
+        retry_run = next(
+            run for run in retry_runs_body["data"] if run["attempt"] == 2
+        )
+        retry_run_id = retry_run["id"]
+
+        _compose(["start", "worker"], timeout=60)
+
+        final_status = await _wait_for_terminal(
+            api_client,
+            headers,
+            retry_run_id,
+            timeout_seconds=240,
+        )
+        assert final_status == "done", f"retry run did not complete: {final_status}"
+
+        retry_detail = (
+            await api_client.get(f"/api/v1/runs/{retry_run_id}", headers=headers)
+        ).json()
+        assert retry_detail["finished_at"] is not None
+        assert retry_detail["summary"]["total"] == 1
+        assert retry_detail["summary"]["passed"] == 1
+
+        artifacts_body = await _poll_json(
+            api_client,
+            f"/api/v1/runs/{retry_run_id}/artifacts",
+            headers,
+            lambda body: body["total"] >= 1,
+            timeout_seconds=30,
+        )
+        junit_artifacts = [
+            artifact
+            for artifact in artifacts_body["data"]
+            if artifact["name"] == "junit.xml"
+        ]
+        assert junit_artifacts, artifacts_body
+
+        archive_body = await _poll_json(
+            api_client,
+            f"/api/v1/runs/{retry_run_id}/logs/archive",
+            headers,
+            lambda body: body["total"] >= 1,
+            timeout_seconds=60,
+        )
+        lines = [entry["line"] for entry in archive_body["data"]]
+        assert any("Repository cloned successfully" in line for line in lines)
+        assert any("Uploaded artifact: junit.xml" in line for line in lines)
+        assert any("Run completed: done" in line for line in lines)
+    finally:
+        _compose(["start", "worker"], timeout=60, check=False)

@@ -79,7 +79,7 @@
 | Alembic 迁移链对照 | 通过，源码迁移链为单 head `006`；本地数据库当前版本为 `005`，需要在运行依赖真实 DB 的测试前执行 `.venv/bin/alembic upgrade head` |
 | 通知 / Webhook 当前实现对照 | 通过，`main` 的 `ChannelRouter` 仅注册 `email` / `webhook`；T03/T04 钉钉/企微仍是未合入 feature 分支能力；`api/v1/webhooks.py` 当前仅做项目级触发与 HMAC 验签，T06 分支过滤/去重仍未合入 `main` |
 | 通知规则 / 模板能力对照 | 有已知偏移，当前通知条件只支持 `status` / `pass_rate` / `failed` 的 AND 组合；模板是规则级 `NotificationRule.template`，变量仅 `run_id/status/passed/failed/total/pass_rate`，PRD 中的连续失败次数、每渠道模板、项目名与失败用例变量未闭环 |
-| 自动重试 / 优先级队列闭环对照 | 有已知偏移，`worker/tasks.py` 已有 `_should_retry` / `_attempt_retry` 原语；当前已统一 API-facing `max_attempts` / `retry_on` 与 worker 读取口径，并覆盖 execute_run 基础设施异常真实 DB retry run；真实 Docker/clone/setup/container wait 黑盒场景仍留在 nightly/manual；`worker/scheduler.py` 会写 `queue:high/medium/low`，多队列消费闭环按当前 runbook/CI 分层继续维护 |
+| 自动重试 / 优先级队列闭环对照 | 有已知偏移，`worker/tasks.py` 已有 `_should_retry` / `_attempt_retry` 原语；当前已统一 API-facing `max_attempts` / `retry_on` 与 worker 读取口径，并覆盖 execute_run 基础设施异常真实 DB retry run；worker_lost 黑盒已进 nightly/manual external-stack，真实 Docker/clone/setup/container wait 其它黑盒场景仍留后续；`worker/scheduler.py` 会写 `queue:high/medium/low`，多队列消费闭环按当前 runbook/CI 分层继续维护 |
 | Analytics / Flaky 实现口径对照 | 通过，项目级趋势与 flaky API / 前端入口存在；flaky 当前是同一 suite/name 在窗口内既有 passed 又有 failed/error 的聚合启发式，feature-catalog 已写清该口径 |
 | smoke 脚本覆盖数对照 | 通过，`scripts/smoke/` 当前有 6 个页面脚本；原 catalog 固定写“83 测试点”已改为“检查点以脚本内 `log_step` 为准”，避免数字随脚本增长失真 |
 | 审计写入覆盖对照 | 有已知偏移，多数主路径 mutating routes 已写 audit；`api/v1/runs.py` 的 `/batch/cancel`、`/batch/retry` 与 `/auth/sse-ticket` 临时票据创建已补审计写入；仍需按业务风险矩阵继续覆盖剩余写路径 |
@@ -1388,7 +1388,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 - catalog / TODO 不应把真实 worker 黑盒重试场景标成 PR 必跑完成项；它应继续留在 nightly/manual lane。
 - 当前已统一 retry policy schema 与 worker 读取口径，补了 API-facing `max_attempts` / `retry_on`、waiting retry run、worker_lost callback 与真实 DB retry run 测试；测试断言失败仍不重试。
-- worker_lost 已进入自动重试 callback；真实 Docker/clone/setup/container wait 黑盒场景继续作为 nightly/manual 增强验证。
+- worker_lost 已进入自动重试 callback，并补了 nightly/manual external-stack 黑盒；真实 Docker/clone/setup/container wait 其它黑盒场景继续作为后续增强验证。
 
 修复进度：feature-catalog / TODO / backend-test-audit 已改为当前边界；运行代码和测试已补自动重试核心闭环。
 
@@ -1487,7 +1487,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 | `T-LOG-REPLAY` | 补齐 F-EX-05 日志归档回看闭环：提供从 `logs/{run_id}.jsonl` 读取历史日志的 API / 前端入口，并处理 Redis Stream TTL 过期后的回放体验。 | 后端归档日志读回 API 与真实 DB/RBAC/API 测试已补；前端入口仍缺 |
 | `T-AUTH-SCOPE` | 补齐 API token scope enforcement 在 tenant-scoped / project-scoped / token 管理端点的传递与测试。 | 未处理，已记录为 PRD F-AU-02 缺口 |
 | `T-MANUAL-TRIGGER` | 补齐 F-EX-01 手动触发参数与入队验收：让后端可指定 commit / environment，明确与前端触发 payload 的边界，并补“触发后 < 5s 入队”的可验证测试或压测口径。 | 未处理，已记录为 PRD F-EX-01 缺口 |
-| `T-EXEC-RETRY` | 补齐 F-EX-07 自动重试端到端闭环：统一 `RetryPolicyInput.max_attempts` 与 worker legacy `max_retries` 读取口径并补 1-5 边界校验，让真实 Docker/clone/setup 基础设施异常进入 `_attempt_retry()`，并确认 worker_lost 是否自动重试。 | 已补 API-facing max_attempts/retry_on、waiting retry run、worker_lost callback 与真实 DB retry run 测试；真实 worker 黑盒重试保留 nightly/manual |
+| `T-EXEC-RETRY` | 补齐 F-EX-07 自动重试端到端闭环：统一 `RetryPolicyInput.max_attempts` 与 worker legacy `max_retries` 读取口径并补 1-5 边界校验，让真实 Docker/clone/setup 基础设施异常进入 `_attempt_retry()`，并确认 worker_lost 是否自动重试。 | 已补 API-facing max_attempts/retry_on、waiting retry run、worker_lost callback、真实 DB retry run 测试与 external-stack worker_lost 黑盒；其它 Docker/clone/setup 黑盒重试仍待产品化决策 |
 | `T-QUEUE-PRIORITY` | 补齐 F-EX-08 优先级队列消费闭环：决定单 worker 多队列或多 worker 部署，验证 high/low 队列消费、高优先级插队和同优先级 FIFO。 | 已补 compose high/medium/low worker、manual priority 队列矩阵单测、真实 DB priority+FIFO 排序 |
 | `T-NOTIFICATION-TEMPLATE` | 补齐 F-NT-01 / F-NT-03 通知规则与模板验收：OR、连续失败次数、每渠道模板、项目名和失败用例变量。 | 未处理，已记录为 PRD F-NT-01/F-NT-03 缺口 |
 | `T-RETENTION-OPS` | 补齐数据保留清理闭环：修复 `cleanup_old_runs` 导入/测试，明确是否先 soft-delete 超期终态 Run、是否覆盖 `cancelled/timeout`，决定是否实现 `retry_failed_archives`、artifact 对象清理与 DB 行冷归档。 | 已补超期终态硬删、result/artifact/event 级联、失败归档 retry 与归档日志 API 读回；DB 行冷归档仍是增强项 |
