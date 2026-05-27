@@ -6,8 +6,6 @@ from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-import redis.asyncio as redis
-
 if TYPE_CHECKING:
     from arq.connections import ArqRedis
 

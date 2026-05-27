@@ -260,6 +260,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             npm run test:e2e
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            npm run test:e2e -- tests/e2e/real-login-flow.spec.ts tests/e2e/real-run-trigger.spec.ts tests/e2e/special-regressions.spec.ts
           else
             npm run test:e2e -- tests/e2e/auth-flow.spec.ts
           fi

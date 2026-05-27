@@ -160,7 +160,7 @@ Worker 抢占 (queued → preparing)
 
 当前 collector 边界：Pipeline 的 stage `plugin` 可以选择测试运行器，但结果收集器还不是 pipeline 级配置项；`RunExecutor.execute()` 当前固定调用 JUnit collector。PRD F-PL-01 中“配置结果收集器”的验收需后续补实现，或由 maintainer 决定把 JUnit-only 写成正式产品限制。
 
-当前队列边界：`worker/scheduler.py` 会按 Run `priority` 把任务写入 `queue:high` / `queue:medium` / `queue:low`，并在入队前执行全局并发与单项目并发配额；`RunRepository.find_waiting()` 对等待队列按 `priority, created_at` 排序。部署侧当前默认 `WorkerSettings.queue_name=queue:medium`，`docker-compose.yml` 只启动一个未设置 `QAP_WORKER_QUEUE` 的 worker，因此 high/low 队列消费、高优先级插队与同优先级 FIFO 仍需补配置和端到端测试后才能视为 F-EX-08 完整闭环。
+当前队列边界：`worker/scheduler.py` 会按 Run `priority` 把任务写入 `queue:high` / `queue:medium` / `queue:low`，并在入队前执行全局并发与单项目并发配额；`RunRepository.find_waiting()` 对等待队列按 `priority, created_at` 排序。部署侧 `docker-compose.yml` 明确启动 high / medium / low 三个 worker 队列，单测覆盖 manual priority 到三类队列，真实 DB 测试覆盖 priority + FIFO 排序。worker_lost 后自动重试仍归 F-EX-07。
 
 ### 6.2 状态机
 

@@ -58,6 +58,7 @@ class _FakePubSub:
         self.subscribed: list[str] = []
         self.unsubscribed: list[str] = []
         self.closed = False
+        self.closed_with: str | None = None
 
     async def subscribe(self, channel: str) -> None:
         self.subscribed.append(channel)
@@ -67,6 +68,11 @@ class _FakePubSub:
 
     async def close(self) -> None:
         self.closed = True
+        self.closed_with = "close"
+
+    async def aclose(self) -> None:
+        self.closed = True
+        self.closed_with = "aclose"
 
     async def listen(self):
         while True:
@@ -115,6 +121,7 @@ class TestWatchForCancel:
 
         on_cancel.assert_awaited_once()
         assert pubsub.unsubscribed == [f"{CANCEL_CHANNEL_PREFIX}{run_id}"]
+        assert pubsub.closed_with == "aclose"
 
     @pytest.mark.asyncio
     async def test_callback_invoked_for_each_message(self):
