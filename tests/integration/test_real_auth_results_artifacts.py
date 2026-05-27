@@ -840,6 +840,36 @@ async def test_archived_logs_api_returns_404_when_s3_object_missing(
 
 
 @pytest.mark.asyncio
+async def test_archived_logs_api_returns_503_when_storage_unconfigured_after_rbac(
+    real_auth_app,
+    real_auth_client,
+):
+    access_token = await _register_real_user(real_auth_client, prefix="log_no_storage")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    old_s3 = real_auth_app.state.container.s3_client
+    real_auth_app.state.container.s3_client = None
+    try:
+        replay_resp = await real_auth_client.get(
+            f"/api/v1/runs/{run_id}/logs/archive",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    finally:
+        real_auth_app.state.container.s3_client = old_s3
+
+    assert replay_resp.status_code == 503, replay_resp.text
+    assert replay_resp.json()["detail"] == "Archived logs are not available"
+
+
+@pytest.mark.asyncio
 async def test_artifact_download_url_uses_real_auth_rbac_and_db_row(
     real_auth_app,
     real_auth_client,
@@ -1149,6 +1179,50 @@ async def test_artifact_download_api_token_requires_run_read_scope(
             "expires_in": ttl,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_artifact_download_returns_503_when_storage_unconfigured_after_rbac(
+    real_auth_app,
+    real_auth_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    access_token = await _register_real_user(real_auth_client, prefix="artifact_no_s3")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    artifact_repo = ArtifactRepository(integration_db_session)
+    artifact = await artifact_repo.create(
+        run_id=run_id,
+        type="junit",
+        name="machine-readable.xml",
+        storage_path=f"reports/{run_id}/machine-readable.xml",
+        size_bytes=256,
+        mime_type="application/xml",
+    )
+    await integration_db_session.commit()
+
+    old_s3 = real_auth_app.state.container.s3_client
+    real_auth_app.state.container.s3_client = None
+    try:
+        download_resp = await real_auth_client.get(
+            f"/api/v1/artifacts/{artifact.id}/download",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    finally:
+        real_auth_app.state.container.s3_client = old_s3
+
+    assert download_resp.status_code == 503, download_resp.text
+    assert download_resp.json()["detail"] == "Artifact download is not available"
 
 
 @pytest.mark.asyncio
