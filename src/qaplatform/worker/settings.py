@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import logging
 import os
 import uuid
+from typing import Any
 
 import aiodocker
 from arq import cron, func
@@ -13,6 +14,27 @@ from qaplatform.observability.tracing import instrument_infra, setup_tracing
 from qaplatform.worker.tasks import execute_run
 
 log = logging.getLogger(__name__)
+
+
+def _schedule_run_audit_state(run: Any, *, schedule_id: uuid.UUID, enqueued: bool) -> dict:
+    status = run.status.value if hasattr(run.status, "value") else run.status
+    return {
+        "id": str(run.id),
+        "tenant_id": str(run.tenant_id),
+        "project_id": str(run.project_id),
+        "pipeline_id": str(run.pipeline_id),
+        "environment_id": str(run.environment_id) if run.environment_id else None,
+        "status": status,
+        "trigger_type": run.trigger_type,
+        "triggered_by": str(run.triggered_by) if run.triggered_by else None,
+        "git_ref": run.git_ref,
+        "git_sha": run.git_sha,
+        "priority": run.priority,
+        "attempt": run.attempt,
+        "metadata": run.metadata_ or {},
+        "schedule_id": str(schedule_id),
+        "enqueued": enqueued,
+    }
 
 
 async def on_startup(ctx: dict) -> None:
@@ -285,6 +307,20 @@ async def check_schedules(ctx: dict) -> None:
                 await session.commit()
 
                 enqueued = await enqueue_run(arq, run_repo, run, "schedule", settings)
+                audit_repos = SimpleNamespace(audit=audit_repo)
+                audit_user = SimpleNamespace(tenant_id=project.tenant_id, user_id=None)
+                await write_audit(
+                    audit_repos,
+                    audit_user,
+                    action="run.trigger",
+                    resource_type="run",
+                    resource_id=run.id,
+                    after=_schedule_run_audit_state(
+                        run,
+                        schedule_id=schedule.id,
+                        enqueued=enqueued,
+                    ),
+                )
                 next_run = compute_next_run_at(schedule.cron_expr, schedule.timezone, now)
                 await schedule_repo.update_after_fire(
                     schedule.id,

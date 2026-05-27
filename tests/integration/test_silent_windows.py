@@ -84,6 +84,26 @@ async def _run_count(session, project_id, *, trigger_type: str) -> int:
     return int(result.scalar_one())
 
 
+async def _schedule_runs(session, project_id, schedule_id):
+    from qaplatform.infra.database.models import Run
+
+    runs = (
+        (
+            await session.execute(
+                select(Run).where(
+                    Run.project_id == project_id,
+                    Run.trigger_type == "schedule",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        run for run in runs if (run.metadata_ or {}).get("schedule_id") == str(schedule_id)
+    ]
+
+
 @pytest.mark.asyncio
 async def test_cron_tick_in_silent_window_skips_run_writes_audit_and_preserves_last_run_at(
     seed_run,
@@ -138,7 +158,7 @@ async def test_cron_tick_outside_silent_window_creates_run(
     integration_db_engine,
     integration_db_session,
 ):
-    from qaplatform.infra.database.models import Schedule
+    from qaplatform.infra.database.models import AuditEvent, Schedule
 
     now = datetime.now(timezone.utc)
     project = seed_run["project"]
@@ -168,6 +188,34 @@ async def test_cron_tick_outside_silent_window_creates_run(
     await integration_db_session.refresh(refreshed)
     assert refreshed.last_run_at is not None
 
+    runs = await _schedule_runs(integration_db_session, project.id, schedule.id)
+    assert len(runs) == 1
+    run = runs[0]
+    audit = (
+        (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == "run.trigger",
+                    AuditEvent.resource_id == run.id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert audit.tenant_id == project.tenant_id
+    assert audit.user_id is None
+    assert audit.resource_type == "run"
+    assert audit.after_state["trigger_type"] == "schedule"
+    assert audit.after_state["schedule_id"] == str(schedule.id)
+    assert audit.after_state["metadata"]["schedule_id"] == str(schedule.id)
+    assert audit.after_state["project_id"] == str(project.id)
+    assert audit.after_state["pipeline_id"] == str(seed_run["pipeline"].id)
+    assert audit.after_state["environment_id"] == str(seed_run["environment"].id)
+    assert audit.after_state["git_ref"] == project.default_branch
+    assert audit.after_state["triggered_by"] is None
+    assert audit.after_state["enqueued"] is True
+
 
 @pytest.mark.asyncio
 async def test_cron_tick_enqueue_conflict_records_last_error_and_waiting_run(
@@ -175,7 +223,7 @@ async def test_cron_tick_enqueue_conflict_records_last_error_and_waiting_run(
     integration_db_engine,
     integration_db_session,
 ):
-    from qaplatform.infra.database.models import Run, RunStatusEnum, Schedule
+    from qaplatform.infra.database.models import AuditEvent, RunStatusEnum, Schedule
 
     now = datetime.now(timezone.utc)
     project = seed_run["project"]
@@ -200,27 +248,28 @@ async def test_cron_tick_enqueue_conflict_records_last_error_and_waiting_run(
     assert refreshed.last_run_at is not None
     assert refreshed.last_error == "enqueue failed"
 
-    runs = (
-        (
-            await integration_db_session.execute(
-                select(Run).where(
-                    Run.project_id == project.id,
-                    Run.trigger_type == "schedule",
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    created = [
-        run
-        for run in runs
-        if (run.metadata_ or {}).get("schedule_id") == str(schedule.id)
-    ]
+    created = await _schedule_runs(integration_db_session, project.id, schedule.id)
     assert len(created) == 1
     assert created[0].status == RunStatusEnum.QUEUED
     assert created[0].enqueued_at is None
     assert created[0].arq_job_id is None
+
+    audit = (
+        (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == "run.trigger",
+                    AuditEvent.resource_id == created[0].id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert audit.user_id is None
+    assert audit.after_state["trigger_type"] == "schedule"
+    assert audit.after_state["schedule_id"] == str(schedule.id)
+    assert audit.after_state["enqueued"] is False
 
 
 @pytest.mark.asyncio

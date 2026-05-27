@@ -41,7 +41,14 @@ def sample_schedule():
     )
 
 
-def _patch_repos(schedule_repo=None, pipeline_repo=None, project_repo=None, env_repo=None, run_repo=None):
+def _patch_repos(
+    schedule_repo=None,
+    pipeline_repo=None,
+    project_repo=None,
+    env_repo=None,
+    run_repo=None,
+    audit_repo=None,
+):
     """Return a list of patches for all repository classes used by check_schedules."""
     return [
         patch("qaplatform.infra.database.repositories.project_repo.ScheduleRepository", return_value=schedule_repo or AsyncMock()),
@@ -49,6 +56,7 @@ def _patch_repos(schedule_repo=None, pipeline_repo=None, project_repo=None, env_
         patch("qaplatform.infra.database.repositories.project_repo.ProjectRepository", return_value=project_repo or AsyncMock()),
         patch("qaplatform.infra.database.repositories.project_repo.EnvironmentRepository", return_value=env_repo or AsyncMock()),
         patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo or AsyncMock()),
+        patch("qaplatform.infra.database.repositories.audit_repo.AuditEventRepository", return_value=audit_repo or AsyncMock()),
     ]
 
 
@@ -62,7 +70,7 @@ class TestCheckSchedules:
         schedule_repo.find_due_schedules = AsyncMock(return_value=[])
 
         patches = _patch_repos(schedule_repo=schedule_repo)
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
             await check_schedules(ctx)
 
         schedule_repo.find_due_schedules.assert_awaited_once()
@@ -94,9 +102,23 @@ class TestCheckSchedules:
 
         run = MagicMock()
         run.id = uuid4()
+        run.tenant_id = project.tenant_id
+        run.project_id = sample_schedule.project_id
+        run.pipeline_id = sample_schedule.pipeline_id
+        run.environment_id = env.id
+        run.status = "queued"
+        run.trigger_type = "schedule"
+        run.triggered_by = None
+        run.git_ref = "main"
+        run.git_sha = None
+        run.priority = 2
+        run.attempt = 1
+        run.metadata_ = {"schedule_id": str(sample_schedule.id)}
         run.retry_group_id = None
         run_repo = AsyncMock()
         run_repo.create = AsyncMock(return_value=run)
+        audit_repo = AsyncMock()
+        audit_repo.create = AsyncMock()
 
         patches = _patch_repos(
             schedule_repo=schedule_repo,
@@ -104,9 +126,10 @@ class TestCheckSchedules:
             project_repo=project_repo,
             env_repo=env_repo,
             run_repo=run_repo,
+            audit_repo=audit_repo,
         )
         with (
-            patches[0], patches[1], patches[2], patches[3], patches[4],
+            patches[0], patches[1], patches[2], patches[3], patches[4], patches[5],
             patch("qaplatform.worker.scheduler.enqueue_run", new_callable=AsyncMock, return_value=True) as mock_enqueue,
             patch("qaplatform.domain.services.scheduling.should_fire", return_value=True),
             patch("qaplatform.domain.services.scheduling.compute_next_run_at", return_value=datetime.now(timezone.utc)),
@@ -117,6 +140,16 @@ class TestCheckSchedules:
         mock_enqueue.assert_awaited_once()
         schedule_repo.update_after_fire.assert_awaited_once()
         assert run.retry_group_id == run.id
+        audit_repo.create.assert_awaited_once()
+        audit_kwargs = audit_repo.create.call_args.kwargs
+        assert audit_kwargs["tenant_id"] == project.tenant_id
+        assert audit_kwargs["user_id"] is None
+        assert audit_kwargs["action"] == "run.trigger"
+        assert audit_kwargs["resource_type"] == "run"
+        assert audit_kwargs["resource_id"] == run.id
+        assert audit_kwargs["after_state"]["trigger_type"] == "schedule"
+        assert audit_kwargs["after_state"]["schedule_id"] == str(sample_schedule.id)
+        assert audit_kwargs["after_state"]["enqueued"] is True
 
     @pytest.mark.asyncio
     async def test_skips_in_quiet_window(self, ctx, sample_schedule):
@@ -126,7 +159,7 @@ class TestCheckSchedules:
 
         patches = _patch_repos(schedule_repo=schedule_repo)
         with (
-            patches[0], patches[1], patches[2], patches[3], patches[4],
+            patches[0], patches[1], patches[2], patches[3], patches[4], patches[5],
             patch("qaplatform.domain.services.scheduling.should_fire", return_value=False),
         ):
             await check_schedules(ctx)
@@ -145,7 +178,7 @@ class TestCheckSchedules:
 
         patches = _patch_repos(schedule_repo=schedule_repo, pipeline_repo=pipeline_repo)
         with (
-            patches[0], patches[1], patches[2], patches[3], patches[4],
+            patches[0], patches[1], patches[2], patches[3], patches[4], patches[5],
             patch("qaplatform.domain.services.scheduling.should_fire", return_value=True),
             patch("qaplatform.domain.services.scheduling.compute_next_run_at", return_value=datetime.now(timezone.utc)),
         ):
@@ -182,9 +215,23 @@ class TestCheckSchedules:
 
         run = MagicMock()
         run.id = uuid4()
+        run.tenant_id = project.tenant_id
+        run.project_id = sample_schedule.project_id
+        run.pipeline_id = sample_schedule.pipeline_id
+        run.environment_id = env.id
+        run.status = "queued"
+        run.trigger_type = "schedule"
+        run.triggered_by = None
+        run.git_ref = "main"
+        run.git_sha = None
+        run.priority = 2
+        run.attempt = 1
+        run.metadata_ = {"schedule_id": str(sample_schedule.id)}
         run.retry_group_id = None
         run_repo = AsyncMock()
         run_repo.create = AsyncMock(return_value=run)
+        audit_repo = AsyncMock()
+        audit_repo.create = AsyncMock()
 
         patches = _patch_repos(
             schedule_repo=schedule_repo,
@@ -192,9 +239,10 @@ class TestCheckSchedules:
             project_repo=project_repo,
             env_repo=env_repo,
             run_repo=run_repo,
+            audit_repo=audit_repo,
         )
         with (
-            patches[0], patches[1], patches[2], patches[3], patches[4],
+            patches[0], patches[1], patches[2], patches[3], patches[4], patches[5],
             patch("qaplatform.worker.scheduler.enqueue_run", new_callable=AsyncMock, return_value=False),
             patch("qaplatform.domain.services.scheduling.should_fire", return_value=True),
             patch("qaplatform.domain.services.scheduling.compute_next_run_at", return_value=datetime.now(timezone.utc)),
@@ -204,6 +252,13 @@ class TestCheckSchedules:
         schedule_repo.update_after_fire.assert_awaited_once()
         call_kwargs = schedule_repo.update_after_fire.call_args.kwargs
         assert call_kwargs["last_error"] == "enqueue failed"
+        audit_repo.create.assert_awaited_once()
+        audit_kwargs = audit_repo.create.call_args.kwargs
+        assert audit_kwargs["action"] == "run.trigger"
+        assert audit_kwargs["resource_id"] == run.id
+        assert audit_kwargs["after_state"]["trigger_type"] == "schedule"
+        assert audit_kwargs["after_state"]["schedule_id"] == str(sample_schedule.id)
+        assert audit_kwargs["after_state"]["enqueued"] is False
 
     @pytest.mark.asyncio
     async def test_no_session_factory(self):
