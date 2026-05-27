@@ -83,6 +83,12 @@ class _MemoryS3:
     async def get_object(self, *, Bucket, Key):
         return {"Body": _MemoryBody(self.objects[(Bucket, Key)])}
 
+    async def generate_presigned_url(self, method, *, Params, ExpiresIn):
+        return (
+            f"https://s3.test/{Params['Bucket']}/{Params['Key']}"
+            f"?method={method}&expires={ExpiresIn}"
+        )
+
     async def __aexit__(self, *_args):
         return None
 
@@ -253,4 +259,57 @@ async def test_archived_log_replay_api_p99_smoke(
         "archived log replay API",
         samples,
         _threshold("PERF_LOG_ARCHIVE_READ_P99_MS", 1000),
+    )
+
+
+@pytest.mark.asyncio
+async def test_artifact_download_url_api_p99_smoke(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    run_id = seed_run["run"].id
+    repo = ArtifactRepository(integration_db_session)
+    artifact = await repo.create(
+        run_id=run_id,
+        type="report",
+        name="perf-summary.html",
+        storage_path=f"reports/{run_id}/perf-summary.html",
+        size_bytes=1024,
+        mime_type="text/html",
+    )
+    await integration_db_session.commit()
+
+    old_s3 = integration_app.state.container.s3_client
+    integration_app.state.container.s3_client = _MemoryS3()
+    samples: list[float] = []
+    try:
+        for _ in range(3):
+            response = await integration_client.get(
+                f"/api/v1/artifacts/{artifact.id}/download"
+            )
+            assert response.status_code == 200, response.text
+
+        for _ in range(20):
+            elapsed_ms, response = await _timed(
+                integration_client.get(f"/api/v1/artifacts/{artifact.id}/download")
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert (
+                body["expires_in"]
+                == integration_app.state.container.settings.s3_presigned_url_ttl
+            )
+            assert f"/reports/{run_id}/perf-summary.html" in body["download_url"]
+            samples.append(elapsed_ms)
+    finally:
+        integration_app.state.container.s3_client = old_s3
+
+    _assert_p99_under(
+        "artifact download URL API",
+        samples,
+        _threshold("PERF_ARTIFACT_DOWNLOAD_URL_P99_MS", 1000),
     )
