@@ -14,7 +14,7 @@
 
 | 日期 | required integration | unit | warning 摘要 | 处理结论 |
 | --- | --- | --- | --- | --- |
-| 2026-05-27 | required integration 94 passed；完整 integration 103 passed / 6 skipped；performance smoke 4 passed | unit + coverage 758 passed，coverage 83.37% | 已清理项目内 warning；第三方 testcontainers warning 精确过滤并登记 | 可继续作为 PR 门禁，nightly 承担重型/性能路径 |
+| 2026-05-27 | required integration 94 passed；完整 integration 103 passed / 7 skipped；performance smoke 5 passed | unit + coverage 758 passed，coverage 83.37% | 已清理项目内 warning；第三方 testcontainers warning 精确过滤并登记 | 可继续作为 PR 门禁，nightly 承担重型/性能路径 |
 
 ## 缺陷回归流程
 

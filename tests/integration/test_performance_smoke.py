@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import math
 import os
+from datetime import datetime, timezone
 from time import perf_counter
-from uuid import uuid4
+from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import select
 
 pytestmark = [
     pytest.mark.performance,
@@ -84,6 +87,15 @@ class _MemoryS3:
         return None
 
 
+class _FakeArq:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def enqueue_job(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return SimpleNamespace(job_id=kwargs["_job_id"])
+
+
 @pytest.mark.asyncio
 async def test_read_run_api_p99_smoke(integration_client, seed_run):
     run_id = seed_run["run"].id
@@ -124,6 +136,62 @@ async def test_write_run_api_p99_smoke(integration_app, integration_client, seed
         samples.append(elapsed_ms)
 
     _assert_p99_under("write run API", samples, _threshold("PERF_WRITE_P99_MS", 1500))
+
+
+@pytest.mark.asyncio
+async def test_trigger_run_enqueue_slo_smoke(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Run
+
+    arq = _FakeArq()
+    settings = integration_app.state.container.settings
+    old_arq_pool = integration_app.state.container.arq_pool
+    old_total = settings.max_concurrent_runs
+    old_per_project = settings.max_concurrent_per_project
+    integration_app.state.container.arq_pool = arq
+    settings.max_concurrent_runs = 100
+    settings.max_concurrent_per_project = 100
+
+    pipeline_id = seed_run["pipeline"].id
+    samples: list[float] = []
+    try:
+        for _ in range(10):
+            started_at = datetime.now(timezone.utc)
+            response = await integration_client.post(
+                "/api/v1/runs",
+                json={
+                    "pipeline_id": str(pipeline_id),
+                    "git_ref": f"perf-enqueue/{uuid4().hex}",
+                    "priority": 1,
+                },
+            )
+            assert response.status_code == 201, response.text
+            run_id = UUID(response.json()["id"])
+
+            integration_db_session.expire_all()
+            row = (
+                await integration_db_session.execute(
+                    select(Run).where(Run.id == run_id)
+                )
+            ).scalar_one()
+            assert row.enqueued_at is not None, "triggered run was not enqueued"
+            assert row.queue_name == "queue:medium"
+            samples.append((row.enqueued_at - started_at).total_seconds() * 1000)
+    finally:
+        settings.max_concurrent_runs = old_total
+        settings.max_concurrent_per_project = old_per_project
+        integration_app.state.container.arq_pool = old_arq_pool
+
+    assert len(arq.calls) == 10
+    _assert_p99_under(
+        "trigger enqueue SLO",
+        samples,
+        _threshold("PERF_TRIGGER_ENQUEUE_P99_MS", 5000),
+    )
 
 
 @pytest.mark.asyncio
