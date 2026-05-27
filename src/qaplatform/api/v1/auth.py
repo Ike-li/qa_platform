@@ -254,7 +254,11 @@ async def login(
                 await audit_session.commit()
             except Exception:
                 await audit_session.rollback()
-                log.warning("audit_write_failed", action="auth.login_failed", exc_info=True)
+                log.warning(
+                    "audit_write_failed",
+                    extra={"action": "auth.login_failed"},
+                    exc_info=True,
+                )
 
     async with session_factory() as session:
         try:
@@ -368,7 +372,11 @@ async def refresh(
                 await audit_session.commit()
             except Exception:
                 await audit_session.rollback()
-                log.warning("audit_write_failed", action="auth.refresh_failed", exc_info=True)
+                log.warning(
+                    "audit_write_failed",
+                    extra={"action": "auth.refresh_failed"},
+                    exc_info=True,
+                )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
@@ -390,7 +398,11 @@ async def refresh(
                 await audit_session.commit()
             except Exception:
                 await audit_session.rollback()
-                log.warning("audit_write_failed", action="auth.refresh_failed", exc_info=True)
+                log.warning(
+                    "audit_write_failed",
+                    extra={"action": "auth.refresh_failed"},
+                    exc_info=True,
+                )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token type",
@@ -418,7 +430,11 @@ async def refresh(
                 try:
                     await jwt_svc.revoke(old_jti, ttl)
                 except Exception:
-                    log.warning("token_revoke_failed", jti=old_jti, exc_info=True)
+                    log.warning(
+                        "token_revoke_failed",
+                        extra={"jti": old_jti},
+                        exc_info=True,
+                    )
 
             new_jti_placeholder = None
             audit_repo = AuditEventRepository(session)
@@ -476,7 +492,11 @@ async def logout(
                 try:
                     await jwt_svc.revoke(jti, ttl)
                 except Exception:
-                    log.warning("token_revoke_failed", jti=jti, exc_info=True)
+                    log.warning(
+                        "token_revoke_failed",
+                        extra={"jti": jti},
+                        exc_info=True,
+                    )
             sub = payload.get("sub")
             tid = payload.get("tenant_id")
             if sub:
@@ -502,7 +522,11 @@ async def logout(
                 try:
                     await jwt_svc.revoke(jti, ttl)
                 except Exception:
-                    log.warning("token_revoke_failed", jti=jti, exc_info=True)
+                    log.warning(
+                        "token_revoke_failed",
+                        extra={"jti": jti},
+                        exc_info=True,
+                    )
         except Exception:
             pass
 
@@ -522,7 +546,11 @@ async def logout(
             await audit_session.commit()
         except Exception:
             await audit_session.rollback()
-            log.warning("audit_write_failed", action="auth.logout", exc_info=True)
+            log.warning(
+                "audit_write_failed",
+                extra={"action": "auth.logout"},
+                exc_info=True,
+            )
 
 
 @router.post("/tokens", response_model=ApiTokenResponse, status_code=201)
