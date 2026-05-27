@@ -29,7 +29,7 @@
 | # | 项 | 来源 | 缺什么 |
 |---|---|---|---|
 | 13 | F-EX-02 静默窗口 | PRD §3.3 验收 | 发布冻结期不触发 cron 未实现 |
-| 14 | F-EX-03 Webhook Git 平台事件解析 | PRD §3.3 验收 | 当前项目级 webhook 已支持 HMAC 验签、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口 |
+| 14 | F-EX-03 Webhook Git 平台事件解析 | PRD §3.3 验收 | 当前项目级 webhook 已支持 HMAC 验签、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；webhook 成功触发后的入队 SLO、真实 Run metadata 保留字段保护和 `run.trigger` audit 脱敏已进入 nightly/manual performance smoke；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口 |
 | 15 | F-EX-07 自动重试端到端补齐 | PRD §3.3 验收 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、真实 `RunExecutor` setup Docker daemon `ConnectionError` retry、setup script 非 0 与 git clone 失败不误 retry、worker_lost reclaimer 的真实 DB/Redis status event `previous=running`、orphan cleanup 与 retry Run 入队已进 required integration；nightly/manual external-stack 已补 worker_lost 黑盒重试，以及 credentialed clone failure / setup exit 1 不 retry、不落 artifact、不泄密黑盒；剩余增强是把 Docker daemon 扰动扩到 external-stack 黑盒 |
 | 16 | F-EX-08 优先级队列消费闭环 | PRD §3.3 验收 | 已补 compose high/medium/low worker 部署、manual priority 队列矩阵单测、真实 API/DB queue metadata 测试、真实 DB priority+FIFO 排序测试，以及 nightly/manual external-stack high/low worker 队列隔离黑盒；真实长队公平性/抢占压测仍可作为更重的 nightly/manual 增强 |
 | 17 | F-LS-04 测试结果 suite/关键字过滤 | PRD §3.7 验收 | 当前 `main` 仅 status（后端状态枚举含 `passed/failed/error/skipped/xfail`）；`feature/T07-test-results-filter` 已推送但未合入 |
@@ -38,7 +38,7 @@
 | 20 | F-LS-03 项目搜索排序补齐 | PRD §3.7 验收 | LIKE 转义已修；结果仍按 `created_at desc`，缺名称字母序 |
 | 21 | F-RE-05 单用例历史趋势补齐 | PRD §3.4 验收 | 当前已有项目级趋势和 flaky 聚合；缺单个用例历史趋势 API/视图 |
 | 22 | F-NT-01 / F-NT-03 通知规则与模板验收补齐 | PRD §3.5 验收 | 当前仅状态/pass_rate/失败数 AND 条件和规则级基础变量模板；缺 OR、连续失败次数、每渠道模板、项目名与失败用例变量 |
-| 23 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO（每次采样都写 `run.trigger` 审计且状态字段一致）、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API（小样本与 1500 行大对象分页均只读 `logs/{run_id}.jsonl` 且不 presign，对象缺失稳定 404 且只读目标归档对象，存储未配置稳定 503，跨租户拒绝不读 S3）、artifact 列表元数据 API（成功路径 DB-only 不 presign/读 S3）、artifact 列表拒绝不返回元数据、artifact 下载链接 API（单次/burst 成功路径 presign-only 不读对象，存储未配置稳定 503，跨租户拒绝不 presign）、audit events 查询 API 与成功自审计写入、audit-events 拒绝查询不写自审计、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
+| 23 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、手动/webhook 触发入队 SLO（每次采样都写 `run.trigger` 审计且状态字段一致，webhook 额外验证保留 metadata 不覆盖执行配置且不进审计）、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API（小样本与 1500 行大对象分页均只读 `logs/{run_id}.jsonl` 且不 presign，对象缺失稳定 404 且只读目标归档对象，存储未配置稳定 503，跨租户拒绝不读 S3）、artifact 列表元数据 API（成功路径 DB-only 不 presign/读 S3）、artifact 列表拒绝不返回元数据、artifact 下载链接 API（单次/burst 成功路径 presign-only 不读对象，存储未配置稳定 503，跨租户拒绝不 presign）、audit events 查询 API 与成功自审计写入、audit-events 拒绝查询不写自审计、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
 | 24 | E2E CI 覆盖扩展 | fix-roadmap §4.3 | 已补 nightly 固定真实 E2E：`real-login-flow`、`real-run-trigger`、`special-regressions`；PR 仍保留轻量 `auth-flow`，manual 仍跑全量 |
 | 25 | 数据保留冷归档/读回增强 | architecture §8.4 / runbook §7 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 和前端终态 Run 回看主路径已闭环；当前仍缺 DB 行冷归档与对象存储生命周期运营报表 |
 
