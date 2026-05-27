@@ -273,6 +273,11 @@ async def batch_cancel_runs(
                 continue
 
             before_response = _to_run_response(run)
+            previous = (
+                run.status.value
+                if isinstance(run.status, RunStatusEnum)
+                else str(run.status)
+            )
             cancelled = await repos.run.cancel_if_current(run_id, expected_in=_CANCELABLE)
             if not cancelled:
                 errors.append(f"{run_id}: status changed concurrently")
@@ -284,7 +289,6 @@ async def batch_cancel_runs(
                 from qaplatform.engine.events import publish_status_event
 
                 await publish_cancel(redis, run_id)
-                previous = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
                 await publish_status_event(redis, run_id, "cancelled", previous=previous)
 
             run_after = await repos.run.get_for_tenant(run_id, user.tenant_id)
@@ -428,12 +432,11 @@ async def cancel_run(
     if run.status not in _CANCELABLE:
         raise HTTPException(status_code=409, detail=f"Run already in terminal status: {run.status}")
 
+    previous_status = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
+    before_response = _to_run_response(run)
     cancelled = await repos.run.cancel_if_current(run_id, expected_in=_CANCELABLE)
     if not cancelled:
         raise HTTPException(status_code=409, detail="Run status changed concurrently")
-
-    previous_status = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
-    before_response = _to_run_response(run)
 
     # Notify worker to stop the container
     container = request.app.state.container
