@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -66,6 +66,20 @@ def _decode_redis_mapping(mapping: dict) -> dict[str, str]:
         )
         for key, value in mapping.items()
     }
+
+
+class _RecordingArq:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def enqueue_job(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+
+        class _Job:
+            def __init__(self, job_id: str) -> None:
+                self.job_id = job_id
+
+        return _Job(kwargs["_job_id"])
 
 
 @pytest.mark.asyncio
@@ -891,6 +905,71 @@ async def test_schedule_and_run_apis_persist_next_run_metadata_and_audit_rows(
         user_id=seed_run["user"].id,
         resource_id=run.id,
     )
+
+
+@pytest.mark.asyncio
+async def test_manual_run_priority_persists_worker_queue_metadata_with_real_db(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Run
+
+    pipeline_id = str(seed_run["pipeline"].id)
+    arq = _RecordingArq()
+    original_arq_pool = integration_app.state.container.arq_pool
+    settings = integration_app.state.container.settings
+    original_max_total = settings.max_concurrent_runs
+    original_max_per_project = settings.max_concurrent_per_project
+    integration_app.state.container.arq_pool = arq
+    settings.max_concurrent_runs = 1000
+    settings.max_concurrent_per_project = 1000
+
+    try:
+        cases = [
+            (0, "queue:high"),
+            (1, "queue:medium"),
+            (2, "queue:low"),
+        ]
+        run_ids: list[UUID] = []
+
+        for priority, expected_queue in cases:
+            response = await integration_client.post(
+                "/api/v1/runs",
+                json={
+                    "pipeline_id": pipeline_id,
+                    "git_ref": f"queue-priority-{priority}-{uuid4().hex}",
+                    "priority": priority,
+                },
+            )
+            assert response.status_code == 201, response.text
+            run_id = UUID(response.json()["id"])
+            run_ids.append(run_id)
+
+            integration_db_session.expire_all()
+            run = await integration_db_session.get(Run, run_id)
+            assert run is not None
+            assert run.priority == priority
+            assert run.queue_name == expected_queue
+            assert run.arq_job_id == f"run:{run_id}"
+            assert run.enqueued_at is not None
+
+        assert [call["args"] for call in arq.calls] == [
+            ("execute_run", str(run_id)) for run_id in run_ids
+        ]
+        assert [call["kwargs"]["_queue_name"] for call in arq.calls] == [
+            "queue:high",
+            "queue:medium",
+            "queue:low",
+        ]
+        assert [call["kwargs"]["_job_id"] for call in arq.calls] == [
+            f"run:{run_id}" for run_id in run_ids
+        ]
+    finally:
+        integration_app.state.container.arq_pool = original_arq_pool
+        settings.max_concurrent_runs = original_max_total
+        settings.max_concurrent_per_project = original_max_per_project
 
 
 @pytest.mark.asyncio

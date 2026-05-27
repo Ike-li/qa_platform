@@ -52,7 +52,7 @@
 | F-EX-05 | 实时日志 | P0 | ⚠️ | `engine/log_stream.py` + `api/v1/sse.py` + `api/v1/runs.py` · Redis Stream 实时日志、`Last-Event-ID` 续传、S3 JSONL 归档写入与归档日志读回 API 已实现；真实 API/RBAC/DB/Redis 测试覆盖 SSE 断点续传、归档失败 retry marker/worker cron 重试、归档读回分页、对象缺失 404 和跨租户 404 一致性；nightly/manual performance smoke 覆盖真实 SSE 推送 < 2s；前端终态 Run 回看入口已接入归档日志 API，剩余大日志体验/异常可观测性见 §4 |
 | F-EX-06 | 取消执行 | P0 | ✅ | `engine/cancel.py` + `api/v1/runs.py` · required integration 覆盖单 run/batch cancel 的真实 DB 终态、Redis status event `previous` 与 audit before/after 一致性；nightly/manual performance smoke 覆盖取消 API p99；heavy Docker 覆盖真实容器取消 |
 | F-EX-07 | 自动重试 | P1 | ⚠️ | `worker/tasks.py` 已按 API-facing `max_attempts` / `retry_on` 创建 retry Run，execute_run 基础设施异常会先提交 failed 再调度 retry；`engine/reclaim.py` 的 worker_lost callback 会创建 retry Run，nightly/manual external-stack 已覆盖 worker_lost 黑盒 retry。clone/setup/Docker daemon 失败是否也应黑盒 retry 仍需产品化决策 |
-| F-EX-08 | 优先级队列 | P2 | ⚠️ | `worker/scheduler.py` 已按 priority 写入 `queue:high/medium/low` 并做 per-project quota；默认 `WorkerSettings.queue_name=queue:medium`，compose 只启动一个未设置 `QAP_WORKER_QUEUE` 的 worker，high/low 队列消费与高优先级插队需补部署/测试闭环 |
+| F-EX-08 | 优先级队列 | P2 | ⚠️ | `worker/scheduler.py` 已按 priority 写入 `queue:high/medium/low` 并做 per-project quota；compose/CI nightly 启动 medium/high/low 三组 worker；required integration 覆盖 manual priority 0/1/2 经真实 API/DB 写入对应 queue metadata；剩余高优先级在真实长队中插队的黑盒验收仍见 §4 |
 
 ### 1.4 结果与报告
 
@@ -153,7 +153,7 @@
 | F-EX-02 静默窗口 | P1 | 发布冻结期不触发 cron | PRD §3.3 验收 |
 | F-EX-03 Webhook Git 平台事件解析 | P1 | 项目级 webhook 已支持 HMAC 验签、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口 | 当前接口仍是 `POST /api/v1/webhooks/{project_id}/trigger`，不是 `POST /webhooks/{provider}` |
 | F-EX-07 自动重试端到端补齐 | P2 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 已补单测和真实 DB 测试；nightly/manual 已启动完整外部栈跑 worker smoke 与 worker_lost retry 黑盒 | 剩余增强是明确 clone/setup/Docker daemon 失败是否也进入自动 retry，并补对应黑盒场景 |
-| F-EX-08 优先级队列消费闭环 | P2 | 已补部署/测试主干 | Compose 启动 high/medium/low worker；manual priority 队列矩阵有单测；等待队列 priority+FIFO 有真实 DB 测试 |
+| F-EX-08 优先级队列消费闭环 | P2 | 已补部署/测试主干 | Compose 启动 high/medium/low worker；manual priority 队列矩阵有单测和真实 API/DB queue metadata 测试；等待队列 priority+FIFO 有真实 DB 测试；真实长队抢占仍可作为 nightly/manual 黑盒增强 |
 | F-LS-04 测试结果 suite/关键字过滤 | P0 | `main` 仅 status | PRD §3.7 验收；`feature/T07-test-results-filter` 已推送但未合入 |
 | F-LS-01 执行列表过滤补齐 | P0 | 缺 pipeline / git_ref / time range 过滤 | 当前 `main` 支持 status 多选、project_id 与创建时间排序 |
 | F-LS-02 剩余列表分页补齐 | P0 | credentials、project members、auth tokens 仍返回直接 list | 主要列表已使用 `PaginatedResponse` |
