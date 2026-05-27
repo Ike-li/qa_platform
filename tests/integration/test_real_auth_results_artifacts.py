@@ -711,6 +711,95 @@ async def test_artifact_download_url_uses_real_auth_rbac_and_db_row(
 
 
 @pytest.mark.asyncio
+async def test_artifact_list_api_token_requires_run_read_scope(
+    real_auth_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    access_token = await _register_real_user(real_auth_client, prefix="artifact_list_scope")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    artifact_repo = ArtifactRepository(integration_db_session)
+    first = await artifact_repo.create(
+        run_id=run_id,
+        type="html",
+        name="summary.html",
+        storage_path=f"reports/{run_id}/summary.html",
+        size_bytes=128,
+        mime_type="text/html",
+    )
+    second = await artifact_repo.create(
+        run_id=run_id,
+        type="junit",
+        name="results.xml",
+        storage_path=f"reports/{run_id}/results.xml",
+        size_bytes=256,
+        mime_type="application/xml",
+    )
+    await integration_db_session.commit()
+
+    project_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="artifact-list-project-read",
+        scopes=["project.read"],
+    )
+    denied_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/artifacts",
+        headers={"Authorization": f"Bearer {project_read_token}"},
+    )
+    assert denied_resp.status_code == 403, denied_resp.text
+    assert "summary.html" not in denied_resp.text
+    assert "results.xml" not in denied_resp.text
+
+    run_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="artifact-list-run-read",
+        scopes=["run.read"],
+    )
+    allowed_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/artifacts",
+        headers={"Authorization": f"Bearer {run_read_token}"},
+        params={"page": 1, "per_page": 10},
+    )
+    assert allowed_resp.status_code == 200, allowed_resp.text
+    body = allowed_resp.json()
+    assert body["total"] == 2
+    assert body["page"] == 1
+    assert body["per_page"] == 10
+    artifacts_by_id = {item["id"]: item for item in body["data"]}
+    assert set(artifacts_by_id) == {str(first.id), str(second.id)}
+    first_body = artifacts_by_id[str(first.id)]
+    assert first_body["run_id"] == run_id
+    assert first_body["type"] == "html"
+    assert first_body["name"] == "summary.html"
+    assert first_body["storage_path"] == f"reports/{run_id}/summary.html"
+    assert first_body["size_bytes"] == 128
+    assert first_body["mime_type"] == "text/html"
+    assert first_body["expires_at"] is None
+    assert first_body["created_at"]
+    second_body = artifacts_by_id[str(second.id)]
+    assert second_body["run_id"] == run_id
+    assert second_body["type"] == "junit"
+    assert second_body["name"] == "results.xml"
+    assert second_body["storage_path"] == f"reports/{run_id}/results.xml"
+    assert second_body["size_bytes"] == 256
+    assert second_body["mime_type"] == "application/xml"
+    assert second_body["expires_at"] is None
+    assert second_body["created_at"]
+
+
+@pytest.mark.asyncio
 async def test_artifact_download_api_token_requires_run_read_scope(
     real_auth_app,
     real_auth_client,
