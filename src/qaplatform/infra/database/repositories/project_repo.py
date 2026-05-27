@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from qaplatform.infra.database.models import (
-    AppUser,
     Credential,
     Environment,
     NotificationLog,
@@ -286,6 +285,21 @@ class NotificationLogRepository(BaseRepository[NotificationLog]):
 
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
+
+    async def get_by_delivery(
+        self,
+        *,
+        run_id: UUID,
+        rule_id: UUID,
+        channel_type: str,
+    ) -> NotificationLog | None:
+        stmt = select(NotificationLog).where(
+            NotificationLog.run_id == run_id,
+            NotificationLog.rule_id == rule_id,
+            NotificationLog.channel_type == channel_type,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def list_by_run(
         self, run_id: UUID, *, offset: int = 0, limit: int = 20

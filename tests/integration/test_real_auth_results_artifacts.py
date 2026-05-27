@@ -56,6 +56,99 @@ async def real_auth_client(real_auth_app):
         yield client
 
 
+async def _register_real_user(real_auth_client, prefix: str = "api_token") -> str:
+    suffix = uuid4().hex[:8]
+    username = f"{prefix}_{suffix}"
+    password = "correct-horse-battery"
+
+    register_resp = await real_auth_client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": username,
+            "email": f"{username}@example.com",
+            "password": password,
+        },
+    )
+    assert register_resp.status_code == 201, register_resp.text
+    return register_resp.json()["access_token"]
+
+
+async def _create_real_api_token(
+    real_auth_client,
+    access_token: str,
+    *,
+    name: str,
+    scopes: list[str],
+) -> str:
+    create_resp = await real_auth_client.post(
+        "/api/v1/auth/tokens",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"name": name, "scopes": scopes, "expires_days": 7},
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    return create_resp.json()["token"]
+
+
+async def _create_project_environment_and_pipeline(
+    real_auth_client,
+    access_token: str,
+) -> dict:
+    suffix = uuid4().hex[:8]
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    project_resp = await real_auth_client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={
+            "name": f"scope-project-{suffix}",
+            "slug": f"scope-project-{suffix}",
+            "git_url": "https://example.com/scope-project.git",
+            "default_branch": "main",
+        },
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project = project_resp.json()
+
+    env_resp = await real_auth_client.post(
+        f"/api/v1/projects/{project['id']}/environments",
+        headers=headers,
+        json={
+            "name": "default",
+            "base_image": "python:3.12-alpine",
+            "memory_mb": 128,
+            "cpu_cores": 0.5,
+            "network_policy": "deny",
+            "env_vars": {},
+        },
+    )
+    assert env_resp.status_code == 201, env_resp.text
+
+    pipeline_resp = await real_auth_client.post(
+        f"/api/v1/projects/{project['id']}/pipelines",
+        headers=headers,
+        json={
+            "name": "scope-pipeline",
+            "stages": [
+                {
+                    "name": "run-tests",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {},
+                }
+            ],
+            "trigger_config": {"type": "manual"},
+            "timeout_seconds": 120,
+        },
+    )
+    assert pipeline_resp.status_code == 201, pipeline_resp.text
+
+    return {
+        "project_id": project["id"],
+        "environment_id": env_resp.json()["id"],
+        "pipeline_id": pipeline_resp.json()["id"],
+    }
+
+
 @pytest.mark.asyncio
 async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_revokes(
     real_auth_client,
@@ -140,6 +233,88 @@ async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_re
     assert {"auth.api_token_create", "auth.api_token_revoke"}.issubset(
         set(audit_actions)
     )
+
+
+@pytest.mark.asyncio
+async def test_api_token_scope_matrix_enforced_by_real_routes(
+    real_auth_client,
+):
+    access_token = await _register_real_user(real_auth_client, prefix="scope_matrix")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="read-only",
+        scopes=["project.read"],
+    )
+    read_headers = {"Authorization": f"Bearer {read_token}"}
+    read_resp = await real_auth_client.get("/api/v1/projects", headers=read_headers)
+    assert read_resp.status_code == 200, read_resp.text
+
+    denied_write = await real_auth_client.post(
+        "/api/v1/projects",
+        headers=read_headers,
+        json={
+            "name": "denied",
+            "slug": f"denied-{uuid4().hex[:8]}",
+            "git_url": "https://example.com/denied.git",
+        },
+    )
+    assert denied_write.status_code == 403, denied_write.text
+
+    run_trigger_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="run-trigger-only",
+        scopes=["run.trigger"],
+    )
+    run_headers = {"Authorization": f"Bearer {run_trigger_token}"}
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers=run_headers,
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+
+    denied_schedule = await real_auth_client.post(
+        f"/api/v1/projects/{stack['project_id']}/schedules",
+        headers=run_headers,
+        json={
+            "pipeline_id": stack["pipeline_id"],
+            "cron_expr": "*/15 * * * *",
+            "timezone": "UTC",
+            "missed_fire_policy": "skip",
+            "quiet_windows": [],
+            "enabled": True,
+        },
+    )
+    assert denied_schedule.status_code == 403, denied_schedule.text
+
+    wrong_scope_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="wrong-scope",
+        scopes=["run.read"],
+    )
+    wrong_scope_resp = await real_auth_client.get(
+        "/api/v1/projects",
+        headers={"Authorization": f"Bearer {wrong_scope_token}"},
+    )
+    assert wrong_scope_resp.status_code == 403, wrong_scope_resp.text
+
+    empty_scope_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="empty-scope",
+        scopes=[],
+    )
+    empty_scope_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {empty_scope_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert empty_scope_resp.status_code == 403, empty_scope_resp.text
 
 
 @pytest.mark.asyncio

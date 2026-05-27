@@ -10,10 +10,10 @@
 
 - 覆盖率指标：启用 coverage branch mode，CI 使用 `--cov-report=term-missing`，并设置 `fail_under = 83`。
 - 关键业务路径：覆盖 pipeline API、项目/成员落库、run 状态迁移、schedule/webhook/cancel、worker 调度、插件注册、日志配置。
-- 安全风险路径：覆盖 JWT/API token 中间件、真实 JWT 注册到 API token 创建/使用/撤销、审计失败路径、跨租户隔离、RBAC audit-events 拒绝路径。
+- 安全风险路径：覆盖 JWT/API token 中间件、真实 JWT 注册到 API token 创建/使用/撤销、API token scope 路由矩阵、审计失败路径、跨租户隔离、RBAC audit-events 拒绝路径。
 - 真实数据路径：integration suite 使用真实 PostgreSQL/Redis/Testcontainers/FastAPI ASGI app；新增测试不 mock repository 或 database session。
 - Webhook/schedule 失败路径：新增 required integration 断言 archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 都不会静默写错真实 DB 状态。
-- CI 稳定性：后端单测有覆盖率门槛；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，完整真实 E2E 留给手动 workflow。
+- CI 稳定性：后端单测有覆盖率门槛；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
 
 ## Mock 使用口径
 
@@ -39,7 +39,7 @@ PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=/tmp/qaplatform-final.coverage .venv/bin
 - 总覆盖率：83.24%
 - 语句覆盖率：85.88%
 - 分支覆盖率：69.16%
-- warnings：3（剩余为 testcontainers 第三方弃用提示 + SQLAlchemy mapper overlap 登记项）
+- warnings：项目内 SQLAlchemy overlap 与 Redis pubsub `close()` 已清理；testcontainers 第三方弃用提示已精确过滤并登记 owner/截止条件
 
 真实 DB / API 集成验证：
 
@@ -88,19 +88,19 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 
 - `backend-test`：跑后端单元测试和 coverage fail-under。
 - `backend-integration-test`：PR/push 跑 `tests/integration -m "not heavy_docker and not external_stack"`；`workflow_dispatch`/nightly 额外跑 `heavy_docker` 和 `external_stack` 分组。
-- `e2e-test`：PR 跑 `auth-flow.spec.ts` UI 冒烟；`workflow_dispatch` 跑完整 Playwright E2E。
+- `e2e-test`：PR 跑 `auth-flow.spec.ts` UI 冒烟；nightly 跑三条真实 E2E 主路径；`workflow_dispatch` 跑完整 Playwright E2E。
 - 更多分层细节见 `docs/testing-strategy.md`。
 
 ## 残余缺口
 
 - 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade。
 - Webhook/API/schedule worker 新增真实 DB 失败路径后，project archived、pipeline/environment missing、cross-project pipeline、enqueue conflict 已进 required integration；schedule pipeline missing 仍保留 unit 覆盖，因为真实 FK 下硬删除会级联，软删除不等价于真实缺行。
-- 分支覆盖率仍低于语句覆盖率：主要来自 API token scope 路由级 enforcement、通知 channel 网络异常矩阵和依赖初始化分支。
-- warnings 尚未清零：剩余主要是 testcontainers 第三方弃用提示、SQLAlchemy relationship overlap 提示、Redis pubsub `close()` 弃用提示；已清理 SSE AsyncMock、httpx per-request cookies 和 JWT key length warning。
-- PR E2E 是 mock API UI 冒烟，不证明真实后端；真实后端 E2E 已有 `real-login-flow`、`real-run-trigger`、`special-regressions`，但当前 CI 仅在手动 workflow 全量执行，避免 PR 过慢和 flaky。
+- 分支覆盖率仍低于语句覆盖率：主要来自依赖初始化分支、外部 SDK/worker 边界和少量异常恢复路径。
+- warnings 治理：项目内 SQLAlchemy overlap、Redis pubsub `close()`、SSE AsyncMock、httpx cookies、JWT key length warning 均已清理；testcontainers 第三方弃用提示已在 `pyproject.toml` 精确过滤并登记。
+- PR E2E 是 mock API UI 冒烟，不证明真实后端；真实后端 E2E 已有 `real-login-flow`、`real-run-trigger`、`special-regressions`，当前 CI 在 nightly 固定执行这些真实主路径，manual 执行全量。
 
 ## 后续优先级
 
-1. 单独评估 API token scope 是否应进入路由级 `UserIdentity`/permission enforcement；这会改变当前 API 行为，需安全/产品口径确认后再补端到端矩阵。
-2. 继续补 notifications 外部 channel 网络异常和 template/render 失败路径，但保持外部 SMTP/webhook/DingTalk/WeCom 为 test double，DB/API/规则选择链路走真实 integration。
-3. 在不改 API 行为的前提下单独评估 SQLAlchemy overlap、Redis pubsub `close()` 与 testcontainers deprecation；warnings 收敛后再考虑把 `fail_under` 提升到 84+。
+1. 自动重试端到端闭环仍需继续，尤其是 worker_lost 后是否创建 retry run；当前仍归 F-EX-07。
+2. 通知更高级产品能力仍待补：OR 条件、连续失败次数、每渠道模板、项目名/失败用例变量；本轮已补真实 DB delivery、模板失败、发送失败与幂等。
+3. 后续提升 coverage 门槛应继续依赖真实风险路径，而不是为百分比增加无行为断言。

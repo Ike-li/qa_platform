@@ -116,6 +116,24 @@ async def test_enqueue_schedule_uses_low_priority_queue():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("priority", "expected"),
+    [
+        (0, Priority.HIGH),
+        (1, Priority.MEDIUM),
+        (2, Priority.LOW),
+    ],
+)
+async def test_manual_priority_matrix_targets_all_worker_queues(priority, expected):
+    run = _run(trigger_type="manual", priority=priority)
+    arq = _arq()
+    scheduler = FairScheduler(arq, _repo(), _settings())
+
+    assert await scheduler.enqueue(run) is True
+    assert arq.enqueue_job.call_args.kwargs["_queue_name"] == PRIORITY_QUEUES[expected]
+
+
+@pytest.mark.asyncio
 async def test_enqueue_job_conflict_is_idempotent_for_same_enqueued_run():
     run = _run()
     repo = _repo()

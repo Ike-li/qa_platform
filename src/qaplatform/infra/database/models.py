@@ -422,6 +422,7 @@ class Run(Base):
         primaryjoin="and_(Run.project_id == Project.id, Run.tenant_id == Project.tenant_id)",
         foreign_keys=[project_id, tenant_id],
         lazy="joined",
+        overlaps="runs,tenant",
     )
     pipeline: Mapped[Pipeline] = relationship(
         "Pipeline",
@@ -605,7 +606,13 @@ class NotificationLog(Base):
     rule_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     channel_type: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[NotificationStatusEnum] = mapped_column(
-        Enum(NotificationStatusEnum, name="notification_status_enum", create_constraint=False),
+        Enum(
+            NotificationStatusEnum,
+            name="notification_status_enum",
+            native_enum=False,
+            create_constraint=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
         nullable=False,
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

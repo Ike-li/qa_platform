@@ -51,6 +51,7 @@ async def list_projects(
     per_page: int = Query(20, ge=1, le=100),
     q: str | None = Query(None, description="按名称/描述搜索"),
     status: str | None = Query(None, description="active / archived"),
+    _perm=require_permission(Action.PROJECT_READ),
 ):
     filters = [ProjectORM.tenant_id == user.tenant_id]
     if status:
@@ -137,6 +138,7 @@ async def get_project(
     project_id: UUID,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_permission(Action.PROJECT_READ),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:

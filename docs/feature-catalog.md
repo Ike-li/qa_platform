@@ -147,13 +147,13 @@
 | 审计写入覆盖补齐 | P0 | `api/v1/runs.py` 批量取消/批量重试当前无 audit 事件；SSE ticket 等临时凭证写入是否审计需产品确认 | architecture §9.6 已改为“关键写操作主路径覆盖，覆盖率待补齐” |
 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | P0 | 目录型 Allure HTML report 不会被当前上传逻辑收集；环境级 `max_artifact_size_mb` / `max_artifacts_count` 未传入 worker ResourceLimits，上传侧也未发现强制校验；`disk_bytes` 字段未进入 Docker HostConfig；OOM/timeout 终止原因与资源用量记录未闭环 | PRD §3.2 要求限制产物大小并记录资源终止信息，PRD §3.4 要求预签名下载 + HTML 报告在线预览；当前 CPU/内存/超时和 `download` JSON 已实现，产物限制/预览闭环待补 |
 | F-EX-05 日志归档回看闭环 | P0 | Redis Stream 实时日志与 S3 JSONL 归档写入已实现，但 Redis TTL 过期后的归档日志读回 API / 前端回看入口未实现 | PRD §3.3 验收要求“日志持久化可回看”；当前 UI 只接 SSE 实时窗口 |
-| F-AU-02 API Token scope enforcement 补齐 | P1 | project-scoped 权限依赖未完整传递 token scopes | `api/auth/permissions.py::check_permission` 支持 scopes，但 `api/deps.py::get_current_user` / `require_project_permission` / `enforce_project_action` 当前会丢失或不传 scopes |
-| F-AU-04 跨租户 404 完整收敛 | P0 | 非 Owner/Admin 访问 path `project_id` 的项目级路由时，`require_project_permission` 可能先于 `get_for_tenant` 返回 403；跨租户硬约束要求资源 ID 访问统一 404 | 需调整项目级权限依赖或路由顺序，并补非 Owner/Admin 跨租户集成测试；当前 owner/admin 与 run/artifact 主路径已有 404 覆盖 |
+| F-AU-02 API Token scope enforcement 补齐 | P1 | 已完成 | API token scopes 已贯通 tenant/project 权限依赖；真实 API 测试覆盖只读、run.trigger、错误/空 scope |
+| F-AU-04 跨租户 404 完整收敛 | P0 | 已完成 | Member/Viewer 的 path `project_id` 项目级权限依赖先验证当前租户可见性；跨 tenant、随机 UUID、软删除一致 404 |
 | F-EX-01 手动触发参数与入队验收补齐 | P0 | `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；PRD 要求可指定 commit 与 environment，且触发后 < 5s 入队未纳入自动验收 | 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定；前端旧 `env_overrides` / `params` 偏移仍归 `T-FRONTEND-API` |
 | F-EX-02 静默窗口 | P1 | 发布冻结期不触发 cron | PRD §3.3 验收 |
 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | P1 | 路由未传 `dedup_key`，无分支过滤逻辑 | `dedup_key` 字段在 ORM 已有，路由层接入即可 |
 | F-EX-07 自动重试端到端补齐 | P1 | `RetryPolicyInput.max_attempts` 与 worker `max_retries` 读取不一致，且 `max_attempts` 缺 PRD 1-5 边界校验；执行期 Docker/clone/setup 基础设施异常也没有传递到 `_attempt_retry` | 现有单测覆盖 `_should_retry` / `_attempt_retry` 原语，需补真实 `execute_run` 路径与 worker_lost 策略 |
-| F-EX-08 优先级队列消费闭环 | P2 | 默认 worker 只消费 `queue:medium`，`queue:high` / `queue:low` 没有 compose/文档/测试闭环 | 需决定单 worker 多队列策略或多 worker 部署方式，并验证同优先级 FIFO / 高优先级插队 |
+| F-EX-08 优先级队列消费闭环 | P2 | 已补部署/测试主干 | Compose 启动 high/medium/low worker；manual priority 队列矩阵有单测；等待队列 priority+FIFO 有真实 DB 测试；worker_lost 自动重试仍归 F-EX-07 |
 | F-LS-04 测试结果 suite/关键字过滤 | P0 | `main` 仅 status | PRD §3.7 验收；`feature/T07-test-results-filter` 已推送但未合入 |
 | F-LS-01 执行列表过滤补齐 | P0 | 缺 pipeline / git_ref / time range 过滤 | 当前 `main` 支持 status 多选、project_id 与创建时间排序 |
 | F-LS-02 剩余列表分页补齐 | P0 | credentials、project members、auth tokens 仍返回直接 list | 主要列表已使用 `PaginatedResponse` |
@@ -169,7 +169,7 @@
 |---|---|---|
 | OpenTelemetry 装配 | P2 | 仅声明部分依赖，无 OTLP HTTP exporter、`TracerProvider` / `FastAPIInstrumentor` 代码；设计见 §4.3 |
 | 非功能性能压测 | P1 | 读/写 API p99、日志推送 < 2s、执行摘要生成 < 3s 等目标验证 |
-| E2E CI 覆盖扩展 | P1 | push / PR 已自动跑稳定 `tests/e2e/auth-flow.spec.ts`；`workflow_dispatch` 手动跑全量 E2E，是否扩大自动覆盖需另行决策；若继续保留 `scripts/run-e2e.sh`，需让 seed 密码透传 `E2E_ADMIN_PASSWORD` |
+| E2E CI 覆盖扩展 | P1 | PR 保留 `auth-flow.spec.ts`；nightly 固定跑 `real-login-flow` / `real-run-trigger` / `special-regressions`；`workflow_dispatch` 手动跑全量 E2E |
 | 数据保留清理闭环 | P1 | `cleanup_old_runs` cron 已注册但当前函数缺 `datetime/timezone` 导入会触发失败；`RunRepository.delete_terminal_older_than()` 只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run 与 `cancelled/timeout` 策略未闭环；`retry_failed_archives` 仍为空占位，DB 行冷归档未实现 |
 | 结构化日志全局化 | P2 | API app 默认 factory 已配置 structlog JSON renderer；worker/arq 入口未调用 `configure_logging`，engine / worker / plugin 多数模块仍经 stdlib logger 输出，需统一 worker 进程日志初始化与字段格式 |
 

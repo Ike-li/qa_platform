@@ -121,6 +121,67 @@ services:
     command: ["arq", "qaplatform.worker.settings.WorkerSettings"]
     env_file: .env
     environment:
+      QAP_WORKER_QUEUE: queue:medium
+      QAP_DATABASE_URL: postgresql+asyncpg://${QAP_DB_USER:-qaplatform}:${QAP_DB_PASSWORD:-qaplatform}@postgres:5432/${QAP_DB_NAME:-qaplatform}
+      QAP_REDIS_URL: redis://redis:6379/0
+      QAP_S3_ENDPOINT: http://minio:9000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  worker-high:
+    build: .
+    restart: unless-stopped
+    command: ["arq", "qaplatform.worker.settings.WorkerSettings"]
+    env_file: .env
+    environment:
+      QAP_WORKER_QUEUE: queue:high
+      QAP_DATABASE_URL: postgresql+asyncpg://${QAP_DB_USER:-qaplatform}:${QAP_DB_PASSWORD:-qaplatform}@postgres:5432/${QAP_DB_NAME:-qaplatform}
+      QAP_REDIS_URL: redis://redis:6379/0
+      QAP_S3_ENDPOINT: http://minio:9000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  worker-low:
+    build: .
+    restart: unless-stopped
+    command: ["arq", "qaplatform.worker.settings.WorkerSettings"]
+    env_file: .env
+    environment:
+      QAP_WORKER_QUEUE: queue:low
       QAP_DATABASE_URL: postgresql+asyncpg://${QAP_DB_USER:-qaplatform}:${QAP_DB_PASSWORD:-qaplatform}@postgres:5432/${QAP_DB_NAME:-qaplatform}
       QAP_REDIS_URL: redis://redis:6379/0
       QAP_S3_ENDPOINT: http://minio:9000

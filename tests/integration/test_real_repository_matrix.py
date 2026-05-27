@@ -50,6 +50,66 @@ async def _create_run_for_state(session, seed_run, *, status, git_ref: str):
 
 
 @pytest.mark.asyncio
+async def test_run_repository_find_waiting_orders_by_priority_then_fifo(
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import RunStatusEnum
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+
+    now = datetime.now(timezone.utc)
+    seed_run["run"].enqueued_at = now
+
+    low_old = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.QUEUED,
+        git_ref=f"low-{uuid4().hex}",
+    )
+    low_old.priority = 2
+    low_old.created_at = now - timedelta(minutes=4)
+
+    high_old = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.QUEUED,
+        git_ref=f"high-old-{uuid4().hex}",
+    )
+    high_old.priority = 0
+    high_old.created_at = now - timedelta(minutes=3)
+
+    high_new = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.QUEUED,
+        git_ref=f"high-new-{uuid4().hex}",
+    )
+    high_new.priority = 0
+    high_new.created_at = now - timedelta(minutes=2)
+
+    medium = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.QUEUED,
+        git_ref=f"medium-{uuid4().hex}",
+    )
+    medium.priority = 1
+    medium.created_at = now - timedelta(minutes=1)
+    await integration_db_session.commit()
+
+    waiting = await RunRepository(integration_db_session).find_waiting(limit=1000)
+    expected_ids = {high_old.id, high_new.id, medium.id, low_old.id}
+    observed = [run.id for run in waiting if run.id in expected_ids]
+
+    assert observed == [
+        high_old.id,
+        high_new.id,
+        medium.id,
+        low_old.id,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_audit_repository_filters_paginates_and_detects_cross_tenant_matches(
     integration_db_session,
     seed_run,
