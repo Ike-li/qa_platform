@@ -141,6 +141,37 @@ async def _latest_audit_row(engine, action: str):
         return result.fetchone()
 
 
+async def _audit_count_for_user(engine, action: str, user_id: str) -> int:
+    """Count audit.event rows for one authenticated user and action."""
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT count(*) "
+                "FROM audit.event "
+                "WHERE action = :action AND user_id = :user_id"
+            ),
+            {"action": action, "user_id": user_id},
+        )
+        return result.scalar_one()
+
+
+async def _register_auth_user(auth_client, prefix: str) -> dict:
+    suffix = uuid4().hex[:8]
+    username = f"{prefix}_{suffix}"
+    password = "correct-horse-battery"
+
+    resp = await auth_client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": username,
+            "email": f"{username}@example.com",
+            "password": password,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
 def _force_auth_audit_writes_to_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inject an audit repository outage without replacing auth/DB/Redis wiring."""
     from qaplatform.api.v1 import auth as auth_module
@@ -228,6 +259,67 @@ async def test_auth_login_rate_limit_uses_real_redis_token_hash_bucket(
     assert keys == [bucket_key]
     assert token not in keys[0]
     assert await redis.zcard(bucket_key) == 6
+
+
+@pytest.mark.asyncio
+async def test_auth_sse_ticket_rate_limit_uses_real_redis_token_hash_bucket(
+    auth_app,
+    auth_client,
+    integration_db_engine,
+):
+    """SSE ticket abuse protection uses real JWT auth, Redis, and audit rows."""
+    registered = await _register_auth_user(auth_client, prefix="sse_limit")
+    access_token = registered["access_token"]
+    user_id = registered["user"]["id"]
+    token_hash = hashlib.sha256(access_token.encode()).hexdigest()[:16]
+    bucket_key = f"rate_limit:token:{token_hash}:/api/v1/auth/sse-ticket"
+    redis = auth_app.state.container.redis_client
+    assert redis is not None
+    await redis.delete(bucket_key)
+
+    before_count = await _audit_count_for_user(
+        integration_db_engine,
+        "auth.sse_ticket_create",
+        user_id,
+    )
+    headers = {"Authorization": f"Bearer {access_token}"}
+    issued_tickets: set[str] = set()
+    for _ in range(5):
+        resp = await auth_client.post(
+            "/api/v1/auth/sse-ticket",
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        ticket = resp.json()["ticket"]
+        assert ticket
+        assert ticket not in issued_tickets
+        issued_tickets.add(ticket)
+
+    limited = await auth_client.post(
+        "/api/v1/auth/sse-ticket",
+        headers=headers,
+    )
+    assert limited.status_code == 429, limited.text
+    assert limited.headers["Retry-After"] == str(
+        auth_app.state.container.settings.rate_limit_auth_failure_window
+    )
+    assert limited.json()["error"]["code"] == "TOO_MANY_REQUESTS"
+
+    keys = [
+        key
+        async for key in redis.scan_iter("rate_limit:token:*:/api/v1/auth/sse-ticket")
+        if token_hash in key
+    ]
+    assert keys == [bucket_key]
+    assert access_token not in keys[0]
+    assert await redis.zcard(bucket_key) == 6
+
+    after_count = await _audit_count_for_user(
+        integration_db_engine,
+        "auth.sse_ticket_create",
+        user_id,
+    )
+    assert after_count - before_count == 5
 
 
 @pytest.mark.asyncio
