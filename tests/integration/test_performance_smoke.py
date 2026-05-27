@@ -57,6 +57,15 @@ def _assert_p99_under(name: str, samples: list[float], threshold_ms: float) -> N
         )
 
 
+def _decode_redis_mapping(mapping: dict) -> dict[str, str]:
+    return {
+        key.decode() if isinstance(key, bytes) else key: (
+            value.decode() if isinstance(value, bytes) else value
+        )
+        for key, value in mapping.items()
+    }
+
+
 async def _timed(awaitable) -> tuple[float, object]:
     started = perf_counter()
     result = await awaitable
@@ -336,6 +345,78 @@ async def test_trigger_run_enqueue_slo_smoke(
         "trigger enqueue SLO",
         samples,
         _threshold("PERF_TRIGGER_ENQUEUE_P99_MS", 5000),
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_api_p99_smoke(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.engine.events import STATUS_HASH_KEY
+    from qaplatform.infra.database.models import AuditEvent, Run, RunStatusEnum
+
+    tenant_id = seed_run["tenant"].id
+    project_id = seed_run["project"].id
+    pipeline_id = seed_run["pipeline"].id
+    environment_id = seed_run["environment"].id
+    user_id = seed_run["user"].id
+    redis = integration_app.state.container.redis_client
+    samples: list[float] = []
+
+    for _ in range(10):
+        run = Run(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            pipeline_id=pipeline_id,
+            environment_id=environment_id,
+            status=RunStatusEnum.RUNNING,
+            trigger_type="manual",
+            priority=1,
+            triggered_by=user_id,
+            git_ref=f"perf-cancel/{uuid4().hex}",
+            attempt=1,
+            chain_depth=0,
+            metadata_={"perf_cancel": True},
+        )
+        integration_db_session.add(run)
+        await integration_db_session.commit()
+        await integration_db_session.refresh(run)
+        run_id = run.id
+
+        elapsed_ms, response = await _timed(
+            integration_client.post(f"/api/v1/runs/{run_id}/cancel")
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "cancelled"
+        samples.append(elapsed_ms)
+
+        integration_db_session.expire_all()
+        persisted = await integration_db_session.get(Run, run_id)
+        assert persisted is not None
+        assert persisted.status == RunStatusEnum.CANCELLED
+        assert persisted.cancel_requested_at is not None
+
+        status_hash = await redis.hgetall(STATUS_HASH_KEY.format(run_id=str(run_id)))
+        assert _decode_redis_mapping(status_hash)["status"] == "cancelled"
+
+        audit = (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == "run.cancel",
+                    AuditEvent.resource_id == run_id,
+                )
+            )
+        ).scalar_one()
+        assert audit.before_state["status"] == "running"
+        assert audit.after_state["status"] == "cancelled"
+
+    _assert_p99_under(
+        "cancel run API",
+        samples,
+        _threshold("PERF_CANCEL_RUN_P99_MS", 1000),
     )
 
 
