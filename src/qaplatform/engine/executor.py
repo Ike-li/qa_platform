@@ -51,6 +51,8 @@ GRACE_PERIOD_SECONDS = 30
 # stages, the workdir teardown, and worker release dangling.
 _LOG_DRAIN_TIMEOUT = 5
 
+_INFRA_EXCEPTIONS = (ConnectionError, TimeoutError, OSError)
+
 
 # --------------------------------------------------------------------------- #
 # Repository protocol (dependency injection, avoids ORM coupling)
@@ -301,6 +303,8 @@ class RunExecutor:
                 from qaplatform.api.metrics import run_terminal_total
                 run_terminal_total.labels(status=RunStatus.FAILED.value).inc()
                 await self._publish(run_id, RunStatus.FAILED.value)
+            if isinstance(exc, _INFRA_EXCEPTIONS):
+                raise
             return RunStatus.FAILED
         finally:
             cancel_stop.set()
@@ -545,7 +549,11 @@ class RunExecutor:
 
     async def _clone_repo(self, run: Run, dest: Path) -> None:
         """Clone the repository using the SourceProtocol plugin."""
-        metadata = getattr(run, 'metadata_', None) or getattr(run, 'metadata', None) or {}
+        metadata = getattr(run, "metadata_", None)
+        if metadata is None:
+            metadata = getattr(run, "metadata", None) or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
         git_url = metadata.get("git_url", "")
         if not git_url:
             await self.log_stream.write_log(str(run.id), "No git_url in metadata, using workspace")
