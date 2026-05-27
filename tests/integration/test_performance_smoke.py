@@ -581,6 +581,12 @@ async def test_archived_log_replay_api_p99_smoke(
     finally:
         integration_app.state.container.s3_client = old_s3
 
+    expected_get_call = {
+        "bucket": integration_app.state.container.settings.s3_bucket,
+        "key": f"logs/{run_id}.jsonl",
+    }
+    assert s3.get_calls == [expected_get_call] * 23
+    assert s3.presign_calls == []
     _assert_p99_under(
         "archived log replay API",
         samples,
@@ -653,6 +659,12 @@ async def test_archived_log_replay_large_page_p99_smoke(
     finally:
         integration_app.state.container.s3_client = old_s3
 
+    expected_get_call = {
+        "bucket": bucket,
+        "key": f"logs/{run_id}.jsonl",
+    }
+    assert s3.get_calls == [expected_get_call] * 23
+    assert s3.presign_calls == []
     _assert_p99_under(
         "archived log large-page replay API",
         samples,
