@@ -662,13 +662,13 @@ class RunExecutor:
         limits = resource_limits or ResourceLimits()
         uploaded_count = 0
 
-        for artifact_path in sorted(results_dir.iterdir()):
-            if not artifact_path.is_file():
-                continue
+        for artifact_path in _iter_artifact_files(results_dir):
+            rel_parts = artifact_path.relative_to(results_dir).parts
+            rel_path = Path(*rel_parts).as_posix()
             if uploaded_count >= limits.max_artifacts_count:
                 await self.log_stream.write_log(
                     run_id,
-                    f"Skipped artifact {artifact_path.name}: artifact count limit exceeded",
+                    f"Skipped artifact {rel_path}: artifact count limit exceeded",
                     stream="stderr",
                 )
                 continue
@@ -677,14 +677,14 @@ class RunExecutor:
                 await self.log_stream.write_log(
                     run_id,
                     (
-                        f"Skipped artifact {artifact_path.name}: size "
+                        f"Skipped artifact {rel_path}: size "
                         f"{size_bytes} exceeds limit "
                         f"{limits.max_artifact_size_bytes} bytes"
                     ),
                     stream="stderr",
                 )
                 continue
-            s3_key = f"reports/{run_id}/{artifact_path.name}"
+            s3_key = f"reports/{run_id}/{rel_path}"
             try:
                 with open(artifact_path, "rb") as f:
                     await self.s3_client.put_object(
@@ -699,15 +699,19 @@ class RunExecutor:
             if self.artifact_repo is not None:
                 ext = artifact_path.suffix.lower()
                 artifact_type = _ARTIFACT_TYPE_BY_EXT.get(ext, "other")
-                # Allure report/results directories get a dedicated type
-                if artifact_path.parent.name in ("allure-report", "allure-results"):
+                # Files under Allure report/results directories get a dedicated
+                # type so the UI can offer preview/download affordances.
+                if any(
+                    part in {"allure-report", "allure-results"}
+                    for part in rel_parts[:-1]
+                ):
                     artifact_type = "allure-report"
                 mime_type, _ = mimetypes.guess_type(artifact_path.name)
                 try:
                     await self.artifact_repo.create(
                         run_id=UUID(run_id) if isinstance(run_id, str) else run_id,
                         type=artifact_type,
-                        name=artifact_path.name,
+                        name=rel_path,
                         storage_path=s3_key,
                         size_bytes=size_bytes,
                         mime_type=mime_type or "application/octet-stream",
@@ -721,6 +725,10 @@ class RunExecutor:
 
             await self.log_stream.write_log(
                 run_id,
-                f"Uploaded artifact: {artifact_path.name}",
+                f"Uploaded artifact: {rel_path}",
             )
             uploaded_count += 1
+
+
+def _iter_artifact_files(results_dir: Path) -> list[Path]:
+    return sorted(path for path in results_dir.rglob("*") if path.is_file())

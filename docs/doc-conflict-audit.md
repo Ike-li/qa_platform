@@ -72,7 +72,7 @@
 | Docker socket / 执行隔离文档对照 | 通过，`docker-compose.yml` worker 仍直接挂载 `/var/run/docker.sock`；Docker backend 默认 `network_policy=deny` → `NetworkMode=none`，但 `allow` 会显式使用 bridge，`restricted` 需要部署侧创建 `qap-restricted` 网络；architecture 已改成当前事实 + 生产加固建议，runbook 已新增 Docker socket 风险章节 |
 | 数据保留 / 日志归档闭环对照 | 有已知偏移，`LogStream.archive_logs` 成功后设置 1h TTL、失败后设置 24h TTL 并登记失败 Run；`worker/settings.py::retry_failed_archives` 会重试失败归档；`cleanup_old_runs` 已注册 cron 并硬删超期终态 Run（`done/failed/cancelled/timeout`）且覆盖 result/artifact/event 级联；归档日志读回 API 已补真实 DB/RBAC/API 测试，仍未发现 Redis 内存阈值拒绝入队实现，前端归档日志回看入口仍缺失 |
 | F-EX-05 实时日志 / 归档回看对照 | 有已知偏移，`api/v1/sse.py` 已支持 `/runs/{run_id}/logs` 和 `Last-Event-ID`，`engine/log_stream.py` 已把日志归档到 `logs/{run_id}.jsonl`；后端已提供归档日志读回 API，前端 `log-viewer.tsx` 仅接 SSE 实时窗口，Redis TTL 过期后的 UI 回看闭环仍缺失 |
-| 资源限制 / 产物 / Allure 预览闭环对照 | 有已知偏移，CPU/内存/超时已实现；worker 已把环境级产物 size/count 限制传入 executor，上传侧已在写 S3/DB 前强制校验；`disk_bytes` 未进入 Docker HostConfig；OOM/timeout 能映射为 `timeout`，但未发现资源用量记录闭环；`api/v1/artifacts.py` 已返回 `download_url` / `expires_in`；`engine/executor.py::_upload_artifacts` 只上传 `results/` 下直接文件并跳过目录；`frontend` 仅对 `artifact.type === "allure-report"` 展示预览按钮 |
+| 资源限制 / 产物 / Allure 预览闭环对照 | 有已知偏移，CPU/内存/超时已实现；worker 已把环境级产物 size/count 限制传入 executor，上传侧已在写 S3/DB 前强制校验；上传侧会递归上传 `results/` 下文件并标记 Allure 目录文件；`disk_bytes` 未进入 Docker HostConfig；OOM/timeout 能映射为 `timeout`，但未发现资源用量记录闭环；`api/v1/artifacts.py` 已返回 `download_url` / `expires_in`；`frontend` 仅对 `artifact.type === "allure-report"` 展示预览按钮，完整预览体验仍待补 |
 | Playwright / E2E 配置对照 | 通过，根目录 `package.json` 提供 `npm run test:e2e`；`playwright.config.ts` 的 `testDir` 为 `tests/e2e`，会启动 `frontend` dev server 和 `.venv/bin/python -m uvicorn qaplatform.main:create_app --factory --app-dir src`，`global-setup.ts` 会启动 postgres/redis/minio、执行 alembic upgrade 与 seed |
 | E2E 辅助脚本入口复核 | 发现 `scripts/run-e2e.sh` 仍直接用 `ADMIN_PASSWORD=admin123` seed 后运行 `tests/e2e/real-*.spec.ts`；默认值与 real specs 的 `E2E_ADMIN_PASSWORD || "admin123"` fallback 一致，但若调用者显式设置 `E2E_ADMIN_PASSWORD`，该脚本不会同步 seed 密码。当前 README/development/CI 的推荐入口仍是根目录 `npm run test:e2e`，不受此脚本偏差影响；若后续保留脚本，应让它透传 `E2E_ADMIN_PASSWORD`。 |
 | Git refs / merge state 对照 | 审计快照通过：本地 8 个 `feature/T*` 分支与对应 `origin/feature/T*` SHA 一致且均未合入本地 `main`；审计时本地 `main` 比 `origin/main` 多 5 个 docs commit，`origin/HEAD` 指向 `origin/phase1-release-prep`。该行保留为快照，实时状态以现场 git 命令为准。 |
@@ -104,7 +104,7 @@
 | 资源限制旧口径复扫 | 通过，`F-PL-03` 不再标 ✅；architecture 不再把磁盘限制或 OOM/timeout 资源用量记录写成当前已实现；PRD §4 的 500MB 产物容量目标已在 catalog 非功能表中标为 ⚠️ |
 | Allure / 产物旧口径复扫 | 通过，`F-RE-04` 不再标 ✅；“Allure 已就位 / 需实测确认”只保留在本报告历史发现语境，当前 catalog / TODO / architecture 均改为部分完成与待补闭环 |
 | 执行隔离网络策略复扫 | 通过，PRD / catalog / architecture 已改为“默认 deny 隔离 + allow/restricted 显式例外”；`restricted` 需要部署侧提供 `qap-restricted` 网络 |
-| README / PRD / catalog 入口复扫 | 通过，README 核心功能已改为当前主链路、Docker OOMKilled 状态识别、`results/` 直接文件上传与预签名下载；PRD 顶部、worker_lost 场景和路线图均标明“产品目标不等于当前 main 完成状态”；catalog/TODO 负责记录 `main` 当前缺口 |
+| README / PRD / catalog 入口复扫 | 通过，README 核心功能已改为当前主链路、Docker OOMKilled 状态识别、`results/` 产物上传与预签名下载；PRD 顶部、worker_lost 场景和路线图均标明“产品目标不等于当前 main 完成状态”；catalog/TODO 负责记录 `main` 当前缺口 |
 | PRD 用户旅程复扫 | 通过，测试经理旅程中的 release / main 对比已改为“基于已有 branch 执行记录的轻量对比”，避免与“跨分支/跨环境专属对比视图为远期增强”的范围说明冲突 |
 | 当前文档代码路径引用抽查 | 通过，按当前脚本口径解析到 317 个仓库路径引用且均可解析；另有 8 个明确计划新增路径、285 个 glob/模板路径按非文件路径跳过；缺失仓库路径 0 |
 | catalog 剩余 ✅ 项抽查 | 通过，抽查 archived 项目触发 409、`F-RE-01/03` JUnit 与 `/runs/{run_id}/results`、`F-AU-01/03` JWT/Argon2/RBAC、项目成员 CRUD、通知规则 CRUD、SSE ticket、Prometheus `/metrics`、`/health` / `/ready`、安全头与 iframe sandbox；`F-PL-01`、`F-AU-04` 与 `F-EX-01` 在后续更细复核中发现验收缺口，见下方专项记录。 |
@@ -161,7 +161,7 @@
 | Python / Node 版本当前复跑 | 通过，`pyproject.toml` 仍为 `requires-python >=3.12`，后端 Dockerfile 为 `python:3.12-slim`，CI Python 为 3.12；前端 Dockerfile 为 `node:22-alpine`，CI Node 为 22；`frontend/package-lock.json` 中 Vite 8.0.13 要求 `^20.19.0 || >=22.12.0`，ESLint 10.4.0 要求 `^20.19.0 || ^22.13.0 || >=24`，README / development / frontend README 的 Node 前置条件仍覆盖当前依赖。 |
 | 待确认 / 待补措辞复核 | 通过，非历史文档中的“待补 / 未实现 / 缺口 / 需确认”均已归入 TODO、catalog §4 或本文 §17 决策清单；`fix-roadmap.md` 中的旧 ✅ / TODO 语境由历史档案说明隔离，不再作为当前 `main` 真相源。 |
 | 分层 import / DB access 复核 | 发现当前实现偏离 architecture 目标：`engine` 仍反向依赖 `api.metrics` / `worker._redact`，部分 API 路由仍直接 SQLAlchemy 查询；architecture 已改为“目标规则 + 当前偏差”，TODO 已新增 `T-ARCH-LAYERS` 技术债。 |
-| S3 / MinIO 路径与 lifecycle 复核 | 通过，`engine/log_stream.py` 归档日志到 `logs/{run_id}.jsonl`，`engine/executor.py::_upload_artifacts` 上传 `results/` 直接文件到 `reports/{run_id}/{filename}`；runbook 的 `logs/` 与 `reports/` lifecycle 前缀和当前代码一致。 |
+| S3 / MinIO 路径与 lifecycle 复核 | 通过，`engine/log_stream.py` 归档日志到 `logs/{run_id}.jsonl`，`engine/executor.py::_upload_artifacts` 上传 `results/` 文件到 `reports/{run_id}/{relative_path}`；runbook 的 `logs/` 与 `reports/` lifecycle 前缀和当前代码一致。 |
 | 插件协议示例复核 | 通过，README 插件开发示例包含当前 `RunnerProtocol` 要求的 `build_command()` 与 `run_tests(..., env_vars=None)`；architecture §7.2 的协议片段与 `plugins/protocols.py` 当前签名一致。 |
 | Run / TestResult 状态枚举复核 | 通过并发现前端类型债：Run 后端枚举与前端 README 映射说明已对齐；TestResult 后端枚举含 `xfail`，PRD / catalog / T07 / TODO / frontend README / historical frontend prompt 已同步为“PRD 最低验收 + 后端扩展”，前端运行类型缺口归入 `T-FRONTEND-API`。 |
 | 文档端点示例复核 | 通过，README、architecture、historical frontend prompt 中列出的端点均能和当前 FastAPI router 对齐；T05 任务包和 feature-catalog 的静默窗口项目更新示例均已统一为完整 `PUT /api/v1/projects/{project_id}`。 |
@@ -1114,8 +1114,8 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 - PRD F-RE-04 的验收目标包含 HTML 报告在线预览。
 - 旧 catalog 曾把 F-RE-04 标为已完成，后续一度只写“Allure HTML 报告在线预览需实测确认”。
-- 当前 `engine/executor.py::_upload_artifacts` 只遍历 `working_dir / "results"` 下的直接文件，遇到目录会 `continue`；因此目录型 Allure HTML report 不会被上传。
-- 该函数中 `artifact_path.parent.name in ("allure-report", "allure-results")` 才把类型标成 `allure-report`，但当前遍历入口固定为 `results/` 直接文件，正常路径下这个分支基本不可达。
+- 历史上 `engine/executor.py::_upload_artifacts` 只遍历 `working_dir / "results"` 下的直接文件，遇到目录会 `continue`；因此目录型 Allure HTML report 不会被上传。
+- 当前 `_upload_artifacts` 会递归扫描 `results/` 下文件，保留相对路径，并把 `allure-report` / `allure-results` 目录下文件标成 `allure-report`。
 - 前端 `runs/detail.tsx` 只在 `artifact.type === "allure-report"` 时展示预览按钮；`artifact-preview.tsx` 可以 iframe 预签名 URL，但主线执行链路未稳定产出可预览的 Allure HTML artifact。
 
 建议：
@@ -1123,7 +1123,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - 把 F-RE-04 标为部分完成：预签名下载已实现，Allure/HTML 预览上传闭环未达。
 - 新增独立任务补齐目录上传、入口文件预览 URL、S3 key 布局、size/count 限制与集成测试。
 
-修复进度：feature-catalog 已把 F-RE-04 改为 ⚠️；TODO 已新增 `F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐`；architecture §6.1 已补当前上传边界。
+修复进度：feature-catalog 已把 F-RE-04 改为 ⚠️；TODO 已新增 `F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐`；architecture §6.1 已补当前上传边界；递归上传与 Allure 目录落库已补单测和真实 DB/S3 集成测试，前端完整预览体验仍待补。
 
 ### 9.10 F-PL-03 资源限制状态过度声明
 
@@ -1132,7 +1132,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - PRD F-PL-03 的描述是“限制单次执行的 CPU/内存/产物大小”。
 - 当前 CPU / 内存限制已在 `engine/docker_backend.py` HostConfig 中设置，timeout 也有 SIGTERM → 30s → SIGKILL 路径。
 - `worker/tasks.py::_build_pipeline_config` 已把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入执行配置。
-- `engine/executor.py::_upload_artifacts` 已在上传和写 DB 行前检查单文件大小与数量；总大小、递归目录与 Allure HTML 入口仍未闭环。
+- `engine/executor.py::_upload_artifacts` 已在上传和写 DB 行前检查单文件大小与数量，并递归上传 `results/` 下文件；总大小、磁盘限制、资源用量记录与前端 Allure HTML 入口仍未闭环。
 - `ResourceLimits.disk_bytes` 字段存在，但未进入 Docker HostConfig；architecture 原写“资源限制（CPU/内存/磁盘）”容易被误读为磁盘限制已实现。
 - PRD 还要求 OOM/timeout 记录终止原因和资源用量；当前代码可把 OOM/timeout 映射为 `timeout`，但本轮未发现资源用量写入日志或 summary 的闭环。
 
@@ -1141,7 +1141,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - catalog 中 F-PL-03 改为部分完成。
 - 将 F-PL-03 的产物大小限制与 F-RE-04 的上传/预览闭环合并成一个实施任务，避免两个任务重复改 `_upload_artifacts`。
 
-修复进度：feature-catalog 已把 F-PL-03 改为 ⚠️；TODO / catalog §4.1 已把待办改为 `F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐`；architecture §6.1 / architecture §9.3 已补 CPU/内存、磁盘、产物限制与资源用量记录边界；环境级产物 size/count 限制已补 worker 映射、executor 强制校验与真实 DB/S3 测试，剩余磁盘限制、资源用量记录、目录型 Allure/HTML 上传与预览入口。
+修复进度：feature-catalog 已把 F-PL-03 改为 ⚠️；TODO / catalog §4.1 已把待办改为 `F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐`；architecture §6.1 / architecture §9.3 已补 CPU/内存、磁盘、产物限制与资源用量记录边界；环境级产物 size/count 限制与递归上传已补 worker 映射、executor 强制校验与真实 DB/S3 测试，剩余磁盘限制、资源用量记录和前端 Allure/HTML 预览入口。
 
 ### 9.11 通知条件 AND/OR 与模板能力过度声明
 
@@ -1361,7 +1361,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 - 文档对 resource limit、artifact report 类型、Allure 在线预览等能力描述较满。
 - 代码已实现 CPU/内存/超时、基础产物上传、预签名下载和环境级产物数量/大小上传侧强制校验。
-- Allure report 类型分支存在，但当前只扫描 `results/` 直接文件，目录型 Allure HTML 报告不会形成可预览 artifact。
+- 当前会递归扫描 `results/` 文件并标记 Allure 目录文件，但前端仍缺稳定选择 `index.html` 作为入口并处理关联资源加载的完整体验。
 - README 插件开发段落曾把 CollectorProtocol 示例写成“JUnit XML、Allure”，容易被理解为当前已有 Allure collector；实际内置 collector 仍只有 JUnit。
 
 建议：
@@ -1483,7 +1483,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 | `T-GIT-CREDENTIALS` | 补齐 F-PM-01 / F-PM-02 Git 凭证执行闭环：解密项目绑定的 HTTPS token / SSH key 并安全注入 Git clone，确保错误与日志脱敏，覆盖私有仓库成功、认证失败、凭证轮换后的执行路径。 | 未处理，已记录为 PRD F-PM-01/F-PM-02 缺口 |
 | `T-PIPELINE-COLLECTOR` | 补齐 F-PL-01 Pipeline collector 配置：决定当前 JUnit-only 是正式产品限制还是实现 collector 选择/配置；若补实现，需贯通 API schema、ORM/JSONB、worker `PipelineConfig`、executor `get_collector(...)` 与测试。 | 未处理，已记录为 PRD F-PL-01 缺口 |
 | `T-AUDIT-COVERAGE` | 补齐审计写入覆盖：批量取消/批量重试至少应有 audit；SSE ticket 是否审计需产品确认。 | 批量取消/批量重试与 SSE ticket 已补审计写入；剩余写路径按业务风险矩阵继续补齐 |
-| `T-ARTIFACT-PREVIEW` | 补齐 F-PL-03 / F-RE-04 产物限制与上传/预览闭环：传递并执行上传侧 size/count 限制，决定是否实现磁盘限制，补 OOM/timeout 资源用量记录，递归或打包上传 Allure HTML 报告、明确入口 URL 并补测试。 | 已补 size/count 限制映射、上传侧强制校验和真实 DB/S3 测试；磁盘限制、资源用量记录、Allure/HTML 目录上传与预览仍缺 |
+| `T-ARTIFACT-PREVIEW` | 补齐 F-PL-03 / F-RE-04 产物限制与上传/预览闭环：传递并执行上传侧 size/count 限制，决定是否实现磁盘限制，补 OOM/timeout 资源用量记录，递归或打包上传 Allure HTML 报告、明确入口 URL 并补测试。 | 已补 size/count 限制映射、上传侧强制校验、递归上传 Allure/HTML 目录文件和真实 DB/S3 测试；磁盘限制、资源用量记录、前端预览入口/资源加载仍缺 |
 | `T-LOG-REPLAY` | 补齐 F-EX-05 日志归档回看闭环：提供从 `logs/{run_id}.jsonl` 读取历史日志的 API / 前端入口，并处理 Redis Stream TTL 过期后的回放体验。 | 后端归档日志读回 API 与真实 DB/RBAC/API 测试已补；前端入口仍缺 |
 | `T-AUTH-SCOPE` | 补齐 API token scope enforcement 在 tenant-scoped / project-scoped / token 管理端点的传递与测试。 | 未处理，已记录为 PRD F-AU-02 缺口 |
 | `T-MANUAL-TRIGGER` | 补齐 F-EX-01 手动触发参数与入队验收：让后端可指定 commit / environment，明确与前端触发 payload 的边界，并补“触发后 < 5s 入队”的可验证测试或压测口径。 | 未处理，已记录为 PRD F-EX-01 缺口 |
@@ -1517,7 +1517,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 5. 是否需要 DB 行冷归档；失败归档自动补偿与归档日志读回 API 已实现，但前端归档日志 UI 入口仍待产品决策。
 6. `/auth/sse-ticket` 这种短期临时凭证写入已纳入审计；后续是否需要审计查询 UI 与告警规则仍待产品决策。
 7. Pipeline collector 配置是补实现，还是把当前 JUnit-only 写成正式产品限制并调整 PRD F-PL-01 验收口径。
-8. Allure/HTML 报告预览的产物形态：上传静态目录并预签入口 `index.html`，还是把报告打包为单个 zip/html artifact 后由前端专门渲染。
+8. Allure/HTML 报告后端已递归上传静态目录文件；前端预览是直接选择并预签 `index.html`，还是把报告打包为单个 zip/html artifact 后专门渲染，仍需决策。
 9. 真实 worker 黑盒自动重试是否要从 nightly/manual 提升为 PR 必跑门禁。
 10. F-EX-08 采用 high/medium/low 多 worker 部署；后续如改为单 worker 多队列，需要重新补 runbook/CI 覆盖。
 11. F-NT-03 的“每渠道模板”是否必须实现为 `channels[]` 内独立模板，还是接受当前规则级模板并调整 PRD 验收口径。
