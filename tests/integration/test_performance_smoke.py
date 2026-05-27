@@ -7,15 +7,20 @@ trend signal for the backend paths called out in the test strategy.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
+import socket
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
+import uvicorn
 from sqlalchemy import select
 
 pytestmark = [
@@ -56,6 +61,45 @@ async def _timed(awaitable) -> tuple[float, object]:
     started = perf_counter()
     result = await awaitable
     return (perf_counter() - started) * 1000, result
+
+
+@asynccontextmanager
+async def _live_asgi_server(app):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(128)
+    sock.setblocking(False)
+    host, port = sock.getsockname()
+
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        lifespan="off",
+        log_level="warning",
+        access_log=False,
+        ws="none",
+    )
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve(sockets=[sock]))
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            if task.done():
+                task.result()
+            await asyncio.sleep(0.05)
+        else:
+            raise RuntimeError("uvicorn server did not start")
+
+        yield f"http://{host}:{port}"
+    finally:
+        server.should_exit = True
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(task, timeout=5)
+        with suppress(OSError):
+            sock.close()
 
 
 class _MemoryBody:
@@ -313,6 +357,95 @@ async def test_log_stream_round_trip_smoke(integration_app):
     assert len(entries) == 20
     assert entries[-1]["line"] == "line-19"
     _assert_p99_under("log stream write", samples, _threshold("PERF_LOG_WRITE_P99_MS", 2000))
+
+
+@pytest.mark.asyncio
+async def test_realtime_log_sse_delivery_latency_smoke(
+    integration_app,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.engine.events import publish_status_event
+    from qaplatform.engine.log_stream import LogStream
+    from qaplatform.infra.database.models import Run, RunStatusEnum
+
+    tenant_id = seed_run["tenant"].id
+    project_id = seed_run["project"].id
+    pipeline_id = seed_run["pipeline"].id
+    environment_id = seed_run["environment"].id
+    user_id = seed_run["user"].id
+    redis = integration_app.state.container.redis_client
+    stream = LogStream(redis)
+    samples: list[float] = []
+
+    timeout = httpx.Timeout(5.0, connect=5.0, read=5.0)
+    async with _live_asgi_server(integration_app) as base_url:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for index in range(5):
+                run = Run(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    pipeline_id=pipeline_id,
+                    environment_id=environment_id,
+                    status=RunStatusEnum.RUNNING,
+                    trigger_type="manual",
+                    priority=1,
+                    triggered_by=user_id,
+                    git_ref=f"perf-sse/{uuid4().hex}",
+                    attempt=1,
+                    chain_depth=0,
+                    metadata_={"perf_sse": True},
+                )
+                integration_db_session.add(run)
+                await integration_db_session.commit()
+                await integration_db_session.refresh(run)
+                run_id = run.id
+
+                ticket = f"perf-sse-{uuid4().hex}"
+                await redis.setex(
+                    f"sse_ticket:{ticket}",
+                    90,
+                    f"{user_id}:owner:{tenant_id}",
+                )
+
+                url = f"{base_url}/api/v1/runs/{run_id}/logs?ticket={ticket}"
+                async with client.stream("GET", url) as response:
+                    if response.status_code != 200:
+                        body = await response.aread()
+                        pytest.fail(
+                            f"SSE log stream returned {response.status_code}: "
+                            f"{body.decode('utf-8', errors='replace')}"
+                        )
+                    assert "text/event-stream" in response.headers.get(
+                        "content-type", ""
+                    )
+
+                    chunks: list[str] = []
+                    line_seen_ms: float | None = None
+                    expected_line = f"sse-latency-{index}-{uuid4().hex}"
+                    started = perf_counter()
+                    await stream.write_log(run_id, expected_line, stream="stdout")
+                    await publish_status_event(
+                        redis,
+                        run_id,
+                        RunStatusEnum.DONE.value,
+                        previous=RunStatusEnum.RUNNING.value,
+                    )
+                    async for chunk in response.aiter_text():
+                        chunks.append(chunk)
+                        body = "".join(chunks)
+                        if expected_line in body:
+                            line_seen_ms = (perf_counter() - started) * 1000
+                            break
+
+                assert line_seen_ms is not None, "SSE log line was not delivered"
+                samples.append(line_seen_ms)
+
+    _assert_p99_under(
+        "realtime log SSE delivery",
+        samples,
+        _threshold("PERF_SSE_LOG_DELIVERY_P99_MS", 2000),
+    )
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@
 
 | 日期 | required integration | unit | warning 摘要 | 处理结论 |
 | --- | --- | --- | --- | --- |
+| 2026-05-27 | collect-only 120 tests；required integration 99 passed / 21 deselected；完整 local integration 101 passed / 19 skipped；performance smoke 8 passed | ruff full passed | 无新增 warning；完整 local integration 的 skip 来自 Docker registry/image 前置条件不可用、performance opt-in、macOS OOM 语义、未启动 external stack，业务断言未被 skip | SSE 实时日志推送 < 2s 进入 nightly/manual performance smoke；用真实本地 HTTP SSE 流、一次性 ticket、RBAC/PostgreSQL Run 查询和 Redis Stream 写入证明客户端可收到实时日志 chunk |
 | 2026-05-27 | collect-only 119 tests；required integration 99 passed / 20 deselected；完整 local integration 106 passed / 13 skipped；performance smoke 7 passed | ruff targeted passed | 无新增 warning；完整 local integration 的额外 skip 来自 Docker registry/image 前置条件不可用，业务断言未被 skip；其余 skip 为 performance opt-in、macOS OOM 语义、未启动 external stack | 执行摘要生成 < 3s 进入 nightly/manual performance smoke；用真实 RunRepository/PostgreSQL、Redis LogStream、JUnitCollector 和终态 summary DB 写入证明，不把该 SLO 只留在文档里 |
 | 2026-05-27 | collect-only 118 tests；required integration 99 passed / 19 deselected；完整 local integration 107 passed / 11 skipped；`test_real_auth_results_artifacts.py` 10 passed | ruff targeted passed | 无新增 warning；skip 均为既有 performance opt-in、macOS OOM 语义、未启动 external stack；本轮发现同文件多次真实注册会触发 auth register 每 IP 限流，已在 real-auth integration fixture 中提高测试阈值避免顺序误报 | artifact 列表到下载链接的真实 JWT/RBAC/API/DB 行与预签名 bucket/key/TTL 参数进入 required integration；保留 rate-limit middleware 开启，不改变生产限流行为 |
 | 2026-05-27 | collect-only 117 tests；required integration 98 passed / 19 deselected；完整 local integration 106 passed / 11 skipped；`test_real_api_write_state.py` 10 passed | `test_api/test_projects.py` + `test_engine/test_executor_redaction.py` 30 passed；ruff targeted passed | 无新增 warning；skip 均为既有 performance opt-in、macOS OOM 语义、未启动 external stack | project/member/pipeline 写路径进入真实 DB audit 证据；项目 `git_url` userinfo 仅在 audit state 脱敏，不改变 API 响应 |
@@ -41,7 +42,7 @@ PR 不跑性能硬门禁，避免把环境抖动伪装成产品失败。nightly/
 | 项 | Nightly/Manual 入口 | 观察信号 | 升级条件 |
 | --- | --- | --- | --- |
 | API 与真实 DB smoke | `backend-integration-test` required + nightly/manual `tests/integration/test_performance_smoke.py` | pytest `--durations=20`、读/写 API p99 smoke、DB 写入/查询链路 | 同一测试连续 3 次进入慢榜前 5 且耗时翻倍，或 smoke 超过阈值 |
-| Redis 日志 smoke | nightly/manual `tests/integration/test_performance_smoke.py` | Redis Stream 写入 + 读回 round trip | 连续 2 次超过阈值，转日志链路性能专项 |
+| Redis / SSE 日志 smoke | nightly/manual `tests/integration/test_performance_smoke.py` | Redis Stream 写入 + 读回 round trip；本地 uvicorn HTTP 流验证 `/runs/{run_id}/logs` SSE 真实路由、一次性 ticket、RBAC/PostgreSQL Run 查询和客户端日志 chunk 到达延迟，默认阈值 `PERF_SSE_LOG_DELIVERY_P99_MS=2000` | 连续 2 次超过阈值，转日志链路性能专项 |
 | 归档日志回看 smoke | nightly/manual `tests/integration/test_performance_smoke.py` | `GET /runs/{run_id}/logs/archive` p99 smoke，失败摘要含 p50/p99/max | 连续 2 次超过阈值，转日志归档/对象存储专项 |
 | Artifact 下载链接 smoke | nightly/manual `tests/integration/test_performance_smoke.py` | `GET /artifacts/{artifact_id}/download` p99 smoke，验证真实 DB artifact 行、权限链路和预签名 URL 生成 | 连续 2 次超过阈值，转对象存储/API 性能专项 |
 | 执行摘要生成 smoke | nightly/manual `tests/integration/test_performance_smoke.py` | 真实 RunRepository/PostgreSQL 终态写入、Redis LogStream、JUnitCollector 解析 1000 条 JUnit testcase 后生成 summary；默认阈值 `PERF_EXECUTION_SUMMARY_P99_MS=3000` | 连续 2 次超过阈值，转 collector/summary/DB 写入性能专项 |
