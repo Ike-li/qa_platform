@@ -573,6 +573,59 @@ async def test_real_sse_logs_resume_after_last_event_id_uses_ticket_rbac_and_red
 
 
 @pytest.mark.asyncio
+async def test_real_sse_events_resume_after_last_event_id_uses_ticket_rbac_and_redis(
+    real_auth_app,
+    real_auth_client,
+):
+    from qaplatform.engine.events import EVENT_STREAM_KEY, publish_status_event
+
+    access_token = await _register_real_user(real_auth_client, prefix="sse_events")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    redis = real_auth_app.state.container.redis_client
+    await publish_status_event(redis, run_id, "running", previous="preparing")
+    await publish_status_event(redis, run_id, "done", previous="running")
+    events = await redis.xrange(EVENT_STREAM_KEY.format(run_id=run_id))
+    assert len(events) == 2
+    first_event_id = events[0][0]
+    second_event_id = events[1][0]
+
+    ticket_resp = await real_auth_client.post(
+        "/api/v1/auth/sse-ticket",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert ticket_resp.status_code == 200, ticket_resp.text
+    ticket = ticket_resp.json()["ticket"]
+
+    resume_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/events?ticket={ticket}",
+        headers={"Last-Event-ID": first_event_id},
+    )
+    assert resume_resp.status_code == 200, resume_resp.text
+    assert "text/event-stream" in resume_resp.headers.get("content-type", "")
+    assert f"id: {first_event_id}" not in resume_resp.text
+    assert f"id: {second_event_id}" in resume_resp.text
+    assert "event: status_change" in resume_resp.text
+    assert '"status": "done"' in resume_resp.text
+    assert '"previous": "running"' in resume_resp.text
+    assert "event: done" in resume_resp.text
+
+    reuse_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/events?ticket={ticket}",
+        headers={"Last-Event-ID": first_event_id},
+    )
+    assert reuse_resp.status_code == 401, reuse_resp.text
+
+
+@pytest.mark.asyncio
 async def test_archived_logs_api_replays_s3_jsonl_after_real_rbac(
     real_auth_app,
     real_auth_client,
