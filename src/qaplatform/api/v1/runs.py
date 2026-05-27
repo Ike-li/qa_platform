@@ -270,6 +270,7 @@ async def batch_cancel_runs(
                 failed += 1
                 continue
 
+            before_response = _to_run_response(run)
             cancelled = await repos.run.cancel_if_current(run_id, expected_in=_CANCELABLE)
             if not cancelled:
                 errors.append(f"{run_id}: status changed concurrently")
@@ -284,6 +285,16 @@ async def batch_cancel_runs(
                 previous = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
                 await publish_status_event(redis, run_id, "cancelled", previous=previous)
 
+            run_after = await repos.run.get_for_tenant(run_id, user.tenant_id)
+            after_response = _to_run_response(run_after) if run_after is not None else {"status": "cancelled"}
+            await write_audit(
+                repos, user,
+                action="run.batch_cancel",
+                resource_type="run",
+                resource_id=run_id,
+                before=before_response,
+                after=after_response,
+            )
             processed += 1
         except (SQLAlchemyError, ValueError) as exc:
             errors.append(f"{run_id}: {exc}")
@@ -325,6 +336,7 @@ async def batch_retry_runs(
                 failed += 1
                 continue
 
+            before_response = _to_run_response(original)
             await session.refresh(original, ['pipeline', 'environment'])
 
             new_run = await repos.run.create(
@@ -348,6 +360,19 @@ async def batch_retry_runs(
 
                 await enqueue_run(arq_pool, repos.run, new_run, "manual", container.settings)
 
+            await write_audit(
+                repos, user,
+                action="run.batch_retry",
+                resource_type="run",
+                resource_id=original.id,
+                before=before_response,
+                after={
+                    "retry_run_id": str(new_run.id),
+                    "source_run_id": str(original.id),
+                    "status": "queued",
+                    "attempt": getattr(new_run, "attempt", None),
+                },
+            )
             processed += 1
         except (SQLAlchemyError, ValueError) as exc:
             errors.append(f"{run_id}: {exc}")

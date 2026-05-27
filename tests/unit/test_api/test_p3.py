@@ -32,6 +32,43 @@ def mock_user(tenant_id):
     return user
 
 
+def _make_run(
+    *,
+    tenant_id,
+    project_id,
+    status,
+    user_id=None,
+    run_id=None,
+    attempt=1,
+):
+    now = datetime.now(timezone.utc)
+    return SimpleNamespace(
+        id=run_id or uuid.uuid4(),
+        tenant_id=tenant_id,
+        project_id=project_id,
+        pipeline_id=uuid.uuid4(),
+        environment_id=uuid.uuid4(),
+        status=status,
+        trigger_type="manual",
+        priority=1,
+        triggered_by=user_id,
+        git_ref="main",
+        git_sha="abc123",
+        attempt=attempt,
+        started_at=None,
+        finished_at=None,
+        duration_ms=None,
+        summary=None,
+        error_message=None,
+        created_at=now,
+        updated_at=now,
+        metadata_={},
+        chain_depth=0,
+        pipeline=SimpleNamespace(name="smoke"),
+        environment=SimpleNamespace(name="default"),
+    )
+
+
 @pytest.fixture
 def mock_project(project_id, tenant_id):
     obj = MagicMock()
@@ -233,11 +270,18 @@ class TestBatchCancel:
     async def test_batch_cancel_success(self, app, mock_repos, tenant_id):
         from qaplatform.infra.database.models import RunStatusEnum
 
-        run = MagicMock()
-        run.id = uuid.uuid4()
-        run.tenant_id = tenant_id
-        run.status = RunStatusEnum.RUNNING
-        mock_repos.run.get_for_tenant = AsyncMock(return_value=run)
+        run = _make_run(
+            tenant_id=tenant_id,
+            project_id=uuid.uuid4(),
+            status=RunStatusEnum.RUNNING,
+        )
+        run_after = _make_run(
+            tenant_id=tenant_id,
+            project_id=run.project_id,
+            status=RunStatusEnum.CANCELLED,
+            run_id=run.id,
+        )
+        mock_repos.run.get_for_tenant = AsyncMock(side_effect=[run, run_after])
         mock_repos.run.cancel_if_current = AsyncMock(return_value=True)
 
         with patch("qaplatform.engine.cancel.publish_cancel", new_callable=AsyncMock), \
@@ -252,6 +296,12 @@ class TestBatchCancel:
         data = resp.json()
         assert data["processed"] == 1
         assert data["failed"] == 0
+        mock_repos.audit.create.assert_awaited_once()
+        audit_kwargs = mock_repos.audit.create.await_args.kwargs
+        assert audit_kwargs["action"] == "run.batch_cancel"
+        assert audit_kwargs["resource_id"] == run.id
+        assert audit_kwargs["before_state"]["status"] == "running"
+        assert audit_kwargs["after_state"]["status"] == "cancelled"
 
     @pytest.mark.asyncio
     async def test_batch_cancel_not_found(self, app, mock_repos):
@@ -275,22 +325,16 @@ class TestBatchRetry:
     async def test_batch_retry_success(self, app, mock_repos, project_id, tenant_id):
         from qaplatform.infra.database.models import RunStatusEnum
 
-        original = MagicMock()
-        original.id = uuid.uuid4()
-        original.tenant_id = tenant_id
-        original.project_id = project_id
-        original.pipeline_id = uuid.uuid4()
-        original.environment_id = uuid.uuid4()
-        original.git_ref = "main"
-        original.git_sha = "abc123"
-        original.metadata_ = {}
-        original.status = RunStatusEnum.FAILED
-        original.pipeline = MagicMock()
-        original.environment = MagicMock()
+        original = _make_run(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            status=RunStatusEnum.FAILED,
+        )
 
         new_run = MagicMock()
         new_run.id = uuid.uuid4()
         new_run.retry_group_id = None
+        new_run.attempt = 2
 
         mock_repos.run.get_for_tenant = AsyncMock(return_value=original)
         mock_repos.run.create = AsyncMock(return_value=new_run)
@@ -306,6 +350,12 @@ class TestBatchRetry:
         data = resp.json()
         assert data["processed"] == 1
         assert data["failed"] == 0
+        mock_repos.audit.create.assert_awaited_once()
+        audit_kwargs = mock_repos.audit.create.await_args.kwargs
+        assert audit_kwargs["action"] == "run.batch_retry"
+        assert audit_kwargs["resource_id"] == original.id
+        assert audit_kwargs["before_state"]["status"] == "failed"
+        assert audit_kwargs["after_state"]["retry_run_id"] == str(new_run.id)
 
     @pytest.mark.asyncio
     async def test_batch_retry_not_terminal(self, app, mock_repos, tenant_id):

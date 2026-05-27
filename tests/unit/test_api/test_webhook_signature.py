@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac as _hmac
 
-import pytest
 
 from qaplatform.infra.webhook_signature import (
     generate_webhook_signature,

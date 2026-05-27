@@ -496,11 +496,11 @@ class RunRepository(BaseRepository[Run]):
         await self.session.flush()
 
     async def delete_terminal_older_than(self, *, cutoff: datetime) -> int:
-        """Hard-delete already soft-deleted done/failed runs (and cascade) older than cutoff.
+        """Hard-delete terminal runs (and cascade) older than cutoff.
 
-        Only records where ``deleted_at IS NOT NULL`` (already soft-deleted) AND
-        status is DONE or FAILED AND finished_at < cutoff are eligible.
-        Returns deleted count.  The caller is responsible for committing the
+        Any run in a terminal state with ``finished_at < cutoff`` is eligible,
+        whether or not it was previously soft-deleted. Active or recently
+        finished runs are kept. The caller is responsible for committing the
         session.
         """
         from sqlalchemy import delete as sa_delete
@@ -508,8 +508,12 @@ class RunRepository(BaseRepository[Run]):
         stmt = (
             sa_delete(Run)
             .where(
-                Run.deleted_at.isnot(None),
-                Run.status.in_([RunStatusEnum.DONE, RunStatusEnum.FAILED]),
+                Run.status.in_([
+                    RunStatusEnum.DONE,
+                    RunStatusEnum.FAILED,
+                    RunStatusEnum.CANCELLED,
+                    RunStatusEnum.TIMEOUT,
+                ]),
                 Run.finished_at < cutoff,
             )
         )

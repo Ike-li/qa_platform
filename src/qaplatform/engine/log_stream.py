@@ -15,6 +15,8 @@ _MAXLEN = 10_000
 _STREAM_TTL = 3600  # 1 hour
 # TTL for stream on archive failure (seconds)
 _ARCHIVE_FAILURE_TTL = 86400  # 24 hours
+# Redis set of run IDs whose log archive failed and should be retried.
+_ARCHIVE_RETRY_SET = "run:logs:archive_failed"
 # Per-line byte cap (PRD §observability: 4KB max per log line) — guards
 # against pathological producers (e.g. base64 blobs) blowing up Redis or
 # stalling SSE consumers.
@@ -50,6 +52,12 @@ class LogStream:
     @staticmethod
     def _stream_key(run_id: UUID | str) -> str:
         return f"run:{run_id}:logs"
+
+    @staticmethod
+    def _run_id_value(value: Any) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return str(value)
 
     async def write_log(
         self,
@@ -155,6 +163,10 @@ class LogStream:
 
             # Set short TTL — keep stream alive for in-flight SSE readers
             await self._redis.expire(key, _STREAM_TTL)
+            try:
+                await self._redis.srem(_ARCHIVE_RETRY_SET, str(run_id))
+            except Exception:
+                log.warning("failed to clear log archive retry marker for run %s", run_id, exc_info=True)
             log.info("archived %d log entries for run %s", len(all_entries), run_id)
             return True
 
@@ -164,7 +176,31 @@ class LogStream:
                 await self._redis.expire(key, _ARCHIVE_FAILURE_TTL)
             except Exception:
                 pass
+            try:
+                await self._redis.sadd(_ARCHIVE_RETRY_SET, str(run_id))
+            except Exception:
+                log.warning("failed to record log archive retry marker for run %s", run_id, exc_info=True)
             return False
+
+    async def retry_failed_archives(
+        self,
+        s3_client: Any,
+        bucket: str,
+        *,
+        limit: int = 100,
+    ) -> int:
+        """Retry log archives remembered after prior failures.
+
+        Returns the number of run streams successfully archived during this
+        pass. Failed retries keep their retry marker and 24h stream TTL.
+        """
+        raw_run_ids = await self._redis.smembers(_ARCHIVE_RETRY_SET)
+        retried = 0
+        for raw_run_id in list(raw_run_ids)[:limit]:
+            run_id = self._run_id_value(raw_run_id)
+            if await self.archive_logs(run_id, s3_client, bucket):
+                retried += 1
+        return retried
 
     async def delete_stream(self, run_id: UUID | str) -> None:
         """Delete the Redis Stream key for a run."""

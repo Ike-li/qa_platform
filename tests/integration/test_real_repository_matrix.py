@@ -328,7 +328,45 @@ async def test_run_retention_hard_delete_cascades_results_artifacts_and_events(
     old_finished_at = datetime.now(timezone.utc) - timedelta(days=30)
     await run_repo.update(run, status=RunStatusEnum.DONE, finished_at=old_finished_at)
     await run_repo.delete(run)
+
+    old_failed = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.FAILED,
+        git_ref=f"old-failed-{uuid4().hex}",
+    )
+    old_failed.finished_at = old_finished_at
+    old_cancelled = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.CANCELLED,
+        git_ref=f"old-cancelled-{uuid4().hex}",
+    )
+    old_cancelled.finished_at = old_finished_at
+    old_timeout = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.TIMEOUT,
+        git_ref=f"old-timeout-{uuid4().hex}",
+    )
+    old_timeout.finished_at = old_finished_at
+    recent_done = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.DONE,
+        git_ref=f"recent-done-{uuid4().hex}",
+    )
+    recent_done.finished_at = datetime.now(timezone.utc)
+    active_queued = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.QUEUED,
+        git_ref=f"active-queued-{uuid4().hex}",
+    )
     await integration_db_session.commit()
+
+    eligible_run_ids = {run.id, old_failed.id, old_cancelled.id, old_timeout.id}
+    retained_run_ids = {recent_done.id, active_queued.id}
 
     assert await _count_rows(integration_db_session, Run, Run.id == run.id) == 1
     assert await _count_rows(
@@ -352,8 +390,11 @@ async def test_run_retention_hard_delete_cascades_results_artifacts_and_events(
     )
     await integration_db_session.commit()
 
-    assert deleted == 1
-    assert await _count_rows(integration_db_session, Run, Run.id == run.id) == 0
+    assert deleted >= len(eligible_run_ids)
+    for deleted_run_id in eligible_run_ids:
+        assert await _count_rows(integration_db_session, Run, Run.id == deleted_run_id) == 0
+    for retained_run_id in retained_run_ids:
+        assert await _count_rows(integration_db_session, Run, Run.id == retained_run_id) == 1
     assert await _count_rows(
         integration_db_session,
         TestResult,

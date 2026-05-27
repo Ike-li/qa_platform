@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import pytest
 
-from qaplatform.domain.models.run import Run, RunStatus
+from qaplatform.domain.models.run import Run
 from qaplatform.engine.executor import RunExecutor
 from qaplatform.engine.redact import redact_url_userinfo
 from qaplatform.plugins.registry import PluginRegistry

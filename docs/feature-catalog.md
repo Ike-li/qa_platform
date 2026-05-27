@@ -121,7 +121,7 @@
 | Webhook 签名验证 | P1 | ✅ | `api/v1/webhooks.py` · HMAC-SHA256 |
 | Container 安全头（X-Frame, HSTS 等） | P1 | ✅ | `api/middleware/security_headers.py`（CSP 等）+ `frontend/nginx.conf`（静态资源） |
 | iframe sandbox 加固 | P0 | ✅ | `components/runs/artifact-preview.tsx` · 仅 `allow-scripts`，去掉 `allow-same-origin` |
-| 审计日志（who/what/when/from） | P0 | ⚠️ | `api/audit.py` 写入端 + `infra/database/repositories/audit_repo.py` 仓储已实现；查询 API 未实现，`api/v1/runs.py` 批量取消/批量重试等覆盖率仍需补齐，见 §4 |
+| 审计日志（who/what/when/from） | P0 | ⚠️ | `api/audit.py` 写入端 + `infra/database/repositories/audit_repo.py` 仓储已实现；批量取消/批量重试已补 audit 写入与真实 DB 验证；查询 API 仍未实现，见 §4 |
 | structlog（JSON 格式） | P1 | ⚠️ | `qaplatform.logging.configure_logging` 已在 API app 默认 factory 路径配置 structlog / JSON renderer；worker 入口未调用该配置，worker/engine/plugin 多处仍直接使用 stdlib `logging.getLogger`，全局结构化日志待补 |
 | OpenTelemetry 追踪 | P2 | ❌ | **未实现**。`pyproject.toml` 已声明部分 OTel 依赖，但缺 OTLP HTTP exporter；代码无 `TracerProvider` / `FastAPIInstrumentor` 装配，见 §4 |
 | Prometheus 指标 | P1 | ✅ | `/metrics` endpoint |
@@ -144,7 +144,7 @@
 | F-PM-01 / F-PM-02 Git 凭证执行闭环 | P0 | 项目 schema 可保存 `git_auth_method` / `credential_id`，凭证 CRUD 可加密存储；但 manual/webhook Run 只把 `credential_id` 放入 metadata，`engine/executor.py::_clone_repo` 只用原始 `git_url` / `git_ref` 调 `GitSource.clone()`，未解密 token/SSH key 并注入 clone | 需补私有 HTTPS token / SSH key clone 支持、临时文件权限、错误脱敏与认证失败测试；避免把密钥写入日志或持久化 metadata |
 | F-PL-01 collector 配置补齐 | P0 | Pipeline schema / ORM / `worker/tasks.py::_build_pipeline_config` 均无 collector 选择或配置；`RunExecutor.execute()` 固定 `get_collector("junit")` | PRD §3.2 要求可配置测试运行器、结果收集器、超时、重试策略；需决定当前 JUnit-only 是否改为正式限制，或新增 collector 配置与测试 |
 | 审计日志查询 API | P0 | 仅写入端，无 `/api/v1/audit-events` 查询路由 | 写入端 `api/audit.py` + 仓储 `infra/database/repositories/audit_repo.py` 已就位；当前执行来源以本 catalog 待办和 T02 任务包为准 |
-| 审计写入覆盖补齐 | P0 | `api/v1/runs.py` 批量取消/批量重试当前无 audit 事件；SSE ticket 等临时凭证写入是否审计需产品确认 | architecture §9.6 已改为“关键写操作主路径覆盖，覆盖率待补齐” |
+| 审计写入覆盖补齐 | P1 | 批量 cancel/retry 已补 audit 写入与真实 DB 验证；SSE ticket 等临时凭证写入是否审计需产品确认 | architecture §9.6 已改为“关键写操作主路径覆盖，覆盖率待补齐” |
 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | P0 | 目录型 Allure HTML report 不会被当前上传逻辑收集；环境级 `max_artifact_size_mb` / `max_artifacts_count` 未传入 worker ResourceLimits，上传侧也未发现强制校验；`disk_bytes` 字段未进入 Docker HostConfig；OOM/timeout 终止原因与资源用量记录未闭环 | PRD §3.2 要求限制产物大小并记录资源终止信息，PRD §3.4 要求预签名下载 + HTML 报告在线预览；当前 CPU/内存/超时和 `download` JSON 已实现，产物限制/预览闭环待补 |
 | F-EX-05 日志归档回看闭环 | P0 | Redis Stream 实时日志与 S3 JSONL 归档写入已实现，但 Redis TTL 过期后的归档日志读回 API / 前端回看入口未实现 | PRD §3.3 验收要求“日志持久化可回看”；当前 UI 只接 SSE 实时窗口 |
 | F-AU-02 API Token scope enforcement 补齐 | P1 | 已完成 | API token scopes 已贯通 tenant/project 权限依赖；真实 API 测试覆盖只读、run.trigger、错误/空 scope |
@@ -152,8 +152,8 @@
 | F-EX-01 手动触发参数与入队验收补齐 | P0 | `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；PRD 要求可指定 commit 与 environment，且触发后 < 5s 入队未纳入自动验收 | 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定；前端旧 `env_overrides` / `params` 偏移仍归 `T-FRONTEND-API` |
 | F-EX-02 静默窗口 | P1 | 发布冻结期不触发 cron | PRD §3.3 验收 |
 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | P1 | 路由未传 `dedup_key`，无分支过滤逻辑 | `dedup_key` 字段在 ORM 已有，路由层接入即可 |
-| F-EX-07 自动重试端到端补齐 | P1 | `RetryPolicyInput.max_attempts` 与 worker `max_retries` 读取不一致，且 `max_attempts` 缺 PRD 1-5 边界校验；执行期 Docker/clone/setup 基础设施异常也没有传递到 `_attempt_retry` | 现有单测覆盖 `_should_retry` / `_attempt_retry` 原语，需补真实 `execute_run` 路径与 worker_lost 策略 |
-| F-EX-08 优先级队列消费闭环 | P2 | 已补部署/测试主干 | Compose 启动 high/medium/low worker；manual priority 队列矩阵有单测；等待队列 priority+FIFO 有真实 DB 测试；worker_lost 自动重试仍归 F-EX-07 |
+| F-EX-07 自动重试端到端补齐 | P2 | API-facing `max_attempts` / `retry_on`、waiting retry run、worker_lost callback 已补单测和真实 DB 测试 | 剩余增强是把真实 worker 黑盒重试场景保留在 nightly/manual lane 持续跑 |
+| F-EX-08 优先级队列消费闭环 | P2 | 已补部署/测试主干 | Compose 启动 high/medium/low worker；manual priority 队列矩阵有单测；等待队列 priority+FIFO 有真实 DB 测试 |
 | F-LS-04 测试结果 suite/关键字过滤 | P0 | `main` 仅 status | PRD §3.7 验收；`feature/T07-test-results-filter` 已推送但未合入 |
 | F-LS-01 执行列表过滤补齐 | P0 | 缺 pipeline / git_ref / time range 过滤 | 当前 `main` 支持 status 多选、project_id 与创建时间排序 |
 | F-LS-02 剩余列表分页补齐 | P0 | credentials、project members、auth tokens 仍返回直接 list | 主要列表已使用 `PaginatedResponse` |
@@ -168,9 +168,9 @@
 | 项 | 必要性 | 备注 |
 |---|---|---|
 | OpenTelemetry 装配 | P2 | 仅声明部分依赖，无 OTLP HTTP exporter、`TracerProvider` / `FastAPIInstrumentor` 代码；设计见 §4.3 |
-| 非功能性能压测 | P1 | 读/写 API p99、日志推送 < 2s、执行摘要生成 < 3s 等目标验证 |
+| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、Redis 日志写读趋势；严格产品 SLO、执行摘要 < 3s 与完整压测仍需专项环境验证 |
 | E2E CI 覆盖扩展 | P1 | PR 保留 `auth-flow.spec.ts`；nightly 固定跑 `real-login-flow` / `real-run-trigger` / `special-regressions`；`workflow_dispatch` 手动跑全量 E2E |
-| 数据保留清理闭环 | P1 | `cleanup_old_runs` cron 已注册但当前函数缺 `datetime/timezone` 导入会触发失败；`RunRepository.delete_terminal_older_than()` 只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run 与 `cancelled/timeout` 策略未闭环；`retry_failed_archives` 仍为空占位，DB 行冷归档未实现 |
+| 数据保留冷归档/读回增强 | P2 | 超期终态 Run 清理与级联删除、失败日志归档重试已闭环；当前仍缺 DB 行冷归档与归档日志读回 API / UI |
 | 结构化日志全局化 | P2 | API app 默认 factory 已配置 structlog JSON renderer；worker/arq 入口未调用 `configure_logging`，engine / worker / plugin 多数模块仍经 stdlib logger 输出，需统一 worker 进程日志初始化与字段格式 |
 
 ### 4.3 设计决策（已定，可直接交付实施）
@@ -257,8 +257,8 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 
 | 维度 | 指标 | 目标 | 状态 |
 |---|---|---|---|
-| 响应时间 | 读 API p99 | < 100ms | ⏳ 未测量 |
-| 响应时间 | 写 API p99 | < 300ms | ⏳ 未测量 |
+| 响应时间 | 读 API p99 | < 100ms | ⚠️ 已有 nightly/manual smoke 趋势哨兵；严格 SLO 需专项环境压测 |
+| 响应时间 | 写 API p99 | < 300ms | ⚠️ 已有 nightly/manual smoke 趋势哨兵；严格 SLO 需专项环境压测 |
 | 吞吐量 | 单 Worker 并发 | ≥ 10 容器 | ⏳ 未测量 |
 | 可用性 | 月度可用率 | ≥ 99.5% | N/A 内部环境 |
 | 日志延迟 | 实时推送 | < 2s | ⏳ 未测量 |
@@ -268,7 +268,7 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 | 安全 | 凭证加密 | AES-256-GCM | ✅ |
 | 安全 | 通用 API Rate limit | 100/min/限流桶 | ✅ |
 | 安全 | 认证高风险端点 Rate limit | 5/min/限流桶 | ✅ |
-| 数据保留 | 执行记录 | 默认 90 天 | ⚠️ `worker/settings.py` 注册了 cleanup cron，但当前实现缺 `datetime/timezone` 导入测试，需补齐后再标完成 |
+| 数据保留 | 执行记录 | 默认 90 天 | ✅ `cleanup_old_runs` 会硬删超期终态 Run 并级联清理 result/artifact/event，真实 Postgres 集成测试已覆盖 |
 | 数据保留 | 审计日志 | 默认 1095 天配置 | ⚠️ `config.py` 已有 `retention_audit_days`；当前未发现独立审计清理任务 |
 
 ---

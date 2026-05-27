@@ -9,9 +9,8 @@ Covers:
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -224,7 +223,6 @@ class TestRateLimitMiddlewareDispatch:
             rate_limit_window_seconds=60,
             trusted_proxies=trusted_proxies or [],
         )
-        app = MagicMock()
         mw = RateLimitMiddleware.__new__(RateLimitMiddleware)
         mw.settings = settings
         mw.redis = redis_mock

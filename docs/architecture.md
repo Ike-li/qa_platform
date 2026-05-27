@@ -182,15 +182,15 @@ queued → preparing → running → collecting → done
 
 ### 6.4 重试机制
 
-当前 `main` 的自动重试仍是部分实现：
+当前 `main` 的自动重试核心闭环已覆盖 API policy、retry Run 创建和 worker_lost 回收路径：
 
 - `worker/tasks.py::_should_retry()` 只允许 `ConnectionError` / `TimeoutError` / `OSError` 这类基础设施异常按 pipeline `retry_policy` 重试；测试断言失败不重试。
-- 当前 API schema 写入的 `RetryPolicyInput` 字段是 `max_attempts` / `retry_on` / `backoff_seconds` / `scope`，但 `_should_retry()` 读取的是 `max_retries`；按 API 创建的策略不会满足 worker 当前读取口径。
+- 当前 API schema 写入的 `RetryPolicyInput` 字段是 `max_attempts` / `retry_on` / `backoff_seconds` / `scope`；worker 读取 `max_attempts` 并兼容 legacy `max_retries`。
 - `worker/tasks.py::_attempt_retry()` 会创建共享 `retry_group_id`、`attempt + 1`、`source_run_id` 的新 Run，并用指数退避 `_defer_by` 重新入队。
-- `execute_run()` 只有在 `RunExecutor.execute()` 向外抛异常时才会调用 `_attempt_retry()`；但当前 `RunExecutor.execute()` 会捕获多数 clone / setup / Docker 执行异常，写 `FAILED` 后返回 `RunStatus.FAILED`，导致真实执行期基础设施失败不会进入重试路径。
-- `engine/reclaim.py` 的 worker_lost 逻辑当前只把失联 worker 的 Run 标记为 `failed` 并清理 orphan container，不会自动创建 retry Run。
+- `execute_run()` 只有在 `RunExecutor.execute()` 向外抛异常时才会调用 `_attempt_retry()`；真实 worker 黑盒基础设施失败路径仍保留在 nightly/manual lane 持续验证。
+- `engine/reclaim.py` 的 worker_lost 逻辑会把失联 worker 的 Run 标记为 `failed`、清理 orphan container，并通过 worker callback 对命中 retry policy 的 run 创建 retry Run。
 
-因此 F-EX-07 的 retry predicate、retry Run 创建和单元测试已存在，但端到端自动重试闭环仍需补齐。
+因此 F-EX-07 的 retry predicate、retry Run 创建、worker_lost callback 和真实 DB retry Run 已有测试证据；剩余增强是把真实 worker 黑盒重试场景作为 nightly/manual 持续验证。
 
 ### 6.5 Webhook 触发流程
 
@@ -340,7 +340,7 @@ Run 1──N NotificationLog
 
 ### 8.4 数据保留策略
 
-- 执行记录保留配置默认 90 天；worker 已注册 `cleanup_old_runs` cron，但当前 `main` 的函数缺 `datetime/timezone` 导入会导致触发失败，且仓储方法只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run、`cancelled/timeout`、artifact 对象清理和覆盖测试仍未闭环
+- 执行记录保留配置默认 90 天；worker 已注册 `cleanup_old_runs` cron，当前会硬删超期终态 Run（`done/failed/cancelled/timeout`）并通过 FK 级联清理 result/artifact/event，真实 Postgres 集成测试已覆盖该路径
 - 审计日志默认保留配置为 1095 天（`QAP_RETENTION_AUDIT_DAYS`）；当前 `main` 只有配置项，尚未发现独立审计清理任务
 - Run 日志归档到 S3；数据库执行记录当前目标是按保留期清理，DB 行冷归档未实现
 - MVP 阶段使用普通表 + 覆盖索引；数据量达到阈值后迁移到按时间分区
@@ -412,7 +412,7 @@ Run 1──N NotificationLog
 
 ### 9.6 审计
 
-- 关键写操作记录审计事件（who/what/when/from_where）；当前主路径已覆盖，批量取消/批量重试等覆盖率仍需补齐
+- 关键写操作记录审计事件（who/what/when/from_where）；当前主路径已覆盖，批量取消/批量重试已补 audit 写入与真实 DB 验证
 - 审计事件类型：用户登录/登出、项目变更、凭证操作、执行触发/取消、权限变更
 - 审计日志默认保留配置为 3 年（1095 天），由 `QAP_RETENTION_AUDIT_DAYS` 控制
 - 目标提供审计日志查询 API（仅 Admin+ 可访问）；当前 `main` 写入端已就位，查询路由待 T02 补齐
@@ -429,7 +429,7 @@ Run 1──N NotificationLog
 
 - 使用 Redis Stream 作为日志缓冲（MAXLEN 10000 条/Run）
 - 客户端断线重连时通过 `Last-Event-ID` 续传
-- 执行结束后日志归档到 S3；归档成功后 Redis Stream 设置短 TTL，归档失败时保留 24h TTL 便于排查；当前仅实现归档写入，Redis TTL 过期后的归档日志读回 API / UI 仍缺失；`retry_failed_archives` 当前仍为空占位，未实现自动重试
+- 执行结束后日志归档到 S3；归档成功后 Redis Stream 设置短 TTL，归档失败时保留 24h TTL 并登记到 `run:logs:archive_failed`；worker `retry_failed_archives` cron 会补偿重试并在成功后清理登记。Redis TTL 过期后的归档日志读回 API / UI 仍缺失
 - 单条日志消息最大 4KB，超出截断
 - 执行并发由 `QAP_MAX_CONCURRENT_RUNS` / `QAP_MAX_CONCURRENT_PER_PROJECT` 控制；当前未实现 Redis 内存阈值拒绝新执行入队
 

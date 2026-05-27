@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -14,6 +14,7 @@ from qaplatform.worker.settings import (
     dequeue_waiting,
     on_shutdown,
     reclaim_resources,
+    retry_failed_archives,
 )
 
 
@@ -86,6 +87,7 @@ async def test_reclaim_resources_reclaims_updates_metrics_and_commits():
         run_repo=run_repo,
         redis=ctx["redis"],
         backend=ctx["docker_backend"],
+        on_reclaimed=ANY,
     )
     runs_in_flight.set.assert_called_once_with(2)
     run_queue_depth.set.assert_called_once_with(5)
@@ -134,6 +136,32 @@ async def test_cleanup_old_runs_deletes_terminal_runs_and_commits():
     run_repo.delete_terminal_older_than.assert_awaited_once()
     session.commit.assert_awaited_once()
     log.info.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_archives_exits_without_dependencies():
+    await retry_failed_archives({"s3_client": AsyncMock(), "s3_bucket": "bucket"})
+    await retry_failed_archives({"log_stream": AsyncMock(), "s3_bucket": "bucket"})
+    await retry_failed_archives({"log_stream": AsyncMock(), "s3_client": AsyncMock()})
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_archives_retries_and_logs_success():
+    log_stream = AsyncMock()
+    s3_client = AsyncMock()
+    log_stream.retry_failed_archives.return_value = 2
+
+    with patch("qaplatform.worker.settings.log") as log:
+        await retry_failed_archives(
+            {
+                "log_stream": log_stream,
+                "s3_client": s3_client,
+                "s3_bucket": "qa-platform",
+            }
+        )
+
+    log_stream.retry_failed_archives.assert_awaited_once_with(s3_client, "qa-platform")
+    log.info.assert_called_once_with("log_archive_retry_done retried=%s", 2)
 
 
 @pytest.mark.asyncio

@@ -70,7 +70,7 @@
 | Docker/Compose 运行时对照 | 通过，`docker-compose.yml` 当前包含 postgres、redis、minio、api、frontend、worker；`make infra-up` 只启动基础设施，`make up` 启动完整栈；Dockerfile `qaplatform.api:create_app` 入口通过 lazy shim 指向 `qaplatform.main:create_app` |
 | Docker/Compose 服务数当前复跑 | 通过，`docker compose config --services` 当前输出 6 个服务：minio、postgres、redis、api、frontend、worker；README 与 architecture 中“`make infra-up` 启动 PostgreSQL/Redis/MinIO、`make up` 启动完整 6 服务栈”的说法仍与 Makefile / Compose 一致。 |
 | Docker socket / 执行隔离文档对照 | 通过，`docker-compose.yml` worker 仍直接挂载 `/var/run/docker.sock`；Docker backend 默认 `network_policy=deny` → `NetworkMode=none`，但 `allow` 会显式使用 bridge，`restricted` 需要部署侧创建 `qap-restricted` 网络；architecture 已改成当前事实 + 生产加固建议，runbook 已新增 Docker socket 风险章节 |
-| 数据保留 / 日志归档闭环对照 | 有已知偏移，`LogStream.archive_logs` 成功后设置 1h TTL、失败后设置 24h TTL；`worker/settings.py::retry_failed_archives` 为空占位；`cleanup_old_runs` 已注册 cron 但函数内缺 `datetime/timezone` 导入；`RunRepository.delete_terminal_older_than()` 只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run 与 `cancelled/timeout` 策略未闭环；未发现 Redis 内存阈值拒绝入队实现 |
+| 数据保留 / 日志归档闭环对照 | 有已知偏移，`LogStream.archive_logs` 成功后设置 1h TTL、失败后设置 24h TTL 并登记失败 Run；`worker/settings.py::retry_failed_archives` 会重试失败归档；`cleanup_old_runs` 已注册 cron 并硬删超期终态 Run（`done/failed/cancelled/timeout`）且覆盖 result/artifact/event 级联；仍未发现 Redis 内存阈值拒绝入队实现，归档日志读回 API / UI 仍缺失 |
 | F-EX-05 实时日志 / 归档回看对照 | 有已知偏移，`api/v1/sse.py` 已支持 `/runs/{run_id}/logs` 和 `Last-Event-ID`，`engine/log_stream.py` 已把日志归档到 `logs/{run_id}.jsonl`；但未发现归档日志读回 API，前端 `log-viewer.tsx` 仅接 SSE 实时窗口，Redis TTL 过期后不能证明“日志持久化可回看”闭环 |
 | 资源限制 / 产物 / Allure 预览闭环对照 | 有已知偏移，CPU/内存/超时已实现；`worker/tasks.py` 构造 `ResourceLimits` 时只传 memory/cpu，`disk_bytes` 未进入 Docker HostConfig；OOM/timeout 能映射为 `timeout`，但未发现资源用量记录闭环；`api/v1/artifacts.py` 已返回 `download_url` / `expires_in`；`engine/executor.py::_upload_artifacts` 只上传 `results/` 下直接文件并跳过目录；`frontend` 仅对 `artifact.type === "allure-report"` 展示预览按钮；环境级产物数量/大小限制未发现上传侧强制校验 |
 | Playwright / E2E 配置对照 | 通过，根目录 `package.json` 提供 `npm run test:e2e`；`playwright.config.ts` 的 `testDir` 为 `tests/e2e`，会启动 `frontend` dev server 和 `.venv/bin/python -m uvicorn qaplatform.main:create_app --factory --app-dir src`，`global-setup.ts` 会启动 postgres/redis/minio、执行 alembic upgrade 与 seed |
@@ -225,7 +225,7 @@
 | catalog 状态承接复核 | 通过，`feature-catalog.md` 中 ⚠️/❌/⏳ 状态项均已在 catalog backlog 或 TODO 中承接；其中非 F-ID 别名按当前文档语义映射：`API Token 吊销 + scope` → F-AU-02，`审计日志（who/what/when/from）` → 审计日志查询 API + 审计写入覆盖补齐，`OpenTelemetry 追踪` → OpenTelemetry 装配，`项目质量仪表盘` → T-FRONTEND-TS。 |
 | TODO 编号映射复核 | 发现新增 F-AU-04 后 TODO 编号整体漂移，但 `T-EXEC-RETRY` / `T-QUEUE-PRIORITY` / `T-NOTIFICATION-TEMPLATE` / `T-RETENTION-OPS` 和 Maintainer 决策表仍引用旧编号；当时先同步到最新编号。2026-05-27 稳定性复核后，`docs/TODO.md` 已改为稳定标题映射，不再依赖会随排序变化的编号。 |
 | F-EX-01 手动触发验收复核 | 发现 PRD §3.3 要求手动触发可指定分支/commit/管道/环境且触发后 < 5s 入队；当前 `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`，`api/v1/runs.py::trigger_run` 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定，且入队时延未纳入自动验收。已把 catalog 的 F-EX-01 降为 ⚠️，并在 TODO 新增 `F-EX-01 手动触发参数与入队验收补齐`。 |
-| F-EX-07 重试次数边界复核 | 发现 PRD §3.3 要求最大重试次数 1-5；当前 `RetryPolicyInput.max_attempts` 是裸 `int = 1`，没有 `ge=1/le=5` 校验，同时 worker 仍读取 `max_retries`。已把 1-5 边界缺口补进 feature-catalog 与 TODO 的 F-EX-07 待办。 |
+| F-EX-07 重试次数边界复核 | 曾发现 PRD §3.3 要求最大重试次数 1-5，而 `RetryPolicyInput.max_attempts` 和 worker 读取口径不一致；当前已补 `max_attempts` 1-5 边界、兼容 legacy `max_retries`，并用单测/真实 DB 测试锁定。 |
 | F-RE-02 摘要生成时延复核 | 通过并补验收归属，`engine/executor.py` 在 collector 产出结果后同步汇总 `total/passed/failed/skipped/error/pass_rate`，随后写入终态 Run；未发现单独的后台摘要任务缺口。但 PRD §3.4 的“执行结束后 < 3s 生成摘要”属于性能验收，已并入 TODO / catalog 的“非功能性能压测”。 |
 | F-RE-03 失败详情路由命名复核 | 通过并细化，当前后端路径是 `api/v1/runs.py` 的 `/runs/{run_id}/results`，响应含 `error_message` / `stack_trace`；前端 `components/test-results-table.tsx` 对 failed/error 用例支持点击展开详情。feature-catalog 已从模糊的 “test-results endpoint” 改为真实 `/runs/{run_id}/results`。 |
 | F-PM-01 / F-PM-02 Git 凭证执行链路复核 | 发现项目 schema 与 API 可保存 `git_auth_method` / `credential_id`，凭证 CRUD 已加密存储并支持轮换；manual/webhook 创建 Run 时也会把 `credential_id` 放进 metadata。但 `engine/executor.py::_clone_repo` 只读取 `git_url` 并调用 `GitSource.clone(git_url, run.git_ref, dest)`，没有解密 token / SSH key，也没有将凭证安全注入 Git clone。因此私有 HTTPS/SSH 仓库执行链路未达 PRD §3.1 验收。已把 F-PM-01 / F-PM-02 降为 ⚠️，新增 Git 凭证执行闭环 TODO。 |
@@ -359,16 +359,16 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 冲突：
 
 - `docs/tasks/README.md` 仍要求每个任务 `make lint` 干净、`make test` 通过、前端任务 `npm run build` 通过。
-- maintainer 已把后端验收修订为“改动文件 ruff 干净 + 不引入新 lint 错误”。
+- maintainer 后续已清理后端 ruff 历史债务；后端验收现在是 `ruff check src tests` 全量干净。
 - maintainer 已把前端验收修订为“改动文件 TS 干净 + 不引入新 TS 错误”。
-- 当前 `main` 存在历史 ruff/TS 债务，完整 lint/build 不能作为每个功能任务阻塞项。
+- 当前 `main` 仍存在历史 TS 债务，完整前端 build 不能作为每个功能任务的无条件阻塞项。
 
 建议：
 
 - 更新 `docs/tasks/README.md` 的通用验收基线。
 - 在每个任务包中避免继续写死 `make lint` 或完整 `npm run build` 作为唯一通过标准。
 
-修复进度：`docs/tasks/README.md` 已改为“改动文件 ruff / TS 干净 + 不引入新错误”的修订验收口径，并保留历史债务单独处理约束。
+修复进度：`docs/tasks/README.md` 已改为后端 `ruff check src tests` 全量干净、前端改动文件 TS 干净且不引入新错误的修订验收口径；后端 `T-LINT` 已处理，前端 TS 债务仍单独处理。
 
 ### 2.5 `make frontend-test` 目标不存在
 
@@ -661,7 +661,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - 在 `docs/tasks/README.md` 写入修订口径。
 - 单独新增 T-LINT 与 T-FRONTEND-TS 任务处理历史债务。
 
-修复进度：任务 README 已写入后端 ruff / 前端 TS 的修订验收口径；CI frontend type/build gate 已改为债务感知，只允许 3 个已知 TS 债务文件失败；`frontend/src/components/projects/environment-editor.tsx` 的新增 lint error 已修复，`npm run lint` 当前为 0 error / 4 warning；本报告、TODO 和任务索引已保留 `T-LINT`、`T-FRONTEND-TS` 为独立任务。
+修复进度：任务 README 已写入后端 ruff / 前端 TS 的修订验收口径；CI frontend type/build gate 已改为债务感知，只允许 3 个已知 TS 债务文件失败；`frontend/src/components/projects/environment-editor.tsx` 的新增 lint error 已修复，`npm run lint` 当前为 0 error / 4 warning；后端 `T-LINT` 已处理并在 CI `backend-test` 加入 `ruff check src tests`，`T-FRONTEND-TS` 仍保留为独立任务。
 
 ### 5.2 `ruff` 未在 pyproject dev/test 依赖中声明
 
@@ -886,16 +886,16 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 ### 7.6 retry failed archive 文档与实现不完整
 
-冲突：
+历史冲突：
 
-- worker settings 中有 `retry_failed_archives` 周期任务，但函数体为空。
-- 如果 runbook/architecture 暗示失败归档可自动重试，当前实现并不支持。
+- worker settings 曾有 `retry_failed_archives` 周期任务，但函数体为空。
+- 如果 runbook/architecture 暗示失败归档可自动重试，当时实现并不支持。
 
 建议：
 
 - 文档里标为未实现，或补实现。
 
-修复进度：architecture / runbook 已明确：单次归档失败只延长 Redis Stream TTL 到 24h，`retry_failed_archives` 仍是空占位，不能宣称自动重试已实现；TODO / catalog 已新增“数据保留清理闭环”待办。
+修复进度：已补实现与测试。`archive_logs` 失败会把 Run ID 登记到 Redis retry set，`retry_failed_archives` cron 会重试并在成功后清理登记；architecture / runbook 已改为当前事实。归档日志读回 API / UI 仍归 F-EX-05。
 
 ### 7.7 Docker socket proxy 文档与 compose 现状要分层表达
 
@@ -917,16 +917,16 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - `docs/architecture.md` 曾写“Git 凭证和环境变量使用 AES-256-GCM 加密存储”，但当前 `Environment.env_vars` 仍是明文 JSONB，T01 才是补齐任务。
 - architecture 曾写“超期数据批量归档到冷存储”，但当前只看到 Run 日志归档到 S3；数据库 Run 行冷归档未实现。
 - architecture 曾写“Redis 内存超过阈值时拒绝新执行入队”，但当前代码只有执行并发/项目并发限制，未发现 Redis 内存阈值入队保护。
-- `cleanup_old_runs` 已注册 cron，但函数内使用 `datetime.now(timezone.utc)`，只局部导入了 `timedelta`，当前模块没有 `datetime/timezone` 全局导入；文档不能把执行记录保留清理标成完全完成。
-- `RunRepository.delete_terminal_older_than()` 当前只硬删 `deleted_at IS NOT NULL` 且状态为 `done/failed` 且 `finished_at < cutoff` 的 Run；不会主动 soft-delete 普通超期终态 Run，也不覆盖 `cancelled/timeout`，因此“执行记录默认 90 天保留”目前只能视为目标配置，而非完整执行闭环。
+- `cleanup_old_runs` 已注册 cron，当前实现可计算 cutoff 并调用仓储删除。
+- `RunRepository.delete_terminal_older_than()` 当前硬删超期终态 Run（`done/failed/cancelled/timeout`），并通过真实 Postgres 集成测试验证 result/artifact/event 级联。
 
 建议：
 
 - architecture 区分“Git 凭证已加密”和“env_vars 待 T01”。
-- 数据保留口径改为：日志/报告走 S3 lifecycle，DB Run 行清理入口当前缺导入且只覆盖已 soft-delete 的 `done/failed`，普通超期终态 Run、`cancelled/timeout`、artifact 对象清理和 DB 冷归档均未闭环。
+- 数据保留口径改为：日志/报告走 S3 lifecycle，DB Run 行清理覆盖超期终态 Run 与级联删除；DB 冷归档和归档日志读回仍是增强项。
 - 把 Redis 内存阈值拒绝入队改成未实现增强项，不再写成现状。
 
-修复进度：architecture、feature-catalog、TODO 和 runbook 已按上述口径更新；未修改运行代码。
+修复进度：architecture、feature-catalog、TODO 和 runbook 已按上述口径更新；运行代码已补 retention 删除与归档重试，测试覆盖真实 DB 级联和 retry set。
 
 ### 7.9 分层依赖规则与当前 import 图偏差
 
@@ -1386,11 +1386,11 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 建议：
 
-- catalog / TODO 不应把 F-EX-07 标成 `main` 已完成。
-- 后续任务需要先统一 retry policy schema 与 worker 读取口径，再补“真实执行路径”的端到端测试：Docker daemon / clone / setup / container wait 等基础设施异常应进入 `_attempt_retry()`，而测试断言失败仍不重试。
-- 需要产品/架构确认 worker_lost 是否也应该自动重试，还是只标 failed 后由人工/批量重试处理。
+- catalog / TODO 不应把真实 worker 黑盒重试场景标成 PR 必跑完成项；它应继续留在 nightly/manual lane。
+- 当前已统一 retry policy schema 与 worker 读取口径，补了 API-facing `max_attempts` / `retry_on`、waiting retry run、worker_lost callback 与真实 DB retry run 测试；测试断言失败仍不重试。
+- worker_lost 已进入自动重试 callback；真实 Docker/clone/setup/container wait 黑盒场景继续作为 nightly/manual 增强验证。
 
-修复进度：feature-catalog 已把 F-EX-07 改为 ⚠️；TODO 已新增“F-EX-07 自动重试端到端补齐”；architecture §6.4 已改为当前部分实现边界，并记录 `max_attempts` / `max_retries` 字段不一致；PRD worker_lost 异常路径已改为“目标体验”，并补充当前 `main` 只标 failed、重试闭环待补的说明。
+修复进度：feature-catalog / TODO / backend-test-audit 已改为当前边界；运行代码和测试已补自动重试核心闭环。
 
 ### 12.5 F-EX-08 优先级队列入队侧与消费侧脱节
 
@@ -1487,13 +1487,13 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 | `T-LOG-REPLAY` | 补齐 F-EX-05 日志归档回看闭环：提供从 `logs/{run_id}.jsonl` 读取历史日志的 API / 前端入口，并处理 Redis Stream TTL 过期后的回放体验。 | 未处理，已记录为 PRD F-EX-05 缺口 |
 | `T-AUTH-SCOPE` | 补齐 API token scope enforcement 在 tenant-scoped / project-scoped / token 管理端点的传递与测试。 | 未处理，已记录为 PRD F-AU-02 缺口 |
 | `T-MANUAL-TRIGGER` | 补齐 F-EX-01 手动触发参数与入队验收：让后端可指定 commit / environment，明确与前端触发 payload 的边界，并补“触发后 < 5s 入队”的可验证测试或压测口径。 | 未处理，已记录为 PRD F-EX-01 缺口 |
-| `T-EXEC-RETRY` | 补齐 F-EX-07 自动重试端到端闭环：统一 `RetryPolicyInput.max_attempts` 与 worker `max_retries` 读取口径并补 1-5 边界校验，让真实 Docker/clone/setup 基础设施异常进入 `_attempt_retry()`，并确认 worker_lost 是否自动重试。 | 未处理，已记录为 PRD F-EX-07 缺口 |
-| `T-QUEUE-PRIORITY` | 补齐 F-EX-08 优先级队列消费闭环：决定单 worker 多队列或多 worker 部署，验证 high/low 队列消费、高优先级插队和同优先级 FIFO。 | 未处理，已记录为 PRD F-EX-08 缺口 |
+| `T-EXEC-RETRY` | 补齐 F-EX-07 自动重试端到端闭环：统一 `RetryPolicyInput.max_attempts` 与 worker `max_retries` 读取口径并补 1-5 边界校验，让真实 Docker/clone/setup 基础设施异常进入 `_attempt_retry()`，并确认 worker_lost 是否自动重试。 | 已补 API-facing max_attempts/retry_on、waiting retry run、worker_lost callback 与真实 DB retry run 测试；真实 worker 黑盒重试保留 nightly/manual |
+| `T-QUEUE-PRIORITY` | 补齐 F-EX-08 优先级队列消费闭环：决定单 worker 多队列或多 worker 部署，验证 high/low 队列消费、高优先级插队和同优先级 FIFO。 | 已补 compose high/medium/low worker、manual priority 队列矩阵单测、真实 DB priority+FIFO 排序 |
 | `T-NOTIFICATION-TEMPLATE` | 补齐 F-NT-01 / F-NT-03 通知规则与模板验收：OR、连续失败次数、每渠道模板、项目名和失败用例变量。 | 未处理，已记录为 PRD F-NT-01/F-NT-03 缺口 |
-| `T-RETENTION-OPS` | 补齐数据保留清理闭环：修复 `cleanup_old_runs` 导入/测试，明确是否先 soft-delete 超期终态 Run、是否覆盖 `cancelled/timeout`，决定是否实现 `retry_failed_archives`、artifact 对象清理与 DB 行冷归档。 | 未处理，已记录为中优先级运维待办 |
+| `T-RETENTION-OPS` | 补齐数据保留清理闭环：修复 `cleanup_old_runs` 导入/测试，明确是否先 soft-delete 超期终态 Run、是否覆盖 `cancelled/timeout`，决定是否实现 `retry_failed_archives`、artifact 对象清理与 DB 行冷归档。 | 已补超期终态硬删、result/artifact/event 级联、失败归档 retry；DB 行冷归档与归档读回仍是增强项 |
 | `T-ARCH-LAYERS` | 收敛分层 import / DB 访问偏差：把 `engine` 反向依赖的 `api.metrics` / `worker._redact` 迁出或改为中立模块，并逐步把 API 路由里的直接 SQLAlchemy 查询下沉到 repositories / query service。 | 未处理，已记录为技术债专项 |
 | `T-LOGGING` | 结构化日志全局化：在 worker/arq 入口调用统一日志配置，收敛 engine / worker / plugin 的 stdlib logger 输出形态，保证 API 与后台任务日志字段一致。 | 未处理，已记录为技术债专项 |
-| `T-LINT` | 清理 main 既有 ruff 历史债务。 | 未处理，保持独立任务 |
+| `T-LINT` | 清理 main 既有 ruff 历史债务。 | 已处理，CI `backend-test` 已加入 `ruff check src tests` |
 | `T-FRONTEND-TS` | 清理前端 3 个历史 TS 错误文件。 | 未处理，保持独立任务 |
 | `T-FRONTEND-API` | 拆分或对齐前端 API DTO、hook 路径/响应形状与 UI view model 类型，覆盖 Run、run trigger payload、run summary `error/errors` 归一化、Environment、environment editor payload、Pipeline 嵌套 selector / retry shape、pipeline modal payload、`use-projects.ts` search/q 参数、`use-pipelines.ts` 路径、`use-notifications.ts` pagination、`use-sse.ts` fallback、TestResult `xfail` 等已登记偏移。 | 未处理，避免在文档审计中改运行代码 |
 
@@ -1514,11 +1514,11 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 2. T05 的 `Schedule.quiet_windows` 与 `Project.settings.silent_windows` 是否共存？
 3. T10 是否允许新增 OTLP HTTP exporter 依赖？
 4. 是否需要实现独立的审计日志清理任务；当前配置有 `retention_audit_days=1095`，但本轮只发现执行记录清理 cron。
-5. 是否需要把 `retry_failed_archives` 做成真正的自动补偿任务，以及是否需要 DB 行冷归档；当前文档已按“未实现/待 T-RETENTION-OPS”记录。
-6. `/auth/sse-ticket` 这种短期临时凭证写入是否必须纳入审计；批量取消/批量重试已明确记录为待补审计。
+5. 是否需要 DB 行冷归档；失败归档自动补偿已实现，但归档日志读回 API / UI 仍待产品决策。
+6. `/auth/sse-ticket` 这种短期临时凭证写入是否必须纳入审计；批量取消/批量重试已补审计写入。
 7. Pipeline collector 配置是补实现，还是把当前 JUnit-only 写成正式产品限制并调整 PRD F-PL-01 验收口径。
 8. Allure/HTML 报告预览的产物形态：上传静态目录并预签入口 `index.html`，还是把报告打包为单个 zip/html artifact 后由前端专门渲染。
-9. worker_lost 是否纳入 F-EX-07 自动重试，还是只标记 failed 后由人工/批量重试处理。
-10. F-EX-08 采用单 worker 多队列消费还是 high/medium/low 多 worker 部署；若采用多 worker，需要补 compose/runbook/CI 覆盖。
+9. 真实 worker 黑盒自动重试是否要从 nightly/manual 提升为 PR 必跑门禁。
+10. F-EX-08 采用 high/medium/low 多 worker 部署；后续如改为单 worker 多队列，需要重新补 runbook/CI 覆盖。
 11. F-NT-03 的“每渠道模板”是否必须实现为 `channels[]` 内独立模板，还是接受当前规则级模板并调整 PRD 验收口径。
 12. F-EX-05 的归档日志回看应采用流式 API 直接读取 `logs/{run_id}.jsonl`，还是把归档日志注册成 artifact 后复用现有预签名下载/预览链路。

@@ -103,6 +103,9 @@ jobs:
       - name: Install backend dependencies
         run: python -m pip install -e '.[dev]'
 
+      - name: Run backend lint
+        run: ruff check src tests
+
       - name: Run backend tests
         run: pytest --cov=qaplatform --cov-report=term-missing --tb=short --durations=20
 
@@ -125,7 +128,7 @@ jobs:
       - name: Run required integration tests
         env:
           RUN_INTEGRATION_TESTS: "1"
-        run: pytest tests/integration/ -m "not heavy_docker and not external_stack" -v --tb=short --durations=20
+        run: pytest tests/integration/ -m "not heavy_docker and not external_stack and not performance" -v --tb=short --durations=20
 
       - name: Pull heavy docker images (nightly/manual, with retry)
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -157,6 +160,13 @@ jobs:
         env:
           RUN_INTEGRATION_TESTS: "1"
         run: pytest tests/integration/ -m "external_stack" -v --tb=short --durations=20
+
+      - name: Run backend performance smoke (nightly/manual)
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        env:
+          RUN_INTEGRATION_TESTS: "1"
+          RUN_PERFORMANCE_TESTS: "1"
+        run: pytest tests/integration/test_performance_smoke.py -m "performance" -v --tb=short --durations=20
 
   frontend-build:
     runs-on: ubuntu-latest
