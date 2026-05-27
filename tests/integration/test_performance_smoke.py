@@ -395,6 +395,117 @@ async def test_trigger_run_enqueue_slo_smoke(
 
 
 @pytest.mark.asyncio
+async def test_webhook_trigger_enqueue_slo_smoke(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import AuditEvent, Run
+
+    arq = _FakeArq()
+    settings = integration_app.state.container.settings
+    old_arq_pool = integration_app.state.container.arq_pool
+    old_total = settings.max_concurrent_runs
+    old_per_project = settings.max_concurrent_per_project
+    integration_app.state.container.arq_pool = arq
+    settings.max_concurrent_runs = 100
+    settings.max_concurrent_per_project = 100
+
+    project = seed_run["project"]
+    pipeline_id = seed_run["pipeline"].id
+    environment_id = seed_run["environment"].id
+    tenant_id = seed_run["tenant"].id
+    user_id = seed_run["user"].id
+    leaked_url = "https://attacker.example/secret.git"
+    leaked_credential = str(uuid4())
+    samples: list[float] = []
+    triggered_payloads: dict[UUID, dict[str, str]] = {}
+    try:
+        for _ in range(10):
+            delivery_id = f"perf-webhook-{uuid4().hex}"
+            git_sha = f"perf-webhook-{uuid4().hex}"
+            started_at = datetime.now(timezone.utc)
+            response = await integration_client.post(
+                f"/api/v1/webhooks/{project.id}/trigger",
+                json={
+                    "git_ref": "refs/heads/main",
+                    "git_sha": git_sha,
+                    "metadata": {
+                        "provider": "github",
+                        "delivery_id": delivery_id,
+                        "git_url": leaked_url,
+                        "credential_id": leaked_credential,
+                        "default_branch": "evil",
+                    },
+                },
+            )
+            assert response.status_code == 201, response.text
+            run_id = UUID(response.json()["id"])
+            triggered_payloads[run_id] = {
+                "delivery_id": delivery_id,
+                "git_sha": git_sha,
+            }
+
+            integration_db_session.expire_all()
+            row = (
+                await integration_db_session.execute(
+                    select(Run).where(Run.id == run_id)
+                )
+            ).scalar_one()
+            assert row.enqueued_at is not None, "webhook run was not enqueued"
+            assert row.queue_name == "queue:medium"
+            assert row.trigger_type == "webhook"
+            assert row.pipeline_id == pipeline_id
+            assert row.environment_id == environment_id
+            assert row.metadata_["git_url"] == project.git_url
+            assert row.metadata_["delivery_id"] == delivery_id
+            serialized_metadata = repr(row.metadata_)
+            assert leaked_url not in serialized_metadata
+            assert leaked_credential not in serialized_metadata
+            assert "evil" not in serialized_metadata
+            samples.append((row.enqueued_at - started_at).total_seconds() * 1000)
+    finally:
+        settings.max_concurrent_runs = old_total
+        settings.max_concurrent_per_project = old_per_project
+        integration_app.state.container.arq_pool = old_arq_pool
+
+    audit_result = await integration_db_session.execute(
+        select(AuditEvent).where(
+            AuditEvent.tenant_id == tenant_id,
+            AuditEvent.user_id == user_id,
+            AuditEvent.action == "run.trigger",
+            AuditEvent.resource_type == "run",
+            AuditEvent.resource_id.in_(list(triggered_payloads)),
+        )
+    )
+    audits_by_run_id = {event.resource_id: event for event in audit_result.scalars()}
+    assert set(audits_by_run_id) == set(triggered_payloads)
+    for run_id, payload in triggered_payloads.items():
+        event = audits_by_run_id[run_id]
+        assert event.before_state is None
+        assert event.after_state is not None
+        assert event.after_state["id"] == str(run_id)
+        assert event.after_state["status"] == "queued"
+        assert event.after_state["trigger_type"] == "webhook"
+        assert event.after_state["git_ref"] == "refs/heads/main"
+        assert event.after_state["git_sha"] == payload["git_sha"]
+        assert event.after_state["pipeline_id"] == str(pipeline_id)
+        assert event.after_state["environment_id"] == str(environment_id)
+        serialized_audit = repr(event.after_state)
+        assert leaked_url not in serialized_audit
+        assert leaked_credential not in serialized_audit
+        assert payload["delivery_id"] not in serialized_audit
+
+    assert len(arq.calls) == 10
+    _assert_p99_under(
+        "webhook trigger enqueue SLO",
+        samples,
+        _threshold("PERF_WEBHOOK_TRIGGER_ENQUEUE_P99_MS", 5000),
+    )
+
+
+@pytest.mark.asyncio
 async def test_cancel_run_api_p99_smoke(
     integration_app,
     integration_client,
