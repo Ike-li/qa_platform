@@ -50,7 +50,7 @@
 | F-EX-03 | Webhook 触发 | P1 | ⚠️ | `api/v1/webhooks.py` · 项目级 webhook 已实现 HMAC-SHA256 签名验证、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口，见 §4 |
 | F-EX-04 | 执行隔离 | P0 | ✅ | `engine/docker_backend.py` · 默认 `network_policy=deny` → `NetworkMode=none`；容器以 `1000:1000`、只读 rootfs、drop all caps、no-new-privileges 运行；`allow` 会显式使用 bridge，`restricted` 需要部署侧提供 `qap-restricted` 网络 |
 | F-EX-05 | 实时日志 | P0 | ⚠️ | `engine/log_stream.py` + `api/v1/sse.py` + `api/v1/runs.py` · Redis Stream 实时日志、`Last-Event-ID` 续传、S3 JSONL 归档写入与归档日志读回 API 已实现；真实 API/RBAC/DB/Redis 测试覆盖 SSE 断点续传、归档失败 retry marker/worker cron 重试、归档读回分页、对象缺失 404 和跨租户 404 一致性；nightly/manual performance smoke 覆盖真实 SSE 推送 < 2s；前端终态 Run 回看入口已接入归档日志 API，剩余大日志体验/异常可观测性见 §4 |
-| F-EX-06 | 取消执行 | P0 | ✅ | `engine/cancel.py` + `api/v1/runs.py` · required integration 覆盖单 run/batch cancel 的真实 DB 终态、Redis status event `previous` 与 audit before/after 一致性；heavy Docker 覆盖真实容器取消 |
+| F-EX-06 | 取消执行 | P0 | ✅ | `engine/cancel.py` + `api/v1/runs.py` · required integration 覆盖单 run/batch cancel 的真实 DB 终态、Redis status event `previous` 与 audit before/after 一致性；nightly/manual performance smoke 覆盖取消 API p99；heavy Docker 覆盖真实容器取消 |
 | F-EX-07 | 自动重试 | P1 | ⚠️ | `worker/tasks.py` 已按 API-facing `max_attempts` / `retry_on` 创建 retry Run，execute_run 基础设施异常会先提交 failed 再调度 retry；`engine/reclaim.py` 的 worker_lost callback 会创建 retry Run，nightly/manual external-stack 已覆盖 worker_lost 黑盒 retry。clone/setup/Docker daemon 失败是否也应黑盒 retry 仍需产品化决策 |
 | F-EX-08 | 优先级队列 | P2 | ⚠️ | `worker/scheduler.py` 已按 priority 写入 `queue:high/medium/low` 并做 per-project quota；默认 `WorkerSettings.queue_name=queue:medium`，compose 只启动一个未设置 `QAP_WORKER_QUEUE` 的 worker，high/low 队列消费与高优先级插队需补部署/测试闭环 |
 
@@ -168,7 +168,7 @@
 | 项 | 必要性 | 备注 |
 |---|---|---|
 | OpenTelemetry 装配 | P2 | 仅声明部分依赖，无 OTLP HTTP exporter、`TracerProvider` / `FastAPIInstrumentor` 代码；设计见 §4.3 |
-| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API、artifact 下载链接 API、audit events 查询 API、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
+| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API、artifact 下载链接 API、audit events 查询 API、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
 | E2E CI 覆盖扩展 | P1 | PR 保留 `auth-flow.spec.ts`；nightly 固定跑 `real-login-flow` / `real-run-trigger` / `special-regressions`；`workflow_dispatch` 手动跑全量 E2E |
 | 数据保留冷归档/读回增强 | P2 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 和前端终态 Run 回看主路径已闭环；当前仍缺 DB 行冷归档与对象存储生命周期运营报表 |
 | 结构化日志全局化 | P2 | API app 默认 factory 已配置 structlog JSON renderer；worker/arq 入口未调用 `configure_logging`，engine / worker / plugin 多数模块仍经 stdlib logger 输出，需统一 worker 进程日志初始化与字段格式 |
