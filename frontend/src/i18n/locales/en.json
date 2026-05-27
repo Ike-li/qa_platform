@@ -210,6 +210,8 @@
   "runs.results.noResults": "No test results reported yet.",
   "runs.results.unknownError": "Unknown error",
   "runs.artifacts.noArtifacts": "No artifacts generated for this run.",
+  "runs.artifacts.previewArtifact": "Preview {{name}}",
+  "runs.artifacts.downloadArtifact": "Download {{name}}",
   "runs.artifacts.downloadFailed": "Failed to download artifact",
   "runs.artifacts.previewFailed": "Failed to load preview",
   "runs.toast.cancelSent": "Cancel request sent",
@@ -238,6 +240,9 @@
   "logs.connected": "Connected",
   "logs.connecting": "Connecting",
   "logs.disconnected": "Disconnected",
+  "logs.polling": "Polling",
+  "logs.archived": "Archived",
+  "logs.archiveUnavailable": "Archived logs are not available yet.",
 
   "commandPalette.placeholder": "Type a command or search...",
   "commandPalette.noResults": "No results found.",

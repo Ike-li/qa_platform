@@ -210,6 +210,8 @@
   "runs.results.noResults": "暂无测试结果。",
   "runs.results.unknownError": "未知错误",
   "runs.artifacts.noArtifacts": "此运行未生成产物。",
+  "runs.artifacts.previewArtifact": "预览 {{name}}",
+  "runs.artifacts.downloadArtifact": "下载 {{name}}",
   "runs.artifacts.downloadFailed": "下载产物失败",
   "runs.artifacts.previewFailed": "加载预览失败",
   "runs.toast.cancelSent": "取消请求已发送",
@@ -238,6 +240,9 @@
   "logs.connected": "已连接",
   "logs.connecting": "连接中",
   "logs.disconnected": "已断开",
+  "logs.polling": "轮询中",
+  "logs.archived": "已归档",
+  "logs.archiveUnavailable": "归档日志暂不可用。",
 
   "commandPalette.placeholder": "输入命令或搜索...",
   "commandPalette.noResults": "未找到结果。",

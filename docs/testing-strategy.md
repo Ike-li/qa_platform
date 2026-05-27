@@ -11,7 +11,7 @@
 | Heavy Docker integration | nightly/manual 跑 `tests/integration -m "heavy_docker and not external_stack"` | worker/container/cancel/state visibility 等需要真实 Docker 镜像和容器生命周期的链路 | 单独启动的 API/worker compose 栈；macOS/GitHub Actions 不稳定的 OOMKilled 语义默认不作为 PR 门禁 |
 | External-stack integration | nightly/manual 先启动 compose API/worker/MinIO，再跑 `tests/integration -m "external_stack"` | 真实 API 触发后由 compose worker 消费队列、执行容器、写回终态；验证真实 worker 后的 artifact 列表/下载链接、归档日志 API，以及 worker_lost 后自动 retry 再完成的黑盒链路 | 不是 PR 门禁；不替代 required integration 的快速 DB/API/RBAC 覆盖；clone/setup/Docker daemon 等其它基础设施失败重试仍由真实 DB/worker 入口测试覆盖 |
 | Performance smoke | nightly/manual 跑 `tests/integration/test_performance_smoke.py -m performance` | 读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API 的趋势哨兵；失败时输出 p50/p99/max 摘要 | 不是 PR 阻塞性 SLO 证明；发现退化后升格专项压测 |
-| E2E | PR 跑 `auth-flow.spec.ts`，nightly 固定跑 `real-login-flow` / `real-run-trigger` / `special-regressions`，manual 跑完整 Playwright | 浏览器登录/权限/导航冒烟；nightly/manual 覆盖创建项目、触发 run、查看 result/artifact、特殊回归 | PR 级 `auth-flow` 是 UI mock 冒烟，不作为后端真实数据正确性的证据 |
+| E2E | PR 跑 `auth-flow.spec.ts`，nightly 固定跑 `real-login-flow` / `real-run-trigger` / `special-regressions`，manual 跑完整 Playwright | 浏览器登录/权限/导航冒烟；nightly/manual 覆盖创建项目、触发 run、查看 result/artifact、归档日志回看、HTML artifact 预览、特殊回归 | PR 级 `auth-flow` 是 UI mock 冒烟，不作为后端真实数据正确性的证据 |
 
 ## 稳定性标准
 
@@ -31,7 +31,7 @@
 | API 写入后的真实 DB 状态 | credentials、environments、notification rules、runs、schedules、auth/token、batch cancel/retry audit 链路 | 已补 required integration |
 | Worker/queue 状态机与产物链路 | 真实 PG repository 状态机、run claim、cancel、state visibility、execute_run 基础设施异常重试、executor/task 单测、artifact size/count/recursive upload 真实 DB 测试、heavy Docker cancel、compose high/medium/low worker 配置、external-stack worker smoke 和 worker_lost retry 黑盒 | 已覆盖 queued/preparing/running/collecting/done/failed/cancelled/timeout；priority+FIFO 排序、worker retry 落库和 artifact 递归落库有真实 DB 测试；nightly/manual 真实外部栈覆盖 worker 产物、归档日志读回和 worker_lost 后自动 retry |
 | Webhook/schedule 幂等与失败路径 | branch filter、dedup、silent window、terminal same commit、cross-tenant 404、archived project、missing pipeline/environment、enqueue conflict | Webhook/API/schedule worker 主风险已进 required integration；schedule pipeline missing 仍由 unit 覆盖，因为真实 DB FK 会把硬删除变成级联，软删除路径不等价于真实缺行 |
-| 三条关键 E2E 冒烟 | 登录/权限、创建项目到触发 run、查看 run/result/artifact | 已有 Playwright 用例；PR 只跑轻量 auth-flow，nightly 固定跑真实链路，完整链路 manual |
+| 三条关键 E2E 冒烟 | 登录/权限、创建项目到触发 run、查看 run/result/artifact/归档日志 | 已有 Playwright 用例；`special-regressions` 已覆盖真实 DB+S3 准备后的归档日志回放、搜索和 HTML artifact 预览；PR 只跑轻量 auth-flow，nightly 固定跑真实链路，完整链路 manual |
 
 ## Warning 登记
 

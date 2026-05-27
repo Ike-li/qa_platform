@@ -104,11 +104,11 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 
 - 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade；retention 已覆盖普通超期终态 Run 与 `cancelled/timeout`。
 - batch cancel/retry 已补 API 写入后真实 DB 状态和 audit 行验证。
-- log archive 失败已补 Redis retry set 与 worker cron 重试路径；归档日志读回 API 已补真实 DB/RBAC/API 集成测试，external-stack worker smoke 与 worker_lost retry 进一步证明真实 worker 完成后可经 API 回看归档日志；当前仍缺前端回看入口。
+- log archive 失败已补 Redis retry set 与 worker cron 重试路径；归档日志读回 API 已补真实 DB/RBAC/API 集成测试，external-stack worker smoke 与 worker_lost retry 进一步证明真实 worker 完成后可经 API 回看归档日志；前端 run detail 已接入终态 run 的归档日志回看，并用 Playwright 真实 DB+S3 数据覆盖日志搜索与 HTML artifact 预览。
 - Webhook/API/schedule worker 新增真实 DB 失败路径后，project archived、pipeline/environment missing、cross-project pipeline、enqueue conflict 已进 required integration；schedule pipeline missing 仍保留 unit 覆盖，因为真实 FK 下硬删除会级联，软删除不等价于真实缺行。
 - 分支覆盖率仍低于语句覆盖率：主要来自依赖初始化分支、外部 SDK/worker 边界和少量异常恢复路径。
 - warnings 治理：项目内 SQLAlchemy overlap、Redis pubsub `close()`、SSE AsyncMock、httpx cookies、JWT key length warning 均已清理；testcontainers 第三方弃用提示已在 `pyproject.toml` 精确过滤并登记。
-- PR E2E 是 mock API UI 冒烟，不证明真实后端；真实后端 E2E 已有 `real-login-flow`、`real-run-trigger`、`special-regressions`，当前 CI 在 nightly 固定执行这些真实主路径，manual 执行全量。
+- PR E2E 是 mock API UI 冒烟，不证明真实后端；真实后端 E2E 已有 `real-login-flow`、`real-run-trigger`、`special-regressions`，其中 `special-regressions` 覆盖归档日志回看与 artifact 预览，当前 CI 在 nightly 固定执行这些真实主路径，manual 执行全量。
 
 ## 后续优先级
 

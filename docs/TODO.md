@@ -16,8 +16,8 @@
 | 3 | F-PL-01 collector 配置补齐 | PRD §3.2 验收 | Pipeline schema / ORM / worker 拼装均无结果收集器选择或配置，`RunExecutor.execute()` 固定 `get_collector("junit")`；需决定 JUnit-only 是否改为正式限制，或补 collector 配置闭环 |
 | 4 | 审计日志查询 API | catalog §4.1 | 已完成：`/api/v1/audit-events` 支持 Owner/Admin 分页查询、组合过滤、跨租户 404/空结果收敛，并写 `audit_events.list` 自审计；正式 PRD 章节仍未补 |
 | 5 | 审计写入覆盖补齐 | architecture §9.6 | 批量取消/批量重试、SSE ticket 已补 audit 事件与真实 DB 验证；剩余写操作按安全风险继续补齐 |
-| 6 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | PRD §3.2 / PRD §3.4 验收 | CPU/内存/超时、产物数量/大小限制、`results/` 递归上传和 Allure 目录文件落库已实现并有真实 DB/S3 验证；nightly/manual external-stack smoke 覆盖真实 worker 后 artifact 列表与下载链接；仍缺磁盘限制、OOM/timeout 资源用量记录，以及前端 Allure/HTML 报告预览入口/资源加载口径 |
-| 7 | F-EX-05 日志归档回看闭环 | PRD §3.3 验收 | Redis Stream 实时日志、断线续传、S3 JSONL 归档写入与归档日志读回 API 已实现；nightly/manual external-stack smoke 覆盖真实 worker 完成后的归档日志读回；前端回看入口仍缺 |
+| 6 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | PRD §3.2 / PRD §3.4 验收 | CPU/内存/超时、产物数量/大小限制、`results/` 递归上传和 Allure 目录文件落库已实现并有真实 DB/S3 验证；nightly/manual external-stack smoke 覆盖真实 worker 后 artifact 列表与下载链接；前端 run detail 已补 HTML artifact 预览 E2E；仍缺磁盘限制、OOM/timeout 资源用量记录和多资源报告加载口径 |
+| 7 | F-EX-05 日志归档回看闭环 | PRD §3.3 验收 | Redis Stream 实时日志、断线续传、S3 JSONL 归档写入与归档日志读回 API 已实现；nightly/manual external-stack smoke 覆盖真实 worker 完成后的归档日志读回；前端终态 run 已接入归档日志 API，并由真实 DB+S3 E2E 覆盖回放/搜索 |
 | 8 | F-AU-02 API Token scope enforcement 补齐 | PRD §3.6 验收 | 已完成：API token scopes 已贯通 tenant/project 权限依赖，并有真实 API 矩阵覆盖只读、run.trigger、错误/空 scope |
 | 9 | F-AU-04 跨租户 404 完整收敛 | PRD §3.6 验收 | 已完成：Member/Viewer 的 path `project_id` 项目级权限依赖先验证租户可见性；跨 tenant、随机 UUID、软删除一致 404 |
 | 10 | F-EX-01 手动触发参数与入队验收补齐 | PRD §3.3 验收 | 当前 `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；缺 commit / environment 指定入参；“触发后 < 5s 入队”已纳入 nightly/manual performance smoke 趋势哨兵 |
@@ -40,7 +40,7 @@
 | 22 | F-NT-01 / F-NT-03 通知规则与模板验收补齐 | PRD §3.5 验收 | 当前仅状态/pass_rate/失败数 AND 条件和规则级基础变量模板；缺 OR、连续失败次数、每渠道模板、项目名与失败用例变量 |
 | 23 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO、执行摘要 < 3s 与完整压测仍需专项环境验证 |
 | 24 | E2E CI 覆盖扩展 | fix-roadmap §4.3 | 已补 nightly 固定真实 E2E：`real-login-flow`、`real-run-trigger`、`special-regressions`；PR 仍保留轻量 `auth-flow`，manual 仍跑全量 |
-| 25 | 数据保留冷归档/读回增强 | architecture §8.4 / runbook §7 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 已闭环；当前仍缺 DB 行冷归档与归档日志 UI |
+| 25 | 数据保留冷归档/读回增强 | architecture §8.4 / runbook §7 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 和前端终态 Run 回看主路径已闭环；当前仍缺 DB 行冷归档与对象存储生命周期运营报表 |
 
 ## 3. 低优先级 — 增强项
 
@@ -104,7 +104,7 @@
 | 是否补 clone/setup/Docker daemon 失败黑盒 retry 场景 | F-EX-07 自动重试端到端补齐；`execute_run` 真实 DB 异常路径与 `worker_lost` callback 已进入自动重试，worker_lost 黑盒已进 nightly/manual external-stack |
 | F-EX-08 采用单 worker 多队列还是多 worker 部署 | F-EX-08 优先级队列消费闭环 |
 | F-NT-03 每渠道模板是否嵌入 `channels[]` | F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
-| F-EX-05 归档日志回看走流式 API 还是 artifact 复用 | 已先落地普通 JSON 分页 API；前端回看入口仍需确认交互口径 |
+| F-EX-05 归档日志回看走流式 API 还是 artifact 复用 | 已决定并落地普通 JSON 分页 API；前端终态 Run 直接消费该 API，后续只保留大日志分页/异常提示增强 |
 
 ## 5. 当前范围不做
 
