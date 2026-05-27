@@ -21,7 +21,7 @@
 - 资源终止：required integration 通过 RunExecutor + 真实 PostgreSQL/Redis 验证 backend 返回 `oom_killed=True` 或 `timed_out=True` 时，Run 终态落 `timeout`、summary 写入、Redis status/event 进入 `timeout`，并保留 run log 收尾证据；真实 Docker OOMKilled 语义仍由 opt-in heavy Docker 在稳定 Linux 环境验证。
 - Webhook/schedule 失败路径：required integration 断言 schedule worker 成功触发与 enqueue conflict 都会以系统身份写 `run.trigger` AuditEvent；schedule pipeline 不可见时不会创建 Run，会更新 `last_error` 并写 `schedule_skipped_missing_pipeline` AuditEvent；缺失 webhook HMAC 签名不会创建 Run；签名成功后写入真实 Run 与 `run.trigger` AuditEvent，且 payload 不能覆盖 `git_url` / `credential_id` / `shallow_clone` / `default_branch` 等保留执行配置；filtered/duplicate 这种不创建 Run 的分支会写项目级 `webhook.filtered` / `webhook.duplicate` AuditEvent，且 after_state 不落 repo URL、dedup_key 或任意 metadata；archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 也不会静默写错真实 DB 状态。
 - CI 稳定性：后端 ruff 与单测覆盖率是同一门禁；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；heavy Docker fixture 先复用本地镜像、缺镜像才 pull，避免 registry/network 抖动制造误 skip；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
-- 非功能 smoke：nightly/manual 覆盖读 API、写 API、触发入队 SLO、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API（小样本、1500 行大对象分页与跨租户拒绝不读 S3）、artifact 列表元数据 API、artifact 列表拒绝不返回元数据、artifact 下载链接 API（单次、burst 与跨租户拒绝不 presign）、audit events 查询 API、audit-events 拒绝查询不写自审计、执行摘要生成 < 3s 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
+- 非功能 smoke：nightly/manual 覆盖读 API、写 API、触发入队 SLO、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API（小样本、1500 行大对象分页与跨租户拒绝不读 S3）、artifact 列表元数据 API、artifact 列表拒绝不返回元数据、artifact 下载链接 API（单次、burst 与跨租户拒绝不 presign）、audit events 查询 API 与成功自审计写入、audit-events 拒绝查询不写自审计、执行摘要生成 < 3s 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
 
 ## Mock 使用口径
 
@@ -104,7 +104,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 
 ## 残余缺口
 
-- 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade；真实 API token 创建/撤销还断言 AuditEvent before/after 不包含 full token、secret 或 secret_hash；audit-events 成功列表会写 `audit_events.list` 自审计，member/viewer 403 与跨租户资源过滤 404 不会误写自审计行，且拒绝路径 p99 已进入 nightly/manual smoke；retention 已覆盖普通超期终态 Run 与 `cancelled/timeout`。
+- 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade；真实 API token 创建/撤销还断言 AuditEvent before/after 不包含 full token、secret 或 secret_hash；audit-events 成功列表会写 `audit_events.list` 自审计，nightly/manual smoke 还验证 p99 采样下成功查询会持续写入对应自审计行，member/viewer 403 与跨租户资源过滤 404 不会误写自审计行，且拒绝路径 p99 已进入 nightly/manual smoke；retention 已覆盖普通超期终态 Run 与 `cancelled/timeout`。
 - auth 安全审计故障已补 required integration：login/refresh/logout 的失败审计写入异常不会把预期 401/204 变成 500；refresh token revoke Redis 抖动会记录 `token_revoke_failed` 并继续签发新 access token；register/refresh/logout 审计防泄密已补真实 JWT/cookie/API/PostgreSQL 证据，证明 password、access token、旧/新 refresh token 不进入 AuditEvent before/after；对应日志上下文改用 logging `extra`，避免告警路径因非法 kwargs 二次失败。
 - 环境变量加密已补 API/DB/migration/worker 证据：API create/fetch/update 路径会以 AES-256-GCM envelope 存入 `Environment.env_vars` JSONB，AAD 错配会返回 500 并写 `environment.env_vars_decrypt_failed` audit，migration `007` 会加密既有明文并跳过已加密 envelope；nightly/manual external-stack worker smoke 会验证加密 env var 经 worker 解密后注入真实执行容器，且该密钥不会出现在 artifact 列表元数据、预签名下载内容或归档日志回看响应中。
 - single run cancel 已补 API 写入后真实 DB 终态、Redis status event `previous=running` 和 audit before/after 验证，并进入 nightly/manual 取消 API p99 smoke；batch cancel/retry 已补 API 写入后真实 DB 状态、cancel Redis status event 和 audit 行验证。
@@ -120,7 +120,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 ## 后续优先级
 
 1. 自动重试已补 API-facing `max_attempts`、`retry_on`、waiting retry run、execute_run 基础设施异常、真实 `RunExecutor` setup Docker daemon retry 边界、setup/clone 业务失败不误 retry、worker_lost callback 路径、external-stack worker_lost 黑盒，以及 external-stack clone/setup 业务失败不 retry 黑盒；后续如要继续提高信心，可把 Docker daemon 扰动扩到 nightly/manual external-stack 黑盒。
-2. 严格产品 SLO 与完整性能压测仍需专项环境；当前 smoke 已覆盖触发入队 < 5s、取消 API p99、SSE 实时日志推送 < 2s、归档日志 1500 行大对象分页回看、归档日志拒绝 no-S3-read、artifact 下载链接单次、burst 与拒绝 no-presign、audit events 查询 API、执行摘要生成 < 3s 趋势哨兵并输出失败摘要。
+2. 严格产品 SLO 与完整性能压测仍需专项环境；当前 smoke 已覆盖触发入队 < 5s、取消 API p99、SSE 实时日志推送 < 2s、归档日志 1500 行大对象分页回看、归档日志拒绝 no-S3-read、artifact 下载链接单次、burst 与拒绝 no-presign、audit events 查询 API 与成功自审计写入、执行摘要生成 < 3s 趋势哨兵并输出失败摘要。
 3. 通知更高级产品能力仍待补：OR 条件、连续失败次数、每渠道模板、项目名/失败用例变量；本轮已补真实 DB delivery、模板失败、发送失败与幂等。
 4. 审计写入覆盖下一步应按高风险资源继续外扩到尚未进入业务矩阵的写路径，重点检查“该写的 before/after 是否完整”和“敏感字段是否脱敏”，而不是只检查 action 名存在。
 5. 后续提升 coverage 门槛应继续依赖真实风险路径，而不是为百分比增加无行为断言。

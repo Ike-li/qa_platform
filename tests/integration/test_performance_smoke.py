@@ -1041,6 +1041,20 @@ async def test_audit_events_list_api_p99_smoke(
         )
     await integration_db_session.commit()
 
+    async def count_self_audits() -> int:
+        result = await integration_db_session.execute(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(
+                AuditEvent.tenant_id == tenant_id,
+                AuditEvent.user_id == user_id,
+                AuditEvent.action == "audit_events.list",
+                AuditEvent.resource_type == "audit_event",
+            )
+        )
+        return result.scalar_one()
+
+    before_self_audits = await count_self_audits()
     params = {
         "action": action,
         "resource_type": "project",
@@ -1064,6 +1078,7 @@ async def test_audit_events_list_api_p99_smoke(
         assert {item["action"] for item in body["data"]} == {action}
         samples.append(elapsed_ms)
 
+    assert await count_self_audits() == before_self_audits + 23
     _assert_p99_under(
         "audit events list API",
         samples,
