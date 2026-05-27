@@ -17,7 +17,7 @@
 | 4 | 审计日志查询 API | catalog §4.1 | 已完成：`/api/v1/audit-events` 支持 Owner/Admin 分页查询、组合过滤、跨租户 404/空结果收敛，并写 `audit_events.list` 自审计；正式 PRD 章节仍未补 |
 | 5 | 审计写入覆盖补齐 | architecture §9.6 | 批量取消/批量重试、SSE ticket、projects/project members/pipelines/credentials/environments/notification rules/schedules 已补 audit 事件、项目 `git_url` userinfo 与敏感字段脱敏或 delete before_state 的真实 DB 验证；剩余写操作按安全风险继续补齐 |
 | 6 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | PRD §3.2 / PRD §3.4 验收 | CPU/内存/超时、产物数量/大小限制、`results/` 递归上传和 Allure 目录文件落库已实现并有真实 DB/S3 验证；required integration 覆盖 artifact 列表到下载链接的真实 JWT/RBAC/API/DB 行与 bucket/key/TTL 参数；nightly/manual external-stack smoke 覆盖真实 worker 后 artifact 列表、预签名下载链接与 JUnit 内容下载；前端 run detail 已补 HTML artifact 预览 E2E；仍缺磁盘限制、OOM/timeout 资源用量记录和多资源报告加载口径 |
-| 7 | F-EX-05 日志归档回看闭环 | PRD §3.3 验收 | Redis Stream 实时日志、断线续传、S3 JSONL 归档写入与归档日志读回 API 已实现；required integration 覆盖真实 API/RBAC/DB 下的默认页、分页窗口和对象缺失 404；nightly/manual external-stack smoke 覆盖真实 worker 完成后的归档日志读回；前端终态 run 已接入归档日志 API，并由真实 DB+S3 E2E 覆盖回放/搜索 |
+| 7 | F-EX-05 日志归档回看闭环 | PRD §3.3 验收 | Redis Stream 实时日志、断线续传、S3 JSONL 归档写入与归档日志读回 API 已实现；required integration 覆盖真实 API/RBAC/DB 下的默认页、分页窗口和对象缺失 404；nightly/manual external-stack smoke 覆盖真实 worker 完成后的归档日志读回；nightly/manual performance smoke 覆盖真实 SSE 推送 < 2s；前端终态 run 已接入归档日志 API，并由真实 DB+S3 E2E 覆盖回放/搜索 |
 | 8 | F-AU-02 API Token scope enforcement 补齐 | PRD §3.6 验收 | 已完成：API token scopes 已贯通 tenant/project 权限依赖，并有真实 API 矩阵覆盖只读、run.trigger、错误/空 scope |
 | 9 | F-AU-04 跨租户 404 完整收敛 | PRD §3.6 验收 | 已完成：Member/Viewer 的 path `project_id` 项目级权限依赖先验证租户可见性；跨 tenant、随机 UUID、软删除一致 404 |
 | 10 | F-EX-01 手动触发参数与入队验收补齐 | PRD §3.3 验收 | 当前 `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；缺 commit / environment 指定入参；“触发后 < 5s 入队”已纳入 nightly/manual performance smoke 趋势哨兵 |
@@ -38,7 +38,7 @@
 | 20 | F-LS-03 项目搜索排序补齐 | PRD §3.7 验收 | LIKE 转义已修；结果仍按 `created_at desc`，缺名称字母序 |
 | 21 | F-RE-05 单用例历史趋势补齐 | PRD §3.4 验收 | 当前已有项目级趋势和 flaky 聚合；缺单个用例历史趋势 API/视图 |
 | 22 | F-NT-01 / F-NT-03 通知规则与模板验收补齐 | PRD §3.5 验收 | 当前仅状态/pass_rate/失败数 AND 条件和规则级基础变量模板；缺 OR、连续失败次数、每渠道模板、项目名与失败用例变量 |
-| 23 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API、artifact 下载链接 API、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
+| 23 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API、artifact 下载链接 API、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
 | 24 | E2E CI 覆盖扩展 | fix-roadmap §4.3 | 已补 nightly 固定真实 E2E：`real-login-flow`、`real-run-trigger`、`special-regressions`；PR 仍保留轻量 `auth-flow`，manual 仍跑全量 |
 | 25 | 数据保留冷归档/读回增强 | architecture §8.4 / runbook §7 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 和前端终态 Run 回看主路径已闭环；当前仍缺 DB 行冷归档与对象存储生命周期运营报表 |
 
