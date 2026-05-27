@@ -187,10 +187,10 @@ queued → preparing → running → collecting → done
 - `worker/tasks.py::_should_retry()` 只允许 `ConnectionError` / `TimeoutError` / `OSError` 这类基础设施异常按 pipeline `retry_policy` 重试；测试断言失败不重试。
 - 当前 API schema 写入的 `RetryPolicyInput` 字段是 `max_attempts` / `retry_on` / `backoff_seconds` / `scope`；worker 读取 `max_attempts` 并兼容 legacy `max_retries`。
 - `worker/tasks.py::_attempt_retry()` 会创建共享 `retry_group_id`、`attempt + 1`、`source_run_id` 的新 Run，并用指数退避 `_defer_by` 重新入队。
-- `execute_run()` 在 `RunExecutor.execute()` 向外抛基础设施异常时会先提交 failed 状态释放行锁，再调用 `_attempt_retry()`；真实 DB 集成测试覆盖该 worker 入口路径。完整 API/worker compose 黑盒场景仍保留在 nightly/manual lane 持续验证。
+- `execute_run()` 在 `RunExecutor.execute()` 向外抛基础设施异常时会先提交 failed 状态释放行锁，再调用 `_attempt_retry()`；真实 DB 集成测试覆盖该 worker 入口路径。API/worker compose 黑盒场景已在 nightly/manual lane 覆盖 worker_lost retry。
 - `engine/reclaim.py` 的 worker_lost 逻辑会把失联 worker 的 Run 标记为 `failed`、清理 orphan container，并通过 worker callback 对命中 retry policy 的 run 创建 retry Run。
 
-因此 F-EX-07 的 retry predicate、retry Run 创建、execute_run 基础设施异常、worker_lost callback 和真实 DB retry Run 已有测试证据；剩余增强是把完整外部栈 worker 黑盒重试场景作为 nightly/manual 持续验证。
+因此 F-EX-07 的 retry predicate、retry Run 创建、execute_run 基础设施异常、worker_lost callback、真实 DB retry Run 和 worker_lost 外部栈黑盒已有测试证据；剩余增强是明确 clone/setup/Docker daemon 失败是否也应进入自动 retry，并补对应黑盒场景。
 
 ### 6.5 Webhook 触发流程
 
@@ -227,7 +227,7 @@ Scheduler 定期扫描（每 60s）
     ├── 发现 status=running 但 heartbeat 已过期的 Run
     ├── 标记为 failed（reason: worker_lost）
     ├── 清理孤儿容器（通过 Docker label 匹配 run_id）
-    ├── 当前不创建自动重试 Run
+    ├── 若 retry_policy 命中 infra retry，则创建新的 retry Run
     │
     ▼
 恢复完成

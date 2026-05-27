@@ -219,7 +219,7 @@ Git push → Webhook 自动触发执行 → 收到通知（或主动查看）
 → 用户看到失败记录，可查看"worker 丢失"原因
 ```
 
-当前 `main` 对 worker_lost 会标记 failed、清理 orphan container；如该 Run 的 retry policy 命中基础设施失败重试条件，worker reclaim callback 会创建新的 retry Run。真实 worker 黑盒重试仍放在 nightly/manual lane 持续验证。
+当前 `main` 对 worker_lost 会标记 failed、清理 orphan container；如该 Run 的 retry policy 命中基础设施失败重试条件，worker reclaim callback 会创建新的 retry Run。nightly/manual external-stack 已覆盖 worker_lost 黑盒重试并验证 retry Run 的 artifact 与归档日志。
 
 ---
 

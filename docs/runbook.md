@@ -22,8 +22,8 @@
    redis-cli -u $QAP_REDIS_URL ping
    ```
 3. 查看 worker 日志中 `worker_heartbeat_set_failed` 条目，确认是 Redis 抖动还是进程崩溃。
-4. 若 Redis 抖动：心跳循环会自动恢复（fail-open 设计，见下节）；Run 已失败需手动重新触发。
-5. 若进程崩溃：重启 worker，检查 OOM / SIGKILL 原因。
+4. 若 Redis 抖动：心跳循环会自动恢复（fail-open 设计，见下节）；已被标记 failed 的 Run 若配置了 infra retry，会由 reclaimer callback 创建 retry Run，否则需手动重新触发。
+5. 若进程崩溃：重启 worker，检查 OOM / SIGKILL 原因；nightly/manual external-stack 覆盖了 worker_lost 后创建 retry Run、重启 worker 后产出 artifact 与归档日志的链路。
 
 **预防**：确保 Redis 有足够内存，避免 `maxmemory-policy allkeys-lru` 驱逐心跳 key。
 

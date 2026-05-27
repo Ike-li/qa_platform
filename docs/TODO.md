@@ -30,7 +30,7 @@
 |---|---|---|---|
 | 13 | F-EX-02 静默窗口 | PRD §3.3 验收 | 发布冻结期不触发 cron 未实现 |
 | 14 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | PRD §3.3 验收 | `dedup_key` 字段在 ORM 已有，路由层未接入 |
-| 15 | F-EX-07 自动重试端到端补齐 | PRD §3.3 验收 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 已补单测和真实 DB 测试；剩余增强是把完整外部栈 worker 黑盒重试场景保留在 nightly/manual lane 持续跑 |
+| 15 | F-EX-07 自动重试端到端补齐 | PRD §3.3 验收 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 已补单测和真实 DB 测试；nightly/manual external-stack 已补 worker_lost 黑盒重试；剩余增强是明确 clone/setup/Docker daemon 失败是否也进入自动 retry 并补对应黑盒场景 |
 | 16 | F-EX-08 优先级队列消费闭环 | PRD §3.3 验收 | 已补 compose high/medium/low worker 部署、manual priority 队列矩阵单测、真实 DB priority+FIFO 排序测试 |
 | 17 | F-LS-04 测试结果 suite/关键字过滤 | PRD §3.7 验收 | 当前 `main` 仅 status（后端状态枚举含 `passed/failed/error/skipped/xfail`）；`feature/T07-test-results-filter` 已推送但未合入 |
 | 18 | F-LS-01 执行列表过滤补齐 | PRD §3.7 验收 | 当前 `main` 支持 status 多选、project_id 与创建时间排序；缺 pipeline / git_ref / time range 过滤 |
@@ -101,7 +101,7 @@
 | `/auth/sse-ticket` 临时凭证写入是否必须纳入审计 | 已按高风险凭证动作纳入审计；后续仅需确认产品展示口径 |
 | Pipeline collector 配置是补实现还是将 JUnit-only 写成正式产品限制 | F-PL-01 collector 配置补齐 |
 | Allure/HTML 报告前端预览采用已上传目录入口还是 zip/html 单产物 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐；后端已递归上传目录文件 |
-| 是否补完整外部栈 worker 黑盒自动重试 nightly 场景 | F-EX-07 自动重试端到端补齐；`execute_run` 真实 DB 异常路径与 `worker_lost` callback 已进入自动重试 |
+| 是否补 clone/setup/Docker daemon 失败黑盒 retry 场景 | F-EX-07 自动重试端到端补齐；`execute_run` 真实 DB 异常路径与 `worker_lost` callback 已进入自动重试，worker_lost 黑盒已进 nightly/manual external-stack |
 | F-EX-08 采用单 worker 多队列还是多 worker 部署 | F-EX-08 优先级队列消费闭环 |
 | F-NT-03 每渠道模板是否嵌入 `channels[]` | F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
 | F-EX-05 归档日志回看走流式 API 还是 artifact 复用 | 已先落地普通 JSON 分页 API；前端回看入口仍需确认交互口径 |
