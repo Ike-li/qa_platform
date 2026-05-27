@@ -58,6 +58,30 @@ def _dedup_key(metadata: dict, repo_url: str, commit_sha: str | None, branch_nam
     return f"{provider}:{repo_url}:{commit_sha}:{branch_name}"
 
 
+def _webhook_decision_audit_state(
+    body: WebhookTriggerRequest,
+    *,
+    project_id: UUID,
+    branch_name: str,
+    status: str,
+    reason: str,
+) -> dict:
+    metadata = body.metadata or {}
+    state = {
+        "project_id": str(project_id),
+        "status": status,
+        "reason": reason,
+        "git_ref": body.git_ref,
+        "git_sha": body.git_sha,
+        "branch_name": branch_name,
+        "provider": str(metadata.get("provider") or "webhook"),
+    }
+    delivery_id = metadata.get("delivery_id")
+    if delivery_id is not None:
+        state["delivery_id"] = str(delivery_id)
+    return state
+
+
 def _exception_chain(exc: Exception):
     pending = [exc]
     seen: set[int] = set()
@@ -107,6 +131,7 @@ async def webhook_trigger(
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    project_resource_id = project.id
 
     if project.status == "archived":
         raise HTTPException(
@@ -130,12 +155,26 @@ async def webhook_trigger(
                 detail="Invalid webhook signature",
             )
 
-    await enforce_project_action(session, user, project.id, Action.RUN_TRIGGER)
+    await enforce_project_action(session, user, project_resource_id, Action.RUN_TRIGGER)
 
     branch_name = _branch_name_from_ref(body.git_ref)
     allowed_branches = _allowed_branch_patterns(project.settings)
     if not _branch_allowed(branch_name, allowed_branches):
-        log.info("webhook branch filtered for project %s branch %s", project.id, branch_name)
+        log.info("webhook branch filtered for project %s branch %s", project_resource_id, branch_name)
+        await write_audit(
+            repos,
+            user,
+            action="webhook.filtered",
+            resource_type="project",
+            resource_id=project_resource_id,
+            after=_webhook_decision_audit_state(
+                body,
+                project_id=project_resource_id,
+                branch_name=branch_name,
+                status="filtered",
+                reason="branch_not_allowed",
+            ),
+        )
         return JSONResponse(
             status_code=200,
             content={"status": "filtered", "reason": "branch_not_allowed"},
@@ -186,6 +225,20 @@ async def webhook_trigger(
             raise
         await session.rollback()
         log.info("webhook duplicate run for project %s branch %s", project_id, branch_name)
+        await write_audit(
+            repos,
+            user,
+            action="webhook.duplicate",
+            resource_type="project",
+            resource_id=project_resource_id,
+            after=_webhook_decision_audit_state(
+                body,
+                project_id=project_resource_id,
+                branch_name=branch_name,
+                status="duplicate",
+                reason="dedup_key_conflict",
+            ),
+        )
         return JSONResponse(status_code=200, content={"status": "duplicate"})
     run.retry_group_id = run.id
 

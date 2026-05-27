@@ -238,6 +238,14 @@ class TestWebhookTrigger:
         assert resp.status_code == 200
         assert resp.json()["status"] == "filtered"
         mock_repos.run.create.assert_not_awaited()
+        mock_repos.audit.create.assert_awaited_once()
+        audit_kwargs = mock_repos.audit.create.await_args.kwargs
+        assert audit_kwargs["action"] == "webhook.filtered"
+        assert audit_kwargs["resource_type"] == "project"
+        assert audit_kwargs["resource_id"] == mock_project.id
+        assert audit_kwargs["after_state"]["status"] == "filtered"
+        assert audit_kwargs["after_state"]["reason"] == "branch_not_allowed"
+        assert audit_kwargs["after_state"]["branch_name"] == "feature/foo"
 
     @pytest.mark.asyncio
     async def test_webhook_trigger_dedup_integrity_error_returns_duplicate(
@@ -258,6 +266,14 @@ class TestWebhookTrigger:
 
         assert resp.status_code == 200
         assert resp.json() == {"status": "duplicate"}
+        mock_repos.audit.create.assert_awaited_once()
+        audit_kwargs = mock_repos.audit.create.await_args.kwargs
+        assert audit_kwargs["action"] == "webhook.duplicate"
+        assert audit_kwargs["resource_type"] == "project"
+        assert audit_kwargs["resource_id"] == project_id
+        assert audit_kwargs["after_state"]["status"] == "duplicate"
+        assert audit_kwargs["after_state"]["reason"] == "dedup_key_conflict"
+        assert audit_kwargs["after_state"]["branch_name"] == "main"
 
 
 # --------------------------------------------------------------------------- #
