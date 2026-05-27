@@ -59,6 +59,15 @@ def _error_detail(body: dict) -> str | None:
     return body.get("detail") or (error or {}).get("message")
 
 
+def _decode_redis_mapping(mapping: dict) -> dict[str, str]:
+    return {
+        key.decode() if isinstance(key, bytes) else key: (
+            value.decode() if isinstance(value, bytes) else value
+        )
+        for key, value in mapping.items()
+    }
+
+
 @pytest.mark.asyncio
 async def test_project_api_audits_lifecycle_without_git_url_userinfo_leak(
     integration_client,
@@ -885,12 +894,64 @@ async def test_schedule_and_run_apis_persist_next_run_metadata_and_audit_rows(
 
 
 @pytest.mark.asyncio
+async def test_single_run_cancel_persists_state_redis_event_and_audit_row(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.engine.events import EVENT_STREAM_KEY, STATUS_HASH_KEY
+    from qaplatform.infra.database.models import AuditEvent, RunStatusEnum
+
+    run = seed_run["run"]
+    run.status = RunStatusEnum.RUNNING
+    await integration_db_session.commit()
+
+    response = await integration_client.post(f"/api/v1/runs/{run.id}/cancel")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cancelled"
+
+    await integration_db_session.refresh(run)
+    assert run.status == RunStatusEnum.CANCELLED
+    assert run.cancel_requested_at is not None
+    assert run.finished_at is not None
+
+    redis = integration_app.state.container.redis_client
+    status_hash = await redis.hgetall(STATUS_HASH_KEY.format(run_id=str(run.id)))
+    decoded_status = _decode_redis_mapping(status_hash)
+    assert decoded_status["status"] == "cancelled"
+
+    events = await redis.xrange(EVENT_STREAM_KEY.format(run_id=str(run.id)))
+    assert events, "cancel API did not publish a Redis status event"
+    _event_id, latest_event = events[-1]
+    decoded_event = _decode_redis_mapping(latest_event)
+    assert decoded_event["status"] == "cancelled"
+    assert decoded_event["previous"] == "running"
+
+    audit = (
+        await integration_db_session.execute(
+            select(AuditEvent)
+            .where(
+                AuditEvent.action == "run.cancel",
+                AuditEvent.resource_id == run.id,
+            )
+            .order_by(AuditEvent.created_at.desc())
+        )
+    ).scalar_one()
+    assert audit.user_id == seed_run["user"].id
+    assert audit.before_state["status"] == "running"
+    assert audit.after_state["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
 async def test_batch_run_apis_persist_state_and_audit_rows(
     integration_app,
     integration_client,
     integration_db_session,
     seed_run,
 ):
+    from qaplatform.engine.events import EVENT_STREAM_KEY
     from qaplatform.infra.database.models import Run, RunStatusEnum
 
     run = seed_run["run"]
@@ -905,6 +966,24 @@ async def test_batch_run_apis_persist_state_and_audit_rows(
     assert cancel_resp.json() == {"processed": 1, "failed": 0, "errors": []}
     await integration_db_session.refresh(run)
     assert run.status == RunStatusEnum.CANCELLED
+
+    events = await integration_app.state.container.redis_client.xrange(
+        EVENT_STREAM_KEY.format(run_id=str(run.id))
+    )
+    assert events, "batch cancel API did not publish a Redis status event"
+    _event_id, latest_event = events[-1]
+    decoded_event = _decode_redis_mapping(latest_event)
+    assert decoded_event["status"] == "cancelled"
+    assert decoded_event["previous"] == "running"
+
+    batch_cancel_audit = await _audit_event(
+        integration_db_session,
+        action="run.batch_cancel",
+        resource_id=run.id,
+    )
+    assert batch_cancel_audit is not None
+    assert batch_cancel_audit.before_state["status"] == "running"
+    assert batch_cancel_audit.after_state["status"] == "cancelled"
 
     integration_app.state.container.arq_pool = None
     retry_resp = await integration_client.post(

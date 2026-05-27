@@ -12,7 +12,7 @@
 - 关键业务路径：覆盖 pipeline API、项目/成员落库、run 状态迁移、schedule/webhook/cancel、worker 调度、插件注册、日志配置。
 - 安全风险路径：覆盖 JWT/API token 中间件、真实 JWT 注册到 API token 创建/使用/撤销、API token scope 路由矩阵、artifact 下载 `run.read` scope 与跨租户 404 收敛、签名 webhook HMAC 验证、审计失败路径、跨租户隔离、RBAC audit-events 拒绝路径。
 - 真实数据路径：integration suite 使用真实 PostgreSQL/Redis/Testcontainers/FastAPI ASGI app；新增测试不 mock repository 或 database session。
-- 数据保留/审计路径：retention 真实 Postgres 测试覆盖超期终态 Run 硬删与 result/artifact/event 级联；batch cancel/retry API 覆盖真实 DB 状态和 audit 行写入；project、project member、pipeline、credentials、environments、notification rules、schedule API 与 schedule worker 自动触发已补真实 DB audit before/after 或 `run.trigger` 断言，项目 `git_url` userinfo、pipeline 复杂配置密钥、凭据明文、环境变量、通知 channel/template 不落审计状态。
+- 数据保留/审计路径：retention 真实 Postgres 测试覆盖超期终态 Run 硬删与 result/artifact/event 级联；single/batch cancel API 覆盖真实 DB 终态、Redis status event `previous` 和 audit before/after，batch retry 覆盖真实 DB 状态和 audit 行写入；project、project member、pipeline、credentials、environments、notification rules、schedule API 与 schedule worker 自动触发已补真实 DB audit before/after 或 `run.trigger` 断言，项目 `git_url` userinfo、pipeline 复杂配置密钥、凭据明文、环境变量、通知 channel/template 不落审计状态。
 - 日志归档补偿与回看：归档失败登记真实 Redis retry set 和失败 TTL，并由 required integration 通过 worker cron 入口验证重试成功、marker 清理、成功 TTL 与 JSONL 读回；SSE `Last-Event-ID` 断点续传由真实 JWT、真实 ticket、PostgreSQL/RBAC 与 Redis Stream 集成测试覆盖；归档 JSONL 读回 API 由真实 DB/RBAC/API 集成测试覆盖，并验证分页窗口、对象缺失 404 和跨租户 Run ID 与随机 UUID 一致 404。
 - Artifact 风险：环境级产物大小/数量限制传入 worker 并在上传前强制校验，真实 DB 集成测试证明被跳过产物不会写 Artifact 行；S3 上传失败路径用真实 ArtifactRepository/PostgreSQL 验证不会留下孤儿 Artifact 行；`results/` 递归上传与 Allure 目录文件落库也有真实 DB/S3 证据；artifact 列表到下载链接的真实 JWT/RBAC/API token scope/DB 行、bucket/key/TTL 参数已进入 required integration，`project.read` token 不能生成预签名 URL，`run.read` token 才能下载；tenant A 的真实 `run.read` API token 请求 tenant B artifact 与随机 UUID 返回一致 404 且不会调用 S3 presign。
 - 真实 worker 黑盒：nightly/manual 会启动 compose API/worker/MinIO；external-stack smoke 覆盖真实 API 触发后 worker 执行容器、产物列表、预签名下载链接、实际下载对象内容、归档日志 API，以及 worker_lost 后自动 retry 再完成的链路。
@@ -57,9 +57,9 @@ RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tes
 
 当前结果：
 
-- integration 收集：130 tests
-- PR/push 必跑 required integration：108 passed, 22 deselected
-- 完整 local integration（未启动外部 API/worker 栈）：116 passed, 14 skipped
+- integration 收集：131 tests
+- PR/push 必跑 required integration：109 passed, 22 deselected
+- 完整 local integration（未启动外部 API/worker 栈）：117 passed, 14 skipped
 - performance smoke opt-in：9 passed
 - skipped 来自 macOS Docker Desktop OOMKilled 平台语义、未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke，以及本地未启动 external stack；CI nightly/manual 会主动启动 external stack，业务断言失败不会被 skip 或 retry 掩盖
 
@@ -103,7 +103,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 ## 残余缺口
 
 - 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade；retention 已覆盖普通超期终态 Run 与 `cancelled/timeout`。
-- batch cancel/retry 已补 API 写入后真实 DB 状态和 audit 行验证。
+- single run cancel 已补 API 写入后真实 DB 终态、Redis status event `previous=running` 和 audit before/after 验证；batch cancel/retry 已补 API 写入后真实 DB 状态、cancel Redis status event 和 audit 行验证。
 - project/project member/pipeline/credentials/environments/notification rules 已补 API 写入后的真实 DB 审计状态检查：项目 `git_url` userinfo、pipeline stages/trigger_config 复杂配置里的 token/password/secret/credential/Authorization、凭据明文、环境变量值、通知 channel 地址/webhook URL 和模板正文不进入 audit before/after；project、pipeline、project member、notification、schedule delete 已补删除前状态快照。
 - log archive 失败已补真实 Redis retry set、失败/成功 TTL 与 worker cron 重试路径；归档日志读回 API 已补真实 DB/RBAC/API 集成测试，覆盖默认页、分页窗口、S3 对象缺失 404 ErrorResponse，以及跨租户 archived-log Run ID 与随机 UUID 一致 404；artifact 上传失败已补真实 PostgreSQL 断言，证明 S3 put 失败后不会写孤儿 Artifact 行；artifact 下载链接已补真实 JWT/RBAC/API token scope/API/DB 行到预签名 bucket/key/TTL 的 required integration，并覆盖真实 API token 跨租户 404 收敛；external-stack worker smoke 与 worker_lost retry 进一步证明真实 worker 完成后可经 API 回看归档日志，并可经预签名 URL 下载真实 JUnit artifact 内容；前端 run detail 已接入终态 run 的归档日志回看，并用 Playwright 真实 DB+S3 数据覆盖日志搜索与 HTML artifact 预览。
 - Webhook/API/schedule worker 新增真实 DB 失败路径后，schedule worker 自动触发 `run.trigger` audit、schedule missing-pipeline skip audit、缺失 HMAC 签名、签名成功、保留 metadata 防覆盖、webhook `run.trigger` audit、filtered/duplicate 决策 audit、project archived、pipeline/environment missing、cross-project pipeline、enqueue conflict 已进 required integration。
