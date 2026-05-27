@@ -14,6 +14,7 @@
 
 | 日期 | required integration | unit | warning 摘要 | 处理结论 |
 | --- | --- | --- | --- | --- |
+| 2026-05-27 | collect-only 114 tests；required integration 95 passed / 19 deselected；完整 local integration 103 passed / 11 skipped；`test_real_auth_results_artifacts.py` 9 passed | ruff targeted passed | 无新增 warning；skip 均为既有 performance opt-in、macOS OOM 语义、未启动 external stack | 归档日志 API 从 happy path 扩到分页窗口和 S3 对象缺失 404，仍不把真实 DB/API/RBAC 链路替换成 mock |
 | 2026-05-27 | `tests/integration/test_worker_execute.py` collect-only 3 tests；local run 3 skipped（未启动 compose API/worker/MinIO） | ruff targeted passed | 无新增 warning | external-stack worker smoke 与 worker_lost retry 将在 nightly/manual 进一步校验预签名 URL 可下载真实 JUnit artifact 内容 |
 | 2026-05-27 | collect-only 113 tests；required integration 94 passed / 19 deselected；完整 local integration 102 passed / 11 skipped；performance smoke 6 passed | ruff targeted passed | 无新增 warning | artifact 下载链接 API 进入 nightly/manual performance smoke，和读/写 run、入队、Redis 日志、归档日志一起输出 p50/p99/max 失败摘要 |
 | 2026-05-27 | `tests/integration/test_real_api_write_state.py` 7 passed | `tests/unit/test_api/test_notifications.py tests/unit/test_api/test_schedules.py` 10 passed | 无新增 warning；ruff targeted passed | 审计敏感值不落库和 delete before_state 进入真实 DB/API 证据，覆盖 credentials、environments、notification rules、schedules |
