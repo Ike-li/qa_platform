@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
 from qaplatform.plugins.builtin.junit_collector import JUnitCollector
-from qaplatform.plugins.protocols import CollectorProtocol, TestResultData
+from qaplatform.plugins.protocols import CollectorProtocol
 
 
 class TestJUnitCollectorProtocol:

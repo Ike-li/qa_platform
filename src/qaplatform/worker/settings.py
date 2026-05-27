@@ -81,19 +81,35 @@ async def reclaim_resources(ctx: dict) -> None:
     from qaplatform.api.metrics import run_queue_depth, runs_in_flight
     from qaplatform.engine.reclaim import reclaim_worker_lost
     from qaplatform.infra.database.repositories.run_repo import RunRepository
+    from qaplatform.worker.tasks import _schedule_retry_for_run
 
     session_factory = ctx.get("db_session_factory")
     redis = ctx.get("redis")
+    arq = ctx.get("arq_pool")
+    settings = ctx.get("settings")
     if session_factory is None or redis is None:
         return
 
     async with session_factory() as session:
         run_repo = RunRepository(session)
+
+        async def _retry_reclaimed(run, message: str) -> None:
+            if arq is None or settings is None:
+                return
+            await _schedule_retry_for_run(
+                run,
+                ConnectionError(message),
+                run_repo=run_repo,
+                arq=arq,
+                settings=settings,
+            )
+
         try:
             await reclaim_worker_lost(
                 run_repo=run_repo,
                 redis=redis,
                 backend=ctx.get("docker_backend"),
+                on_reclaimed=_retry_reclaimed,
             )
             # Update gauges after reclaim so values reflect post-cleanup state
             in_flight = await run_repo.count_active_or_enqueued()
@@ -125,7 +141,7 @@ async def dequeue_waiting(ctx: dict) -> None:
 
 
 async def cleanup_old_runs(ctx: dict) -> None:
-    """Periodic task: delete done/failed runs older than retention_runs_days."""
+    """Periodic task: delete terminal runs older than retention_runs_days."""
     from datetime import timedelta
 
     from qaplatform.infra.database.repositories.run_repo import RunRepository
@@ -141,11 +157,20 @@ async def cleanup_old_runs(ctx: dict) -> None:
         deleted = await run_repo.delete_terminal_older_than(cutoff=cutoff)
         await session.commit()
     if deleted:
-        log.info("retention_cleanup_done", deleted=deleted, cutoff=cutoff.isoformat())
+        log.info("retention_cleanup_done deleted=%s cutoff=%s", deleted, cutoff.isoformat())
 
 
 async def retry_failed_archives(ctx: dict) -> None:
     """Periodic task: retry failed log archival."""
+    log_stream = ctx.get("log_stream")
+    s3_client = ctx.get("s3_client")
+    bucket = ctx.get("s3_bucket")
+    if log_stream is None or s3_client is None or not bucket:
+        return
+
+    retried = await log_stream.retry_failed_archives(s3_client, bucket)
+    if retried:
+        log.info("log_archive_retry_done retried=%s", retried)
 
 
 async def check_schedules(ctx: dict) -> None:

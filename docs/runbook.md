@@ -165,9 +165,9 @@ mc ilm rule add --expire-days 30 myminio/qa-platform --prefix "reports/"
 
 **注意**：
 
-- `QAP_RETENTION_RUNS_DAYS`（默认 90）控制数据库 Run 行清理目标；S3 lifecycle 独立配置，两者应保持一致或 S3 日志保留期 ≥ DB Run 保留期，避免 DB 有记录但 S3 日志已删除。
-- 当前 `main` 的 `cleanup_old_runs` cron 已注册，但函数缺 `datetime/timezone` 导入会导致触发失败；即使修复导入，当前仓储也只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run 与 `cancelled/timeout` 策略仍未闭环。
-- 当前 `main` 的 `retry_failed_archives` 仍是空占位；单次归档失败只会把 Redis Stream TTL 延长到 24h，不能当作自动补偿重试能力。
+- `QAP_RETENTION_RUNS_DAYS`（默认 90）控制数据库 Run 行清理目标；`cleanup_old_runs` 每小时硬删超期终态 Run（`done/failed/cancelled/timeout`）并依赖数据库 FK 级联清理 result/artifact/event。S3 lifecycle 独立配置，两者应保持一致或 S3 日志保留期 ≥ DB Run 保留期，避免 DB 有记录但 S3 日志已删除。
+- 归档失败时 `LogStream.archive_logs` 会把 Redis Stream TTL 延长到 24h，并把 Run ID 登记到 `run:logs:archive_failed`；worker 的 `retry_failed_archives` cron 会重试这些失败项，成功后清理登记。
+- 当前仍缺归档日志读回 API / UI；因此 lifecycle 与 retry 只能证明“写入和补偿归档”，不能单独视为“用户可回看归档日志”闭环。
 
 ---
 

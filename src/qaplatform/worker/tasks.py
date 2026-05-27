@@ -56,13 +56,88 @@ def _should_retry(exc: Exception, retry_policy: dict | None, current_attempt: in
         return False
     if not retry_policy.get("enabled", True):
         return False
-    max_retries = retry_policy.get("max_retries", 0)
+    retry_on = retry_policy.get("retry_on") or []
+    if retry_on and "infra" not in retry_on:
+        return False
+    max_retries = _max_retries_from_policy(retry_policy)
     if max_retries <= 0:
         return False
     if current_attempt >= max_retries + 1:
         return False
     if not isinstance(exc, _INFRA_EXCEPTIONS):
         return False
+    return True
+
+
+def _max_retries_from_policy(retry_policy: dict) -> int:
+    """Return retry count from legacy max_retries or API-facing max_attempts."""
+    if "max_retries" in retry_policy:
+        return int(retry_policy.get("max_retries") or 0)
+    if "max_attempts" in retry_policy:
+        return max(0, int(retry_policy.get("max_attempts") or 1) - 1)
+    return 0
+
+
+async def _schedule_retry_for_run(
+    original: Any,
+    exc: Exception,
+    *,
+    run_repo: Any,
+    arq: Any,
+    settings: Any,
+) -> bool:
+    """Create a retry run and put it in the scheduler lane.
+
+    ``False`` means no retry run was created. A retry run that is waiting due to
+    capacity still counts as scheduled because the dequeue cron can pick it up.
+    """
+    from qaplatform.worker.scheduler import FairScheduler
+
+    retry_policy = getattr(original.pipeline, "retry_policy", None)
+    if not _should_retry(exc, retry_policy, original.attempt):
+        return False
+
+    backoff = retry_policy.get("backoff_seconds", 30)
+    delay = backoff * (2 ** (original.attempt - 1))
+    retry_group_id = original.retry_group_id or original.id
+
+    retry_run = await run_repo.create(
+        tenant_id=original.tenant_id,
+        project_id=original.project_id,
+        pipeline_id=original.pipeline_id,
+        environment_id=original.environment_id,
+        git_ref=original.git_ref,
+        git_sha=original.git_sha,
+        priority=original.priority,
+        triggered_by=original.triggered_by,
+        trigger_type=original.trigger_type,
+        metadata_=dict(original.metadata_ or {}),
+        retry_group_id=retry_group_id,
+        attempt=original.attempt + 1,
+        source_run_id=original.id,
+        chain_depth=(original.chain_depth or 0) + 1,
+    )
+
+    scheduler = FairScheduler(arq, run_repo, settings)
+    enqueued = await scheduler.enqueue(retry_run, _defer_by=delay)
+    if enqueued:
+        log.info(
+            "retry_scheduled",
+            extra={
+                "original_run_id": str(original.id),
+                "retry_run_id": str(retry_run.id),
+                "attempt": retry_run.attempt,
+                "delay_seconds": delay,
+            },
+        )
+    else:
+        log.info(
+            "retry_waiting",
+            extra={
+                "original_run_id": str(original.id),
+                "retry_run_id": str(retry_run.id),
+            },
+        )
     return True
 
 
@@ -74,7 +149,6 @@ async def _attempt_retry(
 ) -> bool:
     """Create a retry run and enqueue it. Returns True if a retry was scheduled."""
     from qaplatform.infra.database.repositories.run_repo import RunRepository
-    from qaplatform.worker.scheduler import FairScheduler
 
     async with session_factory() as session:
         run_repo = RunRepository(session)
@@ -87,51 +161,15 @@ async def _attempt_retry(
         if not _should_retry(exc, retry_policy, original.attempt):
             return False
 
-        # Compute backoff delay (exponential: delay * 2^(attempt-1))
-        backoff = retry_policy.get("backoff_seconds", 30)
-        delay = backoff * (2 ** (original.attempt - 1))
-
-        # Create retry run
-        retry_run = await run_repo.create(
-            tenant_id=original.tenant_id,
-            project_id=original.project_id,
-            pipeline_id=original.pipeline_id,
-            environment_id=original.environment_id,
-            git_ref=original.git_ref,
-            triggered_by=original.triggered_by,
-            trigger_type=original.trigger_type,
-            metadata_=dict(original.metadata_ or {}),
-            retry_group_id=original.retry_group_id,
-            attempt=original.attempt + 1,
-            source_run_id=original.id,
+        scheduled = await _schedule_retry_for_run(
+            original,
+            exc,
+            run_repo=run_repo,
+            arq=ctx["arq_pool"],
+            settings=ctx["settings"],
         )
         await session.commit()
-
-        # Enqueue while session is still open — scheduler uses run_repo
-        arq = ctx["arq_pool"]
-        settings = ctx["settings"]
-
-        scheduler = FairScheduler(arq, run_repo, settings)
-        enqueued = await scheduler.enqueue(retry_run, _defer_by=delay)
-        if enqueued:
-            log.info(
-                "retry_scheduled",
-                extra={
-                    "original_run_id": str(run_id),
-                    "retry_run_id": str(retry_run.id),
-                    "attempt": retry_run.attempt,
-                    "delay_seconds": delay,
-                },
-            )
-        else:
-            log.warning(
-                "retry_enqueue_failed",
-                extra={
-                    "original_run_id": str(run_id),
-                    "retry_run_id": str(retry_run.id),
-                },
-        )
-    return enqueued
+        return scheduled
 
 
 async def execute_run(ctx: dict, run_id: str) -> None:

@@ -73,7 +73,6 @@ class SchedulingService:
 
         Returns a dict suitable for ExecutionService.create_run().
         """
-        now = datetime.now(timezone.utc)
         return {
             "project_id": schedule.project_id,
             "pipeline_id": schedule.pipeline_id,

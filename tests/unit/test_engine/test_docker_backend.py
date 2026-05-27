@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from qaplatform.engine.docker_backend import (
     DockerBackend,
     ExecutionSpec,
-    LogLine,
     Mount,
     ResourceLimits,
     SandboxSecurity,

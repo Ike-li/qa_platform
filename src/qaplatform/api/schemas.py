@@ -238,9 +238,9 @@ class TestSelectorInput(BaseModel):
 
 
 class RetryPolicyInput(BaseModel):
-    max_attempts: int = 1
+    max_attempts: int = Field(1, ge=1, le=5)
     retry_on: list[str] = Field(default_factory=list)
-    backoff_seconds: int = 0
+    backoff_seconds: int = Field(0, ge=0)
     scope: Literal["pipeline", "stage"] = "pipeline"
 
 

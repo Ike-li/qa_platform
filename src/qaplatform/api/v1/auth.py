@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 import secrets
 import time
-
-log = logging.getLogger(__name__)
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -21,14 +19,15 @@ from qaplatform.api.auth.jwt_service import JWTService
 from qaplatform.api.auth.middleware import CurrentUser, get_current_user
 from qaplatform.api.auth.permissions import Role
 from qaplatform.api.auth.token_service import TokenService
-
-_password_hasher = _PasswordHasher()
 from qaplatform.infra.database.models import AppUser, Tenant
 from qaplatform.infra.database.repositories.audit_repo import AuditEventRepository
 from qaplatform.infra.database.repositories.user_repo import (
     ApiTokenRepository,
     UserRepository,
 )
+
+log = logging.getLogger(__name__)
+_password_hasher = _PasswordHasher()
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker

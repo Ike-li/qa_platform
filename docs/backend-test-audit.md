@@ -12,8 +12,11 @@
 - 关键业务路径：覆盖 pipeline API、项目/成员落库、run 状态迁移、schedule/webhook/cancel、worker 调度、插件注册、日志配置。
 - 安全风险路径：覆盖 JWT/API token 中间件、真实 JWT 注册到 API token 创建/使用/撤销、API token scope 路由矩阵、审计失败路径、跨租户隔离、RBAC audit-events 拒绝路径。
 - 真实数据路径：integration suite 使用真实 PostgreSQL/Redis/Testcontainers/FastAPI ASGI app；新增测试不 mock repository 或 database session。
+- 数据保留/审计路径：retention 真实 Postgres 测试覆盖超期终态 Run 硬删与 result/artifact/event 级联；batch cancel/retry API 覆盖真实 DB 状态和 audit 行写入。
+- 日志归档补偿：归档失败登记 Redis retry set，worker cron 重试并由单测锁定成功/失败路径。
 - Webhook/schedule 失败路径：新增 required integration 断言 archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 都不会静默写错真实 DB 状态。
-- CI 稳定性：后端单测有覆盖率门槛；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
+- CI 稳定性：后端 ruff 与单测覆盖率是同一门禁；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
+- 非功能 smoke：nightly/manual 新增读 API、写 API、Redis 日志写读趋势哨兵；不把性能环境抖动放进 PR 硬门禁。
 
 ## Mock 使用口径
 
@@ -33,28 +36,29 @@
 PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=/tmp/qaplatform-final.coverage .venv/bin/python -m pytest tests/unit -q -p no:cacheprovider --cov=qaplatform --cov-report=term-missing --cov-report=json:/tmp/qaplatform-final-coverage.json --tb=short --durations=20
 ```
 
-上轮基线结果：
+当前基线结果：
 
-- 单元测试：729 passed
-- 总覆盖率：83.24%
-- 语句覆盖率：85.88%
-- 分支覆盖率：69.16%
+- 单元测试：750 passed
+- 总覆盖率：83.47%
+- 语句覆盖率：85.99%
+- 分支覆盖率：70.23%
 - warnings：项目内 SQLAlchemy overlap 与 Redis pubsub `close()` 已清理；testcontainers 第三方弃用提示已精确过滤并登记 owner/截止条件
 
 真实 DB / API 集成验证：
 
 ```bash
 RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration --collect-only -q -p no:cacheprovider
-RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration -m "not heavy_docker and not external_stack" -q -p no:cacheprovider --tb=short --durations=20
+RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration -m "not heavy_docker and not external_stack and not performance" -q -p no:cacheprovider --tb=short --durations=20
 RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/integration -q -p no:cacheprovider --tb=short -rs
 ```
 
 当前结果：
 
-- integration 收集：90 tests
-- PR/push 必跑 required integration：79 passed, 11 deselected, 3 warnings
-- 完整 local integration：83 passed, 7 skipped, 4 warnings
-- skipped 来自 Docker image pull/registry 前置条件和 macOS Docker Desktop OOMKilled 平台语义；业务断言失败不会被 skip 或 retry 掩盖
+- integration 收集：103 tests
+- PR/push 必跑 required integration：89 passed, 14 deselected
+- 完整 local integration：98 passed, 5 skipped
+- performance smoke opt-in：3 passed
+- skipped 来自 macOS Docker Desktop OOMKilled 平台语义，以及未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke；业务断言失败不会被 skip 或 retry 掩盖
 
 E2E 冒烟验证：
 
@@ -75,7 +79,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 | `qaplatform.plugins.registry` | 100% | 插件注册/发现路径已覆盖 |
 | `qaplatform.logging` | 100% | JSON/console logging 配置已覆盖 |
 | `qaplatform.worker.scheduler` | 95% | 队列容量、优先级、去重入队路径已覆盖 |
-| `qaplatform.worker.settings` | 89% | 周期任务、资源回收、失败补偿路径已覆盖 |
+| `qaplatform.worker.settings` | 87% | 周期任务、资源回收、失败补偿路径已覆盖 |
 | `qaplatform.api.v1.pipelines` | 84% | Pipeline API 主路径和常见失败路径已覆盖 |
 
 ## 门禁说明
@@ -87,13 +91,17 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 当前 CI 门禁分层：
 
 - `backend-test`：跑后端单元测试和 coverage fail-under。
-- `backend-integration-test`：PR/push 跑 `tests/integration -m "not heavy_docker and not external_stack"`；`workflow_dispatch`/nightly 额外跑 `heavy_docker` 和 `external_stack` 分组。
+- `backend-test`：先跑 `ruff check src tests`，再跑后端单元测试和 coverage fail-under。
+- `backend-integration-test`：PR/push 跑 `tests/integration -m "not heavy_docker and not external_stack and not performance"`；`workflow_dispatch`/nightly 额外跑 `heavy_docker` 和 `external_stack` 分组。
+- `backend-integration-test`：`workflow_dispatch`/nightly 额外跑 `tests/integration/test_performance_smoke.py -m performance`，用于非功能趋势观察。
 - `e2e-test`：PR 跑 `auth-flow.spec.ts` UI 冒烟；nightly 跑三条真实 E2E 主路径；`workflow_dispatch` 跑完整 Playwright E2E。
 - 更多分层细节见 `docs/testing-strategy.md`。
 
 ## 残余缺口
 
-- 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade。
+- 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade；retention 已覆盖普通超期终态 Run 与 `cancelled/timeout`。
+- batch cancel/retry 已补 API 写入后真实 DB 状态和 audit 行验证。
+- log archive 失败已补 Redis retry set 与 worker cron 重试路径；当前仍缺归档日志读回 API / UI。
 - Webhook/API/schedule worker 新增真实 DB 失败路径后，project archived、pipeline/environment missing、cross-project pipeline、enqueue conflict 已进 required integration；schedule pipeline missing 仍保留 unit 覆盖，因为真实 FK 下硬删除会级联，软删除不等价于真实缺行。
 - 分支覆盖率仍低于语句覆盖率：主要来自依赖初始化分支、外部 SDK/worker 边界和少量异常恢复路径。
 - warnings 治理：项目内 SQLAlchemy overlap、Redis pubsub `close()`、SSE AsyncMock、httpx cookies、JWT key length warning 均已清理；testcontainers 第三方弃用提示已在 `pyproject.toml` 精确过滤并登记。
@@ -101,6 +109,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 
 ## 后续优先级
 
-1. 自动重试端到端闭环仍需继续，尤其是 worker_lost 后是否创建 retry run；当前仍归 F-EX-07。
-2. 通知更高级产品能力仍待补：OR 条件、连续失败次数、每渠道模板、项目名/失败用例变量；本轮已补真实 DB delivery、模板失败、发送失败与幂等。
-3. 后续提升 coverage 门槛应继续依赖真实风险路径，而不是为百分比增加无行为断言。
+1. 自动重试已补 API-facing `max_attempts`、`retry_on`、waiting retry run 以及 worker_lost callback 路径；后续如要继续提高信心，可把真实 worker 黑盒场景保留在 nightly/manual lane。
+2. 严格产品 SLO、执行摘要 < 3s 与完整性能压测仍需专项环境；当前 smoke 只做趋势哨兵。
+3. 通知更高级产品能力仍待补：OR 条件、连续失败次数、每渠道模板、项目名/失败用例变量；本轮已补真实 DB delivery、模板失败、发送失败与幂等。
+4. 后续提升 coverage 门槛应继续依赖真实风险路径，而不是为百分比增加无行为断言。

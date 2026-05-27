@@ -52,7 +52,6 @@ def _mock_session(*scalars):
         results.append(r)
     session.execute = AsyncMock(side_effect=results)
 
-    from qaplatform.api.deps import _get_db_session
 
     async def _gen():
         yield session

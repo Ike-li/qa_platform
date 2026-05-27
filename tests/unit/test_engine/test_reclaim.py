@@ -144,6 +144,47 @@ async def test_cleanup_failure_does_not_block_status_transition(run_repo, backen
 
 
 @pytest.mark.asyncio
+async def test_expired_heartbeat_invokes_retry_callback(run_repo, backend):
+    run = _fake_run()
+    run_repo.find_active_with_worker.return_value = [run]
+    redis = AsyncMock()
+    redis.exists = AsyncMock(return_value=0)
+    on_reclaimed = AsyncMock()
+
+    n = await reclaim_worker_lost(
+        run_repo=run_repo,
+        redis=redis,
+        backend=backend,
+        on_reclaimed=on_reclaimed,
+    )
+
+    assert n == 1
+    on_reclaimed.assert_awaited_once()
+    args = on_reclaimed.await_args.args
+    assert args[0] is run
+    assert "worker_lost" in args[1]
+
+
+@pytest.mark.asyncio
+async def test_retry_callback_failure_does_not_block_cleanup(run_repo, backend):
+    run = _fake_run()
+    run_repo.find_active_with_worker.return_value = [run]
+    redis = AsyncMock()
+    redis.exists = AsyncMock(return_value=0)
+    on_reclaimed = AsyncMock(side_effect=RuntimeError("retry path down"))
+
+    n = await reclaim_worker_lost(
+        run_repo=run_repo,
+        redis=redis,
+        backend=backend,
+        on_reclaimed=on_reclaimed,
+    )
+
+    assert n == 1
+    backend.cleanup.assert_awaited_once_with("ctr-1")
+
+
+@pytest.mark.asyncio
 async def test_run_with_null_worker_id_is_skipped(run_repo, backend):
     run = _fake_run(worker_id=None)
     run_repo.find_active_with_worker.return_value = [run]

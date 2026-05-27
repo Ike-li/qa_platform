@@ -348,6 +348,56 @@ async def test_schedule_and_run_apis_persist_next_run_metadata_and_audit_rows(
 
 
 @pytest.mark.asyncio
+async def test_batch_run_apis_persist_state_and_audit_rows(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Run, RunStatusEnum
+
+    run = seed_run["run"]
+    run.status = RunStatusEnum.RUNNING
+    await integration_db_session.commit()
+
+    cancel_resp = await integration_client.post(
+        "/api/v1/runs/batch/cancel",
+        json={"run_ids": [str(run.id)]},
+    )
+    assert cancel_resp.status_code == 200, cancel_resp.text
+    assert cancel_resp.json() == {"processed": 1, "failed": 0, "errors": []}
+    await integration_db_session.refresh(run)
+    assert run.status == RunStatusEnum.CANCELLED
+
+    integration_app.state.container.arq_pool = None
+    retry_resp = await integration_client.post(
+        "/api/v1/runs/batch/retry",
+        json={"run_ids": [str(run.id)]},
+    )
+    assert retry_resp.status_code == 200, retry_resp.text
+    assert retry_resp.json() == {"processed": 1, "failed": 0, "errors": []}
+
+    retry_run = (
+        await integration_db_session.execute(
+            select(Run).where(Run.source_run_id == run.id)
+        )
+    ).scalar_one()
+    assert retry_run.status == RunStatusEnum.QUEUED
+    assert retry_run.tenant_id == seed_run["tenant"].id
+    assert retry_run.project_id == seed_run["project"].id
+    assert retry_run.pipeline_id == seed_run["pipeline"].id
+    assert retry_run.environment_id == seed_run["environment"].id
+    assert retry_run.chain_depth == 1
+
+    actions = await _audit_actions(
+        integration_db_session,
+        user_id=seed_run["user"].id,
+        resource_id=run.id,
+    )
+    assert {"run.batch_cancel", "run.batch_retry"}.issubset(actions)
+
+
+@pytest.mark.asyncio
 async def test_schedule_api_rejects_cross_project_pipeline_without_persisting(
     integration_client_as,
     integration_db_session,

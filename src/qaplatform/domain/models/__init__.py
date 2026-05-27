@@ -50,6 +50,7 @@ __all__ = [
     "RunSummary",
     "Schedule",
     "StageDefinition",
+    "TERMINAL_STATUSES",
     "TestResult",
     "TestSelector",
     "TriggerConfig",

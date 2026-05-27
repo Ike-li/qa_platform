@@ -8,17 +8,14 @@ These tests verify that:
 """
 from __future__ import annotations
 
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
 
 from qaplatform.infra.database.models import (
-    Environment,
     Pipeline,
     Project,
     RunEvent,
-    RunStatusEnum,
 )
 from qaplatform.infra.database.repositories.base import BaseRepository
 from qaplatform.infra.database.repositories.project_repo import ProjectRepository

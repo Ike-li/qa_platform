@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 
 from qaplatform.engine.log_stream import LogStream
+
+_ARCHIVE_RETRY_SET = "run:logs:archive_failed"
 
 
 class TestLogStream:
@@ -123,6 +125,7 @@ class TestLogStream:
 
         # Should set TTL on the stream key
         self.redis.expire.assert_awaited_once()
+        self.redis.srem.assert_awaited_once_with(_ARCHIVE_RETRY_SET, str(self.run_id))
 
     @pytest.mark.asyncio
     async def test_archive_logs_failure_sets_long_ttl(self):
@@ -137,6 +140,33 @@ class TestLogStream:
         assert result is False
         # Should have set the failure TTL
         self.redis.expire.assert_awaited_once()
+        self.redis.sadd.assert_awaited_once_with(_ARCHIVE_RETRY_SET, str(self.run_id))
+
+    @pytest.mark.asyncio
+    async def test_retry_failed_archives_replays_recorded_runs(self):
+        failed_run = uuid4()
+        self.redis.smembers.return_value = [str(self.run_id).encode(), str(failed_run)]
+        self.redis.xread = AsyncMock(side_effect=[
+            [
+                (f"run:{self.run_id}:logs", [
+                    ("1-0", {"stream": "stdout", "line": "ok"}),
+                ]),
+            ],
+            [],
+            Exception("redis still down"),
+        ])
+        s3_client = AsyncMock()
+
+        retried = await self.stream.retry_failed_archives(
+            s3_client,
+            "qa-platform",
+            limit=10,
+        )
+
+        assert retried == 1
+        assert s3_client.put_object.await_count == 1
+        self.redis.srem.assert_any_await(_ARCHIVE_RETRY_SET, str(self.run_id))
+        self.redis.sadd.assert_any_await(_ARCHIVE_RETRY_SET, str(failed_run))
 
     @pytest.mark.asyncio
     async def test_delete_stream(self):

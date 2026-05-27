@@ -15,7 +15,7 @@
 | 2 | F-PM-01 / F-PM-02 Git 凭证执行闭环 | PRD §3.1 验收 | 项目和凭证 API 可保存 `git_auth_method` / `credential_id` 与加密凭证，但执行侧 clone 只使用原始 `git_url`，未解密并注入 HTTPS token / SSH key |
 | 3 | F-PL-01 collector 配置补齐 | PRD §3.2 验收 | Pipeline schema / ORM / worker 拼装均无结果收集器选择或配置，`RunExecutor.execute()` 固定 `get_collector("junit")`；需决定 JUnit-only 是否改为正式限制，或补 collector 配置闭环 |
 | 4 | 审计日志查询 API | catalog §4.1 | 写入端已就位，缺 `/api/v1/audit-events` 查询路由；审计查询尚未补入正式 PRD 章节 |
-| 5 | 审计写入覆盖补齐 | architecture §9.6 | `api/v1/runs.py` 批量取消/批量重试当前无 audit 事件；SSE ticket 等临时凭证写入是否审计需产品确认 |
+| 5 | 审计写入覆盖补齐 | architecture §9.6 | 批量取消/批量重试已补 audit 事件与真实 DB 验证；SSE ticket 等临时凭证写入是否审计需产品确认 |
 | 6 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | PRD §3.2 / PRD §3.4 验收 | CPU/内存/超时已实现；当前仅上传 `results/` 下直接文件并支持预签名下载，目录型 Allure HTML 报告、产物数量/大小限制、磁盘限制、OOM/timeout 资源用量记录未闭环 |
 | 7 | F-EX-05 日志归档回看闭环 | PRD §3.3 验收 | Redis Stream 实时日志、断线续传与 S3 JSONL 归档写入已实现；Redis TTL 过期后的归档日志读回 API / 前端回看入口未实现 |
 | 8 | F-AU-02 API Token scope enforcement 补齐 | PRD §3.6 验收 | 已完成：API token scopes 已贯通 tenant/project 权限依赖，并有真实 API 矩阵覆盖只读、run.trigger、错误/空 scope |
@@ -30,17 +30,17 @@
 |---|---|---|---|
 | 13 | F-EX-02 静默窗口 | PRD §3.3 验收 | 发布冻结期不触发 cron 未实现 |
 | 14 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | PRD §3.3 验收 | `dedup_key` 字段在 ORM 已有，路由层未接入 |
-| 15 | F-EX-07 自动重试端到端补齐 | PRD §3.3 验收 | API schema 使用 `max_attempts` 且缺 1-5 边界校验，worker 读取 `max_retries`；现有 `_should_retry` / `_attempt_retry` 原语未接上真实执行期基础设施失败路径，`RunExecutor.execute()` 会捕获多数异常并返回 `FAILED` |
-| 16 | F-EX-08 优先级队列消费闭环 | PRD §3.3 验收 | 已补 compose high/medium/low worker 部署、manual priority 队列矩阵单测、真实 DB priority+FIFO 排序测试；worker_lost 自动重试仍归 F-EX-07 |
+| 15 | F-EX-07 自动重试端到端补齐 | PRD §3.3 验收 | API-facing `max_attempts` / `retry_on`、waiting retry run、worker_lost callback 已补单测和真实 DB 测试；剩余增强是把真实 worker 黑盒重试场景保留在 nightly/manual lane 持续跑 |
+| 16 | F-EX-08 优先级队列消费闭环 | PRD §3.3 验收 | 已补 compose high/medium/low worker 部署、manual priority 队列矩阵单测、真实 DB priority+FIFO 排序测试 |
 | 17 | F-LS-04 测试结果 suite/关键字过滤 | PRD §3.7 验收 | 当前 `main` 仅 status（后端状态枚举含 `passed/failed/error/skipped/xfail`）；`feature/T07-test-results-filter` 已推送但未合入 |
 | 18 | F-LS-01 执行列表过滤补齐 | PRD §3.7 验收 | 当前 `main` 支持 status 多选、project_id 与创建时间排序；缺 pipeline / git_ref / time range 过滤 |
 | 19 | F-LS-02 剩余列表分页补齐 | PRD §3.7 验收 | credentials、project members、auth tokens 仍返回直接 list，未走 `PaginatedResponse` |
 | 20 | F-LS-03 项目搜索排序补齐 | PRD §3.7 验收 | LIKE 转义已修；结果仍按 `created_at desc`，缺名称字母序 |
 | 21 | F-RE-05 单用例历史趋势补齐 | PRD §3.4 验收 | 当前已有项目级趋势和 flaky 聚合；缺单个用例历史趋势 API/视图 |
 | 22 | F-NT-01 / F-NT-03 通知规则与模板验收补齐 | PRD §3.5 验收 | 当前仅状态/pass_rate/失败数 AND 条件和规则级基础变量模板；缺 OR、连续失败次数、每渠道模板、项目名与失败用例变量 |
-| 23 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 读/写 API p99、日志推送 < 2s、执行摘要生成 < 3s 等目标未验证 |
+| 23 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、Redis 日志写读趋势；严格产品 SLO、执行摘要 < 3s 与完整压测仍需专项环境验证 |
 | 24 | E2E CI 覆盖扩展 | fix-roadmap §4.3 | 已补 nightly 固定真实 E2E：`real-login-flow`、`real-run-trigger`、`special-regressions`；PR 仍保留轻量 `auth-flow`，manual 仍跑全量 |
-| 25 | 数据保留清理闭环 | architecture §8.4 / runbook §7 | `cleanup_old_runs` cron 已注册但当前函数缺 `datetime/timezone` 导入会触发失败；仓储只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run 与 `cancelled/timeout` 策略未闭环；`retry_failed_archives` 为空占位；DB 行冷归档未实现 |
+| 25 | 数据保留冷归档/读回增强 | architecture §8.4 / runbook §7 | 超期终态 Run 清理与级联删除、失败日志归档重试已闭环；当前仍缺 DB 行冷归档与归档日志读回 API / UI |
 
 ## 3. 低优先级 — 增强项
 
@@ -53,7 +53,7 @@
 
 | 任务 | 内容 | 备注 |
 |---|---|---|
-| T-LINT | 清理 main 既有 ruff 历史债务 | 功能任务只要求改动文件 ruff 干净且不引入新错误 |
+| T-LINT | 已完成：清理 main 既有 ruff 历史债务 | CI `backend-test` 已加入 `ruff check src tests`，后续新增债务会阻断 |
 | T-FRONTEND-TS | 清理前端 3 个历史 TS 错误文件 | CI 目前只允许这 3 个已知文件失败；任何新 TS 错误仍阻断 |
 | T-FRONTEND-API | 拆分/对齐前端 API DTO、hook 路径/响应形状与视图模型类型 | `frontend/src/types/api.ts` 仍混合后端响应与 UI 归一化字段（如 Run 的 `git_ref/summary/duration_ms` vs `branch/total_tests/duration_seconds`）；`frontend/src/hooks/use-runs.ts` 的触发 payload 仍带后端 `RunTrigger` 不接收的 `env_overrides/params`，且 `normalizeRun` 仍读取复数 `summary.errors` 而后端 summary 使用单数 `error`；Environment 仍有 `variables` 旧字段且缺 `base_image` / `env_vars` / resource limit 字段，`frontend/src/components/projects/environment-editor.tsx` 创建和更新也仍提交旧 `variables` payload；Pipeline 嵌套 selector / retry shape 仍是旧前端形状，`frontend/src/components/projects/pipeline-modal.tsx` 也提交旧 `framework/pattern/on_push/max_retries/backoff` payload，需对齐后端 `stages/selector/trigger_config/retry_policy` schema；`frontend/src/hooks/use-projects.ts` 项目搜索传 `search`，但后端 `api/v1/projects.py::list_projects` 参数是 `q`；`frontend/src/hooks/use-pipelines.ts` 仍调用不存在的 `/pipelines/{id}`，应改为 `/projects/{project_id}/pipelines/{pipeline_id}`；`frontend/src/hooks/use-notifications.ts` 把通知规则列表当成裸数组，但后端返回 `PaginatedResponse[NotificationRuleResponse]`；`frontend/src/hooks/use-sse.ts` fallback 目前会把 SSE URL 当 JSON API 轮询，需改为重连或普通 JSON 状态端点；TestResult 后端状态含 `xfail` 但当前前端类型未列；以后端 `api/schemas.py` 为契约源 |
 | T-ARCH-LAYERS | 收敛分层 import / DB 访问偏差 | `engine` 当前仍反向依赖 `api.metrics` / `worker._redact`；部分 API 路由仍直接写 SQLAlchemy 查询，需逐步下沉到中立指标模块、`engine.redact` 和 repositories / query service |
@@ -80,7 +80,7 @@
 | `T-EXEC-RETRY` | F-EX-07 自动重试端到端补齐 |
 | `T-QUEUE-PRIORITY` | F-EX-08 优先级队列消费闭环 |
 | `T-NOTIFICATION-TEMPLATE` | F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
-| `T-RETENTION-OPS` | 数据保留清理闭环 |
+| `T-RETENTION-OPS` | 数据保留冷归档/读回增强 |
 | `T-LINT` | 技术债专项 |
 | `T-FRONTEND-TS` | 技术债专项 |
 | `T-FRONTEND-API` | 技术债专项 |
@@ -97,11 +97,11 @@
 | `Schedule.quiet_windows` 与 `Project.settings.silent_windows` 是否长期共存 | F-EX-02 静默窗口；catalog §4.3 已记录当前双机制边界 |
 | T10 是否允许新增 OTLP HTTP exporter 依赖 | OpenTelemetry 装配 |
 | 是否需要独立审计日志清理任务 | 数据保留清理闭环 |
-| 是否实现 `retry_failed_archives` 自动补偿与 DB 行冷归档 | 数据保留清理闭环 |
+| 是否需要 DB 行冷归档 | 数据保留冷归档/读回增强；`retry_failed_archives` 自动补偿已实现 |
 | `/auth/sse-ticket` 临时凭证写入是否必须纳入审计 | 审计写入覆盖补齐 |
 | Pipeline collector 配置是补实现还是将 JUnit-only 写成正式产品限制 | F-PL-01 collector 配置补齐 |
 | Allure/HTML 报告预览采用目录入口还是 zip/html 单产物 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 |
-| `worker_lost` 是否进入自动重试 | F-EX-07 自动重试端到端补齐 |
+| 是否补真实 worker 黑盒自动重试 nightly 场景 | F-EX-07 自动重试端到端补齐；`worker_lost` callback 已进入自动重试 |
 | F-EX-08 采用单 worker 多队列还是多 worker 部署 | F-EX-08 优先级队列消费闭环 |
 | F-NT-03 每渠道模板是否嵌入 `channels[]` | F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
 | F-EX-05 归档日志回看走流式 API 还是 artifact 复用 | F-EX-05 日志归档回看闭环 |
