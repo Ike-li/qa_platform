@@ -175,18 +175,47 @@ class TestCheckSchedules:
 
         pipeline_repo = AsyncMock()
         pipeline_repo.get_by_id = AsyncMock(return_value=None)
+        project = MagicMock()
+        project.tenant_id = uuid4()
+        project_repo = AsyncMock()
+        project_repo.get_by_id = AsyncMock(return_value=project)
+        audit_repo = AsyncMock()
+        audit_repo.create = AsyncMock()
 
-        patches = _patch_repos(schedule_repo=schedule_repo, pipeline_repo=pipeline_repo)
+        next_run_at = datetime.now(timezone.utc)
+        patches = _patch_repos(
+            schedule_repo=schedule_repo,
+            pipeline_repo=pipeline_repo,
+            project_repo=project_repo,
+            audit_repo=audit_repo,
+        )
         with (
             patches[0], patches[1], patches[2], patches[3], patches[4], patches[5],
             patch("qaplatform.domain.services.scheduling.should_fire", return_value=True),
-            patch("qaplatform.domain.services.scheduling.compute_next_run_at", return_value=datetime.now(timezone.utc)),
+            patch("qaplatform.domain.services.scheduling.compute_next_run_at", return_value=next_run_at),
         ):
             await check_schedules(ctx)
 
         schedule_repo.update_after_fire.assert_awaited_once()
         call_kwargs = schedule_repo.update_after_fire.call_args.kwargs
         assert call_kwargs["last_error"] == "pipeline not found"
+        project_repo.get_by_id.assert_awaited_once_with(sample_schedule.project_id)
+        audit_repo.create.assert_awaited_once()
+        audit_kwargs = audit_repo.create.call_args.kwargs
+        assert audit_kwargs["tenant_id"] == project.tenant_id
+        assert audit_kwargs["user_id"] is None
+        assert audit_kwargs["action"] == "schedule_skipped_missing_pipeline"
+        assert audit_kwargs["resource_type"] == "schedule"
+        assert audit_kwargs["resource_id"] == sample_schedule.id
+        assert audit_kwargs["after_state"] == {
+            "schedule_id": str(sample_schedule.id),
+            "project_id": str(sample_schedule.project_id),
+            "pipeline_id": str(sample_schedule.pipeline_id),
+            "status": "skipped",
+            "reason": "pipeline_not_found",
+            "last_error": "pipeline not found",
+            "next_run_at": next_run_at.isoformat(),
+        }
 
     @pytest.mark.asyncio
     async def test_handles_enqueue_failure(self, ctx, sample_schedule):
