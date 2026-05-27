@@ -321,7 +321,7 @@ Run 1──N NotificationLog
 | AppUser | username, email, role, is_platform_admin, is_active, last_login_at | 登录用户与租户级角色 |
 | ApiToken | token_id, secret_hash, scopes, expires_at, is_revoked | 机器访问 token，明文 token 不落库 |
 | Project | slug, git_url, git_auth_method, credential_id, default_branch, settings(JSONB), status | 项目聚合根，settings 当前承载 `webhook_secret`、`allowed_branches` 等嵌入配置；`silent_windows` 为 T05 计划写入同一 JSONB 的字段；`credential_id` 已可绑定但执行侧 clone 使用待补 |
-| Environment | base_image, setup_script, memory_mb, cpu_cores, resource_limits(JSONB), network_policy, env_vars(JSONB), cache_key | 执行环境；`memory_mb` / `cpu_cores` 是 ORM 离散列；API 暴露的 `max_artifact_size_mb` / `max_artifacts_count` 当前存放在 `resource_limits` JSONB 中，不是独立列；内部 `resource_limits.disk_mb` 可传到 Docker `StorageOpt.size`，但尚未暴露为 API 字段；`env_vars` 当前仍为明文 JSONB，待 F-PL-02 加密 |
+| Environment | base_image, setup_script, memory_mb, cpu_cores, resource_limits(JSONB), network_policy, env_vars(JSONB), cache_key | 执行环境；`memory_mb` / `cpu_cores` 是 ORM 离散列；API 暴露的 `max_artifact_size_mb` / `max_artifacts_count` 当前存放在 `resource_limits` JSONB 中，不是独立列；内部 `resource_limits.disk_mb` 可传到 Docker `StorageOpt.size`，但尚未暴露为 API 字段；`env_vars` 当前在 JSONB 中保存 AES-256-GCM envelope，API 读写和 worker 执行侧会按 environment_id AAD 解密 |
 | Pipeline | stages(JSONB), selector(JSONB), trigger_config(JSONB), retry_policy(JSONB), timeout_seconds, enabled | 管道定义，使用 JSONB 支持多阶段执行与不同 runner；当前没有 collector 选择字段，执行器固定 JUnit collector |
 | Schedule | cron_expr, timezone, quiet_windows(JSONB), next_run_at, last_run_at, last_error | 定时触发配置，当前已有 schedule 级 quiet window |
 | Run | status, trigger_type, priority, git_ref, git_sha, retry_group_id, attempt, dedup_key, duration_ms, summary | 执行记录，status 为状态机核心 |
@@ -393,14 +393,14 @@ Run 1──N NotificationLog
 - 每次执行在独立容器中运行
 - 容器网络策略按环境配置：默认 `deny` 对应 Docker `NetworkMode=none`；`allow` 显式使用 bridge；`restricted` 映射到 `qap-restricted`，该网络需部署侧预先创建
 - 容器默认以 `1000:1000` 运行，rootfs 只读，drop all capabilities，并启用 `no-new-privileges`
-- 资源限制：CPU / 内存已在 Docker HostConfig 中设置；磁盘限制、产物大小/数量上传侧校验、OOM/timeout 资源用量记录仍待补齐
+- 资源限制：CPU / 内存已在 Docker HostConfig 中设置；内部 `disk_mb` 可传到 Docker `StorageOpt.size`，产物大小/数量上传侧会校验；API 磁盘配额暴露和 OOM/timeout 资源用量记录仍待补齐
 - 执行结束后容器和临时文件销毁
 - 当前 Compose worker 直接挂载 `/var/run/docker.sock` 以创建测试容器；生产部署必须按风险表加固为 Socket Proxy / rootless Docker / gVisor，或迁移到 K8s Job 后端
 
 ### 9.4 敏感数据
 
 - Git 凭证使用 AES-256-GCM 加密存储；执行侧解密并安全注入 Git clone 仍待 F-PM-01 / F-PM-02 补齐
-- 环境变量 `env_vars` 当前仍为明文 JSONB，待 T01 / F-PL-02 补齐加密存储
+- 环境变量 `env_vars` 使用 AES-256-GCM envelope 加密存入 JSONB，AAD 绑定 environment_id；API 响应和 worker 执行侧按需解密，审计状态只记录 redacted/count
 - 加密密钥通过环境变量注入，不落盘
 - API 响应中不返回凭证明文
 

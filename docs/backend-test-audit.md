@@ -105,6 +105,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 ## 残余缺口
 
 - 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade；真实 API token 创建/撤销还断言 AuditEvent before/after 不包含 full token、secret 或 secret_hash；retention 已覆盖普通超期终态 Run 与 `cancelled/timeout`。
+- 环境变量加密已补 API/DB/migration/worker 证据：API create/fetch/update 路径会以 AES-256-GCM envelope 存入 `Environment.env_vars` JSONB，AAD 错配会返回 500 并写 `environment.env_vars_decrypt_failed` audit，migration `007` 会加密既有明文并跳过已加密 envelope；nightly/manual external-stack worker smoke 会验证加密 env var 经 worker 解密后注入真实执行容器。
 - single run cancel 已补 API 写入后真实 DB 终态、Redis status event `previous=running` 和 audit before/after 验证，并进入 nightly/manual 取消 API p99 smoke；batch cancel/retry 已补 API 写入后真实 DB 状态、cancel Redis status event 和 audit 行验证。
 - OOM/timeout 资源终止已补 RunExecutor + 真实 DB/Redis required integration，覆盖 `oom_killed=True` 和 `timed_out=True` 两条 backend 结果写成 Run `timeout` 终态、Redis `timeout` status event 和 run log 收尾；内部 `disk_mb` → `ResourceLimits.disk_bytes` → Docker `StorageOpt.size` 已有单元证据，但 API 暴露磁盘配额和资源用量记录仍是 F-PL-03 剩余缺口。
 - project/project member/pipeline/credentials/environments/notification rules 已补 API 写入后的真实 DB 审计状态检查：项目 `git_url` userinfo、pipeline stages/trigger_config 复杂配置里的 token/password/secret/credential/Authorization、凭据明文、环境变量值、通知 channel 地址/webhook URL 和模板正文不进入 audit before/after；project、pipeline、project member、notification、schedule delete 已补删除前状态快照。

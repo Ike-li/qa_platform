@@ -206,7 +206,7 @@
 | T05 cron 项目解析复核 | 发现 T05 伪代码沿用了 API `get_for_tenant(...)` 口径，但 `worker/settings.py::check_schedules` 是内部 cron tick，没有 `CurrentUser`。T05 已改为说明 worker 可按 `schedule.project_id` 读取 Project 或 eager-load `Pipeline.project`；对外 API 路由仍必须按租户隔离查询并跨租户返回 404。 |
 | T01 env_vars 存储形态复核 | 发现 `CryptoService.encrypt(...)` 返回 `bytes`，但现有 `Environment.env_vars` 是 JSONB；若 T01 选择“保留原列加密存储”，不能直接把 raw bytes 写入 JSONB。T01 已补充二选一路径：改二进制列并迁移，或在 JSONB 中存 JSON-safe base64/envelope；同时补充 `worker/tasks.py` 执行侧必须解密 env_vars 后再传 executor。 |
 | T01 AAD 创建时序复核 | 发现 T01 要求 AAD 绑定 `environment_id`，但当前 `Environment.id` 由数据库 `server_default` 生成；创建路径若先 encrypt 再 flush 会没有稳定 id。T01 已补充要求应用侧预生成 UUID，或先 flush 出 id 后再 encrypt/update，确保密文 AAD 与最终落库 id 一致。 |
-| T01 / 加密口径当前复跑 | 通过，`dependencies.py::CryptoService` 仍返回 bytes 格式密文并支持 0-15 key version；凭据路由仍用 `credential:{project_id}:{name}` AAD 写入 `Credential.encrypted_value`；`api/v1/environments.py` 仍直接读写明文 `Environment.env_vars` JSONB，T01 / TODO / catalog / architecture 均已把 env_vars 加密列为未达验收而不是已完成能力。 |
+| T01 / 加密口径当前复跑 | 已更新：`dependencies.py::CryptoService` 仍返回 bytes 格式密文并支持 0-15 key version；凭据路由仍用 `credential:{project_id}:{name}` AAD 写入 `Credential.encrypted_value`；`api/v1/environments.py` 现在通过 `domain/services/env_vars_crypto.py` 把 `Environment.env_vars` 写成 JSON-safe AES-256-GCM envelope，AAD 绑定 environment_id，migration `007` 加密既有数据，worker 执行侧解密后注入容器。TODO / catalog / architecture 已改为 F-PL-02 达标。 |
 | T02 router / permission 注册复核 | 发现新增 `src/qaplatform/api/v1/audit_events.py` 不会被自动发现，必须在 `main.py::create_app` 显式 include router；同时当前 `Action` 枚举没有 `AUDIT_READ`，现有普通读权限会放行 Member。T02 已补充：要么新增只授予 Owner/Admin 的 tenant-scoped action，要么在路由内写显式 Owner/Admin guard。 |
 | T02 分页口径复核 | 发现 T02 验收写“分页头返回 page/per_page/total”，但当前仓库统一使用 `PaginatedResponse` 响应体字段，不是 HTTP pagination headers。T02 已改为响应体分页口径，避免实现者额外设计 header。 |
 | T05 audit metadata 字段复核 | 发现 T05 写“audit metadata 包含 …”，但当前 `AuditEvent` ORM 没有 `metadata` 列，且 T05 明确不新增 alembic 列。T05 已改为把 `schedule_id`、`reason`、`window_end` 写入 `after_state`，并说明 cron worker 不应调用依赖 `CurrentUser` 的 API audit helper。 |
@@ -914,7 +914,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 冲突：
 
-- `docs/architecture.md` 曾写“Git 凭证和环境变量使用 AES-256-GCM 加密存储”，但当前 `Environment.env_vars` 仍是明文 JSONB，T01 才是补齐任务。
+- `docs/architecture.md` 曾写“Git 凭证和环境变量使用 AES-256-GCM 加密存储”，当时 `Environment.env_vars` 仍是明文 JSONB；当前 T01 已落地，保留 JSONB 列但写入 JSON-safe 加密 envelope。
 - architecture 曾写“超期数据批量归档到冷存储”，但当前只看到 Run 日志归档到 S3；数据库 Run 行冷归档未实现。
 - architecture 曾写“Redis 内存超过阈值时拒绝新执行入队”，但当前代码只有执行并发/项目并发限制，未发现 Redis 内存阈值入队保护。
 - `cleanup_old_runs` 已注册 cron，当前实现可计算 cutoff 并调用仓储删除。
@@ -1079,7 +1079,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 冲突：
 
 - `docs/TODO.md` 原把 Phase 1 MVP 标为 ✅ 全部完成。
-- 但 PRD Phase 1 范围包含 F-PL-02 与 F-LS-01~04；当前 TODO / catalog 同时列出这些功能仍有缺口。
+- PRD Phase 1 范围中的 F-PL-02 已完成；F-LS-01~04 仍有缺口，当前 TODO / catalog 继续保留对应待办。
 - `docs/TODO.md` 原把 Phase 2 自动化与通知标为 ✅ 主线完成，仅提钉钉/企微缺口。
 - 但当前 TODO / catalog 同时列出 F-EX-02 静默窗口、F-EX-03 Webhook 分支过滤 + 同 commit 去重、钉钉/企微仍未达验收。
 

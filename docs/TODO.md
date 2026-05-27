@@ -11,7 +11,7 @@
 
 | # | 项 | 来源 | 缺什么 |
 |---|---|---|---|
-| 1 | F-PL-02 环境变量加密 | PRD §3.2 验收 | `env_vars` 当前明文 JSONB；需复用 `dependencies.py::CryptoService`（凭据路由经 `container.crypto_service` 调用） |
+| 1 | F-PL-02 环境变量加密 | PRD §3.2 验收 | 已完成：`env_vars` 以 JSON-safe AES-256-GCM envelope 存入 JSONB，API create/fetch/update、AAD 错配失败 audit、migration 加密既有数据、worker 解密注入容器环境变量均有自动化证据 |
 | 2 | F-PM-01 / F-PM-02 Git 凭证执行闭环 | PRD §3.1 验收 | 项目和凭证 API 可保存 `git_auth_method` / `credential_id` 与加密凭证，但执行侧 clone 只使用原始 `git_url`，未解密并注入 HTTPS token / SSH key |
 | 3 | F-PL-01 collector 配置补齐 | PRD §3.2 验收 | Pipeline schema / ORM / worker 拼装均无结果收集器选择或配置，`RunExecutor.execute()` 固定 `get_collector("junit")`；需决定 JUnit-only 是否改为正式限制，或补 collector 配置闭环 |
 | 4 | 审计日志查询 API | catalog §4.1 | 已完成：`/api/v1/audit-events` 支持 Owner/Admin 分页查询、组合过滤、跨租户 404/空结果收敛，并写 `audit_events.list` 自审计；正式 PRD 章节仍未补 |
@@ -120,7 +120,7 @@
 
 | 阶段 | 状态 |
 |---|---|
-| Phase 1 MVP | ⚠️ 主线部分完成（项目/管道/手动执行/日志/结果主链路已就位；Git 凭证 clone 使用、Pipeline collector 配置、F-EX-01 commit/environment 指定入参与入队时延验收、F-PL-02 env_vars 加密、F-PL-03 产物/API 磁盘配额/资源记录闭环、F-LS-01~04 列表过滤/分页/搜索边角仍缺） |
+| Phase 1 MVP | ⚠️ 主线部分完成（项目/管道/手动执行/日志/结果主链路和 F-PL-02 env_vars 加密已就位；Git 凭证 clone 使用、Pipeline collector 配置、F-EX-01 commit/environment 指定入参与入队时延验收、F-PL-03 产物/API 磁盘配额/资源记录闭环、F-LS-01~04 列表过滤/分页/搜索边角仍缺） |
 | Phase 2 自动化与通知 | ⚠️ 主线部分完成（cron/webhook/API token 基础、重试/优先级队列原语、通知规则/模板基础已就位；API token scope、webhook 分支过滤+去重、自动重试主干、优先级队列主干已有测试证据；F-EX-02 静默窗口、F-EX-03 Git 平台事件解析/按 repo 匹配、通知规则/模板验收、钉钉/企微仍缺） |
 | Phase 3 洞察与报告 | ⚠️ 主线部分完成（仪表盘/Flaky/系统状态页/项目级趋势已就位；Allure/HTML 产物预览闭环和单用例历史趋势仍缺） |
 | Phase 4 规模化 | ⛔ 整体不在当前范围 |
