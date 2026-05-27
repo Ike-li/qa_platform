@@ -116,7 +116,7 @@
 | Argon2id 密码哈希 | P0 | ✅ | `api/v1/auth.py` |
 | API Token 吊销 + scope | P1 | ✅ | `api/auth/middleware.py` + `api/auth/permissions.py` · token 吊销/过期/认证已实现；scope 已传入 tenant/project 权限依赖；真实 API 覆盖只读、run.trigger、artifact download 与 archived logs 的 run.read、错误/空 scope |
 | AES-256-GCM 凭据加密 | P0 | ✅ | `dependencies.py::CryptoService` · 多版本密钥、凭据路由经 `container.crypto_service` 加密，并用 `credential:{project_id}:{name}` 做 AAD |
-| 认证高风险端点 rate limit（5/min/限流桶） | P0 | ✅ | `api/middleware/rate_limit.py` + `config.py` `rate_limit_auth_failure=5` · 覆盖 login / register / token / refresh / SSE ticket；变量名保留历史 `auth_failure`，实际是端点级 strict limit；Bearer 请求按 token hash，其他请求按可信代理解析后的 IP；required integration 已用真实 FastAPI + Redis 验证 login 与 SSE ticket 第 6 次请求 429 且 Redis key 不存原始 Bearer token，SSE ticket 限流请求不额外写审计 |
+| 认证高风险端点 rate limit（5/min/限流桶） | P0 | ✅ | `api/middleware/rate_limit.py` + `config.py` `rate_limit_auth_failure=5` · 覆盖 login / register / token / refresh / SSE ticket；变量名保留历史 `auth_failure`，实际是端点级 strict limit；Bearer 请求按 token hash，其他请求按可信代理解析后的 IP；required integration 已用真实 FastAPI + Redis 验证 login、register、refresh、API token create、SSE ticket 第 6 次请求 429，Bearer 路径 Redis key 不存原始 token，IP/cookie 路径 Redis key 不含 username/password/refresh token，限流请求不额外写审计 |
 | 通用 API rate limit（100/min/限流桶） | P1 | ✅ | `api/middleware/rate_limit.py` · Bearer 请求按 token hash，其他请求按可信代理解析后的 IP |
 | Webhook 签名验证 | P1 | ✅ | `api/v1/webhooks.py` · HMAC-SHA256 |
 | Container 安全头（X-Frame, HSTS 等） | P1 | ✅ | `api/middleware/security_headers.py`（CSP 等）+ `frontend/nginx.conf`（静态资源） |
