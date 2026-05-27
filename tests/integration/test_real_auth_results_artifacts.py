@@ -204,6 +204,15 @@ class _MemoryS3:
         return None
 
 
+class _FailingS3:
+    def __init__(self) -> None:
+        self.put_calls: list[dict] = []
+
+    async def put_object(self, *, Bucket, Key, Body, **_kwargs):
+        self.put_calls.append({"bucket": Bucket, "key": Key})
+        raise RuntimeError("s3 upload unavailable")
+
+
 @pytest.mark.asyncio
 async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_revokes(
     real_auth_client,
@@ -589,6 +598,50 @@ async def test_artifact_upload_enforces_limits_before_real_db_rows(
     log_lines = [call.args[1] for call in log_stream.write_log.await_args_list]
     assert any("exceeds limit" in line and "b.txt" in line for line in log_lines)
     assert any("count limit exceeded" in line and "d.txt" in line for line in log_lines)
+
+
+@pytest.mark.asyncio
+async def test_artifact_upload_s3_failure_leaves_no_real_db_rows(
+    integration_db_session,
+    seed_run,
+    tmp_path,
+):
+    from qaplatform.engine.docker_backend import ResourceLimits
+    from qaplatform.engine.executor import RunExecutor
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    run_id = seed_run["run"].id
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    (results_dir / "summary.html").write_text("<html>failed upload</html>")
+
+    s3 = _FailingS3()
+    artifact_repo = ArtifactRepository(integration_db_session)
+    executor = RunExecutor(
+        backend=AsyncMock(),
+        log_stream=AsyncMock(),
+        run_repo=AsyncMock(),
+        s3_client=s3,
+        s3_bucket="qa-platform-test",
+        artifact_repo=artifact_repo,
+    )
+
+    await executor._upload_artifacts(
+        str(run_id),
+        tmp_path,
+        ResourceLimits(max_artifact_size_bytes=1024, max_artifacts_count=10),
+    )
+    await integration_db_session.commit()
+
+    rows, total = await artifact_repo.list_by_run(run_id, limit=10)
+    assert rows == []
+    assert total == 0
+    assert s3.put_calls == [
+        {
+            "bucket": "qa-platform-test",
+            "key": f"reports/{run_id}/summary.html",
+        }
+    ]
 
 
 @pytest.mark.asyncio

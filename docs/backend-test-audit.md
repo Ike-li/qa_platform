@@ -14,7 +14,7 @@
 - 真实数据路径：integration suite 使用真实 PostgreSQL/Redis/Testcontainers/FastAPI ASGI app；新增测试不 mock repository 或 database session。
 - 数据保留/审计路径：retention 真实 Postgres 测试覆盖超期终态 Run 硬删与 result/artifact/event 级联；batch cancel/retry API 覆盖真实 DB 状态和 audit 行写入；project、project member、pipeline、credentials、environments、notification rules、schedule API 与 schedule worker 自动触发已补真实 DB audit before/after 或 `run.trigger` 断言，项目 `git_url` userinfo、pipeline 复杂配置密钥、凭据明文、环境变量、通知 channel/template 不落审计状态。
 - 日志归档补偿与回看：归档失败登记 Redis retry set，worker cron 重试由单测锁定成功/失败路径；SSE `Last-Event-ID` 断点续传由真实 JWT、真实 ticket、PostgreSQL/RBAC 与 Redis Stream 集成测试覆盖；归档 JSONL 读回 API 由真实 DB/RBAC/API 集成测试覆盖，并验证分页窗口与对象缺失 404。
-- Artifact 风险：环境级产物大小/数量限制传入 worker 并在上传前强制校验，真实 DB 集成测试证明被跳过产物不会写 Artifact 行；`results/` 递归上传与 Allure 目录文件落库也有真实 DB/S3 证据；artifact 列表到下载链接的真实 JWT/RBAC/DB 行、bucket/key/TTL 参数已进入 required integration。
+- Artifact 风险：环境级产物大小/数量限制传入 worker 并在上传前强制校验，真实 DB 集成测试证明被跳过产物不会写 Artifact 行；S3 上传失败路径用真实 ArtifactRepository/PostgreSQL 验证不会留下孤儿 Artifact 行；`results/` 递归上传与 Allure 目录文件落库也有真实 DB/S3 证据；artifact 列表到下载链接的真实 JWT/RBAC/DB 行、bucket/key/TTL 参数已进入 required integration。
 - 真实 worker 黑盒：nightly/manual 会启动 compose API/worker/MinIO；external-stack smoke 覆盖真实 API 触发后 worker 执行容器、产物列表、预签名下载链接、实际下载对象内容、归档日志 API，以及 worker_lost 后自动 retry 再完成的链路。
 - Worker 重试：真实 DB 集成测试覆盖 `execute_run` 基础设施异常路径，验证原 Run failed、retry Run 落库并入队；external-stack 进一步扰动 medium worker，验证 reclaimer cron 创建 retry Run，重启 worker 后 retry Run 产出 artifact、可下载 JUnit 内容与归档日志。
 - Webhook/schedule 失败路径：required integration 断言 schedule worker 成功触发与 enqueue conflict 都会以系统身份写 `run.trigger` AuditEvent；schedule pipeline 不可见时不会创建 Run，会更新 `last_error` 并写 `schedule_skipped_missing_pipeline` AuditEvent；缺失 webhook HMAC 签名不会创建 Run；签名成功后写入真实 Run 与 `run.trigger` AuditEvent，且 payload 不能覆盖 `git_url` / `credential_id` / `shallow_clone` / `default_branch` 等保留执行配置；filtered/duplicate 这种不创建 Run 的分支会写项目级 `webhook.filtered` / `webhook.duplicate` AuditEvent，且 after_state 不落 repo URL、dedup_key 或任意 metadata；archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 也不会静默写错真实 DB 状态。
@@ -57,9 +57,9 @@ RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tes
 
 当前结果：
 
-- integration 收集：124 tests
-- PR/push 必跑 required integration：103 passed, 21 deselected
-- 完整 local integration（未启动外部 API/worker 栈）：111 passed, 13 skipped
+- integration 收集：125 tests
+- PR/push 必跑 required integration：104 passed, 21 deselected
+- 完整 local integration（未启动外部 API/worker 栈）：112 passed, 13 skipped
 - performance smoke opt-in：8 passed
 - skipped 来自 macOS Docker Desktop OOMKilled 平台语义、未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke，以及本地未启动 external stack；CI nightly/manual 会主动启动 external stack，业务断言失败不会被 skip 或 retry 掩盖
 
@@ -105,7 +105,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 - 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade；retention 已覆盖普通超期终态 Run 与 `cancelled/timeout`。
 - batch cancel/retry 已补 API 写入后真实 DB 状态和 audit 行验证。
 - project/project member/pipeline/credentials/environments/notification rules 已补 API 写入后的真实 DB 审计状态检查：项目 `git_url` userinfo、pipeline stages/trigger_config 复杂配置里的 token/password/secret/credential/Authorization、凭据明文、环境变量值、通知 channel 地址/webhook URL 和模板正文不进入 audit before/after；project、pipeline、project member、notification、schedule delete 已补删除前状态快照。
-- log archive 失败已补 Redis retry set 与 worker cron 重试路径；归档日志读回 API 已补真实 DB/RBAC/API 集成测试，覆盖默认页、分页窗口和 S3 对象缺失 404 ErrorResponse；artifact 下载链接已补真实 JWT/RBAC/API/DB 行到预签名 bucket/key/TTL 的 required integration；external-stack worker smoke 与 worker_lost retry 进一步证明真实 worker 完成后可经 API 回看归档日志，并可经预签名 URL 下载真实 JUnit artifact 内容；前端 run detail 已接入终态 run 的归档日志回看，并用 Playwright 真实 DB+S3 数据覆盖日志搜索与 HTML artifact 预览。
+- log archive 失败已补 Redis retry set 与 worker cron 重试路径；归档日志读回 API 已补真实 DB/RBAC/API 集成测试，覆盖默认页、分页窗口和 S3 对象缺失 404 ErrorResponse；artifact 上传失败已补真实 PostgreSQL 断言，证明 S3 put 失败后不会写孤儿 Artifact 行；artifact 下载链接已补真实 JWT/RBAC/API/DB 行到预签名 bucket/key/TTL 的 required integration；external-stack worker smoke 与 worker_lost retry 进一步证明真实 worker 完成后可经 API 回看归档日志，并可经预签名 URL 下载真实 JUnit artifact 内容；前端 run detail 已接入终态 run 的归档日志回看，并用 Playwright 真实 DB+S3 数据覆盖日志搜索与 HTML artifact 预览。
 - Webhook/API/schedule worker 新增真实 DB 失败路径后，schedule worker 自动触发 `run.trigger` audit、schedule missing-pipeline skip audit、缺失 HMAC 签名、签名成功、保留 metadata 防覆盖、webhook `run.trigger` audit、filtered/duplicate 决策 audit、project archived、pipeline/environment missing、cross-project pipeline、enqueue conflict 已进 required integration。
 - 分支覆盖率仍低于语句覆盖率：主要来自依赖初始化分支、外部 SDK/worker 边界和少量异常恢复路径。
 - warnings 治理：项目内 SQLAlchemy overlap、Redis pubsub `close()`、SSE AsyncMock、httpx cookies、JWT key length warning 均已清理；testcontainers 第三方弃用提示已在 `pyproject.toml` 精确过滤并登记。
