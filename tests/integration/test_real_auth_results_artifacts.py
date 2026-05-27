@@ -175,6 +175,7 @@ class _MemoryS3:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self.presign_calls: list[dict] = []
+        self.get_calls: list[dict] = []
 
     async def put_object(self, *, Bucket, Key, Body, **_kwargs):
         if hasattr(Body, "read"):
@@ -188,6 +189,7 @@ class _MemoryS3:
         self.objects[(Bucket, Key)] = bytes(data)
 
     async def get_object(self, *, Bucket, Key):
+        self.get_calls.append({"bucket": Bucket, "key": Key})
         try:
             data = self.objects[(Bucket, Key)]
         except KeyError:
@@ -465,6 +467,80 @@ async def test_archived_logs_api_replays_s3_jsonl_after_real_rbac(
     assert page_body["data"] == [
         {"stream": "stdout", "line": "archived-line-2"},
         {"stream": "stderr", "line": "archived-line-3"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_archived_logs_api_token_requires_run_read_scope(
+    real_auth_app,
+    real_auth_client,
+):
+    from qaplatform.engine.log_stream import LogStream
+
+    access_token = await _register_real_user(
+        real_auth_client,
+        prefix="log_scope",
+    )
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    s3 = _MemoryS3()
+    real_auth_app.state.container.s3_client = s3
+    stream = LogStream(real_auth_app.state.container.redis_client)
+    for index in range(3):
+        await stream.write_log(run_id, f"scope-line-{index}", stream="stdout")
+
+    archived = await stream.archive_logs(
+        run_id,
+        s3,
+        real_auth_app.state.container.settings.s3_bucket,
+    )
+    assert archived is True
+
+    project_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="log-project-read-only",
+        scopes=["project.read"],
+    )
+    denied_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers={"Authorization": f"Bearer {project_read_token}"},
+    )
+    assert denied_resp.status_code == 403, denied_resp.text
+    assert s3.get_calls == []
+
+    run_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="log-run-read",
+        scopes=["run.read"],
+    )
+    allowed_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers={"Authorization": f"Bearer {run_read_token}"},
+        params={"page": 1, "per_page": 2},
+    )
+    assert allowed_resp.status_code == 200, allowed_resp.text
+    body = allowed_resp.json()
+    assert body["total"] == 3
+    assert body["per_page"] == 2
+    assert body["data"] == [
+        {"stream": "stdout", "line": "scope-line-0"},
+        {"stream": "stdout", "line": "scope-line-1"},
+    ]
+    assert s3.get_calls == [
+        {
+            "bucket": real_auth_app.state.container.settings.s3_bucket,
+            "key": f"logs/{run_id}.jsonl",
+        }
     ]
 
 
