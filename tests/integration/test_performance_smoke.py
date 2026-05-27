@@ -310,7 +310,7 @@ async def test_trigger_run_enqueue_slo_smoke(
     integration_db_session,
     seed_run,
 ):
-    from qaplatform.infra.database.models import Run
+    from qaplatform.infra.database.models import AuditEvent, Run
 
     arq = _FakeArq()
     settings = integration_app.state.container.settings
@@ -322,20 +322,25 @@ async def test_trigger_run_enqueue_slo_smoke(
     settings.max_concurrent_per_project = 100
 
     pipeline_id = seed_run["pipeline"].id
+    tenant_id = seed_run["tenant"].id
+    user_id = seed_run["user"].id
     samples: list[float] = []
+    triggered_refs: dict[UUID, str] = {}
     try:
         for _ in range(10):
+            git_ref = f"perf-enqueue/{uuid4().hex}"
             started_at = datetime.now(timezone.utc)
             response = await integration_client.post(
                 "/api/v1/runs",
                 json={
                     "pipeline_id": str(pipeline_id),
-                    "git_ref": f"perf-enqueue/{uuid4().hex}",
+                    "git_ref": git_ref,
                     "priority": 1,
                 },
             )
             assert response.status_code == 201, response.text
             run_id = UUID(response.json()["id"])
+            triggered_refs[run_id] = git_ref
 
             integration_db_session.expire_all()
             row = (
@@ -350,6 +355,28 @@ async def test_trigger_run_enqueue_slo_smoke(
         settings.max_concurrent_runs = old_total
         settings.max_concurrent_per_project = old_per_project
         integration_app.state.container.arq_pool = old_arq_pool
+
+    audit_result = await integration_db_session.execute(
+        select(AuditEvent).where(
+            AuditEvent.tenant_id == tenant_id,
+            AuditEvent.user_id == user_id,
+            AuditEvent.action == "run.trigger",
+            AuditEvent.resource_type == "run",
+            AuditEvent.resource_id.in_(list(triggered_refs)),
+        )
+    )
+    audits_by_run_id = {event.resource_id: event for event in audit_result.scalars()}
+    assert set(audits_by_run_id) == set(triggered_refs)
+    for run_id, git_ref in triggered_refs.items():
+        event = audits_by_run_id[run_id]
+        assert event.before_state is None
+        assert event.after_state is not None
+        assert event.after_state["id"] == str(run_id)
+        assert event.after_state["status"] == "queued"
+        assert event.after_state["trigger_type"] == "manual"
+        assert event.after_state["git_ref"] == git_ref
+        assert event.after_state["priority"] == 1
+        assert event.after_state["pipeline_id"] == str(pipeline_id)
 
     assert len(arq.calls) == 10
     _assert_p99_under(

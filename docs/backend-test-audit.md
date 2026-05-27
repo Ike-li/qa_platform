@@ -21,7 +21,7 @@
 - 资源终止：required integration 通过 RunExecutor + 真实 PostgreSQL/Redis 验证 backend 返回 `oom_killed=True` 或 `timed_out=True` 时，Run 终态落 `timeout`、summary 写入、Redis status/event 进入 `timeout`，并保留 run log 收尾证据；真实 Docker OOMKilled 语义仍由 opt-in heavy Docker 在稳定 Linux 环境验证。
 - Webhook/schedule 失败路径：required integration 断言 schedule worker 成功触发与 enqueue conflict 都会以系统身份写 `run.trigger` AuditEvent；schedule pipeline 不可见时不会创建 Run，会更新 `last_error` 并写 `schedule_skipped_missing_pipeline` AuditEvent；缺失 webhook HMAC 签名不会创建 Run；签名成功后写入真实 Run 与 `run.trigger` AuditEvent，且 payload 不能覆盖 `git_url` / `credential_id` / `shallow_clone` / `default_branch` 等保留执行配置；filtered/duplicate 这种不创建 Run 的分支会写项目级 `webhook.filtered` / `webhook.duplicate` AuditEvent，且 after_state 不落 repo URL、dedup_key 或任意 metadata；archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 也不会静默写错真实 DB 状态。
 - CI 稳定性：后端 ruff 与单测覆盖率是同一门禁；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；heavy Docker fixture 先复用本地镜像、缺镜像才 pull，避免 registry/network 抖动制造误 skip；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
-- 非功能 smoke：nightly/manual 覆盖读 API、写 API、触发入队 SLO、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API（小样本与 1500 行大对象分页均只读 `logs/{run_id}.jsonl` 且不 presign，跨租户拒绝不读 S3）、artifact 列表元数据 API（成功路径 DB-only 不 presign/读 S3）、artifact 列表拒绝不返回元数据、artifact 下载链接 API（单次/burst 成功路径 presign-only 不读对象，跨租户拒绝不 presign）、audit events 查询 API 与成功自审计写入、audit-events 拒绝查询不写自审计、执行摘要生成 < 3s 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
+- 非功能 smoke：nightly/manual 覆盖读 API、写 API、触发入队 SLO（每次采样都写 `run.trigger` 审计且状态字段一致）、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API（小样本与 1500 行大对象分页均只读 `logs/{run_id}.jsonl` 且不 presign，跨租户拒绝不读 S3）、artifact 列表元数据 API（成功路径 DB-only 不 presign/读 S3）、artifact 列表拒绝不返回元数据、artifact 下载链接 API（单次/burst 成功路径 presign-only 不读对象，跨租户拒绝不 presign）、audit events 查询 API 与成功自审计写入、audit-events 拒绝查询不写自审计、执行摘要生成 < 3s 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
 
 ## Mock 使用口径
 
@@ -120,7 +120,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 ## 后续优先级
 
 1. 自动重试已补 API-facing `max_attempts`、`retry_on`、waiting retry run、execute_run 基础设施异常、真实 `RunExecutor` setup Docker daemon retry 边界、setup/clone 业务失败不误 retry、worker_lost callback 路径、external-stack worker_lost 黑盒，以及 external-stack clone/setup 业务失败不 retry 黑盒；后续如要继续提高信心，可把 Docker daemon 扰动扩到 nightly/manual external-stack 黑盒。
-2. 严格产品 SLO 与完整性能压测仍需专项环境；当前 smoke 已覆盖触发入队 < 5s、取消 API p99、SSE 实时日志推送 < 2s、归档日志 1500 行大对象分页回看、归档日志成功路径只读归档对象、归档日志拒绝 no-S3-read、artifact 下载链接单次/burst presign-only 与拒绝 no-presign、audit events 查询 API 与成功自审计写入、执行摘要生成 < 3s 趋势哨兵并输出失败摘要。
+2. 严格产品 SLO 与完整性能压测仍需专项环境；当前 smoke 已覆盖触发入队 < 5s 且每次采样写入 `run.trigger` 审计、取消 API p99、SSE 实时日志推送 < 2s、归档日志 1500 行大对象分页回看、归档日志成功路径只读归档对象、归档日志拒绝 no-S3-read、artifact 下载链接单次/burst presign-only 与拒绝 no-presign、audit events 查询 API 与成功自审计写入、执行摘要生成 < 3s 趋势哨兵并输出失败摘要。
 3. 通知更高级产品能力仍待补：OR 条件、连续失败次数、每渠道模板、项目名/失败用例变量；本轮已补真实 DB delivery、模板失败、发送失败与幂等。
 4. 审计写入覆盖下一步应按高风险资源继续外扩到尚未进入业务矩阵的写路径，重点检查“该写的 before/after 是否完整”和“敏感字段是否脱敏”，而不是只检查 action 名存在。
 5. 后续提升 coverage 门槛应继续依赖真实风险路径，而不是为百分比增加无行为断言。
