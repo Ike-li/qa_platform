@@ -611,6 +611,80 @@ async def test_artifact_download_url_uses_real_auth_rbac_and_db_row(
 
 
 @pytest.mark.asyncio
+async def test_artifact_download_api_token_requires_run_read_scope(
+    real_auth_app,
+    real_auth_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    access_token = await _register_real_user(real_auth_client, prefix="artifact_scope")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    artifact_repo = ArtifactRepository(integration_db_session)
+    artifact = await artifact_repo.create(
+        run_id=run_id,
+        type="junit",
+        name="machine-readable.xml",
+        storage_path=f"reports/{run_id}/machine-readable.xml",
+        size_bytes=256,
+        mime_type="application/xml",
+    )
+    await integration_db_session.commit()
+
+    s3 = _MemoryS3()
+    real_auth_app.state.container.s3_client = s3
+
+    project_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="project-read-only",
+        scopes=["project.read"],
+    )
+    denied_resp = await real_auth_client.get(
+        f"/api/v1/artifacts/{artifact.id}/download",
+        headers={"Authorization": f"Bearer {project_read_token}"},
+    )
+    assert denied_resp.status_code == 403, denied_resp.text
+    assert s3.presign_calls == []
+
+    run_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="run-read",
+        scopes=["run.read"],
+    )
+    allowed_resp = await real_auth_client.get(
+        f"/api/v1/artifacts/{artifact.id}/download",
+        headers={"Authorization": f"Bearer {run_read_token}"},
+    )
+    assert allowed_resp.status_code == 200, allowed_resp.text
+    ttl = real_auth_app.state.container.settings.s3_presigned_url_ttl
+    assert allowed_resp.json() == {
+        "download_url": f"http://s3.local/{artifact.storage_path}?expires={ttl}",
+        "expires_in": ttl,
+    }
+    assert s3.presign_calls == [
+        {
+            "method": "get_object",
+            "params": {
+                "Bucket": real_auth_app.state.container.settings.s3_bucket,
+                "Key": artifact.storage_path,
+            },
+            "expires_in": ttl,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_artifact_upload_enforces_limits_before_real_db_rows(
     integration_db_session,
     seed_run,
