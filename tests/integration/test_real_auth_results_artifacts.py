@@ -100,6 +100,12 @@ async def _create_real_api_token(
     return create_resp.json()["token"]
 
 
+def _refresh_cookie(real_auth_client) -> str:
+    cookie = real_auth_client.cookies.get("refresh_token")
+    assert cookie
+    return cookie
+
+
 async def _create_project_environment_and_pipeline(
     real_auth_client,
     access_token: str,
@@ -338,6 +344,108 @@ async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_re
     assert full_api_token not in serialized_audit
     assert secret not in serialized_audit
     assert record.secret_hash not in serialized_audit
+
+
+@pytest.mark.asyncio
+async def test_auth_refresh_logout_audits_do_not_store_tokens_or_passwords(
+    real_auth_app,
+    real_auth_client,
+    integration_db_session,
+):
+    from uuid import UUID
+
+    from qaplatform.api.auth.jwt_service import JWTService
+    from qaplatform.infra.database.models import AuditEvent
+
+    suffix = uuid4().hex[:8]
+    username = f"audit_secret_{suffix}"
+    email = f"{username}@example.com"
+    password = f"password-not-in-audit-{suffix}"
+
+    register_resp = await real_auth_client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": username,
+            "email": email,
+            "password": password,
+        },
+    )
+    assert register_resp.status_code == 201, register_resp.text
+    access_token = register_resp.json()["access_token"]
+    first_refresh_token = _refresh_cookie(real_auth_client)
+
+    jwt_svc = JWTService(real_auth_app.state.container.settings)
+    access_payload = jwt_svc.decode_token(access_token)
+    user_id = UUID(access_payload["sub"])
+    tenant_id = UUID(access_payload["tenant_id"])
+
+    refresh_resp = await real_auth_client.post(
+        "/api/v1/auth/refresh",
+        headers={"Cookie": f"refresh_token={first_refresh_token}"},
+    )
+    assert refresh_resp.status_code == 200, refresh_resp.text
+    refreshed_access_token = refresh_resp.json()["access_token"]
+    second_refresh_token = _refresh_cookie(real_auth_client)
+    assert second_refresh_token != first_refresh_token
+
+    logout_resp = await real_auth_client.post(
+        "/api/v1/auth/logout",
+        headers={
+            "Authorization": f"Bearer {refreshed_access_token}",
+            "Cookie": f"refresh_token={second_refresh_token}",
+        },
+    )
+    assert logout_resp.status_code == 204, logout_resp.text
+
+    audits = (
+        await integration_db_session.execute(
+            select(AuditEvent).where(
+                AuditEvent.user_id == user_id,
+                AuditEvent.action.in_(
+                    ["auth.register", "auth.refresh", "auth.logout"]
+                ),
+            )
+        )
+    ).scalars().all()
+    audits_by_action = {audit.action: audit for audit in audits}
+
+    assert set(audits_by_action) == {
+        "auth.register",
+        "auth.refresh",
+        "auth.logout",
+    }
+    register_audit = audits_by_action["auth.register"]
+    refresh_audit = audits_by_action["auth.refresh"]
+    logout_audit = audits_by_action["auth.logout"]
+
+    assert register_audit.tenant_id == tenant_id
+    assert register_audit.after_state == {"username": username, "email": email}
+    assert refresh_audit.tenant_id == tenant_id
+    assert refresh_audit.before_state is not None
+    assert set(refresh_audit.before_state) == {"old_jti"}
+    assert refresh_audit.before_state["old_jti"]
+    assert refresh_audit.after_state is not None
+    assert set(refresh_audit.after_state) == {"new_jti"}
+    assert logout_audit.tenant_id == tenant_id
+    assert logout_audit.after_state == {"had_access_token": True}
+
+    serialized_audit = repr(
+        [
+            (
+                audit.before_state,
+                audit.after_state,
+            )
+            for audit in audits
+        ]
+    )
+    for secret in [
+        password,
+        access_token,
+        first_refresh_token,
+        refreshed_access_token,
+        second_refresh_token,
+    ]:
+        assert secret not in serialized_audit
 
 
 @pytest.mark.asyncio
