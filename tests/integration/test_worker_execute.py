@@ -88,6 +88,17 @@ def _require_compose_worker_lost_stack() -> None:
         )
 
 
+def _require_compose_priority_stack() -> None:
+    services = _running_compose_services()
+    required = {"api", "postgres", "redis", "worker", "worker-high", "worker-low"}
+    missing = required - services
+    if missing:
+        pytest.skip(
+            "priority external-stack test requires running compose services: "
+            f"{', '.join(sorted(missing))}"
+        )
+
+
 def _compose_redis_keys(pattern: str) -> list[str]:
     result = _compose(
         ["exec", "-T", "redis", "redis-cli", "--raw", "KEYS", pattern],
@@ -197,6 +208,27 @@ async def _wait_for_run_status(
         f"run {run_id} did not reach {sorted(statuses)} within "
         f"{timeout_seconds}s; last={last_seen}"
     )
+
+
+async def _assert_run_stays_queued(
+    api_client,
+    headers,
+    run_id: str,
+    *,
+    seconds: int = 10,
+) -> None:
+    deadline = asyncio.get_event_loop().time() + seconds
+    observed: list[str] = []
+    while asyncio.get_event_loop().time() < deadline:
+        response = await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
+        assert response.status_code == 200, response.text[:500]
+        status = response.json()["status"]
+        observed.append(status)
+        assert status == "queued", (
+            f"run {run_id} should stay queued while matching worker is stopped; "
+            f"observed={observed}"
+        )
+        await asyncio.sleep(2)
 
 
 async def _poll_json(api_client, url: str, headers, predicate, *, timeout_seconds: int = 30):
@@ -715,3 +747,169 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
         assert any("Run completed: done" in line for line in lines)
     finally:
         _compose(["start", "worker"], timeout=60, check=False)
+
+
+@pytest.mark.asyncio
+async def test_priority_queues_wait_for_matching_external_workers_then_finish(
+    docker_available, api_client, admin_token
+):
+    """真实外部栈：high/low queue 不被 medium worker 误消费，匹配 worker 启动后完成。"""
+    _require_compose_priority_stack()
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    suffix = os.urandom(4).hex()
+
+    try:
+        _compose(["stop", "--timeout", "0", "worker-high", "worker-low"], timeout=60)
+
+        project_resp = await api_client.post(
+            "/api/v1/projects",
+            headers=headers,
+            json={
+                "name": f"Priority Queue Evidence {suffix}",
+                "slug": f"priority-queue-evidence-{suffix}",
+                "git_url": EXTERNAL_STACK_GIT_URL,
+                "default_branch": EXTERNAL_STACK_GIT_REF,
+            },
+        )
+        assert project_resp.status_code in (200, 201), project_resp.text
+        project_id = project_resp.json()["id"]
+
+        env_resp = await api_client.post(
+            f"/api/v1/projects/{project_id}/environments",
+            headers=headers,
+            json={
+                "name": "Priority Queue Evidence Env",
+                "base_image": "python:3.12-alpine",
+                "memory_mb": 512,
+                "cpu_cores": 1.0,
+                "network_policy": "allow",
+                "env_vars": {},
+                "setup_script": (
+                    "python - <<'PY'\n"
+                    "from pathlib import Path\n"
+                    "workspace = Path('/workspace')\n"
+                    "(workspace / 'tests').mkdir(exist_ok=True)\n"
+                    "(workspace / 'tests' / 'test_priority_queue.py').write_text(\n"
+                    "    'def test_priority_queue():\\n    assert True\\n'\n"
+                    ")\n"
+                    "(workspace / 'pytest.py').write_text(\n"
+                    "    \"from pathlib import Path\\n\"\n"
+                    "    \"import sys\\n\"\n"
+                    "    \"junit = 'results/junit.xml'\\n\"\n"
+                    "    \"for arg in sys.argv[1:]:\\n\"\n"
+                    "    \"    if arg.startswith('--junitxml='):\\n\"\n"
+                    "    \"        junit = arg.split('=', 1)[1]\\n\"\n"
+                    "    \"path = Path(junit)\\n\"\n"
+                    "    \"path.parent.mkdir(parents=True, exist_ok=True)\\n\"\n"
+                    "    \"path.write_text(\\\"<testsuite name='priority-queue' tests='1' failures='0' errors='0' skipped='0'><testcase classname='priority_queue' name='smoke' time='0.01'/></testsuite>\\\")\\n\"\n"
+                    "    \"print('===== 1 passed in 0.01s =====')\\n\"\n"
+                    ")\n"
+                    "PY"
+                ),
+                "max_artifact_size_mb": 10,
+                "max_artifacts_count": 5,
+            },
+        )
+        assert env_resp.status_code in (200, 201), env_resp.text
+
+        pipeline_resp = await api_client.post(
+            f"/api/v1/projects/{project_id}/pipelines",
+            headers=headers,
+            json={
+                "name": "Priority Queue Evidence Pipeline",
+                "stages": [
+                    {
+                        "name": "pytest",
+                        "plugin": "pytest",
+                        "phase": "execute",
+                        "config": {"test_path": "tests/"},
+                    }
+                ],
+                "timeout_seconds": 300,
+                "selector": {"include_paths": ["tests"], "on_empty": "warn"},
+                "trigger_config": {"type": "manual"},
+                "enabled": True,
+            },
+        )
+        assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+        pipeline_id = pipeline_resp.json()["id"]
+
+        triggered_runs: dict[str, str] = {}
+        for priority, label in [(0, "high"), (2, "low")]:
+            trigger_resp = await api_client.post(
+                "/api/v1/runs",
+                headers=headers,
+                json={
+                    "pipeline_id": pipeline_id,
+                    "git_ref": EXTERNAL_STACK_GIT_REF,
+                    "priority": priority,
+                },
+            )
+            assert trigger_resp.status_code in (200, 201), trigger_resp.text
+            body = trigger_resp.json()
+            assert body["priority"] == priority
+            assert body["status"] == "queued"
+            triggered_runs[label] = body["id"]
+
+        await asyncio.gather(
+            *[
+                _assert_run_stays_queued(api_client, headers, run_id, seconds=10)
+                for run_id in triggered_runs.values()
+            ]
+        )
+
+        _compose(["start", "worker-high", "worker-low"], timeout=60)
+
+        final_statuses = await asyncio.gather(
+            *[
+                _wait_for_terminal(api_client, headers, run_id, timeout_seconds=240)
+                for run_id in triggered_runs.values()
+            ]
+        )
+        assert final_statuses == ["done", "done"]
+
+        for label, run_id in triggered_runs.items():
+            detail = (
+                await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
+            ).json()
+            assert detail["finished_at"] is not None
+            assert detail["summary"]["total"] == 1
+            assert detail["summary"]["passed"] == 1
+
+            artifacts_body = await _poll_json(
+                api_client,
+                f"/api/v1/runs/{run_id}/artifacts",
+                headers,
+                lambda body: body["total"] >= 1,
+                timeout_seconds=30,
+            )
+            junit_artifacts = [
+                artifact
+                for artifact in artifacts_body["data"]
+                if artifact["name"] == "junit.xml"
+            ]
+            assert junit_artifacts, artifacts_body
+
+            download_resp = await api_client.get(
+                f"/api/v1/artifacts/{junit_artifacts[0]['id']}/download",
+                headers=headers,
+            )
+            assert download_resp.status_code == 200, download_resp.text
+            await _assert_presigned_junit_download(
+                download_resp.json()["download_url"],
+                expected_suite="priority-queue",
+            )
+
+            archive_body = await _poll_json(
+                api_client,
+                f"/api/v1/runs/{run_id}/logs/archive",
+                headers,
+                lambda body: body["total"] >= 1,
+                timeout_seconds=60,
+            )
+            lines = [entry["line"] for entry in archive_body["data"]]
+            assert any("Repository cloned successfully" in line for line in lines)
+            assert any("Uploaded artifact: junit.xml" in line for line in lines)
+            assert any("Run completed: done" in line for line in lines), label
+    finally:
+        _compose(["start", "worker-high", "worker-low"], timeout=60, check=False)
