@@ -18,6 +18,7 @@
 - 真实 worker 黑盒：nightly/manual 会启动 compose API/worker/MinIO；external-stack smoke 覆盖真实 API 触发后 worker 执行容器、产物列表、预签名下载链接、实际下载对象内容、归档日志 API，以及 worker_lost 后自动 retry 再完成的链路。
 - Worker 重试：真实 DB 集成测试覆盖 `execute_run` 基础设施异常路径，验证原 Run failed、retry Run 落库并入队；external-stack 进一步扰动 medium worker，验证 reclaimer cron 创建 retry Run，重启 worker 后 retry Run 产出 artifact、可下载 JUnit 内容与归档日志。
 - Worker 队列：required integration 覆盖 `/api/v1/runs` 真实触发后，manual priority 0/1/2 经 FairScheduler 写入 `queue:high` / `queue:medium` / `queue:low`、`arq_job_id` 和 `enqueued_at` 到 PostgreSQL；ARQ 只以 test double 代替外部队列服务，不替代 DB/API/RBAC 链路。
+- 资源终止：required integration 通过 RunExecutor + 真实 PostgreSQL/Redis 验证 backend 返回 `oom_killed=True` 或 `timed_out=True` 时，Run 终态落 `timeout`、summary 写入、Redis status/event 进入 `timeout`，并保留 run log 收尾证据；真实 Docker OOMKilled 语义仍由 opt-in heavy Docker 在稳定 Linux 环境验证。
 - Webhook/schedule 失败路径：required integration 断言 schedule worker 成功触发与 enqueue conflict 都会以系统身份写 `run.trigger` AuditEvent；schedule pipeline 不可见时不会创建 Run，会更新 `last_error` 并写 `schedule_skipped_missing_pipeline` AuditEvent；缺失 webhook HMAC 签名不会创建 Run；签名成功后写入真实 Run 与 `run.trigger` AuditEvent，且 payload 不能覆盖 `git_url` / `credential_id` / `shallow_clone` / `default_branch` 等保留执行配置；filtered/duplicate 这种不创建 Run 的分支会写项目级 `webhook.filtered` / `webhook.duplicate` AuditEvent，且 after_state 不落 repo URL、dedup_key 或任意 metadata；archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 也不会静默写错真实 DB 状态。
 - CI 稳定性：后端 ruff 与单测覆盖率是同一门禁；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
 - 非功能 smoke：nightly/manual 覆盖读 API、写 API、触发入队 SLO、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API、artifact 列表元数据 API、artifact 下载链接 API、audit events 查询 API、执行摘要生成 < 3s 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
@@ -58,9 +59,9 @@ RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tes
 
 当前结果：
 
-- integration 收集：136 tests
-- PR/push 必跑 required integration：112 passed, 24 deselected
-- 完整 local integration（未启动外部 API/worker 栈）：120 passed, 16 skipped
+- integration 收集：137 tests
+- PR/push 必跑 required integration：113 passed, 24 deselected
+- 完整 local integration（未启动外部 API/worker 栈）：121 passed, 16 skipped
 - performance smoke opt-in：11 passed
 - skipped 来自 macOS Docker Desktop OOMKilled 平台语义、未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke，以及本地未启动 external stack；CI nightly/manual 会主动启动 external stack，业务断言失败不会被 skip 或 retry 掩盖
 
@@ -105,6 +106,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 
 - 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade；真实 API token 创建/撤销还断言 AuditEvent before/after 不包含 full token、secret 或 secret_hash；retention 已覆盖普通超期终态 Run 与 `cancelled/timeout`。
 - single run cancel 已补 API 写入后真实 DB 终态、Redis status event `previous=running` 和 audit before/after 验证，并进入 nightly/manual 取消 API p99 smoke；batch cancel/retry 已补 API 写入后真实 DB 状态、cancel Redis status event 和 audit 行验证。
+- OOM/timeout 资源终止已补 RunExecutor + 真实 DB/Redis required integration，覆盖 `oom_killed=True` 和 `timed_out=True` 两条 backend 结果写成 Run `timeout` 终态、Redis `timeout` status event 和 run log 收尾；磁盘限制和资源用量记录仍是 F-PL-03 剩余缺口。
 - project/project member/pipeline/credentials/environments/notification rules 已补 API 写入后的真实 DB 审计状态检查：项目 `git_url` userinfo、pipeline stages/trigger_config 复杂配置里的 token/password/secret/credential/Authorization、凭据明文、环境变量值、通知 channel 地址/webhook URL 和模板正文不进入 audit before/after；project、pipeline、project member、notification、schedule delete 已补删除前状态快照。
 - log archive 失败已补真实 Redis retry set、失败/成功 TTL 与 worker cron 重试路径；归档日志读回 API 已补真实 DB/RBAC/API 集成测试，覆盖默认页、分页窗口、S3 对象缺失 404 ErrorResponse、API token `run.read` scope，以及跨租户 archived-log Run ID 与随机 UUID 一致 404；`project.read` token 被拒绝时不会读取 S3；artifact 上传失败已补真实 PostgreSQL 断言，证明 S3 put 失败后不会写孤儿 Artifact 行；artifact 列表元数据和下载链接已补真实 JWT/RBAC/API token scope/API/DB 行到预签名 bucket/key/TTL 的 required integration，`project.read` token 不能枚举 artifact 名称/路径或换取 URL，并覆盖真实 API token 跨租户 404 收敛；external-stack worker smoke 与 worker_lost retry 进一步证明真实 worker 完成后可经 API 回看归档日志，并可经预签名 URL 下载真实 JUnit artifact 内容；前端 run detail 已接入终态 run 的归档日志回看，并用 Playwright 真实 DB+S3 数据覆盖日志搜索与 HTML artifact 预览。
 - manual priority 0/1/2 已补真实 API/DB 入队元数据测试，证明 `/api/v1/runs` 写入后会经 FairScheduler 把 queue name、ARQ job id 和 enqueued_at 持久化到 Run 行；真实 worker 消费由 compose high/medium/low worker 的 nightly/manual lane 继续承担。
