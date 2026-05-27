@@ -10,6 +10,7 @@ These tests intentionally exercise production wiring where it matters:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 import logging
 import os
 from unittest.mock import AsyncMock
@@ -688,6 +689,69 @@ async def test_archived_logs_api_replays_s3_jsonl_after_real_rbac(
         {"stream": "stdout", "line": "archived-line-2"},
         {"stream": "stderr", "line": "archived-line-3"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_archived_logs_api_replays_large_page_without_presign_after_real_rbac(
+    real_auth_app,
+    real_auth_client,
+):
+    access_token = await _register_real_user(real_auth_client, prefix="log_large_page")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    entries = [
+        {
+            "stream": "stderr" if index % 97 == 0 else "stdout",
+            "line": f"archived-large-line-{index:04}",
+        }
+        for index in range(1500)
+    ]
+    archive_body = "\n".join(json.dumps(entry) for entry in entries).encode("utf-8")
+
+    s3 = _MemoryS3()
+    bucket = real_auth_app.state.container.settings.s3_bucket
+    old_s3 = real_auth_app.state.container.s3_client
+    real_auth_app.state.container.s3_client = s3
+    try:
+        await s3.put_object(
+            Bucket=bucket,
+            Key=f"logs/{run_id}.jsonl",
+            Body=archive_body,
+            ContentType="application/x-ndjson",
+        )
+
+        replay_resp = await real_auth_client.get(
+            f"/api/v1/runs/{run_id}/logs/archive",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"page": 15, "per_page": 100},
+        )
+    finally:
+        real_auth_app.state.container.s3_client = old_s3
+
+    assert replay_resp.status_code == 200, replay_resp.text
+    body = replay_resp.json()
+    assert body["total"] == 1500
+    assert body["page"] == 15
+    assert body["per_page"] == 100
+    assert len(body["data"]) == 100
+    assert body["data"][0] == {
+        "stream": "stdout",
+        "line": "archived-large-line-1400",
+    }
+    assert body["data"][-1] == {
+        "stream": "stdout",
+        "line": "archived-large-line-1499",
+    }
+    assert s3.get_calls == [{"bucket": bucket, "key": f"logs/{run_id}.jsonl"}]
+    assert s3.presign_calls == []
 
 
 @pytest.mark.asyncio
