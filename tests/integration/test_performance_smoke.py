@@ -691,6 +691,63 @@ async def test_artifact_download_url_api_p99_smoke(
 
 
 @pytest.mark.asyncio
+async def test_artifact_download_url_burst_p99_smoke(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    run_id = seed_run["run"].id
+    repo = ArtifactRepository(integration_db_session)
+    artifacts = []
+    for index in range(40):
+        name = f"burst-download-{index:03}.html"
+        artifact = await repo.create(
+            run_id=run_id,
+            type="report",
+            name=name,
+            storage_path=f"reports/{run_id}/{name}",
+            size_bytes=2048 + index,
+            mime_type="text/html",
+        )
+        artifacts.append(artifact)
+    await integration_db_session.commit()
+
+    old_s3 = integration_app.state.container.s3_client
+    integration_app.state.container.s3_client = _MemoryS3()
+    samples: list[float] = []
+    try:
+        for artifact in artifacts[:3]:
+            response = await integration_client.get(
+                f"/api/v1/artifacts/{artifact.id}/download"
+            )
+            assert response.status_code == 200, response.text
+
+        for artifact in artifacts:
+            elapsed_ms, response = await _timed(
+                integration_client.get(f"/api/v1/artifacts/{artifact.id}/download")
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert (
+                body["expires_in"]
+                == integration_app.state.container.settings.s3_presigned_url_ttl
+            )
+            assert f"/{artifact.storage_path}" in body["download_url"]
+            samples.append(elapsed_ms)
+    finally:
+        integration_app.state.container.s3_client = old_s3
+
+    _assert_p99_under(
+        "artifact download URL burst API",
+        samples,
+        _threshold("PERF_ARTIFACT_DOWNLOAD_BURST_P99_MS", 1500),
+    )
+
+
+@pytest.mark.asyncio
 async def test_audit_events_list_api_p99_smoke(
     integration_client,
     integration_db_session,
