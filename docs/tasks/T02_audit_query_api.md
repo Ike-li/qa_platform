@@ -1,12 +1,14 @@
 # T02: 审计日志查询 API
 
+> 状态：已完成于 `main`。当前实现位于 `src/qaplatform/api/v1/audit_events.py`，集成测试位于 `tests/integration/test_audit_events_api.py`；本文保留为验收档案。
+
 > **来源**：feature-catalog.md §4.1（审计日志查询 API）
 > **必要性**：P0（未达 catalog §4.1 审计查询验收）
 > **预计**：S
 
 ## 背景
 
-[feature-catalog.md](../feature-catalog.md) §4.1 要求提供审计日志查询 API（仅 Admin+ 可访问）。当前写入端 `api/audit.py` + 仓储 `infra/database/repositories/audit_repo.py` 已就位，但**没有查询路由**。
+[feature-catalog.md](../feature-catalog.md) §4.1 要求提供审计日志查询 API（仅 Admin+ 可访问）。当前写入端 `api/audit.py` + 仓储 `infra/database/repositories/audit_repo.py` 已就位，查询路由也已落地。
 
 > 注意：旧文档曾引用 `PRD §9.6`，但当前 `docs/prd.md` 实际只到第 8 章。PR 描述不要继续引用不存在的章节；如需 PRD 出处，应先补 PRD 章节或引用 catalog。
 

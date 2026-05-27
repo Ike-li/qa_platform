@@ -19,6 +19,12 @@ pytestmark = [
 ]
 
 BASE_URL = os.environ.get("QAP_API_URL", "http://localhost:8000")
+EXTERNAL_STACK_GIT_URL = os.environ.get(
+    "QAP_EXTERNAL_STACK_GIT_URL",
+    "https://github.com/octocat/Hello-World.git",
+)
+EXTERNAL_STACK_GIT_REF = os.environ.get("QAP_EXTERNAL_STACK_GIT_REF", "master")
+TERMINAL_STATUSES = {"done", "failed", "cancelled", "timeout"}
 
 
 @pytest.fixture(scope="module")
@@ -75,6 +81,33 @@ async def admin_token(api_client):
     })
     assert resp.status_code == 200
     return resp.json()["access_token"]
+
+
+async def _wait_for_terminal(api_client, headers, run_id: str, *, timeout_seconds: int = 180) -> str | None:
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    final_status = None
+    while asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(3)
+        status_resp = await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
+        if status_resp.status_code == 200:
+            final_status = status_resp.json()["status"]
+            if final_status in TERMINAL_STATUSES:
+                return final_status
+    return final_status
+
+
+async def _poll_json(api_client, url: str, headers, predicate, *, timeout_seconds: int = 30):
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    last_seen = None
+    while asyncio.get_event_loop().time() < deadline:
+        response = await api_client.get(url, headers=headers)
+        last_seen = f"{response.status_code}: {response.text[:500]}"
+        if response.status_code == 200:
+            body = response.json()
+            if predicate(body):
+                return body
+        await asyncio.sleep(2)
+    pytest.fail(f"{url} did not satisfy predicate within {timeout_seconds}s; last={last_seen}")
 
 
 @pytest.mark.asyncio
@@ -144,18 +177,11 @@ async def test_trigger_run_completes_terminal_state(
     run_id = run["id"]
     
     # 5. 轮询直到终态（最长 180s 给 docker pull 留时间）
-    TERMINAL = {"done", "failed", "cancelled", "timeout"}
-    deadline = asyncio.get_event_loop().time() + 180
-    final_status = None
-    while asyncio.get_event_loop().time() < deadline:
-        await asyncio.sleep(3)
-        status_resp = await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
-        if status_resp.status_code == 200:
-            final_status = status_resp.json()["status"]
-            if final_status in TERMINAL:
-                break
+    final_status = await _wait_for_terminal(
+        api_client, headers, run_id, timeout_seconds=180
+    )
     
-    assert final_status in TERMINAL, f"run timed out, last status: {final_status}"
+    assert final_status in TERMINAL_STATUSES, f"run timed out, last status: {final_status}"
     
     # 6. 验证关键事实
     # - status 必须是 done（pytest 应该全通过）；如果 failed，至少证明 worker 真的执行了
@@ -172,3 +198,145 @@ async def test_trigger_run_completes_terminal_state(
     ticket_resp = await api_client.post("/api/v1/auth/sse-ticket", headers=headers)
     assert ticket_resp.status_code == 200
     # 注意：SSE 流测试这里跳过，已被 E2E 验证过
+
+
+@pytest.mark.asyncio
+async def test_real_worker_persists_artifacts_and_archived_logs(
+    docker_available, api_client, admin_token
+):
+    """真实外部栈：API 触发 run 后由 compose worker 执行，并验证落库产物和归档日志可经 API 读回。"""
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    suffix = os.urandom(4).hex()
+
+    project_resp = await api_client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={
+            "name": f"Worker Evidence {suffix}",
+            "slug": f"worker-evidence-{suffix}",
+            "git_url": EXTERNAL_STACK_GIT_URL,
+            "default_branch": EXTERNAL_STACK_GIT_REF,
+        },
+    )
+    assert project_resp.status_code in (200, 201), project_resp.text
+    project_id = project_resp.json()["id"]
+
+    env_resp = await api_client.post(
+        f"/api/v1/projects/{project_id}/environments",
+        headers=headers,
+        json={
+            "name": "Worker Evidence Env",
+            "base_image": "python:3.12-alpine",
+            "memory_mb": 512,
+            "cpu_cores": 1.0,
+            "network_policy": "allow",
+            "env_vars": {},
+            "setup_script": (
+                "python - <<'PY'\n"
+                "from pathlib import Path\n"
+                "workspace = Path('/workspace')\n"
+                "(workspace / 'tests').mkdir(exist_ok=True)\n"
+                "(workspace / 'tests' / 'test_real_worker_smoke.py').write_text(\n"
+                "    'def test_real_worker_smoke():\\n    assert True\\n'\n"
+                ")\n"
+                "(workspace / 'pytest.py').write_text(\n"
+                "    \"from pathlib import Path\\n\"\n"
+                "    \"import sys\\n\"\n"
+                "    \"junit = 'results/junit.xml'\\n\"\n"
+                "    \"for arg in sys.argv[1:]:\\n\"\n"
+                "    \"    if arg.startswith('--junitxml='):\\n\"\n"
+                "    \"        junit = arg.split('=', 1)[1]\\n\"\n"
+                "    \"path = Path(junit)\\n\"\n"
+                "    \"path.parent.mkdir(parents=True, exist_ok=True)\\n\"\n"
+                "    \"path.write_text(\\\"<testsuite name='real-worker' tests='1' failures='0' errors='0' skipped='0'><testcase classname='real_worker' name='smoke' time='0.01'/></testsuite>\\\")\\n\"\n"
+                "    \"print('===== 1 passed in 0.01s =====')\\n\"\n"
+                ")\n"
+                "PY"
+            ),
+            "max_artifact_size_mb": 10,
+            "max_artifacts_count": 5,
+        },
+    )
+    assert env_resp.status_code in (200, 201), env_resp.text
+
+    pipeline_resp = await api_client.post(
+        f"/api/v1/projects/{project_id}/pipelines",
+        headers=headers,
+        json={
+            "name": "Worker Evidence Pipeline",
+            "stages": [
+                {
+                    "name": "pytest",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {"test_path": "tests/"},
+                }
+            ],
+            "timeout_seconds": 300,
+            "selector": {"include_paths": ["tests"], "on_empty": "warn"},
+            "trigger_config": {"type": "manual"},
+            "enabled": True,
+        },
+    )
+    assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+    pipeline_id = pipeline_resp.json()["id"]
+
+    trigger_resp = await api_client.post(
+        "/api/v1/runs",
+        headers=headers,
+        json={
+            "pipeline_id": pipeline_id,
+            "git_ref": EXTERNAL_STACK_GIT_REF,
+            "priority": 1,
+        },
+    )
+    assert trigger_resp.status_code in (200, 201), trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    final_status = await _wait_for_terminal(
+        api_client, headers, run_id, timeout_seconds=240
+    )
+    assert final_status == "done", f"run did not complete successfully: {final_status}"
+
+    detail = (await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)).json()
+    assert detail["finished_at"] is not None
+    assert detail["summary"]["total"] == 1
+    assert detail["summary"]["passed"] == 1
+
+    artifacts_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{run_id}/artifacts",
+        headers,
+        lambda body: body["total"] >= 1,
+        timeout_seconds=30,
+    )
+    junit_artifacts = [
+        artifact
+        for artifact in artifacts_body["data"]
+        if artifact["name"] == "junit.xml"
+    ]
+    assert junit_artifacts, artifacts_body
+    junit_artifact = junit_artifacts[0]
+    assert junit_artifact["type"] == "junit"
+    assert junit_artifact["storage_path"] == f"reports/{run_id}/junit.xml"
+
+    download_resp = await api_client.get(
+        f"/api/v1/artifacts/{junit_artifact['id']}/download",
+        headers=headers,
+    )
+    assert download_resp.status_code == 200, download_resp.text
+    download_body = download_resp.json()
+    assert download_body["expires_in"] > 0
+    assert download_body["download_url"].startswith(("http://", "https://"))
+
+    archive_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers,
+        lambda body: body["total"] >= 1,
+        timeout_seconds=60,
+    )
+    lines = [entry["line"] for entry in archive_body["data"]]
+    assert any("Repository cloned successfully" in line for line in lines)
+    assert any("Uploaded artifact: junit.xml" in line for line in lines)
+    assert any("Run completed: done" in line for line in lines)

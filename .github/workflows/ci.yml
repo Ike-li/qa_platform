@@ -111,7 +111,7 @@ jobs:
 
   backend-integration-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -155,11 +155,39 @@ jobs:
           RUN_INTEGRATION_TESTS: "1"
         run: pytest tests/integration/ -m "heavy_docker and not external_stack" -v --tb=short --durations=20
 
-      - name: Run external-stack worker integration tests (nightly/manual, if stack is reachable)
+      - name: Prepare external API/worker stack env (nightly/manual)
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        run: cp .env.example .env
+
+      - name: Start external API/worker stack (nightly/manual)
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        run: |
+          docker compose up -d --build postgres redis minio minio-init api worker worker-high worker-low
+          for attempt in {1..36}; do
+            if curl -fsS http://localhost:8000/health; then
+              exit 0
+            fi
+            docker compose ps
+            sleep 5
+          done
+          docker compose logs --tail=200 api worker worker-high worker-low minio-init
+          exit 1
+
+      - name: Run external-stack worker integration tests (nightly/manual)
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
         env:
           RUN_INTEGRATION_TESTS: "1"
+          QAP_EXTERNAL_STACK_GIT_URL: https://github.com/octocat/Hello-World.git
+          QAP_EXTERNAL_STACK_GIT_REF: master
         run: pytest tests/integration/ -m "external_stack" -v --tb=short --durations=20
+
+      - name: Show external stack logs on failure
+        if: failure() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+        run: docker compose logs --tail=200 api worker worker-high worker-low minio-init || true
+
+      - name: Stop external API/worker stack (nightly/manual)
+        if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+        run: docker compose down -v || true
 
       - name: Run backend performance smoke (nightly/manual)
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

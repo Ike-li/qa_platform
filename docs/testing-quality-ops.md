@@ -14,7 +14,7 @@
 
 | 日期 | required integration | unit | warning 摘要 | 处理结论 |
 | --- | --- | --- | --- | --- |
-| 2026-05-27 | required integration 94 passed；完整 integration 103 passed / 7 skipped；performance smoke 5 passed | unit + coverage 758 passed，coverage 83.37% | 已清理项目内 warning；第三方 testcontainers warning 精确过滤并登记 | 可继续作为 PR 门禁，nightly 承担重型/性能路径 |
+| 2026-05-27 | required integration 94 passed / 17 deselected；完整 integration 102 passed / 9 skipped（未启动外部 API/worker 栈）；performance smoke 5 passed | unit + coverage 758 passed，coverage 83.37% | 已清理项目内 warning；第三方 testcontainers warning 精确过滤并登记；nightly/manual external-stack 主动启动 compose 后跑真实 worker smoke | 可继续作为 PR 门禁，nightly 承担重型/性能路径 |
 
 ## 缺陷回归流程
 
@@ -35,6 +35,6 @@ PR 不跑性能硬门禁，避免把环境抖动伪装成产品失败。nightly/
 | API 与真实 DB smoke | `backend-integration-test` required + nightly/manual `tests/integration/test_performance_smoke.py` | pytest `--durations=20`、读/写 API p99 smoke、DB 写入/查询链路 | 同一测试连续 3 次进入慢榜前 5 且耗时翻倍，或 smoke 超过阈值 |
 | Redis 日志 smoke | nightly/manual `tests/integration/test_performance_smoke.py` | Redis Stream 写入 + 读回 round trip | 连续 2 次超过阈值，转日志链路性能专项 |
 | 归档日志回看 smoke | nightly/manual `tests/integration/test_performance_smoke.py` | `GET /runs/{run_id}/logs/archive` p99 smoke，失败摘要含 p50/p99/max | 连续 2 次超过阈值，转日志归档/对象存储专项 |
-| Worker/container smoke | `heavy_docker` + `external_stack` integration | worker lost、cancel、state visibility、真实容器生命周期 | 同一 worker 路径连续 2 次超时或状态未收尾 |
+| Worker/container smoke | `heavy_docker` + `external_stack` integration | worker lost、cancel、state visibility、真实容器生命周期、真实 worker 后 artifact/download 与归档日志读回 | 同一 worker 路径连续 2 次超时、状态未收尾，或 artifact/log 回看缺证据 |
 | E2E 用户路径 | nightly 固定 real login / run trigger / special regressions，manual 全量 | 登录权限、创建项目到触发 run、结果/产物查看 | 任一路径 nightly 连续失败 2 次，转 P0 缺陷并补后端回归 |
 | CI 稳定性 | 所有 job timeout + pytest durations + Docker pull retry | 超时、registry 前置失败、warning 摘要 | 非业务前置失败超过 1 周内 2 次，登记 flaky/infra 项 |
