@@ -776,6 +776,85 @@ async def test_artifact_list_api_p99_smoke(
 
 
 @pytest.mark.asyncio
+async def test_artifact_list_denied_no_metadata_p99_smoke(
+    integration_client_as,
+    integration_db_session,
+    seed_run,
+    seed_second_tenant,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    tenant_a = seed_run["tenant"]
+    user_a = seed_run["user"]
+    run_a_id = seed_run["run"].id
+    run_b_id = seed_second_tenant["run"].id
+
+    repo = ArtifactRepository(integration_db_session)
+    marker = f"denied-list-{uuid4().hex}"
+    artifact_names: set[str] = set()
+    for index in range(20):
+        name = f"{marker}-tenant-a-{index:02}.html"
+        artifact_names.add(name)
+        await repo.create(
+            run_id=run_a_id,
+            type="report",
+            name=name,
+            storage_path=f"reports/{run_a_id}/{name}",
+            size_bytes=512 + index,
+            mime_type="text/html",
+        )
+    tenant_b_name = f"{marker}-tenant-b-secret.html"
+    artifact_names.add(tenant_b_name)
+    await repo.create(
+        run_id=run_b_id,
+        type="report",
+        name=tenant_b_name,
+        storage_path=f"reports/{run_b_id}/{tenant_b_name}",
+        size_bytes=2048,
+        mime_type="text/html",
+    )
+    await integration_db_session.commit()
+
+    def assert_no_artifact_metadata(response_text: str) -> None:
+        assert marker not in response_text
+        assert "reports/" not in response_text
+        for name in artifact_names:
+            assert name not in response_text
+
+    samples: list[float] = []
+    for role in ("member", "viewer"):
+        async with integration_client_as(user_a.id, tenant_a.id, role=role) as client:
+            for _ in range(6):
+                elapsed_ms, response = await _timed(
+                    client.get(
+                        f"/api/v1/runs/{run_a_id}/artifacts",
+                        params={"page": 1, "per_page": 100},
+                    )
+                )
+                assert response.status_code == 403, response.text
+                assert_no_artifact_metadata(response.text)
+                samples.append(elapsed_ms)
+
+    async with integration_client_as(user_a.id, tenant_a.id, role="owner") as client:
+        for _ in range(8):
+            elapsed_ms, response = await _timed(
+                client.get(
+                    f"/api/v1/runs/{run_b_id}/artifacts",
+                    params={"page": 1, "per_page": 100},
+                )
+            )
+            assert response.status_code == 404, response.text
+            assert_no_artifact_metadata(response.text)
+            samples.append(elapsed_ms)
+
+    _assert_p99_under(
+        "artifact list denied no-metadata API",
+        samples,
+        _threshold("PERF_ARTIFACT_LIST_DENIED_P99_MS", 1000),
+    )
+
+
+@pytest.mark.asyncio
 async def test_artifact_download_url_api_p99_smoke(
     integration_app,
     integration_client,
