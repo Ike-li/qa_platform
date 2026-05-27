@@ -59,7 +59,7 @@
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
 | F-RE-01 | 结构化结果（JUnit） | P0 | ✅ | `plugins/builtin/junit_collector.py` |
-| F-RE-02 | 执行摘要 | P0 | ✅ | `engine/executor.py` · `passed` / `failed` / `skipped` / `error` / `pass_rate`；PRD 的 < 3s 生成目标纳入 §4.2 性能验证 |
+| F-RE-02 | 执行摘要 | P0 | ✅ | `engine/executor.py` · `passed` / `failed` / `skipped` / `error` / `pass_rate`；PRD 的 < 3s 生成目标已进入 nightly/manual performance smoke |
 | F-RE-03 | 失败详情 | P0 | ✅ | `api/v1/runs.py` · `/runs/{run_id}/results` 返回 `error_message` / `stack_trace`；前端测试结果表支持展开失败用例详情 |
 | F-RE-04 | 产物管理 | P0 | ⚠️ | `api/v1/artifacts.py` · 返回预签名 URL，required integration 已覆盖真实 JWT/RBAC/API/DB 行到 bucket/key/TTL；`engine/executor.py` 递归上传 `results/` 下文件并强制环境级产物数量/大小限制，Allure 目录文件会标记为 `allure-report`；前端 Allure/HTML 预览主路径已有 E2E，磁盘/资源用量闭环待补 |
 | F-RE-05 | 历史趋势 | P1 | ⚠️ | `api/v1/analytics.py` · 项目级每日 run 趋势与 flaky 测试聚合已实现；单个用例的历史趋势视图/API 未实现 |
@@ -168,7 +168,7 @@
 | 项 | 必要性 | 备注 |
 |---|---|---|
 | OpenTelemetry 装配 | P2 | 仅声明部分依赖，无 OTLP HTTP exporter、`TracerProvider` / `FastAPIInstrumentor` 代码；设计见 §4.3 |
-| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API、artifact 下载链接 API 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO、执行摘要 < 3s 与完整压测仍需专项环境验证 |
+| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API、artifact 下载链接 API、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
 | E2E CI 覆盖扩展 | P1 | PR 保留 `auth-flow.spec.ts`；nightly 固定跑 `real-login-flow` / `real-run-trigger` / `special-regressions`；`workflow_dispatch` 手动跑全量 E2E |
 | 数据保留冷归档/读回增强 | P2 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 和前端终态 Run 回看主路径已闭环；当前仍缺 DB 行冷归档与对象存储生命周期运营报表 |
 | 结构化日志全局化 | P2 | API app 默认 factory 已配置 structlog JSON renderer；worker/arq 入口未调用 `configure_logging`，engine / worker / plugin 多数模块仍经 stdlib logger 输出，需统一 worker 进程日志初始化与字段格式 |
@@ -259,6 +259,7 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 |---|---|---|---|
 | 响应时间 | 读 API p99 | < 100ms | ⚠️ 已有 nightly/manual smoke 趋势哨兵；严格 SLO 需专项环境压测 |
 | 响应时间 | 写 API p99 | < 300ms | ⚠️ 已有 nightly/manual smoke 趋势哨兵；严格 SLO 需专项环境压测 |
+| 响应时间 | 执行摘要生成 | < 3s | ⚠️ 已有 nightly/manual smoke 覆盖 JUnitCollector + summary DB 写入；严格 SLO 需专项环境压测 |
 | 吞吐量 | 单 Worker 并发 | ≥ 10 容器 | ⏳ 未测量 |
 | 可用性 | 月度可用率 | ≥ 99.5% | N/A 内部环境 |
 | 日志延迟 | 实时推送 | < 2s | ⏳ 未测量 |

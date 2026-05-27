@@ -19,7 +19,7 @@
 - Worker 重试：真实 DB 集成测试覆盖 `execute_run` 基础设施异常路径，验证原 Run failed、retry Run 落库并入队；external-stack 进一步扰动 medium worker，验证 reclaimer cron 创建 retry Run，重启 worker 后 retry Run 产出 artifact、可下载 JUnit 内容与归档日志。
 - Webhook/schedule 失败路径：新增 required integration 断言 archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 都不会静默写错真实 DB 状态。
 - CI 稳定性：后端 ruff 与单测覆盖率是同一门禁；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
-- 非功能 smoke：nightly/manual 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API、artifact 下载链接 API 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
+- 非功能 smoke：nightly/manual 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API、artifact 下载链接 API、执行摘要生成 < 3s 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
 
 ## Mock 使用口径
 
@@ -57,11 +57,11 @@ RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tes
 
 当前结果：
 
-- integration 收集：118 tests
-- PR/push 必跑 required integration：99 passed, 19 deselected
-- 完整 local integration（未启动外部 API/worker 栈）：107 passed, 11 skipped
-- performance smoke opt-in：6 passed
-- skipped 来自 macOS Docker Desktop OOMKilled 平台语义、未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke，以及本地未启动 external stack；CI nightly/manual 会主动启动 external stack，业务断言失败不会被 skip 或 retry 掩盖
+- integration 收集：119 tests
+- PR/push 必跑 required integration：99 passed, 20 deselected
+- 完整 local integration（未启动外部 API/worker 栈）：106 passed, 13 skipped
+- performance smoke opt-in：7 passed
+- skipped 来自 Docker image/registry 前置条件缺失、macOS Docker Desktop OOMKilled 平台语义、未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke，以及本地未启动 external stack；CI nightly/manual 会主动启动 external stack，业务断言失败不会被 skip 或 retry 掩盖
 
 E2E 冒烟验证：
 
@@ -114,7 +114,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 ## 后续优先级
 
 1. 自动重试已补 API-facing `max_attempts`、`retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 路径和 external-stack worker_lost 黑盒；后续如要继续提高信心，可继续补 clone/setup/Docker daemon 失败是否也应进入 retry 的产品化闭环。
-2. 严格产品 SLO、执行摘要 < 3s 与完整性能压测仍需专项环境；当前 smoke 已覆盖触发入队 < 5s 趋势哨兵并输出失败摘要。
+2. 严格产品 SLO 与完整性能压测仍需专项环境；当前 smoke 已覆盖触发入队 < 5s、执行摘要生成 < 3s 趋势哨兵并输出失败摘要。
 3. 通知更高级产品能力仍待补：OR 条件、连续失败次数、每渠道模板、项目名/失败用例变量；本轮已补真实 DB delivery、模板失败、发送失败与幂等。
 4. 审计写入覆盖下一步应按高风险资源继续外扩到 webhook/schedule worker 自动触发、pipeline/webhook 复杂配置等写路径，重点检查“该写的 before/after 是否完整”和“敏感字段是否脱敏”，而不是只检查 action 名存在。
 5. 后续提升 coverage 门槛应继续依赖真实风险路径，而不是为百分比增加无行为断言。

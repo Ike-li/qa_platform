@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -100,6 +101,100 @@ class _FakeArq:
     async def enqueue_job(self, *args, **kwargs):
         self.calls.append({"args": args, "kwargs": kwargs})
         return SimpleNamespace(job_id=kwargs["_job_id"])
+
+
+class _SummaryRunner:
+    def build_command(self, _config):
+        return "pytest --junitxml=results/junit.xml"
+
+
+class _SummaryPluginRegistry:
+    def __init__(self, collector) -> None:
+        self._collector = collector
+
+    def get_runner(self, _name):
+        return _SummaryRunner()
+
+    def get_collector(self, _name):
+        return self._collector
+
+
+class _SummaryBackend:
+    def __init__(self, *, passed: int, failed: int, skipped: int, error: int) -> None:
+        self._counts = {
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+            "error": error,
+        }
+        self._workspace: Path | None = None
+
+    async def create_execution(self, spec):
+        self._workspace = next(
+            Path(mount.source) for mount in spec.mounts if mount.target == "/workspace"
+        )
+        return f"summary-{uuid4().hex}"
+
+    async def start(self, _execution_id):
+        return None
+
+    async def wait(self, _execution_id, _timeout):
+        assert self._workspace is not None
+        _write_junit_xml(self._workspace / "results" / "junit.xml", self._counts)
+        now = datetime.now(timezone.utc)
+        from qaplatform.engine.docker_backend import ExitResult
+
+        return ExitResult(exit_code=0, started_at=now, finished_at=now)
+
+    async def cleanup(self, _execution_id):
+        return None
+
+    async def stream_logs(self, _execution_id):
+        if False:
+            yield
+
+
+def _write_junit_xml(path: Path, counts: dict[str, int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cases: list[str] = []
+    index = 0
+    for _ in range(counts["passed"]):
+        cases.append(
+            f'<testcase classname="perf.summary" name="test_pass_{index}" time="0.001" />'
+        )
+        index += 1
+    for _ in range(counts["failed"]):
+        cases.append(
+            "<testcase classname=\"perf.summary\" "
+            f'name="test_fail_{index}" time="0.001">'
+            '<failure message="expected failure">stack</failure></testcase>'
+        )
+        index += 1
+    for _ in range(counts["skipped"]):
+        cases.append(
+            "<testcase classname=\"perf.summary\" "
+            f'name="test_skip_{index}" time="0.001">'
+            '<skipped message="not selected" /></testcase>'
+        )
+        index += 1
+    for _ in range(counts["error"]):
+        cases.append(
+            "<testcase classname=\"perf.summary\" "
+            f'name="test_error_{index}" time="0.001">'
+            '<error message="boom">trace</error></testcase>'
+        )
+        index += 1
+
+    total = sum(counts.values())
+    path.write_text(
+        "<testsuite "
+        'name="perf-summary" '
+        f'tests="{total}" failures="{counts["failed"]}" '
+        f'errors="{counts["error"]}" skipped="{counts["skipped"]}">'
+        + "".join(cases)
+        + "</testsuite>",
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.asyncio
@@ -312,4 +407,81 @@ async def test_artifact_download_url_api_p99_smoke(
         "artifact download URL API",
         samples,
         _threshold("PERF_ARTIFACT_DOWNLOAD_URL_P99_MS", 1000),
+    )
+
+
+@pytest.mark.asyncio
+async def test_execution_summary_generation_slo_smoke(
+    integration_app,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.engine.executor import PipelineConfig, RunExecutor, StageDefinition
+    from qaplatform.engine.log_stream import LogStream
+    from qaplatform.infra.database.models import Run, RunStatusEnum
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+    from qaplatform.plugins.builtin.junit_collector import JUnitCollector
+
+    counts = {"passed": 920, "failed": 40, "skipped": 25, "error": 15}
+    total = sum(counts.values())
+    expected_summary = {
+        "total": total,
+        **counts,
+        "pass_rate": counts["passed"] / total,
+    }
+    tenant_id = seed_run["tenant"].id
+    project_id = seed_run["project"].id
+    pipeline_id = seed_run["pipeline"].id
+    environment_id = seed_run["environment"].id
+    user_id = seed_run["user"].id
+    samples: list[float] = []
+
+    for _ in range(5):
+        run = Run(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            pipeline_id=pipeline_id,
+            environment_id=environment_id,
+            status=RunStatusEnum.PREPARING,
+            trigger_type="manual",
+            priority=1,
+            triggered_by=user_id,
+            git_ref=f"perf-summary/{uuid4().hex}",
+            attempt=1,
+            chain_depth=0,
+            metadata_={"perf_summary": True},
+        )
+        integration_db_session.add(run)
+        await integration_db_session.commit()
+        await integration_db_session.refresh(run)
+        run_id = run.id
+
+        run_repo = RunRepository(integration_db_session)
+        executor = RunExecutor(
+            backend=_SummaryBackend(**counts),
+            log_stream=LogStream(integration_app.state.container.redis_client),
+            run_repo=run_repo,
+            plugin_registry=_SummaryPluginRegistry(JUnitCollector()),
+            redis=integration_app.state.container.redis_client,
+        )
+        pipeline = PipelineConfig(
+            image="python:3.12-alpine",
+            stages=[StageDefinition(name="summary", plugin="pytest")],
+            timeout_seconds=30,
+        )
+
+        elapsed_ms, status = await _timed(executor.execute(run, pipeline))
+        assert status.value == "done"
+        samples.append(elapsed_ms)
+
+        integration_db_session.expire_all()
+        persisted = await integration_db_session.get(Run, run_id)
+        assert persisted is not None
+        assert persisted.status == RunStatusEnum.DONE
+        assert persisted.summary == expected_summary
+
+    _assert_p99_under(
+        "execution summary generation",
+        samples,
+        _threshold("PERF_EXECUTION_SUMMARY_P99_MS", 3000),
     )
