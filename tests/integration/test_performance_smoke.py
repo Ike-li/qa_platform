@@ -123,6 +123,7 @@ class _MemoryBody:
 class _MemoryS3:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
+        self.presign_calls: list[dict] = []
 
     async def put_object(self, *, Bucket, Key, Body, **_kwargs):
         if hasattr(Body, "read"):
@@ -139,6 +140,13 @@ class _MemoryS3:
         return {"Body": _MemoryBody(self.objects[(Bucket, Key)])}
 
     async def generate_presigned_url(self, method, *, Params, ExpiresIn):
+        self.presign_calls.append(
+            {
+                "method": method,
+                "params": dict(Params),
+                "expires_in": ExpiresIn,
+            }
+        )
         return (
             f"https://s3.test/{Params['Bucket']}/{Params['Key']}"
             f"?method={method}&expires={ExpiresIn}"
@@ -817,6 +825,55 @@ async def test_artifact_download_url_burst_p99_smoke(
         "artifact download URL burst API",
         samples,
         _threshold("PERF_ARTIFACT_DOWNLOAD_BURST_P99_MS", 1500),
+    )
+
+
+@pytest.mark.asyncio
+async def test_artifact_download_denied_no_presign_p99_smoke(
+    integration_app,
+    integration_client_as,
+    seed_run,
+    seed_second_tenant,
+):
+    tenant_a = seed_run["tenant"]
+    user_a = seed_run["user"]
+    artifact_b_id = seed_second_tenant["artifact"].id
+
+    s3 = _MemoryS3()
+    old_s3 = integration_app.state.container.s3_client
+    integration_app.state.container.s3_client = s3
+    samples: list[float] = []
+    try:
+        async with integration_client_as(user_a.id, tenant_a.id) as client:
+            random_response = await client.get(
+                f"/api/v1/artifacts/{uuid4()}/download"
+            )
+            assert random_response.status_code == 404, random_response.text
+            expected_404 = random_response.json()
+
+            for _ in range(3):
+                response = await client.get(
+                    f"/api/v1/artifacts/{artifact_b_id}/download"
+                )
+                assert response.status_code == 404, response.text
+                assert response.json() == expected_404
+
+            for _ in range(20):
+                elapsed_ms, response = await _timed(
+                    client.get(f"/api/v1/artifacts/{artifact_b_id}/download")
+                )
+                assert response.status_code == 404, response.text
+                assert response.json() == expected_404
+                assert s3.presign_calls == []
+                samples.append(elapsed_ms)
+    finally:
+        integration_app.state.container.s3_client = old_s3
+
+    assert s3.presign_calls == []
+    _assert_p99_under(
+        "artifact download denied no-presign API",
+        samples,
+        _threshold("PERF_ARTIFACT_DOWNLOAD_DENIED_P99_MS", 1000),
     )
 
 
