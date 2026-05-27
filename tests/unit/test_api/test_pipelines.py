@@ -193,13 +193,32 @@ async def test_update_pipeline_translates_partial_nested_updates(
 ):
     pipeline = _make_orm_pipeline(project_id)
     mock_repos.pipeline.get_by_id = AsyncMock(return_value=pipeline)
+    raw_token = "pipeline-token-should-not-enter-audit"
 
     async with await _make_client(app) as client:
         resp = await client.put(
             f"/api/v1/projects/{project_id}/pipelines/{pipeline.id}",
             json={
                 "name": "Updated",
+                "stages": [
+                    {
+                        "name": "Smoke",
+                        "plugin": "pytest",
+                        "phase": "execute",
+                        "config": {
+                            "command": f"pytest --index-url https://u:{raw_token}@pkg.example/simple",
+                            "env": {"API_TOKEN": raw_token, "REGION": "ap-east-1"},
+                        },
+                    }
+                ],
                 "selector": {"exclude_paths": ["tests/e2e"]},
+                "trigger_config": {
+                    "type": "webhook",
+                    "source": {
+                        "webhook_secret": raw_token,
+                        "clone_url": f"https://x-access-token:{raw_token}@git.example/repo.git",
+                    },
+                },
                 "retry_policy": None,
                 "enabled": False,
             },
@@ -208,10 +227,26 @@ async def test_update_pipeline_translates_partial_nested_updates(
     assert resp.status_code == 200, resp.text
     update_kwargs = mock_repos.pipeline.update.call_args.kwargs
     assert update_kwargs["name"] == "Updated"
+    assert update_kwargs["stages"][0]["config"]["env"]["API_TOKEN"] == raw_token
     assert update_kwargs["selector"]["exclude_paths"] == ["tests/e2e"]
+    assert update_kwargs["trigger_config"]["source"]["webhook_secret"] == raw_token
     assert update_kwargs["retry_policy"] is None
     assert update_kwargs["enabled"] is False
     mock_repos.audit.create.assert_awaited_once()
+    audit_kwargs = mock_repos.audit.create.await_args.kwargs
+    serialized_audit = repr([audit_kwargs["before_state"], audit_kwargs["after_state"]])
+    assert raw_token not in serialized_audit
+    assert "x-access-token" not in serialized_audit
+    assert audit_kwargs["after_state"]["stages"][0]["config"]["env"]["API_TOKEN"] == {
+        "redacted": True
+    }
+    assert audit_kwargs["after_state"]["stages"][0]["config"]["env"]["REGION"] == "ap-east-1"
+    assert audit_kwargs["after_state"]["trigger_config"]["source"]["webhook_secret"] == {
+        "redacted": True
+    }
+    assert audit_kwargs["after_state"]["trigger_config"]["source"]["clone_url"] == (
+        "https://***@git.example/repo.git"
+    )
 
 
 @pytest.mark.asyncio

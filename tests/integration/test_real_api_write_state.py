@@ -173,6 +173,8 @@ async def test_pipeline_api_persists_audit_states_for_lifecycle(
 
     project_id = seed_run["project"].id
     name = f"audit-pipeline-{uuid4().hex[:8]}"
+    create_secret = f"create-pipeline-secret-{uuid4().hex}"
+    update_secret = f"update-pipeline-secret-{uuid4().hex}"
 
     create_resp = await integration_client.post(
         f"/api/v1/projects/{project_id}/pipelines",
@@ -183,11 +185,25 @@ async def test_pipeline_api_persists_audit_states_for_lifecycle(
                     "name": "unit",
                     "plugin": "pytest",
                     "phase": "execute",
-                    "config": {"command": "pytest tests/unit -q"},
+                    "config": {
+                        "command": (
+                            "pytest tests/unit -q --index-url "
+                            f"https://user:{create_secret}@packages.example/simple"
+                        ),
+                        "env": {"API_TOKEN": create_secret, "REGION": "ap-east-1"},
+                        "headers": {"Authorization": f"Bearer {create_secret}"},
+                    },
                 }
             ],
             "selector": {"include_paths": ["tests/unit"], "on_empty": "warn"},
-            "trigger_config": {"type": "manual"},
+            "trigger_config": {
+                "type": "manual",
+                "source": {
+                    "webhook_secret": create_secret,
+                    "credential_id": f"credential-{create_secret}",
+                    "clone_url": f"https://x-access-token:{create_secret}@git.example/repo.git",
+                },
+            },
             "retry_policy": {"max_attempts": 2, "retry_on": ["infra"]},
             "timeout_seconds": 900,
             "enabled": True,
@@ -199,13 +215,36 @@ async def test_pipeline_api_persists_audit_states_for_lifecycle(
     pipeline = await integration_db_session.get(Pipeline, pipeline_id)
     assert pipeline is not None
     assert pipeline.project_id == project_id
-    assert pipeline.stages[0]["config"]["command"] == "pytest tests/unit -q"
+    assert pipeline.stages[0]["config"]["env"]["API_TOKEN"] == create_secret
 
     update_resp = await integration_client.put(
         f"/api/v1/projects/{project_id}/pipelines/{pipeline_id}",
         json={
             "name": f"{name}-disabled",
+            "stages": [
+                {
+                    "name": "integration",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {
+                        "command": (
+                            "pytest tests/integration -q --repo "
+                            f"https://user:{update_secret}@git.example/org/repo.git"
+                        ),
+                        "env": {"PASSWORD": update_secret, "REGION": "ap-east-1"},
+                        "tokens": [update_secret],
+                    },
+                }
+            ],
             "selector": {"exclude_paths": ["tests/e2e"]},
+            "trigger_config": {
+                "type": "schedule",
+                "conditions": {"secret_header": update_secret},
+                "target": {
+                    "url": f"https://deploy:{update_secret}@deploy.example/hook",
+                    "access_token": update_secret,
+                },
+            },
             "retry_policy": {"max_attempts": 3, "retry_on": ["infra", "timeout"]},
             "enabled": False,
         },
@@ -214,6 +253,8 @@ async def test_pipeline_api_persists_audit_states_for_lifecycle(
     await integration_db_session.refresh(pipeline)
     assert pipeline.enabled is False
     assert pipeline.retry_policy["max_attempts"] == 3
+    assert pipeline.stages[0]["config"]["env"]["PASSWORD"] == update_secret
+    assert pipeline.trigger_config["target"]["access_token"] == update_secret
 
     delete_resp = await integration_client.delete(
         f"/api/v1/projects/{project_id}/pipelines/{pipeline_id}"
@@ -250,14 +291,59 @@ async def test_pipeline_api_persists_audit_states_for_lifecycle(
     assert create_audit.before_state is None
     assert create_audit.after_state["name"] == name
     assert create_audit.after_state["retry_policy"]["max_attempts"] == 2
+    assert create_audit.after_state["stages"][0]["config"]["env"] == {
+        "API_TOKEN": {"redacted": True},
+        "REGION": "ap-east-1",
+    }
+    assert create_audit.after_state["stages"][0]["config"]["headers"] == {
+        "Authorization": {"redacted": True}
+    }
+    assert create_audit.after_state["stages"][0]["config"]["command"] == (
+        "pytest tests/unit -q --index-url https://***@packages.example/simple"
+    )
+    assert create_audit.after_state["trigger_config"]["source"] == {
+        "webhook_secret": {"redacted": True},
+        "credential_id": {"redacted": True},
+        "clone_url": "https://***@git.example/repo.git",
+    }
     assert update_audit.before_state["enabled"] is True
     assert update_audit.after_state["enabled"] is False
     assert update_audit.after_state["retry_policy"]["retry_on"] == [
         "infra",
         "timeout",
     ]
+    assert update_audit.after_state["stages"][0]["config"]["env"] == {
+        "PASSWORD": {"redacted": True},
+        "REGION": "ap-east-1",
+    }
+    assert update_audit.after_state["stages"][0]["config"]["tokens"] == {
+        "redacted": True
+    }
+    assert update_audit.after_state["stages"][0]["config"]["command"] == (
+        "pytest tests/integration -q --repo https://***@git.example/org/repo.git"
+    )
+    assert update_audit.after_state["trigger_config"]["conditions"] == {
+        "secret_header": {"redacted": True}
+    }
+    assert update_audit.after_state["trigger_config"]["target"] == {
+        "url": "https://***@deploy.example/hook",
+        "access_token": {"redacted": True},
+    }
     assert delete_audit.before_state["enabled"] is False
     assert delete_audit.after_state is None
+    serialized_audit = repr(
+        [
+            create_audit.before_state,
+            create_audit.after_state,
+            update_audit.before_state,
+            update_audit.after_state,
+            delete_audit.before_state,
+            delete_audit.after_state,
+        ]
+    )
+    assert create_secret not in serialized_audit
+    assert update_secret not in serialized_audit
+    assert "x-access-token" not in serialized_audit
 
 
 @pytest.mark.asyncio
