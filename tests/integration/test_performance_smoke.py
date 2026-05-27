@@ -886,7 +886,8 @@ async def test_artifact_download_url_api_p99_smoke(
     await integration_db_session.commit()
 
     old_s3 = integration_app.state.container.s3_client
-    integration_app.state.container.s3_client = _MemoryS3()
+    s3 = _MemoryS3()
+    integration_app.state.container.s3_client = s3
     samples: list[float] = []
     try:
         for _ in range(3):
@@ -910,6 +911,22 @@ async def test_artifact_download_url_api_p99_smoke(
     finally:
         integration_app.state.container.s3_client = old_s3
 
+    assert s3.get_calls == []
+    assert len(s3.presign_calls) == 23
+    assert all(call["method"] == "get_object" for call in s3.presign_calls)
+    assert all(
+        call["params"]
+        == {
+            "Bucket": integration_app.state.container.settings.s3_bucket,
+            "Key": artifact.storage_path,
+        }
+        for call in s3.presign_calls
+    )
+    assert all(
+        call["expires_in"]
+        == integration_app.state.container.settings.s3_presigned_url_ttl
+        for call in s3.presign_calls
+    )
     _assert_p99_under(
         "artifact download URL API",
         samples,
@@ -943,7 +960,8 @@ async def test_artifact_download_url_burst_p99_smoke(
     await integration_db_session.commit()
 
     old_s3 = integration_app.state.container.s3_client
-    integration_app.state.container.s3_client = _MemoryS3()
+    s3 = _MemoryS3()
+    integration_app.state.container.s3_client = s3
     samples: list[float] = []
     try:
         for artifact in artifacts[:3]:
@@ -967,6 +985,23 @@ async def test_artifact_download_url_burst_p99_smoke(
     finally:
         integration_app.state.container.s3_client = old_s3
 
+    expected_presigned_keys = [
+        artifact.storage_path for artifact in artifacts[:3]
+    ] + [artifact.storage_path for artifact in artifacts]
+    assert s3.get_calls == []
+    assert [call["method"] for call in s3.presign_calls] == [
+        "get_object"
+    ] * len(expected_presigned_keys)
+    assert [call["params"] for call in s3.presign_calls] == [
+        {
+            "Bucket": integration_app.state.container.settings.s3_bucket,
+            "Key": key,
+        }
+        for key in expected_presigned_keys
+    ]
+    assert [call["expires_in"] for call in s3.presign_calls] == [
+        integration_app.state.container.settings.s3_presigned_url_ttl
+    ] * len(expected_presigned_keys)
     _assert_p99_under(
         "artifact download URL burst API",
         samples,
@@ -1016,6 +1051,7 @@ async def test_artifact_download_denied_no_presign_p99_smoke(
         integration_app.state.container.s3_client = old_s3
 
     assert s3.presign_calls == []
+    assert s3.get_calls == []
     _assert_p99_under(
         "artifact download denied no-presign API",
         samples,
