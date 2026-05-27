@@ -43,6 +43,22 @@ def pull_docker_image():
 
     def _pull(image: str, *, timeout: int = 120) -> str:
         try:
+            local_result = subprocess.run(
+                ["docker", "image", "inspect", image],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except FileNotFoundError as exc:
+            pytest.skip(f"docker image prerequisite unavailable for {image}: {exc}")
+        except subprocess.TimeoutExpired as exc:
+            pytest.skip(f"docker image prerequisite unavailable for {image}: {exc}")
+
+        if local_result.returncode == 0:
+            return image
+
+        try:
             result = subprocess.run(
                 ["docker", "pull", image],
                 check=False,
