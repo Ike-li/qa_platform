@@ -12,7 +12,7 @@ import math
 import os
 import socket
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
@@ -540,6 +540,64 @@ async def test_artifact_download_url_api_p99_smoke(
         "artifact download URL API",
         samples,
         _threshold("PERF_ARTIFACT_DOWNLOAD_URL_P99_MS", 1000),
+    )
+
+
+@pytest.mark.asyncio
+async def test_audit_events_list_api_p99_smoke(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import AuditEvent
+
+    tenant_id = seed_run["tenant"].id
+    user_id = seed_run["user"].id
+    project_id = seed_run["project"].id
+    action = "audit.performance_probe"
+    now = datetime.now(timezone.utc)
+
+    for index in range(120):
+        integration_db_session.add(
+            AuditEvent(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                action=action,
+                resource_type="project",
+                resource_id=project_id,
+                after_state={"index": index},
+                created_at=now - timedelta(seconds=index),
+            )
+        )
+    await integration_db_session.commit()
+
+    params = {
+        "action": action,
+        "resource_type": "project",
+        "per_page": 50,
+    }
+    for _ in range(3):
+        response = await integration_client.get("/api/v1/audit-events", params=params)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["total"] == 120
+        assert len(body["data"]) == 50
+
+    samples: list[float] = []
+    for _ in range(20):
+        elapsed_ms, response = await _timed(
+            integration_client.get("/api/v1/audit-events", params=params)
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["total"] == 120
+        assert {item["action"] for item in body["data"]} == {action}
+        samples.append(elapsed_ms)
+
+    _assert_p99_under(
+        "audit events list API",
+        samples,
+        _threshold("PERF_AUDIT_EVENTS_LIST_P99_MS", 1000),
     )
 
 
