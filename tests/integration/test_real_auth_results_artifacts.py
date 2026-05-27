@@ -213,6 +213,20 @@ class _FailingS3:
         raise RuntimeError("s3 upload unavailable")
 
 
+class _FlakyOnceS3(_MemoryS3):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 1
+        self.put_calls: list[dict] = []
+
+    async def put_object(self, *, Bucket, Key, Body, **kwargs):
+        self.put_calls.append({"bucket": Bucket, "key": Key})
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise RuntimeError("s3 transient outage")
+        await super().put_object(Bucket=Bucket, Key=Key, Body=Body, **kwargs)
+
+
 @pytest.mark.asyncio
 async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_revokes(
     real_auth_client,
@@ -452,6 +466,53 @@ async def test_archived_logs_api_replays_s3_jsonl_after_real_rbac(
         {"stream": "stdout", "line": "archived-line-2"},
         {"stream": "stderr", "line": "archived-line-3"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_log_archive_retry_worker_uses_real_redis_marker(real_auth_app):
+    from qaplatform.engine.log_stream import LogStream
+    from qaplatform.worker.settings import retry_failed_archives
+
+    retry_set = "run:logs:archive_failed"
+    run_id = uuid4()
+    redis = real_auth_app.state.container.redis_client
+    stream = LogStream(redis)
+    bucket = real_auth_app.state.container.settings.s3_bucket
+    s3 = _FlakyOnceS3()
+    stream_key = LogStream._stream_key(run_id)
+
+    try:
+        await stream.write_log(run_id, "retry-line-0", stream="stdout")
+        await stream.write_log(run_id, "retry-line-1", stream="stderr")
+
+        first_archive = await stream.archive_logs(run_id, s3, bucket)
+        assert first_archive is False
+        assert await redis.sismember(retry_set, str(run_id))
+        failure_ttl = await redis.ttl(stream_key)
+        assert 0 < failure_ttl <= 86400
+
+        await retry_failed_archives(
+            {
+                "log_stream": stream,
+                "s3_client": s3,
+                "s3_bucket": bucket,
+            }
+        )
+
+        assert s3.put_calls == [
+            {"bucket": bucket, "key": f"logs/{run_id}.jsonl"},
+            {"bucket": bucket, "key": f"logs/{run_id}.jsonl"},
+        ]
+        assert not await redis.sismember(retry_set, str(run_id))
+        success_ttl = await redis.ttl(stream_key)
+        assert 0 < success_ttl <= 3600
+        assert await stream.read_archived_logs(run_id, s3, bucket) == [
+            {"stream": "stdout", "line": "retry-line-0"},
+            {"stream": "stderr", "line": "retry-line-1"},
+        ]
+    finally:
+        await redis.srem(retry_set, str(run_id))
+        await redis.delete(stream_key)
 
 
 @pytest.mark.asyncio
