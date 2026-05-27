@@ -6,6 +6,7 @@
 import asyncio
 import os
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,10 @@ EXTERNAL_STACK_GIT_URL = os.environ.get(
     "https://github.com/octocat/Hello-World.git",
 )
 EXTERNAL_STACK_GIT_REF = os.environ.get("QAP_EXTERNAL_STACK_GIT_REF", "master")
+EXTERNAL_STACK_S3_URL = os.environ.get(
+    "QAP_EXTERNAL_STACK_S3_URL",
+    "http://localhost:9000",
+)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TERMINAL_STATUSES = {"done", "failed", "cancelled", "timeout"}
 
@@ -215,6 +220,28 @@ async def _poll_project_runs(api_client, project_id: str, headers, predicate, *,
         predicate,
         timeout_seconds=timeout_seconds,
     )
+
+
+def _host_reachable_presigned_request(download_url: str) -> tuple[str, dict[str, str]]:
+    """Return a host-reachable URL while preserving the signed Host value."""
+    parsed = urllib.parse.urlparse(download_url)
+    if parsed.hostname != "minio":
+        return download_url, {}
+
+    public = urllib.parse.urlparse(EXTERNAL_STACK_S3_URL)
+    request_url = urllib.parse.urlunparse(
+        parsed._replace(scheme=public.scheme, netloc=public.netloc)
+    )
+    return request_url, {"Host": parsed.netloc}
+
+
+async def _assert_presigned_junit_download(download_url: str, *, expected_suite: str) -> None:
+    request_url, headers = _host_reachable_presigned_request(download_url)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(request_url, headers=headers)
+    assert response.status_code == 200, response.text[:500]
+    assert f"<testsuite name='{expected_suite}'" in response.text
+    assert "<testcase " in response.text
 
 
 async def _wait_for_worker_heartbeat_keys(*, timeout_seconds: int = 20) -> list[str]:
@@ -449,6 +476,10 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     download_body = download_resp.json()
     assert download_body["expires_in"] > 0
     assert download_body["download_url"].startswith(("http://", "https://"))
+    await _assert_presigned_junit_download(
+        download_body["download_url"],
+        expected_suite="real-worker",
+    )
 
     archive_body = await _poll_json(
         api_client,
@@ -633,6 +664,19 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
             if artifact["name"] == "junit.xml"
         ]
         assert junit_artifacts, artifacts_body
+        retry_junit_artifact = junit_artifacts[0]
+
+        retry_download_resp = await api_client.get(
+            f"/api/v1/artifacts/{retry_junit_artifact['id']}/download",
+            headers=headers,
+        )
+        assert retry_download_resp.status_code == 200, retry_download_resp.text
+        retry_download_body = retry_download_resp.json()
+        assert retry_download_body["expires_in"] > 0
+        await _assert_presigned_junit_download(
+            retry_download_body["download_url"],
+            expected_suite="worker-lost-retry",
+        )
 
         archive_body = await _poll_json(
             api_client,
