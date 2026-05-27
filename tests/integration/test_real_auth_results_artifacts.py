@@ -32,7 +32,16 @@ async def real_auth_app(test_settings, integration_db_schema):
     from qaplatform.dependencies import init_container
     from qaplatform.plugins.registry import PluginRegistry
 
-    container = init_container(test_settings)
+    settings = test_settings.model_copy(
+        update={
+            # This file intentionally registers multiple real users in one ASGI app.
+            # Keep rate-limit middleware enabled, but avoid suite-order 429 noise.
+            "rate_limit_auth_failure": 100,
+            "rate_limit_auth_failure_window": 1,
+        }
+    )
+
+    container = init_container(settings)
     await container.init_db()
     await container.init_redis()
     container.init_crypto()
@@ -41,7 +50,7 @@ async def real_auth_app(test_settings, integration_db_schema):
     plugin_registry.register_builtins()
     container.plugin_registry = plugin_registry
 
-    app = create_app(container=container, settings=test_settings)
+    app = create_app(container=container, settings=settings)
     app.state.container = container
 
     yield app
@@ -165,6 +174,7 @@ class _MemoryBody:
 class _MemoryS3:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
+        self.presign_calls: list[dict] = []
 
     async def put_object(self, *, Bucket, Key, Body, **_kwargs):
         if hasattr(Body, "read"):
@@ -184,8 +194,11 @@ class _MemoryS3:
             raise _NoSuchKey(Key)
         return {"Body": _MemoryBody(data)}
 
-    async def generate_presigned_url(self, *_args, **_kwargs):
-        return "http://s3.local/signed"
+    async def generate_presigned_url(self, method, *, Params, ExpiresIn):
+        self.presign_calls.append(
+            {"method": method, "params": Params, "expires_in": ExpiresIn}
+        )
+        return f"http://s3.local/{Params['Key']}?expires={ExpiresIn}"
 
     async def __aexit__(self, *_args):
         return None
@@ -397,6 +410,73 @@ async def test_archived_logs_api_returns_404_when_s3_object_missing(
     error = replay_resp.json()["error"]
     assert error["code"] == "NOT_FOUND"
     assert error["message"] == "Archived logs not found"
+
+
+@pytest.mark.asyncio
+async def test_artifact_download_url_uses_real_auth_rbac_and_db_row(
+    real_auth_app,
+    real_auth_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    access_token = await _register_real_user(real_auth_client, prefix="artifact_dl")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    storage_path = f"reports/{run_id}/summary.html"
+    artifact_repo = ArtifactRepository(integration_db_session)
+    artifact = await artifact_repo.create(
+        run_id=run_id,
+        type="html",
+        name="summary.html",
+        storage_path=storage_path,
+        size_bytes=128,
+        mime_type="text/html",
+    )
+    await integration_db_session.commit()
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    list_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/artifacts",
+        headers=headers,
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    list_body = list_resp.json()
+    assert list_body["total"] == 1
+    assert list_body["data"][0]["id"] == str(artifact.id)
+    assert list_body["data"][0]["storage_path"] == storage_path
+
+    s3 = _MemoryS3()
+    real_auth_app.state.container.s3_client = s3
+    download_resp = await real_auth_client.get(
+        f"/api/v1/artifacts/{artifact.id}/download",
+        headers=headers,
+    )
+    assert download_resp.status_code == 200, download_resp.text
+    download_body = download_resp.json()
+    ttl = real_auth_app.state.container.settings.s3_presigned_url_ttl
+    assert download_body == {
+        "download_url": f"http://s3.local/{storage_path}?expires={ttl}",
+        "expires_in": ttl,
+    }
+    assert s3.presign_calls == [
+        {
+            "method": "get_object",
+            "params": {
+                "Bucket": real_auth_app.state.container.settings.s3_bucket,
+                "Key": storage_path,
+            },
+            "expires_in": ttl,
+        }
+    ]
 
 
 @pytest.mark.asyncio
