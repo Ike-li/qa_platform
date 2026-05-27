@@ -45,7 +45,7 @@
 
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
-| F-EX-01 | 手动触发 | P0 | ⚠️ | `api/v1/runs.py` · 当前已支持按 pipeline 触发、可指定 `git_ref` 与 priority；“触发后 < 5s 入队”已进入 nightly/manual performance smoke；PRD 要求的 commit / environment 指定入参未闭环，见 §4 |
+| F-EX-01 | 手动触发 | P0 | ⚠️ | `api/v1/runs.py` · 当前已支持按 pipeline 触发、可指定 `git_ref` 与 priority；“触发后 < 5s 入队”已进入 nightly/manual performance smoke，并校验每次采样都写 `run.trigger` 审计且 queued/manual/git_ref/priority/pipeline_id 状态一致；PRD 要求的 commit / environment 指定入参未闭环，见 §4 |
 | F-EX-02 | Cron 定时触发 | P1 | ⚠️ | `api/v1/schedules.py` + `worker/settings.py::check_schedules` · timezone 已实现；既有 schedule 级 `quiet_windows` 存在，但 PRD 验收要求的项目级"静默窗口（发布冻结期）"未实现，见 §4 |
 | F-EX-03 | Webhook 触发 | P1 | ⚠️ | `api/v1/webhooks.py` · 项目级 webhook 已实现 HMAC-SHA256 签名验证、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口，见 §4 |
 | F-EX-04 | 执行隔离 | P0 | ✅ | `engine/docker_backend.py` · 默认 `network_policy=deny` → `NetworkMode=none`；容器以 `1000:1000`、只读 rootfs、drop all caps、no-new-privileges 运行；`allow` 会显式使用 bridge，`restricted` 需要部署侧提供 `qap-restricted` 网络 |
@@ -168,7 +168,7 @@
 | 项 | 必要性 | 备注 |
 |---|---|---|
 | OpenTelemetry 装配 | P2 | 仅声明部分依赖，无 OTLP HTTP exporter、`TracerProvider` / `FastAPIInstrumentor` 代码；设计见 §4.3 |
-| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API（小样本与 1500 行大对象分页均只读 `logs/{run_id}.jsonl` 且不 presign，跨租户拒绝不读 S3）、artifact 列表元数据 API（成功路径 DB-only 不 presign/读 S3）、artifact 列表拒绝不返回元数据、artifact 下载链接 API（单次/burst 成功路径 presign-only 不读对象，跨租户拒绝不 presign）、audit events 查询 API 与成功自审计写入、audit-events 拒绝查询不写自审计、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
+| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO（每次采样都写 `run.trigger` 审计且状态字段一致）、取消 API p99、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API（小样本与 1500 行大对象分页均只读 `logs/{run_id}.jsonl` 且不 presign，跨租户拒绝不读 S3）、artifact 列表元数据 API（成功路径 DB-only 不 presign/读 S3）、artifact 列表拒绝不返回元数据、artifact 下载链接 API（单次/burst 成功路径 presign-only 不读对象，跨租户拒绝不 presign）、audit events 查询 API 与成功自审计写入、audit-events 拒绝查询不写自审计、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
 | E2E CI 覆盖扩展 | P1 | PR 保留 `auth-flow.spec.ts`；nightly 固定跑 `real-login-flow` / `real-run-trigger` / `special-regressions`；`workflow_dispatch` 手动跑全量 E2E |
 | 数据保留冷归档/读回增强 | P2 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 和前端终态 Run 回看主路径已闭环；当前仍缺 DB 行冷归档与对象存储生命周期运营报表 |
 | 结构化日志全局化 | P2 | API app 默认 factory 已配置 structlog JSON renderer；worker/arq 入口未调用 `configure_logging`，engine / worker / plugin 多数模块仍经 stdlib logger 输出，需统一 worker 进程日志初始化与字段格式 |
