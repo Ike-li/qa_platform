@@ -31,7 +31,7 @@
 | 13 | F-EX-02 静默窗口 | PRD §3.3 验收 | 发布冻结期不触发 cron 未实现 |
 | 14 | F-EX-03 Webhook Git 平台事件解析 | PRD §3.3 验收 | 当前项目级 webhook 已支持 HMAC 验签、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口 |
 | 15 | F-EX-07 自动重试端到端补齐 | PRD §3.3 验收 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 已补单测和真实 DB 测试；nightly/manual external-stack 已补 worker_lost 黑盒重试；剩余增强是明确 clone/setup/Docker daemon 失败是否也进入自动 retry 并补对应黑盒场景 |
-| 16 | F-EX-08 优先级队列消费闭环 | PRD §3.3 验收 | 已补 compose high/medium/low worker 部署、manual priority 队列矩阵单测、真实 DB priority+FIFO 排序测试 |
+| 16 | F-EX-08 优先级队列消费闭环 | PRD §3.3 验收 | 已补 compose high/medium/low worker 部署、manual priority 队列矩阵单测、真实 API/DB queue metadata 测试、真实 DB priority+FIFO 排序测试；真实长队抢占黑盒仍可作为 nightly/manual 增强 |
 | 17 | F-LS-04 测试结果 suite/关键字过滤 | PRD §3.7 验收 | 当前 `main` 仅 status（后端状态枚举含 `passed/failed/error/skipped/xfail`）；`feature/T07-test-results-filter` 已推送但未合入 |
 | 18 | F-LS-01 执行列表过滤补齐 | PRD §3.7 验收 | 当前 `main` 支持 status 多选、project_id 与创建时间排序；缺 pipeline / git_ref / time range 过滤 |
 | 19 | F-LS-02 剩余列表分页补齐 | PRD §3.7 验收 | credentials、project members、auth tokens 仍返回直接 list，未走 `PaginatedResponse` |
