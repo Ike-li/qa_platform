@@ -50,6 +50,8 @@ async def auth_app(test_settings, integration_db_schema, seed_run):
     container = init_container(test_settings)
     await container.init_db()
     await container.init_redis()
+    if container.redis_client is not None:
+        await _delete_redis_keys(container.redis_client, "rate_limit:*")
 
     plugin_registry = PluginRegistry()
     plugin_registry.register_builtins()
@@ -61,6 +63,8 @@ async def auth_app(test_settings, integration_db_schema, seed_run):
     yield app
 
     app.dependency_overrides.clear()
+    if container.redis_client is not None:
+        await _delete_redis_keys(container.redis_client, "rate_limit:*")
     await container.close()
 
 
@@ -139,6 +143,22 @@ async def _latest_audit_row(engine, action: str):
             {"action": action},
         )
         return result.fetchone()
+
+
+async def _delete_redis_keys(redis, pattern: str) -> None:
+    keys = [key async for key in redis.scan_iter(pattern)]
+    if keys:
+        await redis.delete(*keys)
+
+
+async def _audit_count(engine, action: str) -> int:
+    """Count audit.event rows for one action."""
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text("SELECT count(*) FROM audit.event WHERE action = :action"),
+            {"action": action},
+        )
+        return result.scalar_one()
 
 
 async def _audit_count_for_user(engine, action: str, user_id: str) -> int:
@@ -259,6 +279,191 @@ async def test_auth_login_rate_limit_uses_real_redis_token_hash_bucket(
     assert keys == [bucket_key]
     assert token not in keys[0]
     assert await redis.zcard(bucket_key) == 6
+
+
+@pytest.mark.asyncio
+async def test_auth_register_rate_limit_uses_real_redis_ip_bucket_and_audit_count(
+    auth_app,
+    auth_client,
+    integration_db_engine,
+):
+    """Self-service registration strict limit uses real Redis and audit rows."""
+    redis = auth_app.state.container.redis_client
+    assert redis is not None
+    await _delete_redis_keys(redis, "rate_limit:ip:*:/api/v1/auth/register")
+
+    before_count = await _audit_count(integration_db_engine, "auth.register")
+    prefix = f"register_limit_{uuid4().hex[:8]}"
+    password = "correct-horse-battery"
+    for index in range(5):
+        username = f"{prefix}_{index}"
+        resp = await auth_client.post(
+            "/api/v1/auth/register",
+            json={
+                "username": username,
+                "email": f"{username}@example.com",
+                "password": password,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["access_token"]
+
+    limited_username = f"{prefix}_final"
+    limited = await auth_client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": limited_username,
+            "email": f"{limited_username}@example.com",
+            "password": password,
+        },
+    )
+    assert limited.status_code == 429, limited.text
+    assert limited.headers["Retry-After"] == str(
+        auth_app.state.container.settings.rate_limit_auth_failure_window
+    )
+    assert limited.json()["error"]["code"] == "TOO_MANY_REQUESTS"
+
+    keys = [
+        key async for key in redis.scan_iter("rate_limit:ip:*:/api/v1/auth/register")
+    ]
+    assert len(keys) == 1
+    assert prefix not in keys[0]
+    assert password not in keys[0]
+    assert await redis.zcard(keys[0]) == 6
+
+    after_count = await _audit_count(integration_db_engine, "auth.register")
+    assert after_count - before_count == 5
+
+
+def _refresh_cookie(auth_client) -> str:
+    cookie = auth_client.cookies.get("refresh_token")
+    assert cookie
+    return cookie
+
+
+@pytest.mark.asyncio
+async def test_auth_refresh_rate_limit_uses_real_redis_ip_bucket_and_audit_count(
+    auth_app,
+    auth_client,
+    integration_db_engine,
+):
+    """Refresh strict limit uses real secure cookie rotation, Redis, and audit rows."""
+    redis = auth_app.state.container.redis_client
+    assert redis is not None
+    registered = await _register_auth_user(auth_client, prefix="refresh_limit")
+    user_id = registered["user"]["id"]
+    await _delete_redis_keys(redis, "rate_limit:ip:*:/api/v1/auth/refresh")
+
+    before_count = await _audit_count_for_user(
+        integration_db_engine,
+        "auth.refresh",
+        user_id,
+    )
+    seen_refresh_tokens = {_refresh_cookie(auth_client)}
+    for _ in range(5):
+        refresh_token = _refresh_cookie(auth_client)
+        resp = await auth_client.post(
+            "/api/v1/auth/refresh",
+            headers={"Cookie": f"refresh_token={refresh_token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["access_token"]
+        seen_refresh_tokens.add(_refresh_cookie(auth_client))
+
+    assert len(seen_refresh_tokens) == 6
+    limited_refresh_token = _refresh_cookie(auth_client)
+    limited = await auth_client.post(
+        "/api/v1/auth/refresh",
+        headers={"Cookie": f"refresh_token={limited_refresh_token}"},
+    )
+    assert limited.status_code == 429, limited.text
+    assert limited.headers["Retry-After"] == str(
+        auth_app.state.container.settings.rate_limit_auth_failure_window
+    )
+    assert limited.json()["error"]["code"] == "TOO_MANY_REQUESTS"
+    assert _refresh_cookie(auth_client) == limited_refresh_token
+
+    keys = [
+        key async for key in redis.scan_iter("rate_limit:ip:*:/api/v1/auth/refresh")
+    ]
+    assert len(keys) == 1
+    for token in seen_refresh_tokens:
+        assert token not in keys[0]
+    assert await redis.zcard(keys[0]) == 6
+
+    after_count = await _audit_count_for_user(
+        integration_db_engine,
+        "auth.refresh",
+        user_id,
+    )
+    assert after_count - before_count == 5
+
+
+@pytest.mark.asyncio
+async def test_auth_api_token_create_rate_limit_uses_real_redis_token_bucket(
+    auth_app,
+    auth_client,
+    integration_db_engine,
+):
+    """API token creation strict limit uses real JWT auth, Redis, and audit rows."""
+    redis = auth_app.state.container.redis_client
+    assert redis is not None
+    registered = await _register_auth_user(auth_client, prefix="api_token_limit")
+    access_token = registered["access_token"]
+    user_id = registered["user"]["id"]
+    token_hash = hashlib.sha256(access_token.encode()).hexdigest()[:16]
+    bucket_key = f"rate_limit:token:{token_hash}:/api/v1/auth/tokens"
+    await redis.delete(bucket_key)
+
+    before_count = await _audit_count_for_user(
+        integration_db_engine,
+        "auth.api_token_create",
+        user_id,
+    )
+    headers = {"Authorization": f"Bearer {access_token}"}
+    for index in range(5):
+        resp = await auth_client.post(
+            "/api/v1/auth/tokens",
+            headers=headers,
+            json={
+                "name": f"limited-token-{index}",
+                "scopes": ["project.read"],
+                "expires_days": 7,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["token"]
+
+    limited = await auth_client.post(
+        "/api/v1/auth/tokens",
+        headers=headers,
+        json={
+            "name": "limited-token-final",
+            "scopes": ["project.read"],
+            "expires_days": 7,
+        },
+    )
+    assert limited.status_code == 429, limited.text
+    assert limited.headers["Retry-After"] == str(
+        auth_app.state.container.settings.rate_limit_auth_failure_window
+    )
+    assert limited.json()["error"]["code"] == "TOO_MANY_REQUESTS"
+
+    keys = [
+        key
+        async for key in redis.scan_iter("rate_limit:token:*:/api/v1/auth/tokens")
+        if token_hash in key
+    ]
+    assert keys == [bucket_key]
+    assert access_token not in keys[0]
+    assert await redis.zcard(bucket_key) == 6
+
+    after_count = await _audit_count_for_user(
+        integration_db_engine,
+        "auth.api_token_create",
+        user_id,
+    )
+    assert after_count - before_count == 5
 
 
 @pytest.mark.asyncio
