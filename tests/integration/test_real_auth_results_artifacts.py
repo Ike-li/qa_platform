@@ -685,6 +685,61 @@ async def test_artifact_download_api_token_requires_run_read_scope(
 
 
 @pytest.mark.asyncio
+async def test_artifact_download_api_token_cross_tenant_returns_same_404(
+    real_auth_app,
+    real_auth_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    access_token_a = await _register_real_user(real_auth_client, prefix="artifact_a")
+    access_token_b = await _register_real_user(real_auth_client, prefix="artifact_b")
+    stack_b = await _create_project_environment_and_pipeline(real_auth_client, access_token_b)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token_b}"},
+        json={"pipeline_id": stack_b["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_b_id = trigger_resp.json()["id"]
+
+    artifact_repo = ArtifactRepository(integration_db_session)
+    artifact_b = await artifact_repo.create(
+        run_id=run_b_id,
+        type="junit",
+        name="tenant-b-report.xml",
+        storage_path=f"reports/{run_b_id}/tenant-b-report.xml",
+        size_bytes=512,
+        mime_type="application/xml",
+    )
+    await integration_db_session.commit()
+
+    s3 = _MemoryS3()
+    real_auth_app.state.container.s3_client = s3
+    run_read_token_a = await _create_real_api_token(
+        real_auth_client,
+        access_token_a,
+        name="tenant-a-run-read",
+        scopes=["run.read"],
+    )
+    headers_a = {"Authorization": f"Bearer {run_read_token_a}"}
+
+    tenant_b_resp = await real_auth_client.get(
+        f"/api/v1/artifacts/{artifact_b.id}/download",
+        headers=headers_a,
+    )
+    random_resp = await real_auth_client.get(
+        f"/api/v1/artifacts/{uuid4()}/download",
+        headers=headers_a,
+    )
+
+    assert tenant_b_resp.status_code == random_resp.status_code == 404
+    assert tenant_b_resp.json() == random_resp.json()
+    assert s3.presign_calls == []
+
+
+@pytest.mark.asyncio
 async def test_artifact_upload_enforces_limits_before_real_db_rows(
     integration_db_session,
     seed_run,
