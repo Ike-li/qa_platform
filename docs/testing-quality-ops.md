@@ -14,6 +14,7 @@
 
 | 日期 | required integration | unit | warning 摘要 | 处理结论 |
 | --- | --- | --- | --- | --- |
+| 2026-05-27 | `tests/integration/test_real_api_write_state.py` 7 passed | `tests/unit/test_api/test_notifications.py tests/unit/test_api/test_schedules.py` 10 passed | 无新增 warning；ruff targeted passed | 审计敏感值不落库和 delete before_state 进入真实 DB/API 证据，覆盖 credentials、environments、notification rules、schedules |
 | 2026-05-27 | E2E targeted `special-regressions -g "archived logs"` 1 passed | frontend lint `--quiet` passed | 本地旧 Uvicorn/Vite 复用会造成归档接口路由级假阴性；验证时已用 `CI=1` 强制新进程 | 归档日志回看 + artifact 预览进入 nightly/manual 真实 E2E 证据；本地复现该链路时优先停旧服务或使用 `CI=1` |
 | 2026-05-27 | required integration 94 passed / 18 deselected；完整 integration 102 passed / 10 skipped（未启动外部 API/worker 栈）；performance smoke 5 passed | unit + coverage 758 passed，coverage 83.37% | 已清理项目内 warning；第三方 testcontainers warning 精确过滤并登记；nightly/manual external-stack 主动启动 compose 后跑真实 worker smoke 与 worker_lost retry 黑盒 | 可继续作为 PR 门禁，nightly 承担重型/性能路径 |
 

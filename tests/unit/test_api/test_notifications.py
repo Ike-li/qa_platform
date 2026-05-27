@@ -17,8 +17,10 @@ def _make_orm_rule(project_id):
     obj.name = "Test Rule"
     obj.enabled = True
     obj.conditions = [{"field": "status", "operator": "eq", "value": "failed"}]
-    obj.channels = [{"type": "webhook", "config": {"url": "https://example.com"}}]
-    obj.template = None
+    obj.channels = [
+        {"type": "webhook", "config": {"url": "https://example.com/secret-token"}}
+    ]
+    obj.template = "Run {{run_id}} token"
     obj.created_at = datetime.now(timezone.utc)
     return obj
 
@@ -120,6 +122,15 @@ async def test_create_rule(app, mock_repos, project_id):
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "Test Rule"
+    audit_kwargs = mock_repos.audit.create.call_args.kwargs
+    assert audit_kwargs["action"] == "notification_rule.create"
+    assert audit_kwargs["after_state"]["channels"] == {
+        "redacted": True,
+        "count": 1,
+        "types": ["webhook"],
+    }
+    assert "secret-token" not in repr(audit_kwargs)
+    assert "Run {{run_id}} token" not in repr(audit_kwargs)
 
 
 @pytest.mark.asyncio
@@ -145,6 +156,14 @@ async def test_delete_rule(app, mock_repos, project_id):
 
     assert resp.status_code == 204
     mock_repos.notification_rule.delete.assert_awaited_once_with(rule)
+    audit_kwargs = mock_repos.audit.create.call_args.kwargs
+    assert audit_kwargs["action"] == "notification_rule.delete"
+    assert audit_kwargs["before_state"]["channels"] == {
+        "redacted": True,
+        "count": 1,
+        "types": ["webhook"],
+    }
+    assert "secret-token" not in repr(audit_kwargs)
 
 
 @pytest.mark.asyncio
@@ -160,3 +179,7 @@ async def test_update_rule(app, mock_repos, project_id):
 
     assert resp.status_code == 200
     assert rule.name == "Updated Rule"
+    audit_kwargs = mock_repos.audit.create.call_args.kwargs
+    assert audit_kwargs["action"] == "notification_rule.update"
+    assert audit_kwargs["before_state"]["channels"]["redacted"] is True
+    assert audit_kwargs["after_state"]["channels"]["redacted"] is True

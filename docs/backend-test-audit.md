@@ -12,7 +12,7 @@
 - 关键业务路径：覆盖 pipeline API、项目/成员落库、run 状态迁移、schedule/webhook/cancel、worker 调度、插件注册、日志配置。
 - 安全风险路径：覆盖 JWT/API token 中间件、真实 JWT 注册到 API token 创建/使用/撤销、API token scope 路由矩阵、审计失败路径、跨租户隔离、RBAC audit-events 拒绝路径。
 - 真实数据路径：integration suite 使用真实 PostgreSQL/Redis/Testcontainers/FastAPI ASGI app；新增测试不 mock repository 或 database session。
-- 数据保留/审计路径：retention 真实 Postgres 测试覆盖超期终态 Run 硬删与 result/artifact/event 级联；batch cancel/retry API 覆盖真实 DB 状态和 audit 行写入。
+- 数据保留/审计路径：retention 真实 Postgres 测试覆盖超期终态 Run 硬删与 result/artifact/event 级联；batch cancel/retry API 覆盖真实 DB 状态和 audit 行写入；credentials、environments、notification rules 已补敏感值不落审计状态的真实 DB 断言。
 - 日志归档补偿与回看：归档失败登记 Redis retry set，worker cron 重试由单测锁定成功/失败路径；归档 JSONL 读回 API 由真实 DB/RBAC/API 集成测试覆盖。
 - Artifact 风险：环境级产物大小/数量限制传入 worker 并在上传前强制校验，真实 DB 集成测试证明被跳过产物不会写 Artifact 行；`results/` 递归上传与 Allure 目录文件落库也有真实 DB/S3 证据。
 - 真实 worker 黑盒：nightly/manual 会启动 compose API/worker/MinIO；external-stack smoke 覆盖真实 API 触发后 worker 执行容器、产物列表、预签名下载链接、归档日志 API，以及 worker_lost 后自动 retry 再完成的链路。
@@ -104,6 +104,7 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 
 - 数据库 repositories 已覆盖 Project/Pipeline/Run、Audit/User、API token、TestResult、Artifact 的真实 Postgres 行为，并覆盖分页、唯一约束 rollback、soft-delete 和 terminal run retention cascade；retention 已覆盖普通超期终态 Run 与 `cancelled/timeout`。
 - batch cancel/retry 已补 API 写入后真实 DB 状态和 audit 行验证。
+- credentials/environments/notification rules 已补 API 写入后的真实 DB 审计状态检查：凭据明文、环境变量值、通知 channel 地址/webhook URL 和模板正文不进入 audit before/after；notification/schedule delete 已补 delete 前状态快照。
 - log archive 失败已补 Redis retry set 与 worker cron 重试路径；归档日志读回 API 已补真实 DB/RBAC/API 集成测试，external-stack worker smoke 与 worker_lost retry 进一步证明真实 worker 完成后可经 API 回看归档日志；前端 run detail 已接入终态 run 的归档日志回看，并用 Playwright 真实 DB+S3 数据覆盖日志搜索与 HTML artifact 预览。
 - Webhook/API/schedule worker 新增真实 DB 失败路径后，project archived、pipeline/environment missing、cross-project pipeline、enqueue conflict 已进 required integration；schedule pipeline missing 仍保留 unit 覆盖，因为真实 FK 下硬删除会级联，软删除不等价于真实缺行。
 - 分支覆盖率仍低于语句覆盖率：主要来自依赖初始化分支、外部 SDK/worker 边界和少量异常恢复路径。
@@ -115,4 +116,5 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 1. 自动重试已补 API-facing `max_attempts`、`retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 路径和 external-stack worker_lost 黑盒；后续如要继续提高信心，可继续补 clone/setup/Docker daemon 失败是否也应进入 retry 的产品化闭环。
 2. 严格产品 SLO、执行摘要 < 3s 与完整性能压测仍需专项环境；当前 smoke 已覆盖触发入队 < 5s 趋势哨兵并输出失败摘要。
 3. 通知更高级产品能力仍待补：OR 条件、连续失败次数、每渠道模板、项目名/失败用例变量；本轮已补真实 DB delivery、模板失败、发送失败与幂等。
-4. 后续提升 coverage 门槛应继续依赖真实风险路径，而不是为百分比增加无行为断言。
+4. 审计写入覆盖下一步应按高风险资源继续外扩到项目/成员/pipeline/webhook/schedule worker 自动触发等写路径，重点检查“该写的 before/after 是否完整”和“敏感字段是否脱敏”，而不是只检查 action 名存在。
+5. 后续提升 coverage 门槛应继续依赖真实风险路径，而不是为百分比增加无行为断言。
