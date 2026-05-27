@@ -63,6 +63,7 @@ async def reclaim_worker_lost(
         message = redact_url_userinfo(
             f"worker_lost: heartbeat expired for {worker_id}"
         )
+        previous = run.status.value if hasattr(run.status, "value") else str(run.status)
         updated = await run_repo.mark_worker_lost(
             run.id, worker_id=worker_id, message=message
         )
@@ -70,7 +71,6 @@ async def reclaim_worker_lost(
             continue
 
         reclaimed += 1
-        previous = run.status.value if hasattr(run.status, "value") else str(run.status)
         log.warning(
             "reclaimed run %s (worker_lost, was %s, worker=%s)",
             run.id,
