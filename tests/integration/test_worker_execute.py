@@ -5,6 +5,7 @@
 """
 import asyncio
 import hashlib
+import json
 import os
 import subprocess
 import urllib.parse
@@ -322,6 +323,50 @@ async def _assert_presigned_junit_download(download_url: str, *, expected_suite:
     assert "<testcase " in text
 
 
+async def _assert_run_trigger_audit_event(
+    api_client,
+    headers,
+    run_id: str,
+    *,
+    expected_git_ref: str,
+    expected_priority: int,
+    forbidden_texts: tuple[str, ...] = (),
+) -> None:
+    response = await api_client.get(
+        "/api/v1/audit-events",
+        headers=headers,
+        params={
+            "action": "run.trigger",
+            "resource_type": "run",
+            "resource_id": run_id,
+            "per_page": 5,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    matching = [
+        event
+        for event in body["data"]
+        if event["resource_id"] == run_id and event["action"] == "run.trigger"
+    ]
+    assert matching, body
+
+    event = matching[0]
+    assert event["resource_type"] == "run"
+    assert event["before_state"] is None
+    after_state = event["after_state"]
+    assert after_state is not None
+    assert after_state["id"] == run_id
+    assert after_state["status"] == "queued"
+    assert after_state["trigger_type"] == "manual"
+    assert after_state["git_ref"] == expected_git_ref
+    assert after_state["priority"] == expected_priority
+
+    serialized_event = json.dumps(event, ensure_ascii=False, sort_keys=True)
+    for forbidden_text in forbidden_texts:
+        assert forbidden_text not in serialized_event
+
+
 async def _wait_for_worker_heartbeat_keys(*, timeout_seconds: int = 20) -> list[str]:
     deadline = asyncio.get_event_loop().time() + timeout_seconds
     last_seen: list[str] = []
@@ -533,6 +578,14 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     )
     assert trigger_resp.status_code in (200, 201), trigger_resp.text
     run_id = trigger_resp.json()["id"]
+    await _assert_run_trigger_audit_event(
+        api_client,
+        headers,
+        run_id,
+        expected_git_ref=EXTERNAL_STACK_GIT_REF,
+        expected_priority=1,
+        forbidden_texts=(worker_secret,),
+    )
 
     final_status = await _wait_for_terminal(
         api_client, headers, run_id, timeout_seconds=240
@@ -695,6 +748,13 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
         )
         assert trigger_resp.status_code in (200, 201), trigger_resp.text
         original_run_id = trigger_resp.json()["id"]
+        await _assert_run_trigger_audit_event(
+            api_client,
+            headers,
+            original_run_id,
+            expected_git_ref=EXTERNAL_STACK_GIT_REF,
+            expected_priority=1,
+        )
 
         await _wait_for_run_status(
             api_client,
@@ -893,6 +953,13 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
             assert body["priority"] == priority
             assert body["status"] == "queued"
             triggered_runs[label] = body["id"]
+            await _assert_run_trigger_audit_event(
+                api_client,
+                headers,
+                body["id"],
+                expected_git_ref=EXTERNAL_STACK_GIT_REF,
+                expected_priority=priority,
+            )
 
         await asyncio.gather(
             *[
@@ -1040,7 +1107,16 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
             },
         )
         assert trigger_resp.status_code in (200, 201), trigger_resp.text
-        return project_id, trigger_resp.json()["id"]
+        run_id = trigger_resp.json()["id"]
+        await _assert_run_trigger_audit_event(
+            api_client,
+            headers,
+            run_id,
+            expected_git_ref=EXTERNAL_STACK_GIT_REF,
+            expected_priority=1,
+            forbidden_texts=(secret,),
+        )
+        return project_id, run_id
 
     secret = f"clone-secret-{suffix}"
     missing_repo_url = (
