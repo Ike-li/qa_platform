@@ -38,7 +38,7 @@
 | 20 | F-LS-03 项目搜索排序补齐 | PRD §3.7 验收 | LIKE 转义已修；结果仍按 `created_at desc`，缺名称字母序 |
 | 21 | F-RE-05 单用例历史趋势补齐 | PRD §3.4 验收 | 当前已有项目级趋势和 flaky 聚合；缺单个用例历史趋势 API/视图 |
 | 22 | F-NT-01 / F-NT-03 通知规则与模板验收补齐 | PRD §3.5 验收 | 当前仅状态/pass_rate/失败数 AND 条件和规则级基础变量模板；缺 OR、连续失败次数、每渠道模板、项目名与失败用例变量 |
-| 23 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API、artifact 下载链接 API、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
+| 23 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、SSE 实时日志推送 < 2s、归档日志读回 API、artifact 下载链接 API、audit events 查询 API、执行摘要生成 < 3s 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO 与完整压测仍需专项环境验证 |
 | 24 | E2E CI 覆盖扩展 | fix-roadmap §4.3 | 已补 nightly 固定真实 E2E：`real-login-flow`、`real-run-trigger`、`special-regressions`；PR 仍保留轻量 `auth-flow`，manual 仍跑全量 |
 | 25 | 数据保留冷归档/读回增强 | architecture §8.4 / runbook §7 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 和前端终态 Run 回看主路径已闭环；当前仍缺 DB 行冷归档与对象存储生命周期运营报表 |
 
