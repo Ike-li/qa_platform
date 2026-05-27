@@ -51,9 +51,18 @@ export interface Environment {
   id: string;
   project_id: string;
   name: string;
+  base_image: string;
+  setup_script: string | null;
+  memory_mb: number;
+  cpu_cores: number;
+  max_artifact_size_mb: number;
+  max_artifacts_count: number;
+  network_policy: "allow" | "deny" | "restricted";
+  env_vars?: Record<string, string>;
   variables: Record<string, string>;
+  cache_key: string | null;
   created_at: string;
-  updated_at: string;
+  updated_at?: string;
 }
 
 export type RunStatus = "queued" | "preparing" | "running" | "collecting" | "passed" | "failed" | "cancelled" | "timed_out";

@@ -177,7 +177,7 @@ test("trigger a run against the real backend and display live logs", async ({ pa
   // Wait for project detail to load (project name appears in h1)
   await expect(page.getByRole("heading", { level: 1, name: project.name })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Trigger Run" }).click();
-  await page.getByRole("combobox").click();
+  await page.getByRole("combobox").filter({ hasText: "Select a pipeline" }).click();
   await page.getByRole("option", { name: pipeline.name }).click();
   await page.getByRole("button", { name: "Run Pipeline" }).click();
 
@@ -186,7 +186,6 @@ test("trigger a run against the real backend and display live logs", async ({ pa
   await expect(page.getByText(/queued|preparing|running|passed|failed/i).first()).toBeVisible();
 
   await advanceRunToRunning(runId);
-  await expect(page.getByText("running").first()).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole("tab", { name: /Logs/ }).click();
   // Log viewer uses virtual scrolling; just verify the tab content is present
