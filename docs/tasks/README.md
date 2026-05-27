@@ -7,7 +7,7 @@
 
 | 文件 | 必要性 | 主要修改面 | Alembic / 数据迁移 |
 |---|---|---|---|
-| [T01_env_vars_encryption.md](T01_env_vars_encryption.md) | P0 | `api/v1/environments.py` + 迁移 | 需要：加密既有数据 |
+| [T01_env_vars_encryption.md](T01_env_vars_encryption.md) | P0 / 已完成 | `api/v1/environments.py` + 迁移 + worker 解密注入 | 已完成：migration `007` 加密既有数据 |
 | [T02_audit_query_api.md](T02_audit_query_api.md) | P0 | 新增 `src/qaplatform/api/v1/audit_events.py` | 不需要 |
 | [T03_dingtalk_notify.md](T03_dingtalk_notify.md) | P1 | `worker/notifications/channels.py` | 不需要 |
 | [T04_wecom_notify.md](T04_wecom_notify.md) | P1 | `worker/notifications/channels.py` | 不需要 |

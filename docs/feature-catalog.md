@@ -38,7 +38,7 @@
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
 | F-PL-01 | 定义管道 | P0 | ⚠️ | `api/v1/pipelines.py` · stages / selector / trigger_config / retry_policy 与多 Pipeline 已实现；但 PRD 要求的结果收集器配置未暴露，执行器当前固定使用 JUnit collector，见 §4 |
-| F-PL-02 | 环境配置 | P0 | ⚠️ | `api/v1/environments.py` · `env_vars` 目前明文 JSONB；只有 `credentials` 加密。PRD 验收要求"环境变量加密存储"未达，见 §4 |
+| F-PL-02 | 环境配置 | P0 | ✅ | `api/v1/environments.py` + `domain/services/env_vars_crypto.py` + migration `007` · `env_vars` 以 JSON-safe AES-256-GCM envelope 存入 JSONB，AAD 绑定 environment_id；API create/fetch/update 解密返回，解密失败写 audit；worker 执行侧解密后注入容器环境变量，external-stack smoke 已覆盖真实 worker 使用 |
 | F-PL-03 | 资源限制 | P0 | ⚠️ | `engine/docker_backend.py` + `engine/executor.py` · CPU/内存/超时与 SIGTERM → 30s → SIGKILL 已实现；OOM/timeout backend 结果到 Run `timeout` 终态、Redis status event 和日志收尾已有真实 DB/Redis integration 证据；磁盘限制与资源用量记录仍未闭环，见 §4 |
 
 ### 1.3 测试执行
@@ -140,7 +140,7 @@
 
 | ID / 项 | 必要性 | 缺失点 | 备注 |
 |---|---|---|---|
-| F-PL-02 环境变量加密 | P0 | `env_vars` 明文 JSONB | PRD §3.2 验收"环境变量加密存储"；参考 `dependencies.py::CryptoService` / 凭据路由 `container.crypto_service` 包装 |
+| F-PL-02 环境变量加密 | P0 | 已完成：`env_vars` 加密存储、AAD 错配失败 audit、migration 加密既有数据、worker 解密注入容器环境变量均有自动化证据 | PRD §3.2 验收"环境变量加密存储"已达；继续保留为验收档案，后续只需关注密钥轮换运营与真实 worker lane 稳定性 |
 | F-PM-01 / F-PM-02 Git 凭证执行闭环 | P0 | 项目 schema 可保存 `git_auth_method` / `credential_id`，凭证 CRUD 可加密存储；但 manual/webhook Run 只把 `credential_id` 放入 metadata，`engine/executor.py::_clone_repo` 只用原始 `git_url` / `git_ref` 调 `GitSource.clone()`，未解密 token/SSH key 并注入 clone | 需补私有 HTTPS token / SSH key clone 支持、临时文件权限、错误脱敏与认证失败测试；避免把密钥写入日志或持久化 metadata |
 | F-PL-01 collector 配置补齐 | P0 | Pipeline schema / ORM / `worker/tasks.py::_build_pipeline_config` 均无 collector 选择或配置；`RunExecutor.execute()` 固定 `get_collector("junit")` | PRD §3.2 要求可配置测试运行器、结果收集器、超时、重试策略；需决定当前 JUnit-only 是否改为正式限制，或新增 collector 配置与测试 |
 | 审计日志查询 API | P0 | 已完成：`/api/v1/audit-events` 支持 Owner/Admin 分页查询、组合过滤、跨租户 404/空结果收敛，并写 `audit_events.list` 自审计 | 审计查询仍未补入正式 PRD 章节；T02 任务包保留为验收档案 |

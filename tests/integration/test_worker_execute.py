@@ -4,6 +4,7 @@
 默认 skip 除非 RUN_INTEGRATION_TESTS=1 环境变量设置。
 """
 import asyncio
+import hashlib
 import os
 import subprocess
 import urllib.parse
@@ -368,6 +369,8 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     )
     assert project_resp.status_code in (200, 201), project_resp.text
     project_id = project_resp.json()["id"]
+    worker_secret = f"worker-secret-{suffix}"
+    worker_secret_sha256 = hashlib.sha256(worker_secret.encode("utf-8")).hexdigest()
 
     env_resp = await api_client.post(
         f"/api/v1/projects/{project_id}/environments",
@@ -378,7 +381,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
             "memory_mb": 512,
             "cpu_cores": 1.0,
             "network_policy": "allow",
-            "env_vars": {},
+            "env_vars": {"QAP_REAL_WORKER_SECRET": worker_secret},
             "setup_script": (
                 "python - <<'PY'\n"
                 "from pathlib import Path\n"
@@ -389,7 +392,14 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
                 ")\n"
                 "(workspace / 'pytest.py').write_text(\n"
                 "    \"from pathlib import Path\\n\"\n"
+                "    \"import hashlib\\n\"\n"
+                "    \"import os\\n\"\n"
                 "    \"import sys\\n\"\n"
+                f"    \"expected_secret_sha256 = {worker_secret_sha256!r}\\n\"\n"
+                "    \"actual_secret = os.environ.get('QAP_REAL_WORKER_SECRET', '')\\n\"\n"
+                "    \"actual_secret_sha256 = hashlib.sha256(actual_secret.encode('utf-8')).hexdigest()\\n\"\n"
+                "    \"if actual_secret_sha256 != expected_secret_sha256:\\n\"\n"
+                "    \"    raise SystemExit('worker secret env var was not injected')\\n\"\n"
                 "    \"junit = 'results/junit.xml'\\n\"\n"
                 "    \"for arg in sys.argv[1:]:\\n\"\n"
                 "    \"    if arg.startswith('--junitxml='):\\n\"\n"
