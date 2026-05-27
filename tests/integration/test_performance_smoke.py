@@ -8,6 +8,7 @@ trend signal for the backend paths called out in the test strategy.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import socket
@@ -568,6 +569,78 @@ async def test_archived_log_replay_api_p99_smoke(
         "archived log replay API",
         samples,
         _threshold("PERF_LOG_ARCHIVE_READ_P99_MS", 1000),
+    )
+
+
+@pytest.mark.asyncio
+async def test_archived_log_replay_large_page_p99_smoke(
+    integration_app,
+    integration_client,
+    seed_run,
+):
+    run_id = seed_run["run"].id
+    s3 = _MemoryS3()
+    bucket = integration_app.state.container.settings.s3_bucket
+    entries = [
+        {
+            "stream": "stderr" if index % 97 == 0 else "stdout",
+            "line": f"archived-large-line-{index:04}",
+        }
+        for index in range(1500)
+    ]
+    archive_body = "\n".join(json.dumps(entry) for entry in entries).encode("utf-8")
+
+    old_s3 = integration_app.state.container.s3_client
+    integration_app.state.container.s3_client = s3
+    try:
+        await s3.put_object(
+            Bucket=bucket,
+            Key=f"logs/{run_id}.jsonl",
+            Body=archive_body,
+            ContentType="application/x-ndjson",
+        )
+
+        params = {"page": 15, "per_page": 100}
+        for _ in range(3):
+            response = await integration_client.get(
+                f"/api/v1/runs/{run_id}/logs/archive",
+                params=params,
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] == 1500
+            assert body["data"][0]["line"] == "archived-large-line-1400"
+
+        samples: list[float] = []
+        for _ in range(20):
+            elapsed_ms, response = await _timed(
+                integration_client.get(
+                    f"/api/v1/runs/{run_id}/logs/archive",
+                    params=params,
+                )
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] == 1500
+            assert body["page"] == 15
+            assert body["per_page"] == 100
+            assert len(body["data"]) == 100
+            assert body["data"][0] == {
+                "stream": "stdout",
+                "line": "archived-large-line-1400",
+            }
+            assert body["data"][-1] == {
+                "stream": "stdout",
+                "line": "archived-large-line-1499",
+            }
+            samples.append(elapsed_ms)
+    finally:
+        integration_app.state.container.s3_client = old_s3
+
+    _assert_p99_under(
+        "archived log large-page replay API",
+        samples,
+        _threshold("PERF_LOG_ARCHIVE_LARGE_PAGE_P99_MS", 1500),
     )
 
 
