@@ -78,6 +78,7 @@ class StageDefinition(BaseModel):
 
 class TestSelector(BaseModel):
     model_config = ConfigDict(frozen=True)
+    __test__ = False
 
     include_paths: list[str] = Field(default_factory=list)
     exclude_paths: list[str] = Field(default_factory=list)

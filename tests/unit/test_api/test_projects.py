@@ -63,7 +63,7 @@ def mock_user(tenant_id):
 
 @pytest.fixture
 async def app(mock_repos, mock_user):
-    from qaplatform.api.deps import _get_repos, get_current_user
+    from qaplatform.api.deps import _get_db_session, _get_repos, get_current_user
     from qaplatform.main import create_app
 
     app = create_app(container=MagicMock())
@@ -74,8 +74,14 @@ async def app(mock_repos, mock_user):
     async def _override_user():
         return mock_user
 
+    async def _override_session():
+        session = AsyncMock()
+        session.add = MagicMock()
+        yield session
+
     app.dependency_overrides[_get_repos] = _override_repos
     app.dependency_overrides[get_current_user] = _override_user
+    app.dependency_overrides[_get_db_session] = _override_session
     return app
 
 

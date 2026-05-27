@@ -10,6 +10,8 @@ from uuid import UUID
 class TestRunResult:
     """Result returned by a Runner plugin after executing tests."""
 
+    __test__ = False
+
     passed: int
     failed: int
     skipped: int
@@ -23,6 +25,8 @@ class TestRunResult:
 @dataclass(frozen=True)
 class TestResultData:
     """A single parsed test case result from a Collector."""
+
+    __test__ = False
 
     suite: str
     name: str

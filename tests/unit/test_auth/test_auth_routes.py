@@ -29,6 +29,7 @@ def _settings(jwt_secret="test-secret-key-for-jwt-32bytes!!"):
 def _session_mock():
     """Create a mock session and its async context manager factory."""
     session = AsyncMock()
+    session.add = MagicMock()
     session.commit = AsyncMock()
     session.rollback = AsyncMock()
 
@@ -82,6 +83,7 @@ def _multi_session_factory():
     """Return a factory callable that yields a fresh AsyncMock session each call."""
     def _make_fresh_session():
         session = AsyncMock()
+        session.add = MagicMock()
         session.commit = AsyncMock()
         session.rollback = AsyncMock()
         session.flush = AsyncMock()
@@ -708,8 +710,6 @@ class TestRevokedTokenMiddleware:
     @pytest.mark.asyncio
     async def test_revoked_access_token_returns_401(self):
         """A token whose jti is in the blacklist must be rejected with 'revoked'."""
-        import time
-
         import jwt as _jwt
         from fastapi import Depends, FastAPI
         from httpx import ASGITransport, AsyncClient

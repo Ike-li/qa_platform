@@ -100,7 +100,7 @@ jobs:
         run: python -m pip install -e '.[dev]'
 
       - name: Run backend tests
-        run: pytest --cov=qaplatform
+        run: pytest --cov=qaplatform --cov-report=term-missing
 
   backend-integration-test:
     runs-on: ubuntu-latest
