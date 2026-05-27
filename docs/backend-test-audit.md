@@ -18,7 +18,7 @@
 - Worker 重试：真实 DB 集成测试覆盖 `execute_run` 基础设施异常路径，验证原 Run failed、retry Run 落库并入队。
 - Webhook/schedule 失败路径：新增 required integration 断言 archived project、missing pipeline/environment、enqueue conflict、cross-project pipeline 都不会静默写错真实 DB 状态。
 - CI 稳定性：后端 ruff 与单测覆盖率是同一门禁；PR/push 必跑 required integration；heavy Docker/worker integration 拆到 nightly/manual；PR E2E 保留轻量 UI 冒烟，nightly 固定跑真实 E2E 主路径，完整真实 E2E 留给手动 workflow。
-- 非功能 smoke：nightly/manual 覆盖读 API、写 API、Redis 日志写读、归档日志读回 API 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
+- 非功能 smoke：nightly/manual 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API 趋势哨兵，并在失败时输出 p50/p99/max 摘要；不把性能环境抖动放进 PR 硬门禁。
 
 ## Mock 使用口径
 
@@ -56,10 +56,10 @@ RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tes
 
 当前结果：
 
-- integration 收集：109 tests
-- PR/push 必跑 required integration：94 passed, 15 deselected
-- 完整 local integration：103 passed, 6 skipped
-- performance smoke opt-in：4 passed
+- integration 收集：110 tests
+- PR/push 必跑 required integration：94 passed, 16 deselected
+- 完整 local integration：103 passed, 7 skipped
+- performance smoke opt-in：5 passed
 - skipped 来自 macOS Docker Desktop OOMKilled 平台语义，以及未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke；业务断言失败不会被 skip 或 retry 掩盖
 
 E2E 冒烟验证：
@@ -112,6 +112,6 @@ E2E_ADMIN_PASSWORD=admin123 npm run test:e2e -- tests/e2e/auth-flow.spec.ts --pr
 ## 后续优先级
 
 1. 自动重试已补 API-facing `max_attempts`、`retry_on`、waiting retry run、execute_run 基础设施异常以及 worker_lost callback 路径；后续如要继续提高信心，可把完整外部栈 worker 黑盒重试场景保留在 nightly/manual lane。
-2. 严格产品 SLO、执行摘要 < 3s 与完整性能压测仍需专项环境；当前 smoke 做趋势哨兵并输出失败摘要。
+2. 严格产品 SLO、执行摘要 < 3s 与完整性能压测仍需专项环境；当前 smoke 已覆盖触发入队 < 5s 趋势哨兵并输出失败摘要。
 3. 通知更高级产品能力仍待补：OR 条件、连续失败次数、每渠道模板、项目名/失败用例变量；本轮已补真实 DB delivery、模板失败、发送失败与幂等。
 4. 后续提升 coverage 门槛应继续依赖真实风险路径，而不是为百分比增加无行为断言。

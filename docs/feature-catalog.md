@@ -45,7 +45,7 @@
 
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
-| F-EX-01 | 手动触发 | P0 | ⚠️ | `api/v1/runs.py` · 当前已支持按 pipeline 触发、可指定 `git_ref` 与 priority；PRD 要求的 commit / environment 指定入参与“触发后 < 5s 入队”验收未闭环，见 §4 |
+| F-EX-01 | 手动触发 | P0 | ⚠️ | `api/v1/runs.py` · 当前已支持按 pipeline 触发、可指定 `git_ref` 与 priority；“触发后 < 5s 入队”已进入 nightly/manual performance smoke；PRD 要求的 commit / environment 指定入参未闭环，见 §4 |
 | F-EX-02 | Cron 定时触发 | P1 | ⚠️ | `api/v1/schedules.py` + `worker/settings.py::check_schedules` · timezone 已实现；既有 schedule 级 `quiet_windows` 存在，但 PRD 验收要求的项目级"静默窗口（发布冻结期）"未实现，见 §4 |
 | F-EX-03 | Webhook 触发 | P1 | ⚠️ | `api/v1/webhooks.py` · HMAC-SHA256 签名验证已实现；PRD 验收要求"分支过滤 + 同 commit 去重"未实现（`dedup_key` 字段在 ORM 已有但 webhook 路由未传入），见 §4 |
 | F-EX-04 | 执行隔离 | P0 | ✅ | `engine/docker_backend.py` · 默认 `network_policy=deny` → `NetworkMode=none`；容器以 `1000:1000`、只读 rootfs、drop all caps、no-new-privileges 运行；`allow` 会显式使用 bridge，`restricted` 需要部署侧提供 `qap-restricted` 网络 |
@@ -149,7 +149,7 @@
 | F-EX-05 日志归档回看闭环 | P0 | Redis Stream 实时日志、S3 JSONL 归档写入与归档日志读回 API 已实现；前端回看入口未实现 | PRD §3.3 验收要求“日志持久化可回看”；当前 UI 只接 SSE 实时窗口 |
 | F-AU-02 API Token scope enforcement 补齐 | P1 | 已完成 | API token scopes 已贯通 tenant/project 权限依赖；真实 API 测试覆盖只读、run.trigger、错误/空 scope |
 | F-AU-04 跨租户 404 完整收敛 | P0 | 已完成 | Member/Viewer 的 path `project_id` 项目级权限依赖先验证当前租户可见性；跨 tenant、随机 UUID、软删除一致 404 |
-| F-EX-01 手动触发参数与入队验收补齐 | P0 | `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；PRD 要求可指定 commit 与 environment，且触发后 < 5s 入队未纳入自动验收 | 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定；前端旧 `env_overrides` / `params` 偏移仍归 `T-FRONTEND-API` |
+| F-EX-01 手动触发参数与入队验收补齐 | P0 | `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；PRD 要求可指定 commit 与 environment；触发后 < 5s 入队已纳入 nightly/manual performance smoke | 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定；前端旧 `env_overrides` / `params` 偏移仍归 `T-FRONTEND-API` |
 | F-EX-02 静默窗口 | P1 | 发布冻结期不触发 cron | PRD §3.3 验收 |
 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | P1 | 路由未传 `dedup_key`，无分支过滤逻辑 | `dedup_key` 字段在 ORM 已有，路由层接入即可 |
 | F-EX-07 自动重试端到端补齐 | P2 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 已补单测和真实 DB 测试 | 剩余增强是把完整外部栈 worker 黑盒重试场景保留在 nightly/manual lane 持续跑 |
@@ -168,7 +168,7 @@
 | 项 | 必要性 | 备注 |
 |---|---|---|
 | OpenTelemetry 装配 | P2 | 仅声明部分依赖，无 OTLP HTTP exporter、`TracerProvider` / `FastAPIInstrumentor` 代码；设计见 §4.3 |
-| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、Redis 日志写读、归档日志读回 API 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO、执行摘要 < 3s 与完整压测仍需专项环境验证 |
+| 非功能性能压测 | P1 | 已补 nightly/manual performance smoke 覆盖读 API、写 API、触发入队 SLO、Redis 日志写读、归档日志读回 API 趋势并输出 p50/p99/max 失败摘要；严格产品 SLO、执行摘要 < 3s 与完整压测仍需专项环境验证 |
 | E2E CI 覆盖扩展 | P1 | PR 保留 `auth-flow.spec.ts`；nightly 固定跑 `real-login-flow` / `real-run-trigger` / `special-regressions`；`workflow_dispatch` 手动跑全量 E2E |
 | 数据保留冷归档/读回增强 | P2 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 已闭环；当前仍缺 DB 行冷归档与归档日志 UI |
 | 结构化日志全局化 | P2 | API app 默认 factory 已配置 structlog JSON renderer；worker/arq 入口未调用 `configure_logging`，engine / worker / plugin 多数模块仍经 stdlib logger 输出，需统一 worker 进程日志初始化与字段格式 |
