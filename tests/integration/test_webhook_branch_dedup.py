@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -210,6 +211,118 @@ async def test_webhook_enqueue_conflict_keeps_run_waiting_and_audited(
         .one()
     )
     assert audit.user_id == user.id
+
+
+@pytest.mark.asyncio
+async def test_signed_webhook_rejects_missing_signature_without_creating_run(
+    seed_run,
+    integration_app,
+    integration_client_as,
+    integration_db_session,
+):
+    project = seed_run["project"]
+    user = seed_run["user"]
+    tenant = seed_run["tenant"]
+    integration_app.state.container.arq_pool = None
+    await _save_project_settings(
+        integration_db_session,
+        project,
+        {"webhook_secret": "signed-webhook-secret"},
+    )
+    before = await _webhook_run_count(integration_db_session, project.id)
+
+    async with integration_client_as(user.id, tenant.id, role="owner") as client:
+        resp = await client.post(
+            f"/api/v1/webhooks/{project.id}/trigger",
+            json={"git_ref": "refs/heads/main", "git_sha": "missing-signature"},
+        )
+
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["detail"] == "Missing X-Webhook-Signature header"
+    assert await _webhook_run_count(integration_db_session, project.id) == before
+
+
+@pytest.mark.asyncio
+async def test_signed_webhook_success_audits_and_protects_reserved_metadata(
+    seed_run,
+    integration_app,
+    integration_client_as,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import AuditEvent, Run
+    from qaplatform.infra.webhook_signature import generate_webhook_signature
+
+    project = seed_run["project"]
+    user = seed_run["user"]
+    tenant = seed_run["tenant"]
+    integration_app.state.container.arq_pool = None
+    secret = "signed-webhook-secret"
+    await _save_project_settings(
+        integration_db_session,
+        project,
+        {"webhook_secret": secret, "allowed_branches": ["release/*"]},
+    )
+    attacker_url = "https://attacker.example/evil.git"
+    attacker_credential = str(UUID("00000000-0000-0000-0000-000000000123"))
+    payload = {
+        "git_ref": "refs/heads/release/2026.05",
+        "git_sha": "signed-webhook-sha",
+        "metadata": {
+            "provider": "github",
+            "delivery_id": f"delivery-{project.id}",
+            "git_url": attacker_url,
+            "credential_id": attacker_credential,
+            "shallow_clone": False,
+            "default_branch": "evil",
+        },
+    }
+    raw_body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    signature = generate_webhook_signature(secret, raw_body)
+
+    async with integration_client_as(user.id, tenant.id, role="owner") as client:
+        resp = await client.post(
+            f"/api/v1/webhooks/{project.id}/trigger",
+            content=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Webhook-Signature": signature,
+            },
+        )
+
+    assert resp.status_code == 201, resp.text
+    run_id = UUID(resp.json()["id"])
+    run = await integration_db_session.get(Run, run_id)
+    assert run is not None
+    assert run.trigger_type == "webhook"
+    assert run.git_sha == "signed-webhook-sha"
+    assert run.dedup_key == f"github:{project.git_url}:signed-webhook-sha:release/2026.05"
+    assert run.metadata_["git_url"] == project.git_url
+    assert run.metadata_["shallow_clone"] is True
+    assert run.metadata_["default_branch"] == project.default_branch
+    assert run.metadata_["delivery_id"] == f"delivery-{project.id}"
+    serialized_metadata = repr(run.metadata_)
+    assert attacker_url not in serialized_metadata
+    assert attacker_credential not in serialized_metadata
+    assert "evil" not in serialized_metadata
+
+    audit = (
+        (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == "run.trigger",
+                    AuditEvent.resource_id == run.id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert audit.user_id == user.id
+    assert audit.after_state["trigger_type"] == "webhook"
+    assert audit.after_state["git_ref"] == "refs/heads/release/2026.05"
+    assert audit.after_state["git_sha"] == "signed-webhook-sha"
+    assert attacker_url not in repr(audit.after_state)
+    assert attacker_credential not in repr(audit.after_state)
 
 
 @pytest.mark.asyncio

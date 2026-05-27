@@ -15,7 +15,7 @@
 | 2 | F-PM-01 / F-PM-02 Git 凭证执行闭环 | PRD §3.1 验收 | 项目和凭证 API 可保存 `git_auth_method` / `credential_id` 与加密凭证，但执行侧 clone 只使用原始 `git_url`，未解密并注入 HTTPS token / SSH key |
 | 3 | F-PL-01 collector 配置补齐 | PRD §3.2 验收 | Pipeline schema / ORM / worker 拼装均无结果收集器选择或配置，`RunExecutor.execute()` 固定 `get_collector("junit")`；需决定 JUnit-only 是否改为正式限制，或补 collector 配置闭环 |
 | 4 | 审计日志查询 API | catalog §4.1 | 已完成：`/api/v1/audit-events` 支持 Owner/Admin 分页查询、组合过滤、跨租户 404/空结果收敛，并写 `audit_events.list` 自审计；正式 PRD 章节仍未补 |
-| 5 | 审计写入覆盖补齐 | architecture §9.6 | 批量取消/批量重试、SSE ticket、projects/project members/pipelines/credentials/environments/notification rules/schedules 已补 audit 事件、项目 `git_url` userinfo 与敏感字段脱敏或 delete before_state 的真实 DB 验证；剩余写操作按安全风险继续补齐 |
+| 5 | 审计写入覆盖补齐 | architecture §9.6 | 批量取消/批量重试、SSE ticket、projects/project members/pipelines/credentials/environments/notification rules/schedules、签名 webhook `run.trigger` 已补 audit 事件、项目 `git_url` userinfo 与敏感字段脱敏或 delete before_state 的真实 DB 验证；剩余写操作按安全风险继续补齐 |
 | 6 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | PRD §3.2 / PRD §3.4 验收 | CPU/内存/超时、产物数量/大小限制、`results/` 递归上传和 Allure 目录文件落库已实现并有真实 DB/S3 验证；required integration 覆盖 artifact 列表到下载链接的真实 JWT/RBAC/API/DB 行与 bucket/key/TTL 参数；nightly/manual external-stack smoke 覆盖真实 worker 后 artifact 列表、预签名下载链接与 JUnit 内容下载；前端 run detail 已补 HTML artifact 预览 E2E；仍缺磁盘限制、OOM/timeout 资源用量记录和多资源报告加载口径 |
 | 7 | F-EX-05 日志归档回看闭环 | PRD §3.3 验收 | Redis Stream 实时日志、断线续传、S3 JSONL 归档写入与归档日志读回 API 已实现；required integration 覆盖真实 API/RBAC/DB 下的 SSE `Last-Event-ID` 断点续传、默认页、分页窗口和对象缺失 404；nightly/manual external-stack smoke 覆盖真实 worker 完成后的归档日志读回；nightly/manual performance smoke 覆盖真实 SSE 推送 < 2s；前端终态 run 已接入归档日志 API，并由真实 DB+S3 E2E 覆盖回放/搜索 |
 | 8 | F-AU-02 API Token scope enforcement 补齐 | PRD §3.6 验收 | 已完成：API token scopes 已贯通 tenant/project 权限依赖，并有真实 API 矩阵覆盖只读、run.trigger、错误/空 scope |
@@ -29,7 +29,7 @@
 | # | 项 | 来源 | 缺什么 |
 |---|---|---|---|
 | 13 | F-EX-02 静默窗口 | PRD §3.3 验收 | 发布冻结期不触发 cron 未实现 |
-| 14 | F-EX-03 Webhook 分支过滤 + 同 commit 去重 | PRD §3.3 验收 | `dedup_key` 字段在 ORM 已有，路由层未接入 |
+| 14 | F-EX-03 Webhook Git 平台事件解析 | PRD §3.3 验收 | 当前项目级 webhook 已支持 HMAC 验签、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口 |
 | 15 | F-EX-07 自动重试端到端补齐 | PRD §3.3 验收 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 已补单测和真实 DB 测试；nightly/manual external-stack 已补 worker_lost 黑盒重试；剩余增强是明确 clone/setup/Docker daemon 失败是否也进入自动 retry 并补对应黑盒场景 |
 | 16 | F-EX-08 优先级队列消费闭环 | PRD §3.3 验收 | 已补 compose high/medium/low worker 部署、manual priority 队列矩阵单测、真实 DB priority+FIFO 排序测试 |
 | 17 | F-LS-04 测试结果 suite/关键字过滤 | PRD §3.7 验收 | 当前 `main` 仅 status（后端状态枚举含 `passed/failed/error/skipped/xfail`）；`feature/T07-test-results-filter` 已推送但未合入 |
@@ -121,7 +121,7 @@
 | 阶段 | 状态 |
 |---|---|
 | Phase 1 MVP | ⚠️ 主线部分完成（项目/管道/手动执行/日志/结果主链路已就位；Git 凭证 clone 使用、Pipeline collector 配置、F-EX-01 commit/environment 指定入参与入队时延验收、F-PL-02 env_vars 加密、F-PL-03 产物/磁盘/资源记录闭环、F-LS-01~04 列表过滤/分页/搜索边角仍缺） |
-| Phase 2 自动化与通知 | ⚠️ 主线部分完成（cron/webhook/API token 基础、重试/优先级队列原语、通知规则/模板基础已就位；F-AU-02 scope enforcement、F-EX-02 静默窗口、F-EX-03 分支过滤+去重、F-EX-07 自动重试端到端、F-EX-08 队列消费闭环、通知规则/模板验收、钉钉/企微仍缺） |
+| Phase 2 自动化与通知 | ⚠️ 主线部分完成（cron/webhook/API token 基础、重试/优先级队列原语、通知规则/模板基础已就位；API token scope、webhook 分支过滤+去重、自动重试主干、优先级队列主干已有测试证据；F-EX-02 静默窗口、F-EX-03 Git 平台事件解析/按 repo 匹配、通知规则/模板验收、钉钉/企微仍缺） |
 | Phase 3 洞察与报告 | ⚠️ 主线部分完成（仪表盘/Flaky/系统状态页/项目级趋势已就位；Allure/HTML 产物预览闭环和单用例历史趋势仍缺） |
 | Phase 4 规模化 | ⛔ 整体不在当前范围 |
 
