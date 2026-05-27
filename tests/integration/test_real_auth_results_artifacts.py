@@ -300,19 +300,43 @@ async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_re
     )
     assert rejected_resp.status_code == 401, rejected_resp.text
 
-    audit_actions = (
+    create_audit = (
         await integration_db_session.execute(
-            select(AuditEvent.action).where(
+            select(AuditEvent).where(
                 AuditEvent.user_id == record.user_id,
-                AuditEvent.action.in_(
-                    ["auth.api_token_create", "auth.api_token_revoke"]
-                ),
+                AuditEvent.resource_id == record.id,
+                AuditEvent.action == "auth.api_token_create",
             )
         )
-    ).scalars().all()
-    assert {"auth.api_token_create", "auth.api_token_revoke"}.issubset(
-        set(audit_actions)
+    ).scalar_one()
+    revoke_audit = (
+        await integration_db_session.execute(
+            select(AuditEvent).where(
+                AuditEvent.user_id == record.user_id,
+                AuditEvent.resource_id == record.id,
+                AuditEvent.action == "auth.api_token_revoke",
+            )
+        )
+    ).scalar_one()
+
+    assert create_audit.resource_type == "auth"
+    assert create_audit.before_state is None
+    assert create_audit.after_state == {"name": "ci-smoke", "scopes": ["project.read"]}
+    assert revoke_audit.resource_type == "auth"
+    assert revoke_audit.before_state == {"name": "ci-smoke"}
+    assert revoke_audit.after_state is None
+
+    serialized_audit = repr(
+        (
+            create_audit.before_state,
+            create_audit.after_state,
+            revoke_audit.before_state,
+            revoke_audit.after_state,
+        )
     )
+    assert full_api_token not in serialized_audit
+    assert secret not in serialized_audit
+    assert record.secret_hash not in serialized_audit
 
 
 @pytest.mark.asyncio

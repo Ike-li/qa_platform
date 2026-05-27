@@ -77,7 +77,7 @@
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
 | F-AU-01 | 用户认证 | P0 | ✅ | `api/v1/auth.py` · username/password 登录，注册时收集 email；JWT + Argon2id |
-| F-AU-02 | API Token | P1 | ✅ | `api/v1/auth.py` tokens + `api/auth/middleware.py` · 创建/过期/吊销/认证已实现；scope 已传入 tenant/project 权限依赖，真实 API 覆盖只读、run.trigger、artifact download 与 archived logs 的 run.read、错误/空 scope |
+| F-AU-02 | API Token | P1 | ✅ | `api/v1/auth.py` tokens + `api/auth/middleware.py` · 创建/过期/吊销/认证已实现；scope 已传入 tenant/project 权限依赖，真实 API 覆盖只读、run.trigger、artifact download 与 archived logs 的 run.read、错误/空 scope；create/revoke AuditEvent 只记录可追溯元数据，不落 full token / secret / hash |
 | F-AU-03 | 双层 RBAC | P0 | ✅ | `api/auth/permissions.py` · 租户 × 项目角色交集 |
 | F-AU-04 | 租户隔离 | P0 | ⚠️ | 聚合根查询与 Owner/Admin 主要路径使用 `get_for_tenant` / tenant filter 并返回 404；但 `require_project_permission` 对非 Owner/Admin 的 path `project_id` 路由会在资源查询前因缺少 `ProjectMember` 返回 403，跨租户 404 硬约束需补齐 |
 
@@ -147,7 +147,7 @@
 | 审计写入覆盖补齐 | P1 | single/batch cancel、batch retry、SSE ticket、projects/project members/pipelines/credentials/environments/notification rules/schedules、schedule worker 自动触发与 missing-pipeline skip、签名 webhook `run.trigger` 与 webhook filtered/duplicate 决策 audit 已补写入，cancel 控制面 Redis previous 与 audit before/after 一致性、项目 `git_url` userinfo、pipeline 复杂配置密钥与敏感字段脱敏或 delete before_state 的真实 DB 验证已覆盖；剩余写操作按安全风险继续补齐 | architecture §9.6 已改为“关键写操作主路径覆盖，覆盖率待补齐” |
 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | P0 | 后端已递归上传 `results/` 目录文件并标记 Allure 目录产物；required integration 覆盖 artifact 列表到下载链接的真实 JWT/RBAC/API token scope/API/DB 行、bucket/key/TTL 参数、跨租户 404 收敛，以及 S3 上传失败不写孤儿 Artifact 行；nightly/manual external-stack smoke 覆盖真实 worker 后 artifact 列表、预签名下载链接与 JUnit 内容下载；前端 run detail 已有 HTML artifact 预览 E2E；`disk_bytes` 字段未进入 Docker HostConfig，OOM/timeout 终止原因与资源用量记录未闭环 | PRD §3.2 要求限制产物大小并记录资源终止信息，PRD §3.4 要求预签名下载 + HTML 报告在线预览；当前 CPU/内存/超时、产物数量/大小限制、递归上传、失败上传无 DB 孤儿行、`download` JSON 和前端预览主路径已实现，资源记录仍待补 |
 | F-EX-05 日志归档回看闭环 | P0 | Redis Stream 实时日志、S3 JSONL 归档写入与归档日志读回 API 已实现；required integration 覆盖真实 API/RBAC/DB 下的 SSE 断点续传、归档失败真实 Redis retry marker/worker cron 重试、默认页、分页窗口、对象缺失 404、API token `run.read` scope 和跨租户 Run ID 404 一致性；nightly/manual external-stack smoke 覆盖真实 worker 完成后的归档日志读回；nightly/manual performance smoke 覆盖真实 SSE 推送 < 2s；前端终态 run 已接入归档日志 API 并用真实 DB+S3 E2E 覆盖回放/搜索 | PRD §3.3 验收要求“日志持久化可回看”；剩余增强是大日志虚拟列表体验和对象存储异常可观测性 |
-| F-AU-02 API Token scope enforcement 补齐 | P1 | 已完成 | API token scopes 已贯通 tenant/project 权限依赖；真实 API 测试覆盖只读、run.trigger、artifact download 与 archived logs 的 run.read、错误/空 scope |
+| F-AU-02 API Token scope enforcement 补齐 | P1 | 已完成 | API token scopes 已贯通 tenant/project 权限依赖；真实 API 测试覆盖只读、run.trigger、artifact download 与 archived logs 的 run.read、错误/空 scope；create/revoke 审计状态不泄露 full token、secret 或 secret_hash |
 | F-AU-04 跨租户 404 完整收敛 | P0 | 已完成 | Member/Viewer 的 path `project_id` 项目级权限依赖先验证当前租户可见性；跨 tenant、随机 UUID、软删除一致 404 |
 | F-EX-01 手动触发参数与入队验收补齐 | P0 | `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；PRD 要求可指定 commit 与 environment；触发后 < 5s 入队已纳入 nightly/manual performance smoke | 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定；前端旧 `env_overrides` / `params` 偏移仍归 `T-FRONTEND-API` |
 | F-EX-02 静默窗口 | P1 | 发布冻结期不触发 cron | PRD §3.3 验收 |
