@@ -559,6 +559,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         "allure-report/index.html": ("allure-report", "real-worker-allure"),
     }
     assert expected_artifacts.keys() <= artifacts_by_name.keys(), artifacts_body
+    assert worker_secret not in str(artifacts_body)
 
     for artifact_name, (artifact_type, expected_text) in expected_artifacts.items():
         artifact = artifacts_by_name[artifact_name]
@@ -575,6 +576,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         assert download_body["download_url"].startswith(("http://", "https://"))
         downloaded_text = await _download_presigned_text(download_body["download_url"])
         assert expected_text in downloaded_text
+        assert worker_secret not in downloaded_text
 
     archive_body = await _poll_json(
         api_client,
@@ -584,6 +586,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         timeout_seconds=60,
     )
     lines = [entry["line"] for entry in archive_body["data"]]
+    assert worker_secret not in "\n".join(lines)
     assert any("Repository cloned successfully" in line for line in lines)
     for artifact_name in expected_artifacts:
         assert any(f"Uploaded artifact: {artifact_name}" in line for line in lines)
