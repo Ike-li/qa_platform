@@ -1001,6 +1001,83 @@ async def test_artifact_download_url_uses_real_auth_rbac_and_db_row(
 
 
 @pytest.mark.asyncio
+async def test_artifact_download_urls_presign_each_real_db_row_without_s3_reads(
+    real_auth_app,
+    real_auth_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    access_token = await _register_real_user(real_auth_client, prefix="artifact_burst")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    artifact_repo = ArtifactRepository(integration_db_session)
+    artifacts = []
+    for index, artifact_type in enumerate(("html", "junit", "log", "allure", "report")):
+        artifact = await artifact_repo.create(
+            run_id=run_id,
+            type=artifact_type,
+            name=f"download-{index}.{artifact_type}",
+            storage_path=f"reports/{run_id}/download-{index}.{artifact_type}",
+            size_bytes=1024 + index,
+            mime_type="text/html" if artifact_type != "junit" else "application/xml",
+        )
+        artifacts.append(artifact)
+    await integration_db_session.commit()
+
+    run_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="artifact-burst-run-read",
+        scopes=["run.read"],
+    )
+
+    old_s3 = real_auth_app.state.container.s3_client
+    s3 = _MemoryS3()
+    real_auth_app.state.container.s3_client = s3
+    responses = []
+    try:
+        for artifact in artifacts:
+            response = await real_auth_client.get(
+                f"/api/v1/artifacts/{artifact.id}/download",
+                headers={"Authorization": f"Bearer {run_read_token}"},
+            )
+            assert response.status_code == 200, response.text
+            responses.append(response.json())
+    finally:
+        real_auth_app.state.container.s3_client = old_s3
+
+    ttl = real_auth_app.state.container.settings.s3_presigned_url_ttl
+    assert responses == [
+        {
+            "download_url": f"http://s3.local/{artifact.storage_path}?expires={ttl}",
+            "expires_in": ttl,
+        }
+        for artifact in artifacts
+    ]
+    assert s3.get_calls == []
+    assert s3.presign_calls == [
+        {
+            "method": "get_object",
+            "params": {
+                "Bucket": real_auth_app.state.container.settings.s3_bucket,
+                "Key": artifact.storage_path,
+            },
+            "expires_in": ttl,
+        }
+        for artifact in artifacts
+    ]
+
+
+@pytest.mark.asyncio
 async def test_artifact_list_api_token_requires_run_read_scope(
     real_auth_client,
     integration_db_session,
