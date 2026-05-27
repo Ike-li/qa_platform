@@ -755,6 +755,46 @@ async def test_archived_log_missing_object_p99_smoke(
 
 
 @pytest.mark.asyncio
+async def test_archived_log_storage_unavailable_p99_smoke(
+    integration_app,
+    integration_client,
+    seed_run,
+):
+    run_id = seed_run["run"].id
+    headers = {"Authorization": f"Bearer perf-archive-storage-{run_id}"}
+    old_s3 = integration_app.state.container.s3_client
+    integration_app.state.container.s3_client = None
+    try:
+        for _ in range(3):
+            response = await integration_client.get(
+                f"/api/v1/runs/{run_id}/logs/archive",
+                headers=headers,
+            )
+            assert response.status_code == 503, response.text
+            assert response.json()["detail"] == "Archived logs are not available"
+
+        samples: list[float] = []
+        for _ in range(20):
+            elapsed_ms, response = await _timed(
+                integration_client.get(
+                    f"/api/v1/runs/{run_id}/logs/archive",
+                    headers=headers,
+                )
+            )
+            assert response.status_code == 503, response.text
+            assert response.json()["detail"] == "Archived logs are not available"
+            samples.append(elapsed_ms)
+    finally:
+        integration_app.state.container.s3_client = old_s3
+
+    _assert_p99_under(
+        "archived log storage-unavailable API",
+        samples,
+        _threshold("PERF_LOG_ARCHIVE_UNAVAILABLE_P99_MS", 1000),
+    )
+
+
+@pytest.mark.asyncio
 async def test_archived_log_denied_no_s3_read_p99_smoke(
     integration_app,
     integration_client_as,
