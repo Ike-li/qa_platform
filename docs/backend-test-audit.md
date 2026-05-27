@@ -10,7 +10,7 @@
 
 - 覆盖率指标：启用 coverage branch mode，CI 使用 `--cov-report=term-missing`，并设置 `fail_under = 83`。
 - 关键业务路径：覆盖 pipeline API、项目/成员落库、run 状态迁移、schedule/webhook/cancel、worker 调度、manual priority 队列元数据、插件注册、日志配置。
-- 安全风险路径：覆盖 JWT/API token 中间件、真实 JWT 注册到 API token 创建/使用/撤销、refresh revoke Redis 抖动不阻断 token 轮换、auth 失败审计写入异常不把 401/204 变成 500、register/refresh/logout 审计状态不泄露 password/access token/refresh token、API token create/revoke 审计状态不泄露 full token / secret / hash、API token scope 路由矩阵、artifact 下载与归档日志读回的 `run.read` scope、跨租户 404 收敛、签名 webhook HMAC 验证、审计失败路径、跨租户隔离、RBAC audit-events 拒绝路径，以及 audit-events 403/跨租户 404 不误写自审计；nightly/manual performance smoke 还观察这些拒绝路径的 p99。
+- 安全风险路径：覆盖 JWT/API token 中间件、真实 JWT 注册到 API token 创建/使用/撤销、真实 Redis auth rate limit 与 Bearer token hash bucket、refresh revoke Redis 抖动不阻断 token 轮换、auth 失败审计写入异常不把 401/204 变成 500、register/refresh/logout 审计状态不泄露 password/access token/refresh token、API token create/revoke 审计状态不泄露 full token / secret / hash、API token scope 路由矩阵、artifact 下载与归档日志读回的 `run.read` scope、跨租户 404 收敛、签名 webhook HMAC 验证、审计失败路径、跨租户隔离、RBAC audit-events 拒绝路径，以及 audit-events 403/跨租户 404 不误写自审计；nightly/manual performance smoke 还观察这些拒绝路径的 p99。
 - 真实数据路径：integration suite 使用真实 PostgreSQL/Redis/Testcontainers/FastAPI ASGI app；新增测试不 mock repository 或 database session。
 - 数据保留/审计路径：retention 真实 Postgres 测试覆盖超期终态 Run 硬删与 result/artifact/event 级联；single/batch cancel API 覆盖真实 DB 终态、Redis status event `previous` 和 audit before/after，batch retry 覆盖真实 DB 状态和 audit 行写入；project、project member、pipeline、credentials、environments、notification rules、schedule API 与 schedule worker 自动触发已补真实 DB audit before/after 或 `run.trigger` 断言，项目 `git_url` userinfo、pipeline 复杂配置密钥、凭据明文、环境变量、通知 channel/template 不落审计状态。
 - 日志归档补偿与回看：归档失败登记真实 Redis retry set 和失败 TTL，并由 required integration 通过 worker cron 入口验证重试成功、marker 清理、成功 TTL 与 JSONL 读回；SSE `Last-Event-ID` 断点续传由真实 JWT、真实 ticket、PostgreSQL/RBAC 与 Redis Stream 集成测试覆盖；归档 JSONL 读回 API 由真实 DB/RBAC/API 集成测试覆盖，并验证分页窗口、对象缺失 404、API token `run.read` scope，以及跨租户 Run ID 与随机 UUID 一致 404；`project.read` token 被拒绝时不会触碰 S3；nightly/manual performance smoke 进一步覆盖成功回看只读 `logs/{run_id}.jsonl` 且不 presign、对象缺失稳定 404 且只读目标归档对象、存储未配置稳定 503、跨租户 archived logs 拒绝路径 p99，且拒绝路径不触发 S3 get_object。
@@ -30,7 +30,7 @@
 - 单元测试里的 mock 用来锁定分支、错误处理、外部服务失败和边界输入，适合快速定位逻辑回归。
 - `auth-flow.spec.ts` 的 E2E mock API 是前端登录/导航冒烟，不能作为后端数据正确性的证据。
 - 真实后端数据正确性由 integration suite 承担：真实 PostgreSQL schema、真实事务/唯一约束/soft-delete、真实 FastAPI 路由、真实 JWT/API token、真实 audit/event 写入。
-- 部分 integration fixture 会 override 当前用户以便稳定覆盖 RBAC/API 行为；当前真实 JWT/API token、artifact 下载、归档日志读回和 API token 审计断言均不 override current-user，补上“鉴权是否真的能走通数据库、审计是否真的写入且不泄密”的证据。
+- 部分 integration fixture 会 override 当前用户以便稳定覆盖 RBAC/API 行为；当前真实 JWT/API token、auth rate limit、artifact 下载、归档日志读回和 API token 审计断言均不 override current-user，补上“鉴权/限流是否真的能走通 Redis/数据库、审计是否真的写入且不泄密”的证据。
 - SSE 单测里的 Redis fake 只用于替代 rate-limit/SSE 单元边界的外部服务，真实 Redis/DB/API 状态由 required integration 验证。
 
 ## 覆盖率基线
@@ -59,10 +59,10 @@ RUN_INTEGRATION_TESTS=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tes
 
 当前结果：
 
-- integration 收集：155 tests
-- PR/push 必跑 required integration：123 passed, 32 deselected
-- 完整 local integration（未启动外部 API/worker 栈）：131 passed, 24 skipped
-- performance smoke opt-in：17 passed
+- integration 收集：159 tests
+- PR/push 必跑 required integration：124 passed, 35 deselected
+- 完整 local integration（未启动外部 API/worker 栈）：132 passed, 27 skipped
+- performance smoke opt-in：20 passed
 - skipped 来自 macOS Docker Desktop OOMKilled 平台语义、未设置 `RUN_PERFORMANCE_TESTS=1` 的 performance smoke，以及本地未启动 external stack；CI nightly/manual 会主动启动 external stack，业务断言失败不会被 skip 或 retry 掩盖
 
 E2E 冒烟验证：

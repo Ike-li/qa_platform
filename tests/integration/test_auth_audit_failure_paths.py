@@ -18,7 +18,9 @@ Fixtures used
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -177,6 +179,55 @@ async def test_login_nonexistent_user_returns_401_not_500(
     assert row is not None, "audit.login_failed row must be written"
     assert row.tenant_id is None, "tenant_id must be NULL for unknown-user path"
     assert "invalid_credentials" in str(row.after_state)
+
+
+@pytest.mark.asyncio
+async def test_auth_login_rate_limit_uses_real_redis_token_hash_bucket(
+    auth_app,
+    auth_client,
+):
+    """Auth abuse protection uses real Redis and never stores the raw bearer token."""
+    token = f"rate-limit-secret-{uuid4().hex}"
+    token_hash = hashlib.sha256(token.encode()).hexdigest()[:16]
+    bucket_key = f"rate_limit:token:{token_hash}:/api/v1/auth/login"
+    redis = auth_app.state.container.redis_client
+    assert redis is not None
+    await redis.delete(bucket_key)
+
+    headers = {"Authorization": f"Bearer {token}"}
+    for index in range(5):
+        resp = await auth_client.post(
+            "/api/v1/auth/login",
+            headers=headers,
+            json={
+                "username": f"rate-limit-missing-{index}-{uuid4().hex}",
+                "password": "wrong-password",
+            },
+        )
+        assert resp.status_code == 401, resp.text
+
+    limited = await auth_client.post(
+        "/api/v1/auth/login",
+        headers=headers,
+        json={
+            "username": f"rate-limit-missing-final-{uuid4().hex}",
+            "password": "wrong-password",
+        },
+    )
+    assert limited.status_code == 429, limited.text
+    assert limited.headers["Retry-After"] == str(
+        auth_app.state.container.settings.rate_limit_auth_failure_window
+    )
+    assert limited.json()["error"]["code"] == "TOO_MANY_REQUESTS"
+
+    keys = [
+        key
+        async for key in redis.scan_iter("rate_limit:token:*:/api/v1/auth/login")
+        if token_hash in key
+    ]
+    assert keys == [bucket_key]
+    assert token not in keys[0]
+    assert await redis.zcard(bucket_key) == 6
 
 
 @pytest.mark.asyncio
