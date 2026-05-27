@@ -123,7 +123,7 @@ async def test_project_create_route_invokes_audit():
     from unittest.mock import patch
     from httpx import ASGITransport, AsyncClient
 
-    from qaplatform.api.deps import _get_repos, get_current_user
+    from qaplatform.api.deps import _get_db_session, _get_repos, get_current_user
     from qaplatform.main import create_app
 
     tenant = uuid.uuid4()
@@ -162,6 +162,13 @@ async def test_project_create_route_invokes_audit():
     app = create_app(container=MagicMock())
     app.dependency_overrides[_get_repos] = lambda: repos
     app.dependency_overrides[get_current_user] = lambda: user
+
+    async def _override_session():
+        session = AsyncMock()
+        session.add = MagicMock()
+        yield session
+
+    app.dependency_overrides[_get_db_session] = _override_session
 
     audit_recorder = AsyncMock()
     with patch("qaplatform.api.v1.projects.write_audit", audit_recorder):

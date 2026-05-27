@@ -58,3 +58,16 @@ packages = ["src/qaplatform"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["qaplatform"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 83
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
