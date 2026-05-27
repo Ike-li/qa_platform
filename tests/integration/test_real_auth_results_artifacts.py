@@ -9,6 +9,7 @@ These tests intentionally exercise production wiring where it matters:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 from unittest.mock import AsyncMock
@@ -992,6 +993,88 @@ async def test_artifact_list_api_token_requires_run_read_scope(
     assert second_body["mime_type"] == "application/xml"
     assert second_body["expires_at"] is None
     assert second_body["created_at"]
+
+
+@pytest.mark.asyncio
+async def test_run_artifacts_list_paginates_real_db_without_s3_side_effects(
+    real_auth_app,
+    real_auth_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    access_token = await _register_real_user(real_auth_client, prefix="artifact_page")
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    artifact_repo = ArtifactRepository(integration_db_session)
+    created = []
+    base_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    for index in range(5):
+        artifact = await artifact_repo.create(
+            run_id=run_id,
+            type="report",
+            name=f"report-{index}.html",
+            storage_path=f"reports/{run_id}/report-{index}.html",
+            size_bytes=1024 + index,
+            mime_type="text/html",
+            created_at=base_time + timedelta(seconds=index),
+        )
+        created.append(artifact)
+    await integration_db_session.commit()
+
+    expected_desc = list(reversed(created))
+    old_s3 = real_auth_app.state.container.s3_client
+    s3 = _MemoryS3()
+    real_auth_app.state.container.s3_client = s3
+    try:
+        page_two_resp = await real_auth_client.get(
+            f"/api/v1/runs/{run_id}/artifacts",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"page": 2, "per_page": 2},
+        )
+        empty_page_resp = await real_auth_client.get(
+            f"/api/v1/runs/{run_id}/artifacts",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"page": 4, "per_page": 2},
+        )
+    finally:
+        real_auth_app.state.container.s3_client = old_s3
+
+    assert page_two_resp.status_code == 200, page_two_resp.text
+    page_two = page_two_resp.json()
+    assert page_two["page"] == 2
+    assert page_two["per_page"] == 2
+    assert page_two["total"] == 5
+    assert [item["id"] for item in page_two["data"]] == [
+        str(artifact.id) for artifact in expected_desc[2:4]
+    ]
+    assert [item["name"] for item in page_two["data"]] == [
+        artifact.name for artifact in expected_desc[2:4]
+    ]
+    assert [item["storage_path"] for item in page_two["data"]] == [
+        artifact.storage_path for artifact in expected_desc[2:4]
+    ]
+    assert [item["size_bytes"] for item in page_two["data"]] == [
+        artifact.size_bytes for artifact in expected_desc[2:4]
+    ]
+
+    assert empty_page_resp.status_code == 200, empty_page_resp.text
+    empty_page = empty_page_resp.json()
+    assert empty_page["page"] == 4
+    assert empty_page["per_page"] == 2
+    assert empty_page["total"] == 5
+    assert empty_page["data"] == []
+
+    assert s3.presign_calls == []
+    assert s3.get_calls == []
 
 
 @pytest.mark.asyncio
