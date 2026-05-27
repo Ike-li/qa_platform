@@ -623,6 +623,119 @@ async def test_schedule_tick_enqueue_slo_smoke(
 
 
 @pytest.mark.asyncio
+async def test_dequeue_waiting_runs_slo_smoke(
+    integration_db_engine,
+    integration_db_session,
+    seed_run,
+):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from qaplatform.infra.database.models import Run, RunStatusEnum
+    from qaplatform.worker.settings import dequeue_waiting
+
+    arq = _FakeArq()
+    ctx = {
+        "db_session_factory": async_sessionmaker(
+            integration_db_engine,
+            expire_on_commit=False,
+        ),
+        "arq_pool": arq,
+        "settings": SimpleNamespace(
+            max_concurrent_runs=10_000,
+            max_concurrent_per_project=10_000,
+        ),
+    }
+    tenant_id = seed_run["tenant"].id
+    project_id = seed_run["project"].id
+    pipeline_id = seed_run["pipeline"].id
+    environment_id = seed_run["environment"].id
+    user_id = seed_run["user"].id
+    seed_run["run"].queue_name = "queue:medium"
+    seed_run["run"].arq_job_id = f"run:{seed_run['run'].id}"
+    seed_run["run"].enqueued_at = datetime.now(timezone.utc)
+    await integration_db_session.commit()
+
+    queue_by_priority = {
+        0: "queue:high",
+        1: "queue:medium",
+        2: "queue:low",
+    }
+    priorities = [0, 1, 2, 0, 1, 2, 0, 1, 2, 1]
+    waiting_runs: dict[UUID, tuple[int, str]] = {}
+    base_created_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    for index, priority in enumerate(priorities):
+        run = Run(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            pipeline_id=pipeline_id,
+            environment_id=environment_id,
+            status=RunStatusEnum.QUEUED,
+            trigger_type="manual",
+            priority=priority,
+            triggered_by=user_id,
+            git_ref=f"perf-dequeue/{priority}/{uuid4().hex}",
+            attempt=1,
+            chain_depth=0,
+            metadata_={"perf_dequeue": True, "priority": priority},
+            created_at=base_created_at + timedelta(milliseconds=index),
+        )
+        integration_db_session.add(run)
+        await integration_db_session.flush()
+        waiting_runs[run.id] = (priority, queue_by_priority[priority])
+    await integration_db_session.commit()
+
+    started_at = datetime.now(timezone.utc)
+    rows_by_id: dict[UUID, Run] = {}
+    # The integration DB is shared across this smoke file, so the cron may drain
+    # older waiting seed runs before reaching the rows created by this test.
+    for _ in range(100):
+        await dequeue_waiting(ctx)
+        integration_db_session.expire_all()
+        result = await integration_db_session.execute(
+            select(Run).where(Run.id.in_(list(waiting_runs)))
+        )
+        rows_by_id = {run.id: run for run in result.scalars()}
+        if rows_by_id and all(run.enqueued_at is not None for run in rows_by_id.values()):
+            break
+    else:
+        missing = [
+            str(run_id)
+            for run_id, run in rows_by_id.items()
+            if run.enqueued_at is None
+        ]
+        pytest.fail(f"waiting runs were not dequeued: {missing}")
+
+    assert set(rows_by_id) == set(waiting_runs)
+    samples: list[float] = []
+    for run_id, (priority, expected_queue) in waiting_runs.items():
+        row = rows_by_id[run_id]
+        assert row.status == RunStatusEnum.QUEUED
+        assert row.priority == priority
+        assert row.queue_name == expected_queue
+        assert row.arq_job_id == f"run:{run_id}"
+        assert row.enqueued_at is not None, "waiting run was not dequeued"
+        assert row.metadata_ == {"perf_dequeue": True, "priority": priority}
+        samples.append((row.enqueued_at - started_at).total_seconds() * 1000)
+
+    expected_job_ids = {f"run:{run_id}" for run_id in waiting_runs}
+    our_calls = [
+        call for call in arq.calls if call["kwargs"]["_job_id"] in expected_job_ids
+    ]
+    assert len(our_calls) == len(waiting_runs)
+    assert {call["kwargs"]["_queue_name"] for call in our_calls} == {
+        "queue:high",
+        "queue:medium",
+        "queue:low",
+    }
+    assert {call["kwargs"]["_job_id"] for call in our_calls} == expected_job_ids
+    _assert_p99_under(
+        "dequeue waiting runs SLO",
+        samples,
+        _threshold("PERF_DEQUEUE_WAITING_P99_MS", 5000),
+    )
+
+
+@pytest.mark.asyncio
 async def test_cancel_run_api_p99_smoke(
     integration_app,
     integration_client,
