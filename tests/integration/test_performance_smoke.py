@@ -711,6 +711,7 @@ async def test_archived_log_denied_no_s3_read_p99_smoke(
 
 @pytest.mark.asyncio
 async def test_artifact_list_api_p99_smoke(
+    integration_app,
     integration_client,
     integration_db_session,
     seed_run,
@@ -734,39 +735,48 @@ async def test_artifact_list_api_p99_smoke(
         )
     await integration_db_session.commit()
 
+    old_s3 = integration_app.state.container.s3_client
+    s3 = _MemoryS3()
+    integration_app.state.container.s3_client = s3
     params = {"page": 1, "per_page": 100}
-    for _ in range(3):
-        response = await integration_client.get(
-            f"/api/v1/runs/{run_id}/artifacts",
-            params=params,
-        )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["total"] >= 80
-        returned_names = {item["name"] for item in body["data"]}
-        assert expected_names <= returned_names
-
-    samples: list[float] = []
-    for _ in range(20):
-        elapsed_ms, response = await _timed(
-            integration_client.get(
+    try:
+        for _ in range(3):
+            response = await integration_client.get(
                 f"/api/v1/runs/{run_id}/artifacts",
                 params=params,
             )
-        )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["page"] == 1
-        assert body["per_page"] == 100
-        assert body["total"] >= 80
-        returned = {item["name"]: item for item in body["data"]}
-        assert expected_names <= set(returned)
-        for name in expected_names:
-            item = returned[name]
-            assert item["run_id"] == str(run_id)
-            assert item["storage_path"] == f"reports/{run_id}/{name}"
-            assert item["size_bytes"] >= 1024
-        samples.append(elapsed_ms)
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] >= 80
+            returned_names = {item["name"] for item in body["data"]}
+            assert expected_names <= returned_names
+
+        samples: list[float] = []
+        for _ in range(20):
+            elapsed_ms, response = await _timed(
+                integration_client.get(
+                    f"/api/v1/runs/{run_id}/artifacts",
+                    params=params,
+                )
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["page"] == 1
+            assert body["per_page"] == 100
+            assert body["total"] >= 80
+            returned = {item["name"]: item for item in body["data"]}
+            assert expected_names <= set(returned)
+            for name in expected_names:
+                item = returned[name]
+                assert item["run_id"] == str(run_id)
+                assert item["storage_path"] == f"reports/{run_id}/{name}"
+                assert item["size_bytes"] >= 1024
+            samples.append(elapsed_ms)
+    finally:
+        integration_app.state.container.s3_client = old_s3
+
+    assert s3.presign_calls == []
+    assert s3.get_calls == []
 
     _assert_p99_under(
         "artifact list API",
