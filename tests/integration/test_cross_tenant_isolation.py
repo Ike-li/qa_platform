@@ -376,6 +376,35 @@ async def test_run_artifacts_cross_tenant_returns_same_404(
 
 
 @pytest.mark.asyncio
+async def test_archived_logs_cross_tenant_returns_same_404(
+    seed_run, seed_second_tenant, integration_client_as
+):
+    """GET /runs/{id}/logs/archive — tenant_A cannot probe tenant_B archived logs."""
+    tenant_a = seed_run["tenant"]
+    user_a = seed_run["user"]
+    run_b_id = seed_second_tenant["run"].id
+    random_id = uuid.uuid4()
+
+    async with integration_client_as(user_a.id, tenant_a.id) as client:
+        status_b, body_b = await _hit(
+            client,
+            "GET",
+            f"/api/v1/runs/{run_b_id}/logs/archive",
+        )
+        status_r, body_r = await _hit(
+            client,
+            "GET",
+            f"/api/v1/runs/{random_id}/logs/archive",
+        )
+
+    assert status_b == status_r == 404
+    detail_b = _detail(body_b)
+    detail_r = _detail(body_r)
+    assert detail_b == detail_r
+    assert detail_b is not None and detail_b != ""
+
+
+@pytest.mark.asyncio
 async def test_artifact_download_cross_tenant_returns_same_404(
     seed_run, seed_second_tenant, integration_client_as
 ):
