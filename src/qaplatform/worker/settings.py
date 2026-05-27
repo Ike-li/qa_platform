@@ -37,6 +37,24 @@ def _schedule_run_audit_state(run: Any, *, schedule_id: uuid.UUID, enqueued: boo
     }
 
 
+def _schedule_skip_audit_state(
+    schedule: Any,
+    *,
+    reason: str,
+    last_error: str,
+    next_run_at: datetime | None,
+) -> dict:
+    return {
+        "schedule_id": str(schedule.id),
+        "project_id": str(schedule.project_id),
+        "pipeline_id": str(schedule.pipeline_id),
+        "status": "skipped",
+        "reason": reason,
+        "last_error": last_error,
+        "next_run_at": next_run_at.isoformat() if next_run_at is not None else None,
+    }
+
+
 async def on_startup(ctx: dict) -> None:
     """arq on_startup hook: initialise worker dependencies."""
     from qaplatform.config import Settings
@@ -248,12 +266,33 @@ async def check_schedules(ctx: dict) -> None:
                 # Resolve pipeline for project context
                 pipeline = await pipeline_repo.get_by_id(schedule.pipeline_id)
                 if pipeline is None:
+                    next_run = compute_next_run_at(schedule.cron_expr, schedule.timezone, now)
                     await schedule_repo.update_after_fire(
                         schedule.id,
                         last_run_at=now,
-                        next_run_at=compute_next_run_at(schedule.cron_expr, schedule.timezone, now),
+                        next_run_at=next_run,
                         last_error="pipeline not found",
                     )
+                    project = await project_repo.get_by_id(schedule.project_id)
+                    audit_repos = SimpleNamespace(audit=audit_repo)
+                    audit_user = SimpleNamespace(
+                        tenant_id=getattr(project, "tenant_id", None),
+                        user_id=None,
+                    )
+                    await write_audit(
+                        audit_repos,
+                        audit_user,
+                        action="schedule_skipped_missing_pipeline",
+                        resource_type="schedule",
+                        resource_id=schedule.id,
+                        after=_schedule_skip_audit_state(
+                            schedule,
+                            reason="pipeline_not_found",
+                            last_error="pipeline not found",
+                            next_run_at=next_run,
+                        ),
+                    )
+                    await session.commit()
                     continue
 
                 project = await project_repo.get_by_id(schedule.project_id)

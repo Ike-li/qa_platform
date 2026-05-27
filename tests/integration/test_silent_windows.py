@@ -273,6 +273,67 @@ async def test_cron_tick_enqueue_conflict_records_last_error_and_waiting_run(
 
 
 @pytest.mark.asyncio
+async def test_cron_tick_soft_deleted_pipeline_records_audit_without_run(
+    seed_run,
+    integration_db_engine,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import AuditEvent, Schedule
+
+    now = datetime.now(timezone.utc)
+    project = seed_run["project"]
+    pipeline = seed_run["pipeline"]
+    schedule = await _create_due_schedule(
+        integration_db_session,
+        seed_run,
+        next_run_at=now - timedelta(minutes=1),
+    )
+    before_runs = await _run_count(
+        integration_db_session, project.id, trigger_type="schedule"
+    )
+    pipeline.deleted_at = now
+    await integration_db_session.commit()
+
+    await check_schedules(_ctx(integration_db_engine))
+
+    assert (
+        await _run_count(integration_db_session, project.id, trigger_type="schedule")
+        == before_runs
+    )
+    refreshed = await integration_db_session.get(Schedule, schedule.id)
+    assert refreshed is not None
+    await integration_db_session.refresh(refreshed)
+    assert refreshed.last_run_at is not None
+    assert refreshed.last_error == "pipeline not found"
+    assert refreshed.next_run_at is not None
+
+    audit = (
+        (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == "schedule_skipped_missing_pipeline",
+                    AuditEvent.resource_id == schedule.id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert audit.tenant_id == project.tenant_id
+    assert audit.user_id is None
+    assert audit.resource_type == "schedule"
+    assert audit.after_state == {
+        "schedule_id": str(schedule.id),
+        "project_id": str(project.id),
+        "pipeline_id": str(pipeline.id),
+        "status": "skipped",
+        "reason": "pipeline_not_found",
+        "last_error": "pipeline not found",
+        "next_run_at": refreshed.next_run_at.isoformat(),
+    }
+
+
+@pytest.mark.asyncio
 async def test_manual_trigger_ignores_silent_windows(
     seed_run,
     integration_app,
