@@ -156,7 +156,7 @@ Worker 抢占 (queued → preparing)
 触发通知 (按规则)
 ```
 
-当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；但 `disk_bytes` 未进入 Docker HostConfig，OOM/timeout 的资源用量记录也未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；上传侧会递归扫描工作目录 `results/` 下文件，保留相对路径写入 S3/Artifact 行，并把 `allure-report/`、`allure-results/` 目录下文件标记为 `allure-report` 类型。前端 Allure/HTML 报告预览主路径已有 E2E 覆盖，多资源报告加载体验仍需后续设计。
+当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；worker 可把内部 `resource_limits.disk_mb` 转成 `ResourceLimits.disk_bytes`，Docker backend 会在该值存在时写入 `HostConfig.StorageOpt.size`。API 目前还不暴露磁盘配额字段，OOM/timeout 的资源用量记录也未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；上传侧会递归扫描工作目录 `results/` 下文件，保留相对路径写入 S3/Artifact 行，并把 `allure-report/`、`allure-results/` 目录下文件标记为 `allure-report` 类型。前端 Allure/HTML 报告预览主路径已有 E2E 覆盖，多资源报告加载体验仍需后续设计。
 
 当前 collector 边界：Pipeline 的 stage `plugin` 可以选择测试运行器，但结果收集器还不是 pipeline 级配置项；`RunExecutor.execute()` 当前固定调用 JUnit collector。PRD F-PL-01 中“配置结果收集器”的验收需后续补实现，或由 maintainer 决定把 JUnit-only 写成正式产品限制。
 
@@ -321,7 +321,7 @@ Run 1──N NotificationLog
 | AppUser | username, email, role, is_platform_admin, is_active, last_login_at | 登录用户与租户级角色 |
 | ApiToken | token_id, secret_hash, scopes, expires_at, is_revoked | 机器访问 token，明文 token 不落库 |
 | Project | slug, git_url, git_auth_method, credential_id, default_branch, settings(JSONB), status | 项目聚合根，settings 当前承载 `webhook_secret`、`allowed_branches` 等嵌入配置；`silent_windows` 为 T05 计划写入同一 JSONB 的字段；`credential_id` 已可绑定但执行侧 clone 使用待补 |
-| Environment | base_image, setup_script, memory_mb, cpu_cores, resource_limits(JSONB), network_policy, env_vars(JSONB), cache_key | 执行环境；`memory_mb` / `cpu_cores` 是 ORM 离散列；API 暴露的 `max_artifact_size_mb` / `max_artifacts_count` 当前存放在 `resource_limits` JSONB 中，不是独立列；`env_vars` 当前仍为明文 JSONB，待 F-PL-02 加密 |
+| Environment | base_image, setup_script, memory_mb, cpu_cores, resource_limits(JSONB), network_policy, env_vars(JSONB), cache_key | 执行环境；`memory_mb` / `cpu_cores` 是 ORM 离散列；API 暴露的 `max_artifact_size_mb` / `max_artifacts_count` 当前存放在 `resource_limits` JSONB 中，不是独立列；内部 `resource_limits.disk_mb` 可传到 Docker `StorageOpt.size`，但尚未暴露为 API 字段；`env_vars` 当前仍为明文 JSONB，待 F-PL-02 加密 |
 | Pipeline | stages(JSONB), selector(JSONB), trigger_config(JSONB), retry_policy(JSONB), timeout_seconds, enabled | 管道定义，使用 JSONB 支持多阶段执行与不同 runner；当前没有 collector 选择字段，执行器固定 JUnit collector |
 | Schedule | cron_expr, timezone, quiet_windows(JSONB), next_run_at, last_run_at, last_error | 定时触发配置，当前已有 schedule 级 quiet window |
 | Run | status, trigger_type, priority, git_ref, git_sha, retry_group_id, attempt, dedup_key, duration_ms, summary | 执行记录，status 为状态机核心 |

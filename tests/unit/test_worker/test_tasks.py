@@ -77,12 +77,14 @@ def test_build_pipeline_config_maps_environment_artifact_limits(fake_run):
     from qaplatform.worker.tasks import _build_pipeline_config
 
     fake_run.environment.resource_limits = {
+        "disk_mb": 256,
         "max_artifact_size_mb": 42,
         "max_artifacts_count": 9,
     }
 
     config = _build_pipeline_config(fake_run, fake_run.pipeline, fake_run.environment)
 
+    assert config.resource_limits.disk_bytes == 256 * 1024 * 1024
     assert config.resource_limits.max_artifact_size_bytes == 42 * 1024 * 1024
     assert config.resource_limits.max_artifacts_count == 9
 

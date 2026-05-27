@@ -16,7 +16,7 @@
 | 3 | F-PL-01 collector 配置补齐 | PRD §3.2 验收 | Pipeline schema / ORM / worker 拼装均无结果收集器选择或配置，`RunExecutor.execute()` 固定 `get_collector("junit")`；需决定 JUnit-only 是否改为正式限制，或补 collector 配置闭环 |
 | 4 | 审计日志查询 API | catalog §4.1 | 已完成：`/api/v1/audit-events` 支持 Owner/Admin 分页查询、组合过滤、跨租户 404/空结果收敛，并写 `audit_events.list` 自审计；正式 PRD 章节仍未补 |
 | 5 | 审计写入覆盖补齐 | architecture §9.6 | 单 run cancel、批量取消/批量重试、SSE ticket、projects/project members/pipelines/credentials/environments/notification rules/schedules、schedule worker 自动触发与 missing-pipeline skip、签名 webhook `run.trigger` 与 webhook filtered/duplicate 决策 audit 已补真实 DB 验证；cancel 控制面已验证 Redis status event `previous` 与 audit before/after 一致，项目 `git_url` userinfo、pipeline 复杂配置密钥与敏感字段脱敏或 delete before_state 已覆盖；剩余写操作按安全风险继续补齐 |
-| 6 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | PRD §3.2 / PRD §3.4 验收 | CPU/内存/超时、产物数量/大小限制、`results/` 递归上传和 Allure 目录文件落库已实现并有真实 DB/S3 验证；required integration 覆盖 artifact 列表元数据到下载链接的真实 JWT/RBAC/API token scope/API/DB 行与 bucket/key/TTL 参数，`project.read` token 不能枚举 artifact 名称/路径或换取预签名 URL，跨租户真实 artifact ID 与随机 UUID 一致 404 且不 presign；OOM/timeout backend 结果写 Run `timeout`、Redis status event 和日志收尾已有真实 DB/Redis 证据；nightly/manual external-stack smoke 覆盖真实 worker 后 artifact 列表、预签名下载链接与 JUnit 内容下载；前端 run detail 已补 HTML artifact 预览 E2E；仍缺磁盘限制、资源用量记录和多资源报告加载口径 |
+| 6 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | PRD §3.2 / PRD §3.4 验收 | CPU/内存/超时、产物数量/大小限制、内部 `disk_mb` 到 Docker `StorageOpt.size` 传递、`results/` 递归上传和 Allure 目录文件落库已实现并有自动化证据；required integration 覆盖 artifact 列表元数据到下载链接的真实 JWT/RBAC/API token scope/API/DB 行与 bucket/key/TTL 参数，`project.read` token 不能枚举 artifact 名称/路径或换取预签名 URL，跨租户真实 artifact ID 与随机 UUID 一致 404 且不 presign；OOM/timeout backend 结果写 Run `timeout`、Redis status event 和日志收尾已有真实 DB/Redis 证据；nightly/manual external-stack smoke 覆盖真实 worker 后 artifact 列表、预签名下载链接与 JUnit 内容下载；前端 run detail 已补 HTML artifact 预览 E2E；仍缺 API 磁盘配额暴露、资源用量记录和多资源报告加载口径 |
 | 7 | F-EX-05 日志归档回看闭环 | PRD §3.3 验收 | Redis Stream 实时日志、断线续传、S3 JSONL 归档写入与归档日志读回 API 已实现；required integration 覆盖真实 API/RBAC/DB 下的 SSE `Last-Event-ID` 断点续传、归档失败真实 Redis retry marker/worker cron 重试、默认页、分页窗口、对象缺失 404、API token `run.read` scope 和跨租户 Run ID 404 一致性；nightly/manual external-stack smoke 覆盖真实 worker 完成后的归档日志读回；nightly/manual performance smoke 覆盖真实 SSE 推送 < 2s；前端终态 run 已接入归档日志 API，并由真实 DB+S3 E2E 覆盖回放/搜索 |
 | 8 | F-AU-02 API Token scope enforcement 补齐 | PRD §3.6 验收 | 已完成：API token scopes 已贯通 tenant/project 权限依赖，并有真实 API 矩阵覆盖只读、run.trigger、artifact download 与 archived logs 的 run.read、错误/空 scope；create/revoke 审计状态不泄露 full token、secret 或 secret_hash |
 | 9 | F-AU-04 跨租户 404 完整收敛 | PRD §3.6 验收 | 已完成：Member/Viewer 的 path `project_id` 项目级权限依赖先验证租户可见性；跨 tenant、随机 UUID、软删除一致 404 |
@@ -120,7 +120,7 @@
 
 | 阶段 | 状态 |
 |---|---|
-| Phase 1 MVP | ⚠️ 主线部分完成（项目/管道/手动执行/日志/结果主链路已就位；Git 凭证 clone 使用、Pipeline collector 配置、F-EX-01 commit/environment 指定入参与入队时延验收、F-PL-02 env_vars 加密、F-PL-03 产物/磁盘/资源记录闭环、F-LS-01~04 列表过滤/分页/搜索边角仍缺） |
+| Phase 1 MVP | ⚠️ 主线部分完成（项目/管道/手动执行/日志/结果主链路已就位；Git 凭证 clone 使用、Pipeline collector 配置、F-EX-01 commit/environment 指定入参与入队时延验收、F-PL-02 env_vars 加密、F-PL-03 产物/API 磁盘配额/资源记录闭环、F-LS-01~04 列表过滤/分页/搜索边角仍缺） |
 | Phase 2 自动化与通知 | ⚠️ 主线部分完成（cron/webhook/API token 基础、重试/优先级队列原语、通知规则/模板基础已就位；API token scope、webhook 分支过滤+去重、自动重试主干、优先级队列主干已有测试证据；F-EX-02 静默窗口、F-EX-03 Git 平台事件解析/按 repo 匹配、通知规则/模板验收、钉钉/企微仍缺） |
 | Phase 3 洞察与报告 | ⚠️ 主线部分完成（仪表盘/Flaky/系统状态页/项目级趋势已就位；Allure/HTML 产物预览闭环和单用例历史趋势仍缺） |
 | Phase 4 规模化 | ⛔ 整体不在当前范围 |
