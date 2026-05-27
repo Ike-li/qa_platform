@@ -576,6 +576,102 @@ async def test_realtime_log_sse_delivery_latency_smoke(
 
 
 @pytest.mark.asyncio
+async def test_realtime_status_event_sse_delivery_latency_smoke(
+    integration_app,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.engine.events import publish_status_event
+    from qaplatform.infra.database.models import Run, RunStatusEnum
+
+    tenant_id = seed_run["tenant"].id
+    project_id = seed_run["project"].id
+    pipeline_id = seed_run["pipeline"].id
+    environment_id = seed_run["environment"].id
+    user_id = seed_run["user"].id
+    redis = integration_app.state.container.redis_client
+    samples: list[float] = []
+
+    timeout = httpx.Timeout(5.0, connect=5.0, read=5.0)
+    async with _live_asgi_server(integration_app) as base_url:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for index in range(5):
+                run = Run(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    pipeline_id=pipeline_id,
+                    environment_id=environment_id,
+                    status=RunStatusEnum.RUNNING,
+                    trigger_type="manual",
+                    priority=1,
+                    triggered_by=user_id,
+                    git_ref=f"perf-sse-events/{uuid4().hex}",
+                    attempt=1,
+                    chain_depth=0,
+                    metadata_={"perf_sse_events": True},
+                )
+                integration_db_session.add(run)
+                await integration_db_session.commit()
+                await integration_db_session.refresh(run)
+                run_id = run.id
+
+                ticket = f"perf-sse-events-{uuid4().hex}"
+                await redis.setex(
+                    f"sse_ticket:{ticket}",
+                    90,
+                    f"{user_id}:owner:{tenant_id}",
+                )
+
+                url = f"{base_url}/api/v1/runs/{run_id}/events?ticket={ticket}"
+                async with client.stream("GET", url) as response:
+                    if response.status_code != 200:
+                        body = await response.aread()
+                        pytest.fail(
+                            f"SSE status event stream returned {response.status_code}: "
+                            f"{body.decode('utf-8', errors='replace')}"
+                        )
+                    assert "text/event-stream" in response.headers.get(
+                        "content-type", ""
+                    )
+
+                    chunks: list[str] = []
+                    event_seen_ms: float | None = None
+                    started = perf_counter()
+                    await publish_status_event(
+                        redis,
+                        run_id,
+                        RunStatusEnum.COLLECTING.value,
+                        previous=RunStatusEnum.RUNNING.value,
+                    )
+                    await publish_status_event(
+                        redis,
+                        run_id,
+                        RunStatusEnum.DONE.value,
+                        previous=RunStatusEnum.COLLECTING.value,
+                    )
+                    async for chunk in response.aiter_text():
+                        chunks.append(chunk)
+                        body = "".join(chunks)
+                        if (
+                            "event: status_change" in body
+                            and '"status": "collecting"' in body
+                        ):
+                            event_seen_ms = (perf_counter() - started) * 1000
+                            break
+
+                assert event_seen_ms is not None, (
+                    f"SSE status event was not delivered for sample {index}"
+                )
+                samples.append(event_seen_ms)
+
+    _assert_p99_under(
+        "realtime status event SSE delivery",
+        samples,
+        _threshold("PERF_SSE_EVENT_DELIVERY_P99_MS", 2000),
+    )
+
+
+@pytest.mark.asyncio
 async def test_archived_log_replay_api_p99_smoke(
     integration_app,
     integration_client,
