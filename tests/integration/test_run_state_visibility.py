@@ -34,10 +34,13 @@ from qaplatform.infra.database.repositories.run_repo import (
     RunRepository,
 )
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("RUN_INTEGRATION_TESTS") != "1",
-    reason="set RUN_INTEGRATION_TESTS=1 to run integration tests",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        os.environ.get("RUN_INTEGRATION_TESTS") != "1",
+        reason="set RUN_INTEGRATION_TESTS=1 to run integration tests",
+    ),
+    pytest.mark.heavy_docker,
+]
 
 
 @pytest.fixture(scope="module")
@@ -54,14 +57,8 @@ def docker_available():
 
 
 @pytest.fixture(scope="module")
-def alpine_image_pulled(docker_available):
-    subprocess.run(
-        ["docker", "pull", "alpine:3.19"],
-        check=True,
-        capture_output=True,
-        timeout=120,
-    )
-    return "alpine:3.19"
+def alpine_image_pulled(docker_available, pull_docker_image):
+    return pull_docker_image("alpine:3.19", timeout=120)
 
 
 @pytest_asyncio.fixture

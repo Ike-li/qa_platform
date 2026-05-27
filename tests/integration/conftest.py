@@ -32,6 +32,36 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
+@pytest.fixture(scope="session")
+def pull_docker_image():
+    """Pull a Docker image, skipping heavy integration tests on registry issues.
+
+    These tests validate worker/container behavior, but a transient registry or
+    local Docker credential failure should be reported as an unavailable
+    prerequisite rather than a product regression.
+    """
+
+    def _pull(image: str, *, timeout: int = 120) -> str:
+        try:
+            result = subprocess.run(
+                ["docker", "pull", image],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            pytest.skip(f"docker image prerequisite unavailable for {image}: {exc}")
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip().splitlines()
+            reason = detail[-1] if detail else f"docker pull exited {result.returncode}"
+            pytest.skip(f"docker image prerequisite unavailable for {image}: {reason}")
+        return image
+
+    return _pull
+
+
 # --------------------------------------------------------------------------- #
 # Schema bootstrap
 # --------------------------------------------------------------------------- #

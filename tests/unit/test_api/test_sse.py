@@ -9,11 +9,31 @@ from httpx import ASGITransport, AsyncClient
 from qaplatform.domain.models.run import RunStatus
 
 
+class _RateLimitPipeline:
+    def zremrangebyscore(self, *args, **kwargs):
+        return self
+
+    def zadd(self, *args, **kwargs):
+        return self
+
+    def zcard(self, *args, **kwargs):
+        return self
+
+    def expire(self, *args, **kwargs):
+        return self
+
+    async def execute(self):
+        return [0, 1, 1, True]
+
+
 @pytest.fixture
 def mock_redis():
-    redis = AsyncMock()
+    redis = MagicMock()
     redis.get = AsyncMock(return_value=None)
     redis.delete = AsyncMock()
+    redis.getdel = AsyncMock(return_value=None)
+    redis.time = AsyncMock(return_value=(1_700_000_000, 0))
+    redis.pipeline = MagicMock(return_value=_RateLimitPipeline())
     return redis
 
 
@@ -400,8 +420,10 @@ async def test_authenticate_sse_ticket_consumes_atomically():
             return payload
         return None
     
-    mock_redis = AsyncMock()
+    mock_redis = MagicMock()
     mock_redis.getdel = mock_getdel
+    mock_redis.get = MagicMock()
+    mock_redis.delete = MagicMock()
     
     # Mock request with redis client
     mock_request = MagicMock()
