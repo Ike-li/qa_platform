@@ -800,6 +800,7 @@ async def test_archived_logs_api_token_requires_run_read_scope(
     )
     assert denied_resp.status_code == 403, denied_resp.text
     assert s3.get_calls == []
+    assert s3.presign_calls == []
 
     run_read_token = await _create_real_api_token(
         real_auth_client,
@@ -826,6 +827,7 @@ async def test_archived_logs_api_token_requires_run_read_scope(
             "key": f"logs/{run_id}.jsonl",
         }
     ]
+    assert s3.presign_calls == []
 
 
 @pytest.mark.asyncio
@@ -1079,6 +1081,7 @@ async def test_artifact_download_urls_presign_each_real_db_row_without_s3_reads(
 
 @pytest.mark.asyncio
 async def test_artifact_list_api_token_requires_run_read_scope(
+    real_auth_app,
     real_auth_client,
     integration_db_session,
 ):
@@ -1120,13 +1123,21 @@ async def test_artifact_list_api_token_requires_run_read_scope(
         name="artifact-list-project-read",
         scopes=["project.read"],
     )
-    denied_resp = await real_auth_client.get(
-        f"/api/v1/runs/{run_id}/artifacts",
-        headers={"Authorization": f"Bearer {project_read_token}"},
-    )
+    old_s3 = real_auth_app.state.container.s3_client
+    s3 = _MemoryS3()
+    real_auth_app.state.container.s3_client = s3
+    try:
+        denied_resp = await real_auth_client.get(
+            f"/api/v1/runs/{run_id}/artifacts",
+            headers={"Authorization": f"Bearer {project_read_token}"},
+        )
+    finally:
+        real_auth_app.state.container.s3_client = old_s3
     assert denied_resp.status_code == 403, denied_resp.text
     assert "summary.html" not in denied_resp.text
     assert "results.xml" not in denied_resp.text
+    assert s3.presign_calls == []
+    assert s3.get_calls == []
 
     run_read_token = await _create_real_api_token(
         real_auth_client,
@@ -1293,6 +1304,7 @@ async def test_artifact_download_api_token_requires_run_read_scope(
     )
     assert denied_resp.status_code == 403, denied_resp.text
     assert s3.presign_calls == []
+    assert s3.get_calls == []
 
     run_read_token = await _create_real_api_token(
         real_auth_client,
