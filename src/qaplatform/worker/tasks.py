@@ -266,9 +266,10 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
             # Terminal state (finish_if_current / fail_if_current) is written
             # inside executor.execute() with summary; no redundant write here.
 
-            # Retry is handled in the except branch below — when the executor
-            # returns FAILED the real infra exception is already swallowed
-            # inside executor.execute() and cannot be recovered here.
+            # Retry is handled in the except branch below. Real infra
+            # exceptions bubble out of the executor after it writes the
+            # terminal failed state; ordinary test/setup failures return
+            # FAILED and must not be retried.
 
         except Exception as exc:
             log.exception("execute_run failed for run %s", run_id)
