@@ -77,8 +77,6 @@ async def seeded_user(integration_db_engine):
     """
     from argon2 import PasswordHasher
     from uuid import uuid4
-    from qaplatform.infra.database.models import AppUser, Tenant
-
     ph = PasswordHasher()
     password = "correct-horse-battery"
     sfx = uuid4().hex[:8]
@@ -196,10 +194,12 @@ async def test_refresh_with_invalid_token_returns_401_not_500(
     auth_client, integration_db_engine
 ):
     """P1-8 regression: refresh with a garbage token must return 401, not 500."""
-    resp = await auth_client.post(
-        "/api/v1/auth/refresh",
-        cookies={"refresh_token": "this.is.not.a.valid.jwt"},
+    auth_client.cookies.set(
+        "refresh_token",
+        "this.is.not.a.valid.jwt",
+        path="/api/v1/auth",
     )
+    resp = await auth_client.post("/api/v1/auth/refresh")
     assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
 
     row = await _latest_audit_row(integration_db_engine, "auth.refresh_failed")
