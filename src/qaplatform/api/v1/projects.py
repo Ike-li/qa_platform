@@ -18,6 +18,7 @@ from qaplatform.api.schemas import (
     ProjectUpdate,
 )
 from qaplatform.domain.models.project import SilentWindow
+from qaplatform.engine.redact import redact_url_userinfo
 from qaplatform.infra.database.models import Project as ProjectORM
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -33,6 +34,12 @@ def _to_response(orm: ProjectORM) -> ProjectResponse:
             ]
         }
     )
+
+
+def _to_audit_state(response: ProjectResponse) -> dict:
+    data = response.model_dump(mode="json")
+    data["git_url"] = redact_url_userinfo(data["git_url"])
+    return data
 
 
 def _serialize_silent_windows(windows: list[SilentWindow]) -> list[dict]:
@@ -123,7 +130,7 @@ async def create_project(
         action="project.create",
         resource_type="project",
         resource_id=orm.id,
-        after=response,
+        after=_to_audit_state(response),
     )
     return response
 
@@ -177,8 +184,8 @@ async def update_project(
         action="project.update",
         resource_type="project",
         resource_id=updated.id,
-        before=before,
-        after=after,
+        before=_to_audit_state(before),
+        after=_to_audit_state(after),
     )
     return after
 
@@ -206,5 +213,5 @@ async def delete_project(
         action="project.delete",
         resource_type="project",
         resource_id=project_id,
-        before=before,
+        before=_to_audit_state(before),
     )

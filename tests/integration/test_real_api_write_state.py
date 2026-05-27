@@ -60,6 +60,311 @@ def _error_detail(body: dict) -> str | None:
 
 
 @pytest.mark.asyncio
+async def test_project_api_audits_lifecycle_without_git_url_userinfo_leak(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Project
+
+    slug = f"audit-project-{uuid4().hex[:8]}"
+    create_secret = f"create-token-{uuid4().hex}"
+    update_secret = f"update-token-{uuid4().hex}"
+    create_git_url = (
+        f"https://x-access-token:{create_secret}@example.com/org/repo.git"
+    )
+    update_git_url = f"https://oauth2:{update_secret}@git.example.com/new/repo.git"
+
+    create_resp = await integration_client.post(
+        "/api/v1/projects",
+        json={
+            "name": f"Audit Project {slug}",
+            "slug": slug,
+            "description": "initial",
+            "git_url": create_git_url,
+            "default_branch": "main",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    project_id = create_resp.json()["id"]
+    assert create_resp.json()["git_url"] == create_git_url
+
+    project = await integration_db_session.get(Project, project_id)
+    assert project is not None
+    assert project.tenant_id == seed_run["tenant"].id
+    assert project.created_by == seed_run["user"].id
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}",
+        json={
+            "description": "archived for audit evidence",
+            "git_url": update_git_url,
+            "status": "archived",
+        },
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    assert update_resp.json()["git_url"] == update_git_url
+    await integration_db_session.refresh(project)
+    assert project.status == "archived"
+    assert project.git_url == update_git_url
+
+    delete_resp = await integration_client.delete(f"/api/v1/projects/{project_id}")
+    assert delete_resp.status_code == 204, delete_resp.text
+    await integration_db_session.refresh(project)
+    assert project.deleted_at is not None
+
+    assert {"project.create", "project.update", "project.delete"}.issubset(
+        await _audit_actions(
+            integration_db_session,
+            user_id=seed_run["user"].id,
+            resource_id=project.id,
+        )
+    )
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="project.create",
+        resource_id=project.id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="project.update",
+        resource_id=project.id,
+    )
+    delete_audit = await _audit_event(
+        integration_db_session,
+        action="project.delete",
+        resource_id=project.id,
+    )
+    assert create_audit is not None
+    assert update_audit is not None
+    assert delete_audit is not None
+
+    serialized_audit = repr(
+        [
+            create_audit.before_state,
+            create_audit.after_state,
+            update_audit.before_state,
+            update_audit.after_state,
+            delete_audit.before_state,
+            delete_audit.after_state,
+        ]
+    )
+    assert create_secret not in serialized_audit
+    assert update_secret not in serialized_audit
+    assert "x-access-token" not in serialized_audit
+    assert "oauth2" not in serialized_audit
+    assert create_audit.before_state is None
+    assert create_audit.after_state["git_url"] == "https://***@example.com/org/repo.git"
+    assert update_audit.before_state["git_url"] == "https://***@example.com/org/repo.git"
+    assert update_audit.after_state["git_url"] == "https://***@git.example.com/new/repo.git"
+    assert update_audit.after_state["status"] == "archived"
+    assert delete_audit.before_state["git_url"] == "https://***@git.example.com/new/repo.git"
+    assert delete_audit.before_state["status"] == "archived"
+    assert delete_audit.after_state is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_api_persists_audit_states_for_lifecycle(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Pipeline
+
+    project_id = seed_run["project"].id
+    name = f"audit-pipeline-{uuid4().hex[:8]}"
+
+    create_resp = await integration_client.post(
+        f"/api/v1/projects/{project_id}/pipelines",
+        json={
+            "name": name,
+            "stages": [
+                {
+                    "name": "unit",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {"command": "pytest tests/unit -q"},
+                }
+            ],
+            "selector": {"include_paths": ["tests/unit"], "on_empty": "warn"},
+            "trigger_config": {"type": "manual"},
+            "retry_policy": {"max_attempts": 2, "retry_on": ["infra"]},
+            "timeout_seconds": 900,
+            "enabled": True,
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    pipeline_id = create_resp.json()["id"]
+
+    pipeline = await integration_db_session.get(Pipeline, pipeline_id)
+    assert pipeline is not None
+    assert pipeline.project_id == project_id
+    assert pipeline.stages[0]["config"]["command"] == "pytest tests/unit -q"
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}/pipelines/{pipeline_id}",
+        json={
+            "name": f"{name}-disabled",
+            "selector": {"exclude_paths": ["tests/e2e"]},
+            "retry_policy": {"max_attempts": 3, "retry_on": ["infra", "timeout"]},
+            "enabled": False,
+        },
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    await integration_db_session.refresh(pipeline)
+    assert pipeline.enabled is False
+    assert pipeline.retry_policy["max_attempts"] == 3
+
+    delete_resp = await integration_client.delete(
+        f"/api/v1/projects/{project_id}/pipelines/{pipeline_id}"
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+    await integration_db_session.refresh(pipeline)
+    assert pipeline.deleted_at is not None
+
+    assert {"pipeline.create", "pipeline.update", "pipeline.delete"}.issubset(
+        await _audit_actions(
+            integration_db_session,
+            user_id=seed_run["user"].id,
+            resource_id=pipeline.id,
+        )
+    )
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="pipeline.create",
+        resource_id=pipeline.id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="pipeline.update",
+        resource_id=pipeline.id,
+    )
+    delete_audit = await _audit_event(
+        integration_db_session,
+        action="pipeline.delete",
+        resource_id=pipeline.id,
+    )
+    assert create_audit is not None
+    assert update_audit is not None
+    assert delete_audit is not None
+    assert create_audit.before_state is None
+    assert create_audit.after_state["name"] == name
+    assert create_audit.after_state["retry_policy"]["max_attempts"] == 2
+    assert update_audit.before_state["enabled"] is True
+    assert update_audit.after_state["enabled"] is False
+    assert update_audit.after_state["retry_policy"]["retry_on"] == [
+        "infra",
+        "timeout",
+    ]
+    assert delete_audit.before_state["enabled"] is False
+    assert delete_audit.after_state is None
+
+
+@pytest.mark.asyncio
+async def test_project_member_api_persists_audit_states_for_role_changes(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import AppUser, ProjectMember
+    from qaplatform.infra.database.repositories.project_repo import (
+        ProjectMemberRepository,
+    )
+
+    tenant_id = seed_run["tenant"].id
+    project_id = seed_run["project"].id
+    suffix = uuid4().hex[:8]
+    member_user = AppUser(
+        tenant_id=tenant_id,
+        username=f"member-{suffix}",
+        email=f"member-{suffix}@test.local",
+        password_hash="argon2:placeholder",
+        role="member",
+        is_platform_admin=False,
+        is_active=True,
+    )
+    integration_db_session.add(member_user)
+    await integration_db_session.commit()
+    await integration_db_session.refresh(member_user)
+
+    add_resp = await integration_client.post(
+        f"/api/v1/projects/{project_id}/members",
+        json={"user_id": str(member_user.id), "role": "developer"},
+    )
+    assert add_resp.status_code == 201, add_resp.text
+    assert add_resp.json()["role"] == "developer"
+
+    member = await integration_db_session.get(
+        ProjectMember,
+        {"project_id": project_id, "user_id": member_user.id},
+    )
+    assert member is not None
+    assert member.tenant_id == tenant_id
+    assert member.role == "developer"
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}/members/{member_user.id}",
+        json={"role": "viewer"},
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    await integration_db_session.refresh(member)
+    assert member.role == "viewer"
+
+    delete_resp = await integration_client.delete(
+        f"/api/v1/projects/{project_id}/members/{member_user.id}"
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+    await integration_db_session.refresh(member)
+    assert member.deleted_at is not None
+
+    repo = ProjectMemberRepository(integration_db_session)
+    assert await repo.get_by_project_user(project_id, member_user.id, tenant_id) is None
+
+    assert {
+        "project_member.add",
+        "project_member.update",
+        "project_member.remove",
+    }.issubset(
+        await _audit_actions(
+            integration_db_session,
+            user_id=seed_run["user"].id,
+            resource_id=project_id,
+        )
+    )
+    add_audit = await _audit_event(
+        integration_db_session,
+        action="project_member.add",
+        resource_id=project_id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="project_member.update",
+        resource_id=project_id,
+    )
+    remove_audit = await _audit_event(
+        integration_db_session,
+        action="project_member.remove",
+        resource_id=project_id,
+    )
+    assert add_audit is not None
+    assert update_audit is not None
+    assert remove_audit is not None
+    assert add_audit.before_state is None
+    assert add_audit.after_state["user_id"] == str(member_user.id)
+    assert add_audit.after_state["role"] == "developer"
+    assert update_audit.before_state == {
+        "user_id": str(member_user.id),
+        "role": "developer",
+    }
+    assert update_audit.after_state["role"] == "viewer"
+    assert remove_audit.before_state == {
+        "user_id": str(member_user.id),
+        "role": "viewer",
+    }
+    assert remove_audit.after_state is None
+
+
+@pytest.mark.asyncio
 async def test_credentials_api_persists_encrypted_value_rotates_and_soft_deletes(
     integration_app,
     integration_client,
