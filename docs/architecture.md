@@ -203,14 +203,16 @@ POST /api/v1/webhooks/{project_id}/trigger
     ├── 按 tenant + project_id 读取项目；跨租户返回 404
     ├── 如配置 webhook_secret，则验证 X-Webhook-Signature（HMAC-SHA256）
     ├── 校验当前用户对项目有 RUN_TRIGGER 权限
+    ├── 按 Project.settings.allowed_branches 做分支过滤
     ├── 选择项目首个 pipeline 与默认/首个 environment
     ├── 使用请求体 git_ref / git_sha / metadata 创建 webhook Run
+    ├── 使用 provider + git_url + git_sha + branch_name 写 dedup_key，避免同 commit 重复触发
     │
     ▼
 按当前 FairScheduler 入队执行（见 §6.1 队列边界）
 ```
 
-当前 `main` 尚未实现 Git 平台事件类型解析、按 repo URL 匹配项目、分支过滤和同 commit 去重；这些由 T06 Webhook 分支过滤 + 去重任务补齐。
+当前 `main` 的项目级 webhook 已实现 HMAC 验签、分支过滤和同 commit 去重；尚未实现 Git 平台事件类型解析与按 repo URL 匹配项目的 provider 级入口。
 
 ### 6.6 Worker 故障恢复
 
@@ -318,7 +320,7 @@ Run 1──N NotificationLog
 | Tenant | name, settings(JSONB) | 租户级配置（默认资源限制等） |
 | AppUser | username, email, role, is_platform_admin, is_active, last_login_at | 登录用户与租户级角色 |
 | ApiToken | token_id, secret_hash, scopes, expires_at, is_revoked | 机器访问 token，明文 token 不落库 |
-| Project | slug, git_url, git_auth_method, credential_id, default_branch, settings(JSONB), status | 项目聚合根，settings 当前承载 `webhook_secret` 等嵌入配置；`allowed_branches` / `silent_windows` 为 T06 / T05 计划写入同一 JSONB 的字段；`credential_id` 已可绑定但执行侧 clone 使用待补 |
+| Project | slug, git_url, git_auth_method, credential_id, default_branch, settings(JSONB), status | 项目聚合根，settings 当前承载 `webhook_secret`、`allowed_branches` 等嵌入配置；`silent_windows` 为 T05 计划写入同一 JSONB 的字段；`credential_id` 已可绑定但执行侧 clone 使用待补 |
 | Environment | base_image, setup_script, memory_mb, cpu_cores, resource_limits(JSONB), network_policy, env_vars(JSONB), cache_key | 执行环境；`memory_mb` / `cpu_cores` 是 ORM 离散列；API 暴露的 `max_artifact_size_mb` / `max_artifacts_count` 当前存放在 `resource_limits` JSONB 中，不是独立列；`env_vars` 当前仍为明文 JSONB，待 F-PL-02 加密 |
 | Pipeline | stages(JSONB), selector(JSONB), trigger_config(JSONB), retry_policy(JSONB), timeout_seconds, enabled | 管道定义，使用 JSONB 支持多阶段执行与不同 runner；当前没有 collector 选择字段，执行器固定 JUnit collector |
 | Schedule | cron_expr, timezone, quiet_windows(JSONB), next_run_at, last_run_at, last_error | 定时触发配置，当前已有 schedule 级 quiet window |

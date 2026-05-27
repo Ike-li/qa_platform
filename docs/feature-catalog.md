@@ -47,7 +47,7 @@
 |---|---|---|---|---|
 | F-EX-01 | 手动触发 | P0 | ⚠️ | `api/v1/runs.py` · 当前已支持按 pipeline 触发、可指定 `git_ref` 与 priority；“触发后 < 5s 入队”已进入 nightly/manual performance smoke；PRD 要求的 commit / environment 指定入参未闭环，见 §4 |
 | F-EX-02 | Cron 定时触发 | P1 | ⚠️ | `api/v1/schedules.py` + `worker/settings.py::check_schedules` · timezone 已实现；既有 schedule 级 `quiet_windows` 存在，但 PRD 验收要求的项目级"静默窗口（发布冻结期）"未实现，见 §4 |
-| F-EX-03 | Webhook 触发 | P1 | ⚠️ | `api/v1/webhooks.py` · HMAC-SHA256 签名验证已实现；PRD 验收要求"分支过滤 + 同 commit 去重"未实现（`dedup_key` 字段在 ORM 已有但 webhook 路由未传入），见 §4 |
+| F-EX-03 | Webhook 触发 | P1 | ⚠️ | `api/v1/webhooks.py` · 项目级 webhook 已实现 HMAC-SHA256 签名验证、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口，见 §4 |
 | F-EX-04 | 执行隔离 | P0 | ✅ | `engine/docker_backend.py` · 默认 `network_policy=deny` → `NetworkMode=none`；容器以 `1000:1000`、只读 rootfs、drop all caps、no-new-privileges 运行；`allow` 会显式使用 bridge，`restricted` 需要部署侧提供 `qap-restricted` 网络 |
 | F-EX-05 | 实时日志 | P0 | ⚠️ | `engine/log_stream.py` + `api/v1/sse.py` + `api/v1/runs.py` · Redis Stream 实时日志、`Last-Event-ID` 续传、S3 JSONL 归档写入与归档日志读回 API 已实现；真实 API/RBAC/DB 测试覆盖 SSE 断点续传、归档读回分页和对象缺失 404；nightly/manual performance smoke 覆盖真实 SSE 推送 < 2s；前端终态 Run 回看入口已接入归档日志 API，剩余大日志体验/异常可观测性见 §4 |
 | F-EX-06 | 取消执行 | P0 | ✅ | `engine/cancel.py` |
@@ -121,7 +121,7 @@
 | Webhook 签名验证 | P1 | ✅ | `api/v1/webhooks.py` · HMAC-SHA256 |
 | Container 安全头（X-Frame, HSTS 等） | P1 | ✅ | `api/middleware/security_headers.py`（CSP 等）+ `frontend/nginx.conf`（静态资源） |
 | iframe sandbox 加固 | P0 | ✅ | `components/runs/artifact-preview.tsx` · 仅 `allow-scripts`，去掉 `allow-same-origin` |
-| 审计日志（who/what/when/from） | P0 | ⚠️ | `api/audit.py` 写入端 + `infra/database/repositories/audit_repo.py` 仓储已实现；批量取消/批量重试、SSE ticket、projects/project members/pipelines/credentials/environments/notification rules/schedules 已补 audit 写入、敏感字段脱敏或 delete before_state 的真实 DB 验证；查询 API 已实现但正式 PRD 章节仍未补，见 §4 |
+| 审计日志（who/what/when/from） | P0 | ⚠️ | `api/audit.py` 写入端 + `infra/database/repositories/audit_repo.py` 仓储已实现；批量取消/批量重试、SSE ticket、projects/project members/pipelines/credentials/environments/notification rules/schedules、签名 webhook `run.trigger` 已补 audit 写入、敏感字段脱敏或 delete before_state 的真实 DB 验证；查询 API 已实现但正式 PRD 章节仍未补，见 §4 |
 | structlog（JSON 格式） | P1 | ⚠️ | `qaplatform.logging.configure_logging` 已在 API app 默认 factory 路径配置 structlog / JSON renderer；worker 入口未调用该配置，worker/engine/plugin 多处仍直接使用 stdlib `logging.getLogger`，全局结构化日志待补 |
 | OpenTelemetry 追踪 | P2 | ❌ | **未实现**。`pyproject.toml` 已声明部分 OTel 依赖，但缺 OTLP HTTP exporter；代码无 `TracerProvider` / `FastAPIInstrumentor` 装配，见 §4 |
 | Prometheus 指标 | P1 | ✅ | `/metrics` endpoint |
@@ -144,14 +144,14 @@
 | F-PM-01 / F-PM-02 Git 凭证执行闭环 | P0 | 项目 schema 可保存 `git_auth_method` / `credential_id`，凭证 CRUD 可加密存储；但 manual/webhook Run 只把 `credential_id` 放入 metadata，`engine/executor.py::_clone_repo` 只用原始 `git_url` / `git_ref` 调 `GitSource.clone()`，未解密 token/SSH key 并注入 clone | 需补私有 HTTPS token / SSH key clone 支持、临时文件权限、错误脱敏与认证失败测试；避免把密钥写入日志或持久化 metadata |
 | F-PL-01 collector 配置补齐 | P0 | Pipeline schema / ORM / `worker/tasks.py::_build_pipeline_config` 均无 collector 选择或配置；`RunExecutor.execute()` 固定 `get_collector("junit")` | PRD §3.2 要求可配置测试运行器、结果收集器、超时、重试策略；需决定当前 JUnit-only 是否改为正式限制，或新增 collector 配置与测试 |
 | 审计日志查询 API | P0 | 已完成：`/api/v1/audit-events` 支持 Owner/Admin 分页查询、组合过滤、跨租户 404/空结果收敛，并写 `audit_events.list` 自审计 | 审计查询仍未补入正式 PRD 章节；T02 任务包保留为验收档案 |
-| 审计写入覆盖补齐 | P1 | 批量 cancel/retry、SSE ticket、projects/project members/pipelines/credentials/environments/notification rules/schedules 已补 audit 写入、项目 `git_url` userinfo 与敏感字段脱敏或 delete before_state 的真实 DB 验证；剩余写操作按安全风险继续补齐 | architecture §9.6 已改为“关键写操作主路径覆盖，覆盖率待补齐” |
+| 审计写入覆盖补齐 | P1 | 批量 cancel/retry、SSE ticket、projects/project members/pipelines/credentials/environments/notification rules/schedules、签名 webhook `run.trigger` 已补 audit 写入、项目 `git_url` userinfo 与敏感字段脱敏或 delete before_state 的真实 DB 验证；剩余写操作按安全风险继续补齐 | architecture §9.6 已改为“关键写操作主路径覆盖，覆盖率待补齐” |
 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐 | P0 | 后端已递归上传 `results/` 目录文件并标记 Allure 目录产物；required integration 覆盖 artifact 列表到下载链接的真实 JWT/RBAC/API/DB 行与 bucket/key/TTL 参数；nightly/manual external-stack smoke 覆盖真实 worker 后 artifact 列表、预签名下载链接与 JUnit 内容下载；前端 run detail 已有 HTML artifact 预览 E2E；`disk_bytes` 字段未进入 Docker HostConfig，OOM/timeout 终止原因与资源用量记录未闭环 | PRD §3.2 要求限制产物大小并记录资源终止信息，PRD §3.4 要求预签名下载 + HTML 报告在线预览；当前 CPU/内存/超时、产物数量/大小限制、递归上传、`download` JSON 和前端预览主路径已实现，资源记录仍待补 |
 | F-EX-05 日志归档回看闭环 | P0 | Redis Stream 实时日志、S3 JSONL 归档写入与归档日志读回 API 已实现；required integration 覆盖真实 API/RBAC/DB 下的 SSE 断点续传、默认页、分页窗口和对象缺失 404；nightly/manual external-stack smoke 覆盖真实 worker 完成后的归档日志读回；nightly/manual performance smoke 覆盖真实 SSE 推送 < 2s；前端终态 run 已接入归档日志 API 并用真实 DB+S3 E2E 覆盖回放/搜索 | PRD §3.3 验收要求“日志持久化可回看”；剩余增强是大日志虚拟列表体验和对象存储异常可观测性 |
 | F-AU-02 API Token scope enforcement 补齐 | P1 | 已完成 | API token scopes 已贯通 tenant/project 权限依赖；真实 API 测试覆盖只读、run.trigger、错误/空 scope |
 | F-AU-04 跨租户 404 完整收敛 | P0 | 已完成 | Member/Viewer 的 path `project_id` 项目级权限依赖先验证当前租户可见性；跨 tenant、随机 UUID、软删除一致 404 |
 | F-EX-01 手动触发参数与入队验收补齐 | P0 | `RunTrigger` 只接收 `pipeline_id` / `git_ref` / `priority`；PRD 要求可指定 commit 与 environment；触发后 < 5s 入队已纳入 nightly/manual performance smoke | 创建 Run 时 `environment_id` 取项目默认或首个环境，`git_sha` 不能由请求体指定；前端旧 `env_overrides` / `params` 偏移仍归 `T-FRONTEND-API` |
 | F-EX-02 静默窗口 | P1 | 发布冻结期不触发 cron | PRD §3.3 验收 |
-| F-EX-03 Webhook 分支过滤 + 同 commit 去重 | P1 | 路由未传 `dedup_key`，无分支过滤逻辑 | `dedup_key` 字段在 ORM 已有，路由层接入即可 |
+| F-EX-03 Webhook Git 平台事件解析 | P1 | 项目级 webhook 已支持 HMAC 验签、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口 | 当前接口仍是 `POST /api/v1/webhooks/{project_id}/trigger`，不是 `POST /webhooks/{provider}` |
 | F-EX-07 自动重试端到端补齐 | P2 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、worker_lost callback 已补单测和真实 DB 测试；nightly/manual 已启动完整外部栈跑 worker smoke 与 worker_lost retry 黑盒 | 剩余增强是明确 clone/setup/Docker daemon 失败是否也进入自动 retry，并补对应黑盒场景 |
 | F-EX-08 优先级队列消费闭环 | P2 | 已补部署/测试主干 | Compose 启动 high/medium/low worker；manual priority 队列矩阵有单测；等待队列 priority+FIFO 有真实 DB 测试 |
 | F-LS-04 测试结果 suite/关键字过滤 | P0 | `main` 仅 status | PRD §3.7 验收；`feature/T07-test-results-filter` 已推送但未合入 |
