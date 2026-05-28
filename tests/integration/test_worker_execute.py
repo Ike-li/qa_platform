@@ -225,6 +225,22 @@ async def admin_token(api_client):
     return resp.json()["access_token"]
 
 
+async def _create_external_api_token(
+    api_client,
+    access_token: str,
+    *,
+    name: str,
+    scopes: list[str],
+) -> str:
+    response = await api_client.post(
+        "/api/v1/auth/tokens",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"name": name, "scopes": scopes, "expires_days": 7},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["token"]
+
+
 async def _wait_for_terminal(api_client, headers, run_id: str, *, timeout_seconds: int = 180) -> str | None:
     deadline = asyncio.get_event_loop().time() + timeout_seconds
     final_status = None
@@ -684,6 +700,86 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     for artifact_name in expected_artifacts:
         assert any(f"Uploaded artifact: {artifact_name}" in line for line in lines)
     assert any("Run completed: done" in line for line in lines)
+
+    run_read_token = await _create_external_api_token(
+        api_client,
+        admin_token,
+        name=f"worker-run-read-{suffix}",
+        scopes=["run.read"],
+    )
+    empty_scope_token = await _create_external_api_token(
+        api_client,
+        admin_token,
+        name=f"worker-empty-{suffix}",
+        scopes=[],
+    )
+    run_read_headers = {"Authorization": f"Bearer {run_read_token}"}
+    empty_scope_headers = {"Authorization": f"Bearer {empty_scope_token}"}
+
+    token_artifacts_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}/artifacts",
+        headers=run_read_headers,
+        params={"page": 1, "per_page": 20},
+    )
+    assert token_artifacts_resp.status_code == 200, token_artifacts_resp.text
+    token_artifacts_body = token_artifacts_resp.json()
+    token_artifacts_by_name = {
+        artifact["name"]: artifact for artifact in token_artifacts_body["data"]
+    }
+    assert expected_artifacts.keys() <= token_artifacts_by_name.keys()
+    assert worker_secret not in json.dumps(token_artifacts_body, sort_keys=True)
+
+    token_archive_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers=run_read_headers,
+        params={"page": 1, "per_page": 100},
+    )
+    assert token_archive_resp.status_code == 200, token_archive_resp.text
+    token_archive_body = token_archive_resp.json()
+    token_lines = [entry["line"] for entry in token_archive_body["data"]]
+    assert any("Repository cloned successfully" in line for line in token_lines)
+    assert any("Run completed: done" in line for line in token_lines)
+    assert worker_secret not in "\n".join(token_lines)
+
+    token_junit = token_artifacts_by_name["junit.xml"]
+    token_download_resp = await api_client.get(
+        f"/api/v1/artifacts/{token_junit['id']}/download",
+        headers=run_read_headers,
+    )
+    assert token_download_resp.status_code == 200, token_download_resp.text
+    token_download_body = token_download_resp.json()
+    assert token_download_body["expires_in"] > 0
+    token_downloaded_text = await _download_presigned_text(
+        token_download_body["download_url"]
+    )
+    assert "<testsuite name='real-worker'" in token_downloaded_text
+    assert worker_secret not in token_downloaded_text
+
+    forbidden_fragments = (
+        worker_secret,
+        f"reports/{run_id}/",
+        f"logs/{run_id}.jsonl",
+        "Repository cloned successfully",
+        "Run completed: done",
+        *expected_artifacts.keys(),
+    )
+
+    denied_archive_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers=empty_scope_headers,
+    )
+    denied_list_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}/artifacts",
+        headers=empty_scope_headers,
+    )
+    denied_download_resp = await api_client.get(
+        f"/api/v1/artifacts/{token_junit['id']}/download",
+        headers=empty_scope_headers,
+    )
+    for response in (denied_archive_resp, denied_list_resp, denied_download_resp):
+        assert response.status_code == 403, response.text
+        for fragment in forbidden_fragments:
+            assert fragment not in response.text
 
 
 @pytest.mark.asyncio
