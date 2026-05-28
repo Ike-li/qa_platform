@@ -2750,14 +2750,24 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
         ).encode("utf-8")
 
         artifact_repo = ArtifactRepository(integration_db_session)
-        artifact = await artifact_repo.create(
-            run_id=run_id,
-            type="report",
-            name=f"{marker}-report.html",
-            storage_path=f"reports/{run_id}/{marker}-report.html",
-            size_bytes=4096,
-            mime_type="text/html",
-        )
+        artifacts = [
+            await artifact_repo.create(
+                run_id=run_id,
+                type=artifact_type,
+                name=f"{marker}-{artifact_name}",
+                storage_path=f"reports/{run_id}/{marker}-{artifact_name}",
+                size_bytes=4096 + index,
+                mime_type=mime_type,
+            )
+            for index, (artifact_type, artifact_name, mime_type) in enumerate(
+                (
+                    ("report", "report.html", "text/html"),
+                    ("junit", "junit.xml", "application/xml"),
+                    ("log", "trace.txt", "text/plain"),
+                )
+            )
+        ]
+        artifact = artifacts[0]
 
         audit_action = f"audit.concurrent_probe.{marker}"
         now = datetime.now(timezone.utc)
@@ -2813,6 +2823,22 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
             "per_page": 30,
         }
 
+        async def read_run_detail() -> float:
+            elapsed_ms, response = await _timed(
+                client.get(
+                    f"/api/v1/runs/{run_id}",
+                    headers=headers,
+                )
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["id"] == str(run_id)
+            assert body["status"] == "queued"
+            assert body["pipeline_id"] == stack["pipeline_id"]
+            assert body["project_id"] == stack["project_id"]
+            assert body["environment_id"] == stack["environment_id"]
+            return elapsed_ms
+
         async def read_archived_logs() -> float:
             elapsed_ms, response = await _timed(
                 client.get(
@@ -2828,6 +2854,27 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
             assert body["per_page"] == 40
             assert body["data"][0]["line"] == f"{marker}-archived-line-080"
             assert body["data"][-1]["line"] == f"{marker}-archived-line-119"
+            return elapsed_ms
+
+        async def list_artifacts() -> float:
+            elapsed_ms, response = await _timed(
+                client.get(
+                    f"/api/v1/runs/{run_id}/artifacts",
+                    headers=headers,
+                )
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] == len(artifacts)
+            artifacts_by_id = {item["id"]: item for item in body["data"]}
+            assert set(artifacts_by_id) == {str(item.id) for item in artifacts}
+            for item in artifacts:
+                response_item = artifacts_by_id[str(item.id)]
+                assert response_item["run_id"] == str(run_id)
+                assert response_item["name"] == item.name
+                assert response_item["storage_path"] == item.storage_path
+                assert response_item["type"] == item.type
+                assert response_item["size_bytes"] == item.size_bytes
             return elapsed_ms
 
         async def download_artifact() -> float:
@@ -2861,17 +2908,21 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
         before_self_audits = await count_self_audits()
         try:
             warmup_samples = await asyncio.gather(
+                read_run_detail(),
                 read_archived_logs(),
+                list_artifacts(),
                 download_artifact(),
                 list_audit_events(),
             )
-            assert len(warmup_samples) == 3
+            assert len(warmup_samples) == 5
 
             samples: list[float] = []
             for _ in range(6):
                 samples.extend(
                     await asyncio.gather(
+                        read_run_detail(),
                         read_archived_logs(),
+                        list_artifacts(),
                         download_artifact(),
                         list_audit_events(),
                     )
