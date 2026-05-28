@@ -741,19 +741,24 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     assert any("Run completed: done" in line for line in token_lines)
     assert worker_secret not in "\n".join(token_lines)
 
-    token_junit = token_artifacts_by_name["junit.xml"]
-    token_download_resp = await api_client.get(
-        f"/api/v1/artifacts/{token_junit['id']}/download",
-        headers=run_read_headers,
-    )
-    assert token_download_resp.status_code == 200, token_download_resp.text
-    token_download_body = token_download_resp.json()
-    assert token_download_body["expires_in"] > 0
-    token_downloaded_text = await _download_presigned_text(
-        token_download_body["download_url"]
-    )
-    assert "<testsuite name='real-worker'" in token_downloaded_text
-    assert worker_secret not in token_downloaded_text
+    for artifact_name, (artifact_type, expected_text) in expected_artifacts.items():
+        token_artifact = token_artifacts_by_name[artifact_name]
+        assert token_artifact["type"] == artifact_type
+        assert token_artifact["storage_path"] == f"reports/{run_id}/{artifact_name}"
+
+        token_download_resp = await api_client.get(
+            f"/api/v1/artifacts/{token_artifact['id']}/download",
+            headers=run_read_headers,
+        )
+        assert token_download_resp.status_code == 200, token_download_resp.text
+        token_download_body = token_download_resp.json()
+        assert token_download_body["expires_in"] > 0
+        assert token_download_body["download_url"].startswith(("http://", "https://"))
+        token_downloaded_text = await _download_presigned_text(
+            token_download_body["download_url"]
+        )
+        assert expected_text in token_downloaded_text
+        assert worker_secret not in token_downloaded_text
 
     forbidden_fragments = (
         worker_secret,
@@ -761,7 +766,9 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         f"logs/{run_id}.jsonl",
         "Repository cloned successfully",
         "Run completed: done",
+        "Uploaded artifact:",
         *expected_artifacts.keys(),
+        *(expected_text for _, expected_text in expected_artifacts.values()),
     )
 
     denied_archive_resp = await api_client.get(
@@ -772,11 +779,20 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         f"/api/v1/runs/{run_id}/artifacts",
         headers=empty_scope_headers,
     )
-    denied_download_resp = await api_client.get(
-        f"/api/v1/artifacts/{token_junit['id']}/download",
-        headers=empty_scope_headers,
-    )
-    for response in (denied_archive_resp, denied_list_resp, denied_download_resp):
+    denied_download_responses = []
+    for artifact_name in expected_artifacts:
+        artifact = token_artifacts_by_name[artifact_name]
+        denied_download_responses.append(
+            await api_client.get(
+                f"/api/v1/artifacts/{artifact['id']}/download",
+                headers=empty_scope_headers,
+            )
+        )
+    for response in (
+        denied_archive_resp,
+        denied_list_resp,
+        *denied_download_responses,
+    ):
         assert response.status_code == 403, response.text
         for fragment in forbidden_fragments:
             assert fragment not in response.text
