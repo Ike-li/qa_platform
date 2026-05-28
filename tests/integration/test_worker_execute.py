@@ -921,6 +921,8 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
                 "    \"actual_secret_sha256 = hashlib.sha256(actual_secret.encode('utf-8')).hexdigest()\\n\"\n"
                 "    \"if actual_secret_sha256 != expected_secret_sha256:\\n\"\n"
                 "    \"    raise SystemExit('worker secret env var was not injected')\\n\"\n"
+                "    \"print(f'active stdout secret: {actual_secret}', flush=True)\\n\"\n"
+                "    \"print(f'active stderr secret: {actual_secret}', file=sys.stderr, flush=True)\\n\"\n"
                 "    \"junit = 'results/junit.xml'\\n\"\n"
                 "    \"for arg in sys.argv[1:]:\\n\"\n"
                 "    \"    if arg.startswith('--junitxml='):\\n\"\n"
@@ -988,6 +990,22 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         forbidden_texts=(worker_secret,),
     )
 
+    live_ticket_resp = await api_client.post(
+        "/api/v1/auth/sse-ticket",
+        headers=headers,
+    )
+    assert live_ticket_resp.status_code == 200, live_ticket_resp.text
+    live_secret_events = await _read_sse_until_log_line(
+        run_id,
+        live_ticket_resp.json()["ticket"],
+        "active stdout secret: [REDACTED]",
+        timeout_seconds=180,
+    )
+    live_secret_lines = "\n".join(
+        _sse_log_line(event) for event in live_secret_events
+    )
+    assert worker_secret not in live_secret_lines
+
     final_status = await _wait_for_terminal(
         api_client, headers, run_id, timeout_seconds=240
     )
@@ -1040,7 +1058,10 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         timeout_seconds=60,
     )
     lines = [entry["line"] for entry in archive_body["data"]]
-    assert worker_secret not in "\n".join(lines)
+    joined_lines = "\n".join(lines)
+    assert worker_secret not in joined_lines
+    assert "active stdout secret: [REDACTED]" in joined_lines
+    assert "active stderr secret: [REDACTED]" in joined_lines
     assert any("Repository cloned successfully" in line for line in lines)
     for artifact_name in expected_artifacts:
         assert any(f"Uploaded artifact: {artifact_name}" in line for line in lines)
@@ -1080,6 +1101,22 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     assert token_detail["summary"]["passed"] == 1
     assert worker_secret not in json.dumps(token_detail, sort_keys=True)
 
+    token_live_ticket_resp = await api_client.post(
+        "/api/v1/auth/sse-ticket",
+        headers=run_read_headers,
+    )
+    assert token_live_ticket_resp.status_code == 200, token_live_ticket_resp.text
+    token_live_secret_events = await _read_sse_until_log_line(
+        run_id,
+        token_live_ticket_resp.json()["ticket"],
+        "active stdout secret: [REDACTED]",
+        timeout_seconds=30,
+    )
+    token_live_secret_lines = "\n".join(
+        _sse_log_line(event) for event in token_live_secret_events
+    )
+    assert worker_secret not in token_live_secret_lines
+
     token_artifacts_resp = await api_client.get(
         f"/api/v1/runs/{run_id}/artifacts",
         headers=run_read_headers,
@@ -1101,9 +1138,12 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     assert token_archive_resp.status_code == 200, token_archive_resp.text
     token_archive_body = token_archive_resp.json()
     token_lines = [entry["line"] for entry in token_archive_body["data"]]
+    token_joined_lines = "\n".join(token_lines)
     assert any("Repository cloned successfully" in line for line in token_lines)
     assert any("Run completed: done" in line for line in token_lines)
-    assert worker_secret not in "\n".join(token_lines)
+    assert "active stdout secret: [REDACTED]" in token_joined_lines
+    assert "active stderr secret: [REDACTED]" in token_joined_lines
+    assert worker_secret not in token_joined_lines
 
     for artifact_name, (artifact_type, expected_text) in expected_artifacts.items():
         token_artifact = token_artifacts_by_name[artifact_name]
@@ -1131,6 +1171,9 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         "Repository cloned successfully",
         "Run completed: done",
         "Uploaded artifact:",
+        "active stdout secret:",
+        "active stderr secret:",
+        "[REDACTED]",
         *expected_artifacts.keys(),
         *(expected_text for _, expected_text in expected_artifacts.values()),
     )
@@ -1146,6 +1189,14 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     denied_project_detail_resp = await api_client.get(
         f"/api/v1/runs/{run_id}",
         headers=project_read_headers,
+    )
+    denied_live_ticket_resp = await api_client.post(
+        "/api/v1/auth/sse-ticket",
+        headers=empty_scope_headers,
+    )
+    assert denied_live_ticket_resp.status_code == 200, denied_live_ticket_resp.text
+    denied_live_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}/logs?ticket={denied_live_ticket_resp.json()['ticket']}",
     )
     denied_list_resp = await api_client.get(
         f"/api/v1/runs/{run_id}/artifacts",
@@ -1163,6 +1214,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     for response in (
         denied_detail_resp,
         denied_project_detail_resp,
+        denied_live_resp,
         denied_archive_resp,
         denied_list_resp,
         *denied_download_responses,
