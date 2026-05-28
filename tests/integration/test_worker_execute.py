@@ -1228,12 +1228,13 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
                 "    \"(path.parent / 'logs' / 'trace.txt').write_text('real-worker-trace')\\n\"\n"
                 "    \"(path.parent / 'allure-report').mkdir(exist_ok=True)\\n\"\n"
                 "    \"(path.parent / 'allure-report' / 'index.html').write_text('<html>real-worker-allure</html>')\\n\"\n"
+                "    \"(path.parent / 'zz-over-limit.txt').write_text('over-limit-artifact-content')\\n\"\n"
                 "    \"print('===== 1 passed in 0.01s =====')\\n\"\n"
                 ")\n"
                 "PY"
             ),
             "max_artifact_size_mb": 10,
-            "max_artifacts_count": 8,
+            "max_artifacts_count": 4,
         },
     )
     assert env_resp.status_code in (200, 201), env_resp.text
@@ -1323,7 +1324,10 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         "allure-report/index.html": ("allure-report", "real-worker-allure"),
     }
     assert expected_artifacts.keys() <= artifacts_by_name.keys(), artifacts_body
+    assert artifacts_body["total"] == len(expected_artifacts)
+    assert "zz-over-limit.txt" not in artifacts_by_name
     assert worker_secret not in str(artifacts_body)
+    assert "over-limit-artifact-content" not in str(artifacts_body)
 
     for artifact_name, (artifact_type, expected_text) in expected_artifacts.items():
         artifact = artifacts_by_name[artifact_name]
@@ -1375,6 +1379,10 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     assert any("Repository cloned successfully" in line for line in lines)
     for artifact_name in expected_artifacts:
         assert any(f"Uploaded artifact: {artifact_name}" in line for line in lines)
+    assert any(
+        "Skipped artifact zz-over-limit.txt: artifact count limit exceeded" in line
+        for line in lines
+    )
     assert any("Run completed: done" in line for line in lines)
 
     run_read_token = await _create_external_api_token(
@@ -1438,7 +1446,13 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         artifact["name"]: artifact for artifact in token_artifacts_body["data"]
     }
     assert expected_artifacts.keys() <= token_artifacts_by_name.keys()
+    assert token_artifacts_body["total"] == len(expected_artifacts)
+    assert "zz-over-limit.txt" not in token_artifacts_by_name
     assert worker_secret not in json.dumps(token_artifacts_body, sort_keys=True)
+    assert "over-limit-artifact-content" not in json.dumps(
+        token_artifacts_body,
+        sort_keys=True,
+    )
 
     token_archive_resp = await api_client.get(
         f"/api/v1/runs/{run_id}/logs/archive",
@@ -1470,6 +1484,10 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     assert "active stderr secret: [REDACTED]" in token_joined_lines
     assert "active bulk secret: [REDACTED]" in token_joined_lines
     assert collect_bulk_indexes(token_lines) == list(range(bulk_log_count))
+    assert any(
+        "Skipped artifact zz-over-limit.txt: artifact count limit exceeded" in line
+        for line in token_lines
+    )
     assert worker_secret not in token_joined_lines
 
     for artifact_name, (artifact_type, expected_text) in expected_artifacts.items():
@@ -1502,6 +1520,9 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         "active stderr secret:",
         "active bulk secret:",
         bulk_marker,
+        "zz-over-limit.txt",
+        "over-limit-artifact-content",
+        "artifact count limit exceeded",
         "[REDACTED]",
         *expected_artifacts.keys(),
         *(expected_text for _, expected_text in expected_artifacts.values()),
