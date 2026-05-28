@@ -48,7 +48,7 @@ def _compose(args: list[str], *, timeout: int = 60, check: bool = True) -> subpr
             check=False,
         )
     except FileNotFoundError:
-        pytest.skip("docker compose is not available")
+        _skip_or_fail_external_stack("docker compose is not available")
     except subprocess.TimeoutExpired as exc:
         pytest.fail(f"docker compose {' '.join(args)} timed out after {timeout}s: {exc}")
 
@@ -69,7 +69,9 @@ def _running_compose_services() -> set[str]:
         timeout=30,
     )
     if result.returncode != 0:
-        pytest.skip("docker compose services are not available for this external stack")
+        _skip_or_fail_external_stack(
+            "docker compose services are not available for this external stack"
+        )
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
@@ -78,12 +80,12 @@ def _require_compose_worker_lost_stack() -> None:
     required = {"api", "postgres", "redis", "worker"}
     missing = required - services
     if missing:
-        pytest.skip(
+        _skip_or_fail_external_stack(
             "worker-lost external-stack test requires running compose services: "
             f"{', '.join(sorted(missing))}"
         )
     if not ({"worker-high", "worker-low"} & services):
-        pytest.skip(
+        _skip_or_fail_external_stack(
             "worker-lost external-stack test requires worker-high or worker-low "
             "to keep the reclaimer cron alive while worker is stopped"
         )
@@ -94,7 +96,7 @@ def _require_compose_priority_stack() -> None:
     required = {"api", "postgres", "redis", "worker", "worker-high", "worker-low"}
     missing = required - services
     if missing:
-        pytest.skip(
+        _skip_or_fail_external_stack(
             "priority external-stack test requires running compose services: "
             f"{', '.join(sorted(missing))}"
         )
@@ -105,7 +107,7 @@ def _require_compose_worker_stack() -> None:
     required = {"api", "postgres", "redis", "minio", "worker"}
     missing = required - services
     if missing:
-        pytest.skip(
+        _skip_or_fail_external_stack(
             "worker failure external-stack test requires running compose services: "
             f"{', '.join(sorted(missing))}"
         )
@@ -129,19 +131,53 @@ def _compose_redis_delete(keys: list[str]) -> int:
     return int((result.stdout or "0").strip() or "0")
 
 
+def _external_stack_required() -> bool:
+    return os.environ.get("QAP_EXTERNAL_STACK_REQUIRED") == "1"
+
+
+def _skip_or_fail_external_stack(reason: str) -> None:
+    if _external_stack_required():
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 @pytest.fixture(scope="module")
 def api_server_available():
-    """Skip if the API server is not reachable (e.g. CI without docker-compose stack)."""
-    import socket
-    import urllib.parse
-    parsed = urllib.parse.urlparse(BASE_URL)
-    host = parsed.hostname or "localhost"
-    port = parsed.port or 8000
+    """Require a ready external API stack, skipping only for local optional runs."""
+    services = _running_compose_services()
+    required = {"api", "postgres", "redis", "minio", "worker"}
+    missing = required - services
+    if missing:
+        _skip_or_fail_external_stack(
+            "external-stack tests require running compose services: "
+            f"{', '.join(sorted(missing))}"
+        )
+
     try:
-        with socket.create_connection((host, port), timeout=3):
-            pass
-    except OSError:
-        pytest.skip(f"API server not reachable at {BASE_URL} — start docker-compose stack first")
+        with httpx.Client(base_url=BASE_URL, timeout=3.0) as client:
+            response = client.get("/ready")
+    except httpx.HTTPError as exc:
+        _skip_or_fail_external_stack(
+            f"external API stack not ready at {BASE_URL}: {exc!r}"
+        )
+
+    if response.status_code != 200:
+        _skip_or_fail_external_stack(
+            "external API stack not ready at "
+            f"{BASE_URL}: {response.status_code} {response.text[:300]}"
+        )
+    try:
+        body = response.json()
+    except ValueError:
+        _skip_or_fail_external_stack(
+            "external API stack did not serve QA Platform /ready JSON at "
+            f"{BASE_URL}: {response.text[:300]}"
+        )
+    if body.get("status") != "ok" or not isinstance(body.get("checks"), dict):
+        _skip_or_fail_external_stack(
+            "external API stack did not serve a healthy QA Platform /ready "
+            f"response at {BASE_URL}: {body}"
+        )
 
 
 @pytest.fixture(scope="module")
@@ -149,7 +185,7 @@ def docker_available():
     try:
         subprocess.run(["docker", "info"], check=True, capture_output=True, timeout=5)
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        pytest.skip("docker daemon not available")
+        _skip_or_fail_external_stack("docker daemon not available")
     return True
 
 
@@ -181,7 +217,11 @@ async def admin_token(api_client):
     resp = await api_client.post("/api/v1/auth/login", json={
         "username": "admin", "password": "admin123"
     })
-    assert resp.status_code == 200
+    if resp.status_code != 200:
+        _skip_or_fail_external_stack(
+            "external API stack admin login failed at "
+            f"{BASE_URL}: {resp.status_code} {resp.text[:300]}"
+        )
     return resp.json()["access_token"]
 
 

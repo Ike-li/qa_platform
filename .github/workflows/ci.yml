@@ -164,7 +164,7 @@ jobs:
         run: |
           docker compose up -d --build postgres redis minio minio-init api worker worker-high worker-low
           for attempt in {1..36}; do
-            if curl -fsS http://localhost:8000/health; then
+            if curl -fsS http://localhost:8000/ready; then
               exit 0
             fi
             docker compose ps
@@ -177,6 +177,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
         env:
           RUN_INTEGRATION_TESTS: "1"
+          QAP_EXTERNAL_STACK_REQUIRED: "1"
           QAP_EXTERNAL_STACK_GIT_URL: https://github.com/octocat/Hello-World.git
           QAP_EXTERNAL_STACK_GIT_REF: master
         run: pytest tests/integration/ -m "external_stack" -v --tb=short --durations=20
