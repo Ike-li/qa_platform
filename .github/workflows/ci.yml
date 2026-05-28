@@ -294,12 +294,36 @@ jobs:
           set +e
           set -o pipefail
           pytest tests/integration/ \
-            -m "external_stack" \
+            -m "external_stack and not performance" \
             -v \
             --junitxml=artifacts/backend-integration/external-stack-integration.xml \
             --tb=short \
             --durations=20 \
             2>&1 | tee artifacts/backend-integration/external-stack-integration.log
+          status=$?
+          set -e
+          exit "$status"
+
+      - name: Run external-stack worker performance smoke (nightly/manual)
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        env:
+          RUN_INTEGRATION_TESTS: "1"
+          RUN_PERFORMANCE_TESTS: "1"
+          QAP_EXTERNAL_STACK_REQUIRED: "1"
+          QAP_EXTERNAL_STACK_GIT_URL: https://github.com/octocat/Hello-World.git
+          QAP_EXTERNAL_STACK_GIT_REF: master
+          QAP_PERFORMANCE_SUMMARY_JSONL: artifacts/backend-integration/performance-smoke-summary.jsonl
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          pytest tests/integration/test_worker_execute.py \
+            -m "external_stack and performance" \
+            -v \
+            --junitxml=artifacts/backend-integration/external-stack-performance.xml \
+            --tb=short \
+            --durations=20 \
+            2>&1 | tee artifacts/backend-integration/external-stack-performance.log
           status=$?
           set -e
           exit "$status"
@@ -380,6 +404,8 @@ jobs:
               artifacts/backend-integration/external-stack-ps.txt
               artifacts/backend-integration/external-stack-integration.log
               artifacts/backend-integration/external-stack-integration.xml
+              artifacts/backend-integration/external-stack-performance.log
+              artifacts/backend-integration/external-stack-performance.xml
               artifacts/backend-integration/performance-smoke.log
               artifacts/backend-integration/performance-smoke.xml
               artifacts/backend-integration/performance-smoke-summary.jsonl
