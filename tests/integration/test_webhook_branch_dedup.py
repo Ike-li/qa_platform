@@ -214,7 +214,8 @@ async def test_webhook_enqueue_conflict_keeps_run_waiting_and_audited(
         resp = await client.post(f"/api/v1/webhooks/{project.id}/trigger", json=payload)
 
     assert resp.status_code == 201, resp.text
-    run_id = UUID(resp.json()["id"])
+    response_body = resp.json()
+    run_id = UUID(response_body["id"])
     run = await integration_db_session.get(Run, run_id)
     assert run is not None
     assert run.trigger_type == "webhook"
@@ -237,6 +238,7 @@ async def test_webhook_enqueue_conflict_keeps_run_waiting_and_audited(
         .one()
     )
     assert audit.user_id == user.id
+    assert audit.after_state == response_body
 
 
 @pytest.mark.asyncio
@@ -316,7 +318,8 @@ async def test_signed_webhook_success_audits_and_protects_reserved_metadata(
         )
 
     assert resp.status_code == 201, resp.text
-    run_id = UUID(resp.json()["id"])
+    response_body = resp.json()
+    run_id = UUID(response_body["id"])
     run = await integration_db_session.get(Run, run_id)
     assert run is not None
     assert run.trigger_type == "webhook"
@@ -344,9 +347,8 @@ async def test_signed_webhook_success_audits_and_protects_reserved_metadata(
         .one()
     )
     assert audit.user_id == user.id
+    assert audit.after_state == response_body
     assert audit.after_state["trigger_type"] == "webhook"
-    assert audit.after_state["git_ref"] == "refs/heads/release/2026.05"
-    assert audit.after_state["git_sha"] == "signed-webhook-sha"
     assert attacker_url not in repr(audit.after_state)
     assert attacker_credential not in repr(audit.after_state)
 
