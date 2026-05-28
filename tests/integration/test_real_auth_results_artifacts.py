@@ -19,7 +19,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 pytestmark = pytest.mark.skipif(
@@ -346,6 +346,137 @@ async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_re
     assert full_api_token not in serialized_audit
     assert secret not in serialized_audit
     assert record.secret_hash not in serialized_audit
+
+
+@pytest.mark.asyncio
+async def test_audit_events_api_token_requires_audit_read_scope_without_self_audit_on_denial(
+    real_auth_app,
+    real_auth_client,
+    integration_db_session,
+):
+    from uuid import UUID
+
+    from qaplatform.api.auth.jwt_service import JWTService
+    from qaplatform.infra.database.models import AuditEvent
+
+    access_token = await _register_real_user(real_auth_client, prefix="audit_scope")
+    payload = JWTService(real_auth_app.state.container.settings).decode_token(
+        access_token
+    )
+    tenant_id = UUID(payload["tenant_id"])
+    user_id = UUID(payload["sub"])
+    resource_id = uuid4()
+    action = f"audit.scope_probe.{uuid4().hex}"
+
+    integration_db_session.add(
+        AuditEvent(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action=action,
+            resource_type="project",
+            resource_id=resource_id,
+            before_state=None,
+            after_state={"marker": action},
+        )
+    )
+    await integration_db_session.commit()
+
+    async def count_self_audits() -> int:
+        result = await integration_db_session.execute(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(
+                AuditEvent.tenant_id == tenant_id,
+                AuditEvent.user_id == user_id,
+                AuditEvent.action == "audit_events.list",
+                AuditEvent.resource_type == "audit_event",
+            )
+        )
+        return result.scalar_one()
+
+    params = {
+        "action": action,
+        "resource_type": "project",
+        "resource_id": str(resource_id),
+        "page": 1,
+        "per_page": 10,
+    }
+    run_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="audit-run-read-denied",
+        scopes=["run.read"],
+    )
+    project_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="audit-project-read-denied",
+        scopes=["project.read"],
+    )
+    audit_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="audit-read-allowed",
+        scopes=["audit.read"],
+    )
+
+    before_self_audits = await count_self_audits()
+    for denied_token in (run_read_token, project_read_token):
+        denied_resp = await real_auth_client.get(
+            "/api/v1/audit-events",
+            headers={"Authorization": f"Bearer {denied_token}"},
+            params=params,
+        )
+        assert denied_resp.status_code == 403, denied_resp.text
+
+    assert await count_self_audits() == before_self_audits
+
+    allowed_resp = await real_auth_client.get(
+        "/api/v1/audit-events",
+        headers={"Authorization": f"Bearer {audit_read_token}"},
+        params=params,
+    )
+    assert allowed_resp.status_code == 200, allowed_resp.text
+    body = allowed_resp.json()
+    assert body["total"] == 1
+    assert [item["action"] for item in body["data"]] == [action]
+    assert body["data"][0]["resource_id"] == str(resource_id)
+
+    assert await count_self_audits() == before_self_audits + 1
+    self_audit = (
+        await integration_db_session.execute(
+            select(AuditEvent)
+            .where(
+                AuditEvent.tenant_id == tenant_id,
+                AuditEvent.user_id == user_id,
+                AuditEvent.action == "audit_events.list",
+                AuditEvent.resource_type == "audit_event",
+            )
+            .order_by(AuditEvent.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one()
+    assert set(self_audit.after_state) == {
+        "actor_id",
+        "action",
+        "resource_type",
+        "resource_id",
+        "start_at",
+        "end_at",
+        "page",
+        "per_page",
+        "total",
+    }
+    assert self_audit.after_state["actor_id"] is None
+    assert self_audit.after_state["action"] == action
+    assert self_audit.after_state["resource_type"] == "project"
+    assert self_audit.after_state["resource_id"] == str(resource_id)
+    assert self_audit.after_state["start_at"] is None
+    assert self_audit.after_state["end_at"] is None
+    assert self_audit.after_state["page"] == 1
+    assert self_audit.after_state["per_page"] == 10
+    assert self_audit.after_state["total"] == 1
+    assert "data" not in self_audit.after_state
 
 
 @pytest.mark.asyncio
