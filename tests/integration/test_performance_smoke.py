@@ -458,7 +458,7 @@ async def test_trigger_run_enqueue_slo_smoke(
     tenant_id = seed_run["tenant"].id
     user_id = seed_run["user"].id
     samples: list[float] = []
-    triggered_refs: dict[UUID, str] = {}
+    triggered_refs: dict[UUID, dict] = {}
     try:
         for _ in range(10):
             git_ref = f"perf-enqueue/{uuid4().hex}"
@@ -472,8 +472,9 @@ async def test_trigger_run_enqueue_slo_smoke(
                 },
             )
             assert response.status_code == 201, response.text
-            run_id = UUID(response.json()["id"])
-            triggered_refs[run_id] = git_ref
+            body = response.json()
+            run_id = UUID(body["id"])
+            triggered_refs[run_id] = body
 
             integration_db_session.expire_all()
             row = (
@@ -500,14 +501,15 @@ async def test_trigger_run_enqueue_slo_smoke(
     )
     audits_by_run_id = {event.resource_id: event for event in audit_result.scalars()}
     assert set(audits_by_run_id) == set(triggered_refs)
-    for run_id, git_ref in triggered_refs.items():
+    for run_id, body in triggered_refs.items():
         event = audits_by_run_id[run_id]
         assert event.before_state is None
         assert event.after_state is not None
+        assert event.after_state == body
         assert event.after_state["id"] == str(run_id)
         assert event.after_state["status"] == "queued"
         assert event.after_state["trigger_type"] == "manual"
-        assert event.after_state["git_ref"] == git_ref
+        assert event.after_state["git_ref"] == body["git_ref"]
         assert event.after_state["priority"] == 1
         assert event.after_state["pipeline_id"] == str(pipeline_id)
 
@@ -897,7 +899,7 @@ async def test_dequeue_waiting_prioritizes_newer_high_runs_over_older_low_backlo
     low_run_ids: list[UUID] = []
     high_run_ids: list[UUID] = []
     all_run_ids: set[UUID] = set()
-    triggered_refs: dict[UUID, tuple[int, str]] = {}
+    triggered_refs: dict[UUID, dict] = {}
 
     async def trigger_waiting_run(priority: int, label: str, index: int) -> UUID:
         git_ref = f"perf-priority-backlog/{label}/{index}/{uuid4().hex}"
@@ -916,7 +918,7 @@ async def test_dequeue_waiting_prioritizes_newer_high_runs_over_older_low_backlo
         assert body["pipeline_id"] == str(pipeline_id)
         assert body["git_ref"] == git_ref
         run_id = UUID(body["id"])
-        triggered_refs[run_id] = (priority, git_ref)
+        triggered_refs[run_id] = body
         all_run_ids.add(run_id)
         return run_id
 
@@ -939,10 +941,10 @@ async def test_dequeue_waiting_prioritizes_newer_high_runs_over_older_low_backlo
         created_rows = {run.id: run for run in created_result.scalars()}
         assert set(created_rows) == all_run_ids
         for run_id, row in created_rows.items():
-            priority, git_ref = triggered_refs[run_id]
+            body = triggered_refs[run_id]
             assert row.status == RunStatusEnum.QUEUED
-            assert row.priority == priority
-            assert row.git_ref == git_ref
+            assert row.priority == body["priority"]
+            assert row.git_ref == body["git_ref"]
             assert row.queue_name is None
             assert row.arq_job_id is None
             assert row.enqueued_at is None
@@ -958,17 +960,18 @@ async def test_dequeue_waiting_prioritizes_newer_high_runs_over_older_low_backlo
         assert len(audits) == len(all_run_ids)
         audits_by_run_id = {event.resource_id: event for event in audits}
         assert set(audits_by_run_id) == all_run_ids
-        for run_id, (priority, git_ref) in triggered_refs.items():
+        for run_id, body in triggered_refs.items():
             event = audits_by_run_id[run_id]
             assert event.action == "run.trigger"
             assert event.resource_type == "run"
             assert event.before_state is None
             assert event.after_state is not None
+            assert event.after_state == body
             assert event.after_state["id"] == str(run_id)
             assert event.after_state["status"] == "queued"
             assert event.after_state["trigger_type"] == "manual"
-            assert event.after_state["priority"] == priority
-            assert event.after_state["git_ref"] == git_ref
+            assert event.after_state["priority"] == body["priority"]
+            assert event.after_state["git_ref"] == body["git_ref"]
             assert event.after_state["pipeline_id"] == str(pipeline_id)
 
         active_count = (

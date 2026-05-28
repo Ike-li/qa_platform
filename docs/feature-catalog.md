@@ -45,7 +45,7 @@
 
 | ID | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|---|
-| F-EX-01 | 手动触发 | P0 | ⚠️ | `api/v1/runs.py` · 当前已支持按 pipeline 触发、可指定 `git_ref` 与 priority；“触发后 < 5s 入队”已进入 nightly/manual performance smoke，并校验每次采样都写 `run.trigger` 审计且 queued/manual/git_ref/priority/pipeline_id 状态一致；PRD 要求的 commit / environment 指定入参未闭环，见 §4 |
+| F-EX-01 | 手动触发 | P0 | ⚠️ | `api/v1/runs.py` · 当前已支持按 pipeline 触发、可指定 `git_ref` 与 priority；required integration 已覆盖 manual priority 0/1/2 的 high/medium/low queue 元数据落库，并校验 `run.trigger` audit payload 完全等于 API response、不会夹带 queue/clone 内部元数据；“触发后 < 5s 入队”已进入 nightly/manual performance smoke，并校验每次采样都写 `run.trigger` 审计且 after_state 对齐触发响应；PRD 要求的 commit / environment 指定入参未闭环，见 §4 |
 | F-EX-02 | Cron 定时触发 | P1 | ⚠️ | `api/v1/schedules.py` + `worker/settings.py::check_schedules` · timezone 已实现；schedule worker 成功触发、missing-pipeline skip audit、静默窗口和 schedule tick 入队 SLO 已有自动化证据；既有 schedule 级 `quiet_windows` 存在，但 PRD 验收要求的项目级"静默窗口（发布冻结期）"未实现，见 §4 |
 | F-EX-03 | Webhook 触发 | P1 | ⚠️ | `api/v1/webhooks.py` · 项目级 webhook 已实现 HMAC-SHA256 签名验证、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；required integration 覆盖签名成功与 enqueue conflict 的 `run.trigger` audit payload 对齐 API response，webhook 成功触发后的入队 SLO、真实 Run metadata 保留字段保护和 `run.trigger` audit 脱敏已进入 nightly/manual performance smoke；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口，见 §4 |
 | F-EX-04 | 执行隔离 | P0 | ✅ | `engine/docker_backend.py` · 默认 `network_policy=deny` → `NetworkMode=none`；容器以 `1000:1000`、只读 rootfs、drop all caps、no-new-privileges 运行；`allow` 会显式使用 bridge，`restricted` 需要部署侧提供 `qap-restricted` 网络 |
