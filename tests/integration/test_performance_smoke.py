@@ -2584,6 +2584,129 @@ async def test_audit_events_api_token_denied_no_self_audit_p99_smoke(
 
 
 @pytest.mark.asyncio
+async def test_run_read_empty_scope_denied_logs_and_artifacts_no_s3_p99_smoke(
+    test_settings,
+    integration_db_session,
+):
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    async with _real_auth_perf_client(test_settings) as (app, client):
+        registration = await _register_perf_user(
+            client,
+            prefix="perf_rr_empty",
+        )
+        access_token = registration["access_token"]
+        stack = await _create_perf_project_environment_and_pipeline(
+            client,
+            access_token,
+        )
+        trigger_resp = await client.post(
+            "/api/v1/runs",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+        )
+        assert trigger_resp.status_code == 201, trigger_resp.text
+        run_id = UUID(trigger_resp.json()["id"])
+
+        marker = f"empty-scope-run-read-{uuid4().hex}"
+        archive_key = f"logs/{run_id}.jsonl"
+        archive_body = "\n".join(
+            json.dumps(
+                {
+                    "stream": "stdout",
+                    "line": f"{marker}-archived-line-{index}",
+                }
+            )
+            for index in range(3)
+        ).encode("utf-8")
+
+        artifact_repo = ArtifactRepository(integration_db_session)
+        artifact = await artifact_repo.create(
+            run_id=run_id,
+            type="report",
+            name=f"{marker}-report.html",
+            storage_path=f"reports/{run_id}/{marker}-report.html",
+            size_bytes=1024,
+            mime_type="text/html",
+        )
+        await integration_db_session.commit()
+
+        denied_token = await _create_perf_api_token(
+            client,
+            access_token,
+            name="empty-scope-run-read-denied",
+            scopes=[],
+        )
+        headers = {"Authorization": f"Bearer {denied_token}"}
+
+        s3 = _MemoryS3()
+        await s3.put_object(
+            Bucket=app.state.container.settings.s3_bucket,
+            Key=archive_key,
+            Body=archive_body,
+            ContentType="application/x-ndjson",
+        )
+        old_s3 = app.state.container.s3_client
+        app.state.container.s3_client = s3
+
+        def assert_no_sensitive_metadata(response_text: str) -> None:
+            assert marker not in response_text
+            assert archive_key not in response_text
+            assert artifact.name not in response_text
+            assert artifact.storage_path not in response_text
+
+        async def assert_denied(endpoint: str, *, params: dict | None = None) -> float:
+            elapsed_ms, response = await _timed(
+                client.get(endpoint, params=params, headers=headers)
+            )
+            assert response.status_code == 403, response.text
+            assert_no_sensitive_metadata(response.text)
+            assert s3.get_calls == []
+            assert s3.presign_calls == []
+            return elapsed_ms
+
+        try:
+            for _ in range(2):
+                await assert_denied(
+                    f"/api/v1/runs/{run_id}/logs/archive",
+                    params={"page": 1, "per_page": 10},
+                )
+                await assert_denied(
+                    f"/api/v1/runs/{run_id}/artifacts",
+                    params={"page": 1, "per_page": 10},
+                )
+                await assert_denied(f"/api/v1/artifacts/{artifact.id}/download")
+
+            samples: list[float] = []
+            for _ in range(7):
+                samples.append(
+                    await assert_denied(
+                        f"/api/v1/runs/{run_id}/logs/archive",
+                        params={"page": 1, "per_page": 10},
+                    )
+                )
+                samples.append(
+                    await assert_denied(
+                        f"/api/v1/runs/{run_id}/artifacts",
+                        params={"page": 1, "per_page": 10},
+                    )
+                )
+                samples.append(
+                    await assert_denied(f"/api/v1/artifacts/{artifact.id}/download")
+                )
+        finally:
+            app.state.container.s3_client = old_s3
+
+        assert s3.get_calls == []
+        assert s3.presign_calls == []
+        _assert_p99_under(
+            "run.read empty-scope denied log/artifact no-S3 API",
+            samples,
+            _threshold("PERF_RUN_READ_EMPTY_SCOPE_DENIED_P99_MS", 1000),
+        )
+
+
+@pytest.mark.asyncio
 async def test_real_api_token_concurrent_read_paths_p99_smoke(
     test_settings,
     integration_db_session,
