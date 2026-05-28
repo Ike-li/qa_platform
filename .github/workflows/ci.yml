@@ -94,6 +94,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Initialize backend test artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts/backend-test
+          {
+            echo "job=backend-test"
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "sha=${GITHUB_SHA}"
+          } > artifacts/backend-test/manifest.txt
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -107,7 +117,55 @@ jobs:
         run: ruff check src tests
 
       - name: Run backend tests
-        run: pytest --cov=qaplatform --cov-report=term-missing --tb=short --durations=20
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          pytest \
+            --cov=qaplatform \
+            --cov-report=term-missing \
+            --cov-report=xml:artifacts/backend-test/backend-coverage.xml \
+            --cov-report=json:artifacts/backend-test/backend-coverage.json \
+            --junitxml=artifacts/backend-test/backend-unit.xml \
+            --tb=short \
+            --durations=20 \
+            2>&1 | tee artifacts/backend-test/backend-unit.log
+          status=$?
+          set -e
+          exit "$status"
+
+      - name: Validate backend test artifacts
+        if: always()
+        shell: bash
+        run: |
+          manifest=artifacts/backend-test/evidence-manifest.txt
+          {
+            echo "# backend-test evidence manifest"
+            echo "recorded_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            find artifacts/backend-test -maxdepth 1 -type f -print | sort
+          } > "$manifest"
+          missing=0
+          for path in \
+            artifacts/backend-test/backend-unit.log \
+            artifacts/backend-test/backend-unit.xml \
+            artifacts/backend-test/backend-coverage.xml \
+            artifacts/backend-test/backend-coverage.json
+          do
+            if [ ! -s "$path" ]; then
+              echo "missing_or_empty=$path" | tee -a "$manifest"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Upload backend test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-artifacts
+          path: artifacts/backend-test/
+          if-no-files-found: error
 
   backend-integration-test:
     runs-on: ubuntu-latest
@@ -115,6 +173,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Initialize backend integration artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts/backend-integration
+          {
+            echo "job=backend-integration-test"
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "sha=${GITHUB_SHA}"
+          } > artifacts/backend-integration/manifest.txt
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -128,7 +196,20 @@ jobs:
       - name: Run required integration tests
         env:
           RUN_INTEGRATION_TESTS: "1"
-        run: pytest tests/integration/ -m "not heavy_docker and not external_stack and not performance" -v --tb=short --durations=20
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          pytest tests/integration/ \
+            -m "not heavy_docker and not external_stack and not performance" \
+            -v \
+            --junitxml=artifacts/backend-integration/required-integration.xml \
+            --tb=short \
+            --durations=20 \
+            2>&1 | tee artifacts/backend-integration/required-integration.log
+          status=$?
+          set -e
+          exit "$status"
 
       - name: Pull heavy docker images (nightly/manual, with retry)
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -153,7 +234,20 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
         env:
           RUN_INTEGRATION_TESTS: "1"
-        run: pytest tests/integration/ -m "heavy_docker and not external_stack" -v --tb=short --durations=20
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          pytest tests/integration/ \
+            -m "heavy_docker and not external_stack" \
+            -v \
+            --junitxml=artifacts/backend-integration/heavy-docker-integration.xml \
+            --tb=short \
+            --durations=20 \
+            2>&1 | tee artifacts/backend-integration/heavy-docker-integration.log
+          status=$?
+          set -e
+          exit "$status"
 
       - name: Prepare external API/worker stack env (nightly/manual)
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -170,7 +264,10 @@ jobs:
             docker compose ps
             sleep 5
           done
-          docker compose logs --tail=200 api worker worker-high worker-low minio-init
+          docker compose ps > artifacts/backend-integration/external-stack-startup-ps.txt 2>&1 || true
+          docker compose logs --no-color --timestamps --tail=200 \
+            postgres redis minio minio-init api worker worker-high worker-low \
+            2>&1 | tee artifacts/backend-integration/external-stack-startup.log
           exit 1
 
       - name: Run external-stack worker integration tests (nightly/manual)
@@ -180,11 +277,28 @@ jobs:
           QAP_EXTERNAL_STACK_REQUIRED: "1"
           QAP_EXTERNAL_STACK_GIT_URL: https://github.com/octocat/Hello-World.git
           QAP_EXTERNAL_STACK_GIT_REF: master
-        run: pytest tests/integration/ -m "external_stack" -v --tb=short --durations=20
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          pytest tests/integration/ \
+            -m "external_stack" \
+            -v \
+            --junitxml=artifacts/backend-integration/external-stack-integration.xml \
+            --tb=short \
+            --durations=20 \
+            2>&1 | tee artifacts/backend-integration/external-stack-integration.log
+          status=$?
+          set -e
+          exit "$status"
 
-      - name: Show external stack logs on failure
-        if: failure() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
-        run: docker compose logs --tail=200 api worker worker-high worker-low minio-init || true
+      - name: Collect external stack logs (nightly/manual)
+        if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+        run: |
+          docker compose ps > artifacts/backend-integration/external-stack-ps.txt 2>&1 || true
+          docker compose logs --no-color --timestamps --tail=500 \
+            postgres redis minio minio-init api worker worker-high worker-low \
+            > artifacts/backend-integration/external-stack-docker.log 2>&1 || true
 
       - name: Stop external API/worker stack (nightly/manual)
         if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
@@ -195,7 +309,88 @@ jobs:
         env:
           RUN_INTEGRATION_TESTS: "1"
           RUN_PERFORMANCE_TESTS: "1"
-        run: pytest tests/integration/test_performance_smoke.py -m "performance" -v --tb=short --durations=20
+          QAP_PERFORMANCE_SUMMARY_JSONL: artifacts/backend-integration/performance-smoke-summary.jsonl
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          pytest tests/integration/test_performance_smoke.py \
+            -m "performance" \
+            -v \
+            --junitxml=artifacts/backend-integration/performance-smoke.xml \
+            --tb=short \
+            --durations=20 \
+            2>&1 | tee artifacts/backend-integration/performance-smoke.log
+          status=$?
+          set -e
+          exit "$status"
+
+      - name: Write performance smoke summary artifact (nightly/manual)
+        if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+        shell: bash
+        run: |
+          {
+            echo "# Performance Smoke Summary"
+            echo
+            echo "- event: ${GITHUB_EVENT_NAME}"
+            echo "- sha: ${GITHUB_SHA}"
+            echo
+            if [ -f artifacts/backend-integration/performance-smoke-summary.jsonl ]; then
+              echo '```json'
+              cat artifacts/backend-integration/performance-smoke-summary.jsonl
+              echo '```'
+            else
+              echo "No performance summary JSONL was generated before the test process ended."
+            fi
+          } > artifacts/backend-integration/performance-smoke-summary.md
+
+      - name: Validate backend integration artifacts
+        if: always()
+        shell: bash
+        run: |
+          manifest=artifacts/backend-integration/evidence-manifest.txt
+          {
+            echo "# backend-integration evidence manifest"
+            echo "recorded_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            find artifacts/backend-integration -maxdepth 1 -type f -print | sort
+          } > "$manifest"
+
+          expected=(
+            artifacts/backend-integration/required-integration.log
+            artifacts/backend-integration/required-integration.xml
+          )
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            expected+=(
+              artifacts/backend-integration/heavy-docker-integration.log
+              artifacts/backend-integration/heavy-docker-integration.xml
+              artifacts/backend-integration/external-stack-docker.log
+              artifacts/backend-integration/external-stack-ps.txt
+              artifacts/backend-integration/external-stack-integration.log
+              artifacts/backend-integration/external-stack-integration.xml
+              artifacts/backend-integration/performance-smoke.log
+              artifacts/backend-integration/performance-smoke.xml
+              artifacts/backend-integration/performance-smoke-summary.jsonl
+              artifacts/backend-integration/performance-smoke-summary.md
+            )
+          fi
+
+          missing=0
+          for path in "${expected[@]}"; do
+            if [ ! -s "$path" ]; then
+              echo "missing_or_empty=$path" | tee -a "$manifest"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Upload backend integration artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-integration-artifacts
+          path: artifacts/backend-integration/
+          if-no-files-found: error
 
   frontend-build:
     runs-on: ubuntu-latest

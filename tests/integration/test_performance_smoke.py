@@ -51,6 +51,27 @@ def _assert_p99_under(name: str, samples: list[float], threshold_ms: float) -> N
     p50 = _percentile(samples, 0.50)
     p99 = _percentile(samples, 0.99)
     worst = max(samples)
+    summary_path = os.environ.get("QAP_PERFORMANCE_SUMMARY_JSONL")
+    if summary_path:
+        path = Path(summary_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "name": name,
+                        "p50_ms": round(p50, 3),
+                        "p99_ms": round(p99, 3),
+                        "max_ms": round(worst, 3),
+                        "threshold_ms": threshold_ms,
+                        "samples": len(samples),
+                        "passed": p99 <= threshold_ms,
+                        "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
     if p99 > threshold_ms:
         pytest.fail(
             f"{name} p99 {p99:.1f}ms exceeded {threshold_ms:.1f}ms "
