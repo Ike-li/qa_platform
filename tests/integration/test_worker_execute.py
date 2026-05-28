@@ -1157,6 +1157,22 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
     assert clone_artifacts_resp.status_code == 200, clone_artifacts_resp.text
     clone_artifacts = clone_artifacts_resp.json()
     assert clone_artifacts["total"] == 0
+    clone_archive_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{clone_run_id}/logs/archive",
+        headers,
+        lambda body: isinstance(body.get("data"), list)
+        and isinstance(body.get("total"), int),
+        timeout_seconds=60,
+    )
+    serialized_clone_archive = json.dumps(
+        clone_archive_body,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert secret not in serialized_clone_archive
+    assert "x-access-token" not in serialized_clone_archive
+    assert missing_repo_url not in serialized_clone_archive
 
     setup_project_id, setup_run_id = await _create_run(
         label="setup",
