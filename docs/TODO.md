@@ -31,7 +31,7 @@
 | 13 | F-EX-02 静默窗口 | PRD §3.3 验收 | schedule worker 成功触发、missing-pipeline skip audit、静默窗口和 schedule tick 入队 SLO 已有自动化证据；发布冻结期不触发 cron 的产品化入口仍未实现 |
 | 14 | F-EX-03 Webhook Git 平台事件解析 | PRD §3.3 验收 | 当前项目级 webhook 已支持 HMAC 验签、`allowed_branches` 分支过滤、同 commit `dedup_key` 去重、终态同 commit 再触发；webhook 成功触发后的入队 SLO、真实 Run metadata 保留字段保护和 `run.trigger` audit 脱敏已进入 nightly/manual performance smoke；仍缺 Git 平台 push/PR 事件解析与按 repo URL 匹配项目的正式入口 |
 | 15 | F-EX-07 自动重试端到端补齐 | PRD §3.3 验收 | API-facing `max_attempts` / `retry_on`、waiting retry run、execute_run 基础设施异常、真实 `RunExecutor` setup Docker daemon `ConnectionError` retry、setup script 非 0 与 git clone 失败不误 retry、worker_lost reclaimer 的真实 DB/Redis status event `previous=running`、orphan cleanup 与 retry Run 入队已进 required integration；nightly/manual external-stack 已补 worker_lost 黑盒重试，以及 credentialed clone failure / setup exit 1 不 retry、不落 artifact、不泄密黑盒，其中 clone failure 会回看 archived logs API 并断言空或非空响应都不含 secret/userinfo；剩余增强是把 Docker daemon 扰动扩到 external-stack 黑盒 |
-| 16 | F-EX-08 优先级队列消费闭环 | PRD §3.3 验收 | 已补 compose high/medium/low worker 部署、manual priority 队列矩阵单测、真实 API/DB queue metadata 测试、真实 DB priority+FIFO 排序测试、nightly/manual performance smoke 覆盖 `dequeue_waiting` 恢复 waiting Run 入队，以及 nightly/manual external-stack high/low worker 队列隔离黑盒；真实长队公平性/抢占压测仍可作为更重的 nightly/manual 增强 |
+| 16 | F-EX-08 优先级队列消费闭环 | PRD §3.3 验收 | 已补 compose high/medium/low worker 部署、manual priority 队列矩阵单测、真实 API/DB queue metadata 测试、真实 DB priority+FIFO 排序测试、nightly/manual performance smoke 覆盖 `dequeue_waiting` 恢复 waiting Run 入队，以及容量受限长队中 newer high priority 越过 older low backlog 的 priority preemption smoke；nightly/manual external-stack 已覆盖 high/low worker 队列隔离黑盒；真实长队公平性/抢占的更大规模压测仍可作为专项增强 |
 | 17 | F-LS-04 测试结果 suite/关键字过滤 | PRD §3.7 验收 | 当前 `main` 仅 status（后端状态枚举含 `passed/failed/error/skipped/xfail`）；`feature/T07-test-results-filter` 已推送但未合入 |
 | 18 | F-LS-01 执行列表过滤补齐 | PRD §3.7 验收 | 当前 `main` 支持 status 多选、project_id 与创建时间排序；缺 pipeline / git_ref / time range 过滤 |
 | 19 | F-LS-02 剩余列表分页补齐 | PRD §3.7 验收 | credentials、project members、auth tokens 仍返回直接 list，未走 `PaginatedResponse` |
@@ -102,7 +102,7 @@
 | Pipeline collector 配置是补实现还是将 JUnit-only 写成正式产品限制 | F-PL-01 collector 配置补齐 |
 | Allure/HTML 报告前端预览采用已上传目录入口还是 zip/html 单产物 | F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐；后端已递归上传目录文件 |
 | 是否补 clone/setup/Docker daemon 失败黑盒 retry 场景 | F-EX-07 自动重试端到端补齐；required integration 已明确 setup Docker daemon 基础设施异常会 retry，setup script 非 0 与 git clone 失败不会误 retry；nightly/manual external-stack 已覆盖 worker_lost、credentialed clone failure（含 archived logs API 防 secret/userinfo 泄漏）和 setup exit 1 黑盒；剩余只是是否继续投入 Docker daemon 扰动黑盒 |
-| F-EX-08 采用单 worker 多队列还是多 worker 部署 | 已按多 worker 部署落地 compose high/medium/low，并有 external-stack 队列隔离黑盒；后续只剩是否追加更重的长队公平性压测 |
+| F-EX-08 采用单 worker 多队列还是多 worker 部署 | 已按多 worker 部署落地 compose high/medium/low，并有 external-stack 队列隔离黑盒；performance smoke 已覆盖容量受限 priority backlog 中 high 越过 older low，后续只剩是否追加更重的长队公平性压测 |
 | F-NT-03 每渠道模板是否嵌入 `channels[]` | F-NT-01 / F-NT-03 通知规则与模板验收补齐 |
 | F-EX-05 归档日志回看走流式 API 还是 artifact 复用 | 已决定并落地普通 JSON 分页 API；前端终态 Run 直接消费该 API，后端 required integration 已覆盖分页、对象缺失 404、API token `run.read` scope 和跨租户 404 一致性，后续只保留大日志体验/异常提示增强 |
 
