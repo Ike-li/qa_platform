@@ -74,6 +74,131 @@ async def _timed(awaitable) -> tuple[float, object]:
 
 
 @asynccontextmanager
+async def _real_auth_perf_client(test_settings):
+    from qaplatform.api import create_app
+    from qaplatform.dependencies import init_container
+    from qaplatform.plugins.registry import PluginRegistry
+
+    settings = test_settings.model_copy(
+        update={
+            "rate_limit_auth_failure": 100,
+            "rate_limit_auth_failure_window": 1,
+        }
+    )
+    container = init_container(settings)
+    await container.init_db()
+    await container.init_redis()
+    container.init_crypto()
+
+    plugin_registry = PluginRegistry()
+    plugin_registry.register_builtins()
+    container.plugin_registry = plugin_registry
+
+    app = create_app(container=container, settings=settings)
+    app.state.container = container
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            yield app, client
+    finally:
+        app.dependency_overrides.clear()
+        await container.close()
+
+
+async def _register_perf_user(client, *, prefix: str) -> dict:
+    suffix = uuid4().hex[:8]
+    username = f"{prefix}_{suffix}"
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": username,
+            "email": f"{username}@example.com",
+            "password": "correct-horse-battery",
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def _create_perf_api_token(
+    client,
+    access_token: str,
+    *,
+    name: str,
+    scopes: list[str],
+) -> str:
+    response = await client.post(
+        "/api/v1/auth/tokens",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"name": name, "scopes": scopes, "expires_days": 7},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["token"]
+
+
+async def _create_perf_project_environment_and_pipeline(
+    client,
+    access_token: str,
+) -> dict:
+    suffix = uuid4().hex[:8]
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    project_resp = await client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={
+            "name": f"perf-project-{suffix}",
+            "slug": f"perf-project-{suffix}",
+            "git_url": "https://example.com/perf-project.git",
+            "default_branch": "main",
+        },
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project = project_resp.json()
+
+    env_resp = await client.post(
+        f"/api/v1/projects/{project['id']}/environments",
+        headers=headers,
+        json={
+            "name": "default",
+            "base_image": "python:3.12-alpine",
+            "memory_mb": 128,
+            "cpu_cores": 0.5,
+            "network_policy": "deny",
+            "env_vars": {},
+        },
+    )
+    assert env_resp.status_code == 201, env_resp.text
+
+    pipeline_resp = await client.post(
+        f"/api/v1/projects/{project['id']}/pipelines",
+        headers=headers,
+        json={
+            "name": "perf-pipeline",
+            "stages": [
+                {
+                    "name": "run-tests",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {},
+                }
+            ],
+            "trigger_config": {"type": "manual"},
+            "timeout_seconds": 120,
+        },
+    )
+    assert pipeline_resp.status_code == 201, pipeline_resp.text
+
+    return {
+        "project_id": project["id"],
+        "environment_id": env_resp.json()["id"],
+        "pipeline_id": pipeline_resp.json()["id"],
+    }
+
+
+@asynccontextmanager
 async def _live_asgi_server(app):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1832,6 +1957,200 @@ async def test_audit_events_denied_queries_no_self_audit_p99_smoke(
         samples,
         _threshold("PERF_AUDIT_EVENTS_DENIED_P99_MS", 1000),
     )
+
+
+@pytest.mark.asyncio
+async def test_real_api_token_concurrent_read_paths_p99_smoke(
+    test_settings,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import AuditEvent
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    async with _real_auth_perf_client(test_settings) as (app, client):
+        registration = await _register_perf_user(
+            client,
+            prefix="perf_concurrent",
+        )
+        access_token = registration["access_token"]
+        user = registration["user"]
+        tenant_id = UUID(user["tenant_id"])
+        user_id = UUID(user["id"])
+        stack = await _create_perf_project_environment_and_pipeline(
+            client,
+            access_token,
+        )
+        trigger_resp = await client.post(
+            "/api/v1/runs",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+        )
+        assert trigger_resp.status_code == 201, trigger_resp.text
+        run_id = UUID(trigger_resp.json()["id"])
+        project_id = UUID(stack["project_id"])
+        bucket = app.state.container.settings.s3_bucket
+        marker = f"concurrent-read-{uuid4().hex}"
+
+        archive_entries = [
+            {
+                "stream": "stderr" if index % 31 == 0 else "stdout",
+                "line": f"{marker}-archived-line-{index:03}",
+            }
+            for index in range(240)
+        ]
+        archive_body = "\n".join(
+            json.dumps(entry) for entry in archive_entries
+        ).encode("utf-8")
+
+        artifact_repo = ArtifactRepository(integration_db_session)
+        artifact = await artifact_repo.create(
+            run_id=run_id,
+            type="report",
+            name=f"{marker}-report.html",
+            storage_path=f"reports/{run_id}/{marker}-report.html",
+            size_bytes=4096,
+            mime_type="text/html",
+        )
+
+        audit_action = f"audit.concurrent_probe.{marker}"
+        now = datetime.now(timezone.utc)
+        for index in range(90):
+            integration_db_session.add(
+                AuditEvent(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    action=audit_action,
+                    resource_type="project",
+                    resource_id=project_id,
+                    after_state={"index": index, "marker": marker},
+                    created_at=now - timedelta(seconds=index),
+                )
+            )
+        await integration_db_session.commit()
+
+        async def count_self_audits() -> int:
+            result = await integration_db_session.execute(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(
+                    AuditEvent.tenant_id == tenant_id,
+                    AuditEvent.user_id == user_id,
+                    AuditEvent.action == "audit_events.list",
+                    AuditEvent.resource_type == "audit_event",
+                )
+            )
+            return result.scalar_one()
+
+        read_token = await _create_perf_api_token(
+            client,
+            access_token,
+            name="concurrent-read-token",
+            scopes=["run.read", "audit.read"],
+        )
+        headers = {"Authorization": f"Bearer {read_token}"}
+
+        s3 = _MemoryS3()
+        await s3.put_object(
+            Bucket=bucket,
+            Key=f"logs/{run_id}.jsonl",
+            Body=archive_body,
+            ContentType="application/x-ndjson",
+        )
+        old_s3 = app.state.container.s3_client
+        app.state.container.s3_client = s3
+
+        archive_params = {"page": 3, "per_page": 40}
+        audit_params = {
+            "action": audit_action,
+            "resource_type": "project",
+            "per_page": 30,
+        }
+
+        async def read_archived_logs() -> float:
+            elapsed_ms, response = await _timed(
+                client.get(
+                    f"/api/v1/runs/{run_id}/logs/archive",
+                    params=archive_params,
+                    headers=headers,
+                )
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] == 240
+            assert body["page"] == 3
+            assert body["per_page"] == 40
+            assert body["data"][0]["line"] == f"{marker}-archived-line-080"
+            assert body["data"][-1]["line"] == f"{marker}-archived-line-119"
+            return elapsed_ms
+
+        async def download_artifact() -> float:
+            elapsed_ms, response = await _timed(
+                client.get(
+                    f"/api/v1/artifacts/{artifact.id}/download",
+                    headers=headers,
+                )
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["expires_in"] == app.state.container.settings.s3_presigned_url_ttl
+            assert f"/{artifact.storage_path}" in body["download_url"]
+            return elapsed_ms
+
+        async def list_audit_events() -> float:
+            elapsed_ms, response = await _timed(
+                client.get(
+                    "/api/v1/audit-events",
+                    params=audit_params,
+                    headers=headers,
+                )
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] == 90
+            assert len(body["data"]) == 30
+            assert {item["action"] for item in body["data"]} == {audit_action}
+            return elapsed_ms
+
+        before_self_audits = await count_self_audits()
+        try:
+            warmup_samples = await asyncio.gather(
+                read_archived_logs(),
+                download_artifact(),
+                list_audit_events(),
+            )
+            assert len(warmup_samples) == 3
+
+            samples: list[float] = []
+            for _ in range(6):
+                samples.extend(
+                    await asyncio.gather(
+                        read_archived_logs(),
+                        download_artifact(),
+                        list_audit_events(),
+                    )
+                )
+        finally:
+            app.state.container.s3_client = old_s3
+
+        expected_log_get_call = {"bucket": bucket, "key": f"logs/{run_id}.jsonl"}
+        assert s3.get_calls == [expected_log_get_call] * 7
+        assert len(s3.presign_calls) == 7
+        assert all(call["method"] == "get_object" for call in s3.presign_calls)
+        assert all(
+            call["params"] == {"Bucket": bucket, "Key": artifact.storage_path}
+            for call in s3.presign_calls
+        )
+        assert all(
+            call["expires_in"] == app.state.container.settings.s3_presigned_url_ttl
+            for call in s3.presign_calls
+        )
+        assert await count_self_audits() == before_self_audits + 7
+
+        _assert_p99_under(
+            "real API token log/artifact/audit concurrent read paths",
+            samples,
+            _threshold("PERF_REAL_TOKEN_CONCURRENT_READ_PATHS_P99_MS", 3000),
+        )
 
 
 @pytest.mark.asyncio
