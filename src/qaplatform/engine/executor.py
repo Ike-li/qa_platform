@@ -25,7 +25,7 @@ from qaplatform.engine.docker_backend import (
 )
 from qaplatform.engine.events import publish_status_event
 from qaplatform.engine.log_stream import LogStream
-from qaplatform.engine.redact import redact_url_userinfo
+from qaplatform.engine.redact import redact_sensitive_text
 from qaplatform.plugins.registry import PluginRegistry
 
 _ARTIFACT_TYPE_BY_EXT = {
@@ -297,7 +297,7 @@ class RunExecutor:
         except Exception as exc:
             log.exception("execution failed for run %s", run_id)
             failed = await self.run_repo.fail_if_current(
-                run_id, message=redact_url_userinfo(str(exc))
+                run_id, message=redact_sensitive_text(str(exc), pipeline.env_vars)
             )
             if failed:
                 from qaplatform.api.metrics import run_terminal_total
@@ -496,7 +496,13 @@ class RunExecutor:
             await self.backend.start(execution_id)
 
             # Stream logs in background while waiting
-            log_task = asyncio.create_task(self._stream_container_logs(str(run.id), execution_id))
+            log_task = asyncio.create_task(
+                self._stream_container_logs(
+                    str(run.id),
+                    execution_id,
+                    redact_env_vars=pipeline.env_vars,
+                )
+            )
 
             stage_started_at = datetime.now(timezone.utc)
             try:
@@ -604,7 +610,13 @@ class RunExecutor:
         await self.backend.start(execution_id)
         self._active_execution_id = execution_id
 
-        log_task = asyncio.create_task(self._stream_container_logs(run_id, execution_id))
+        log_task = asyncio.create_task(
+            self._stream_container_logs(
+                run_id,
+                execution_id,
+                redact_env_vars=pipeline.env_vars,
+            )
+        )
         # Setup gets a tighter cap than stage timeout to keep slow scripts
         # from eating into stage time. Cap at min(pipeline_timeout, 600s).
         setup_timeout = min(pipeline.timeout_seconds, 600)
@@ -649,11 +661,22 @@ class RunExecutor:
             raise RuntimeError(f"Setup script failed (exit {exit_result.exit_code})")
 
 
-    async def _stream_container_logs(self, run_id: str, execution_id: str) -> None:
+    async def _stream_container_logs(
+        self,
+        run_id: str,
+        execution_id: str,
+        *,
+        redact_env_vars: dict[str, str] | None = None,
+    ) -> None:
         """Stream container logs to Redis. Runs as a background task."""
         try:
             async for log_line in self.backend.stream_logs(execution_id):
-                await self.log_stream.write_log(run_id, log_line.content, stream=log_line.stream)
+                content = redact_sensitive_text(log_line.content, redact_env_vars)
+                await self.log_stream.write_log(
+                    run_id,
+                    content,
+                    stream=log_line.stream,
+                )
         except Exception:
             log.debug("log streaming ended for container %s", execution_id)
 
