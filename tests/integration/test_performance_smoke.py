@@ -88,6 +88,23 @@ def _decode_redis_mapping(mapping: dict) -> dict[str, str]:
     }
 
 
+def _sse_ticket_payload(
+    *,
+    user_id,
+    tenant_id,
+    role: str = "owner",
+    scopes: list[str] | None = None,
+) -> str:
+    return json.dumps(
+        {
+            "user_id": str(user_id),
+            "role": role,
+            "tenant_id": str(tenant_id),
+            "scopes": scopes,
+        }
+    )
+
+
 async def _timed(awaitable) -> tuple[float, object]:
     started = perf_counter()
     result = await awaitable
@@ -1201,6 +1218,127 @@ async def test_log_stream_round_trip_smoke(integration_app):
 
 
 @pytest.mark.asyncio
+async def test_sse_ticket_create_api_p99_smoke(test_settings, integration_db_session):
+    from qaplatform.api.v1.auth import SSE_TICKET_TTL
+    from qaplatform.infra.database.models import AuditEvent
+
+    async with _real_auth_perf_client(test_settings) as (app, client):
+        registration = await _register_perf_user(
+            client,
+            prefix="perf_sse_ticket",
+        )
+        access_token = registration["access_token"]
+        user = registration["user"]
+        user_id = UUID(user["id"])
+        tenant_id = UUID(user["tenant_id"])
+        read_token = await _create_perf_api_token(
+            client,
+            access_token,
+            name="perf-sse-ticket-read",
+            scopes=["run.read"],
+        )
+        headers = {"Authorization": f"Bearer {read_token}"}
+        redis = app.state.container.redis_client
+
+        async def audit_count() -> int:
+            async with app.state.container.db_session_factory() as session:
+                return (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(AuditEvent)
+                        .where(
+                            AuditEvent.tenant_id == tenant_id,
+                            AuditEvent.user_id == user_id,
+                            AuditEvent.action == "auth.sse_ticket_create",
+                            AuditEvent.resource_type == "auth",
+                        )
+                    )
+                ).scalar_one()
+
+        async def assert_ticket_payload(ticket: str) -> None:
+            key = f"sse_ticket:{ticket}"
+            raw_payload = await redis.get(key)
+            assert raw_payload, "SSE ticket payload was not written to Redis"
+            if isinstance(raw_payload, bytes):
+                raw_payload = raw_payload.decode("utf-8")
+            assert json.loads(raw_payload) == {
+                "user_id": str(user_id),
+                "role": user["role"],
+                "tenant_id": str(tenant_id),
+                "scopes": ["run.read"],
+            }
+            await redis.delete(key)
+
+        before_count = await audit_count()
+        samples: list[float] = []
+        tickets: list[str] = []
+
+        for _ in range(3):
+            response = await client.post("/api/v1/auth/sse-ticket", headers=headers)
+            assert response.status_code == 200, response.text
+            ticket = response.json()["ticket"]
+            assert ticket
+            tickets.append(ticket)
+            await assert_ticket_payload(ticket)
+
+        for _ in range(20):
+            elapsed_ms, response = await _timed(
+                client.post("/api/v1/auth/sse-ticket", headers=headers)
+            )
+            assert response.status_code == 200, response.text
+            ticket = response.json()["ticket"]
+            assert ticket
+            tickets.append(ticket)
+            await assert_ticket_payload(ticket)
+            samples.append(elapsed_ms)
+
+        assert await audit_count() == before_count + len(tickets)
+        async with app.state.container.db_session_factory() as session:
+            result = await session.execute(
+                select(AuditEvent)
+                .where(
+                    AuditEvent.tenant_id == tenant_id,
+                    AuditEvent.user_id == user_id,
+                    AuditEvent.action == "auth.sse_ticket_create",
+                    AuditEvent.resource_type == "auth",
+                )
+                .order_by(AuditEvent.created_at.desc())
+                .limit(len(tickets))
+            )
+            audits = result.scalars().all()
+        assert len(audits) == len(tickets)
+        serialized_audits = json.dumps(
+            [
+                {
+                    "before_state": audit.before_state,
+                    "after_state": audit.after_state,
+                    "resource_type": audit.resource_type,
+                    "resource_id": str(audit.resource_id)
+                    if audit.resource_id is not None
+                    else None,
+                }
+                for audit in audits
+            ],
+            sort_keys=True,
+        )
+        for audit in audits:
+            assert audit.before_state is None
+            assert audit.after_state == {
+                "ttl_seconds": SSE_TICKET_TTL,
+                "single_use": True,
+            }
+            assert audit.resource_id is None
+        for secret in (*tickets, access_token, read_token):
+            assert secret not in serialized_audits
+
+        _assert_p99_under(
+            "SSE ticket create API",
+            samples,
+            _threshold("PERF_SSE_TICKET_CREATE_P99_MS", 1000),
+        )
+
+
+@pytest.mark.asyncio
 async def test_realtime_log_sse_delivery_latency_smoke(
     integration_app,
     integration_db_session,
@@ -1246,7 +1384,7 @@ async def test_realtime_log_sse_delivery_latency_smoke(
                 await redis.setex(
                     f"sse_ticket:{ticket}",
                     90,
-                    f"{user_id}:owner:{tenant_id}",
+                    _sse_ticket_payload(user_id=user_id, tenant_id=tenant_id),
                 )
 
                 url = f"{base_url}/api/v1/runs/{run_id}/logs?ticket={ticket}"
@@ -1333,7 +1471,7 @@ async def test_realtime_status_event_sse_delivery_latency_smoke(
                 await redis.setex(
                     f"sse_ticket:{ticket}",
                     90,
-                    f"{user_id}:owner:{tenant_id}",
+                    _sse_ticket_payload(user_id=user_id, tenant_id=tenant_id),
                 )
 
                 url = f"{base_url}/api/v1/runs/{run_id}/events?ticket={ticket}"
