@@ -17,7 +17,7 @@
 
 - 可重复：测试数据使用唯一 slug/name/UUID，不依赖固定执行顺序。
 - 顺序无关：integration 通过 fixture 初始化真实 schema 和 seed 数据，测试间不共享可变业务状态。
-- 失败日志清楚：CI pytest 使用 `--tb=short --durations=20`，heavy Docker fixture 先复用本地镜像；只有缺镜像时才进入 pull 前置条件检查。
+- 失败日志清楚：CI pytest 使用 `--tb=short --durations=20`，并上传 JUnit XML、pytest 原始输出、coverage XML/JSON；nightly/manual external-stack 失败时额外上传 compose PostgreSQL/Redis/MinIO/API/worker 日志；performance smoke 额外上传 p50/p99/max JSONL 与 Markdown 摘要。heavy Docker fixture 先复用本地镜像；只有缺镜像时才进入 pull 前置条件检查。
 - 数据隔离：真实 DB 测试必须断言 tenant/project 过滤、soft-delete 隐藏、唯一约束 rollback 后 session 可恢复。
 - 不掩盖真实失败：仅把 Docker daemon/registry/API stack/OOM 平台语义这类前置条件缺失记为 skip；业务断言失败仍然失败。
 
@@ -62,3 +62,4 @@
 - 每个线上/测试发现缺陷都要补一条能失败再变绿的回归测试，优先放在 required integration；只有纯分支逻辑才放 unit。
 - Coverage 门槛按真实风险路径逐步提高；不得为了百分比添加无行为断言或重 mock 覆盖。
 - 后端静态检查由 CI `backend-test` 执行 `ruff check src tests`，和单元 coverage 门禁一起阻止新增 lint 债务。
+- CI 证据产物：`backend-test` 上传 `backend-test-artifacts`，包含 unit JUnit、pytest log、coverage XML/JSON 和 evidence manifest；`backend-integration-test` 上传 `backend-integration-artifacts`，包含 required/heavy/external-stack/performance JUnit 和 pytest log，external-stack 失败时包含 Docker compose ps/log，performance lane 包含每个 SLO 断言的 p50/p99/max JSONL 与 Markdown 摘要；manifest 会校验当前 lane 期望的证据文件非空，避免只上传空目录或初始化占位文件。
