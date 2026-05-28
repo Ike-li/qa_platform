@@ -952,7 +952,8 @@ async def test_schedule_and_run_apis_persist_next_run_metadata_and_audit_rows(
         },
     )
     assert schedule_resp.status_code == 201, schedule_resp.text
-    schedule_id = schedule_resp.json()["id"]
+    created_schedule = schedule_resp.json()
+    schedule_id = created_schedule["id"]
 
     schedule = await integration_db_session.get(Schedule, schedule_id)
     assert schedule is not None
@@ -966,6 +967,7 @@ async def test_schedule_and_run_apis_persist_next_run_metadata_and_audit_rows(
         json={"enabled": False, "cron_expr": "*/30 * * * *"},
     )
     assert update_resp.status_code == 200, update_resp.text
+    updated_schedule = update_resp.json()
     await integration_db_session.refresh(schedule)
     assert schedule.enabled is False
     assert schedule.cron_expr == "*/30 * * * *"
@@ -1003,12 +1005,28 @@ async def test_schedule_and_run_apis_persist_next_run_metadata_and_audit_rows(
             resource_id=schedule.id,
         )
     )
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="schedule.create",
+        resource_id=schedule.id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="schedule.update",
+        resource_id=schedule.id,
+    )
     delete_audit = await _audit_event(
         integration_db_session,
         action="schedule.delete",
         resource_id=schedule.id,
     )
+    assert create_audit is not None
+    assert update_audit is not None
     assert delete_audit is not None
+    assert create_audit.before_state is None
+    assert create_audit.after_state == created_schedule
+    assert update_audit.before_state == created_schedule
+    assert update_audit.after_state == updated_schedule
     assert delete_audit.before_state["cron_expr"] == "*/30 * * * *"
     assert delete_audit.before_state["enabled"] is False
     assert delete_audit.after_state is None
