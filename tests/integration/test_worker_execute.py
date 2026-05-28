@@ -1164,6 +1164,19 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     project_id = project_resp.json()["id"]
     worker_secret = f"worker-secret-{suffix}"
     worker_secret_sha256 = hashlib.sha256(worker_secret.encode("utf-8")).hexdigest()
+    bulk_marker = f"bulk-worker-log-{suffix}"
+    bulk_log_count = 1505
+
+    def collect_bulk_indexes(log_lines: list[str]) -> list[int]:
+        prefix = f"{bulk_marker}-"
+        indexes: list[int] = []
+        for line in log_lines:
+            if prefix not in line:
+                continue
+            index_text = line.rsplit(prefix, 1)[1][:4]
+            if index_text.isdigit():
+                indexes.append(int(index_text))
+        return indexes
 
     env_resp = await api_client.post(
         f"/api/v1/projects/{project_id}/environments",
@@ -1195,6 +1208,13 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
                 "    \"    raise SystemExit('worker secret env var was not injected')\\n\"\n"
                 "    \"print(f'active stdout secret: {actual_secret}', flush=True)\\n\"\n"
                 "    \"print(f'active stderr secret: {actual_secret}', file=sys.stderr, flush=True)\\n\"\n"
+                f"    \"bulk_marker = {bulk_marker!r}\\n\"\n"
+                f"    \"bulk_log_count = {bulk_log_count!r}\\n\"\n"
+                "    \"for index in range(bulk_log_count):\\n\"\n"
+                "    \"    if index == 1001:\\n\"\n"
+                "    \"        print(f'{bulk_marker}-{index:04} active bulk secret: {actual_secret}', flush=True)\\n\"\n"
+                "    \"    else:\\n\"\n"
+                "    \"        print(f'{bulk_marker}-{index:04}', flush=True)\\n\"\n"
                 "    \"junit = 'results/junit.xml'\\n\"\n"
                 "    \"for arg in sys.argv[1:]:\\n\"\n"
                 "    \"    if arg.startswith('--junitxml='):\\n\"\n"
@@ -1324,16 +1344,34 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
 
     archive_body = await _poll_json(
         api_client,
-        f"/api/v1/runs/{run_id}/logs/archive",
+        f"/api/v1/runs/{run_id}/logs/archive?page=1&per_page=1000",
         headers,
-        lambda body: body["total"] >= 1,
+        lambda body: body.get("total", 0) >= bulk_log_count
+        and len(body.get("data", [])) == 1000,
         timeout_seconds=60,
     )
-    lines = [entry["line"] for entry in archive_body["data"]]
+    archive_tail_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{run_id}/logs/archive?page=2&per_page=1000",
+        headers,
+        lambda body: body.get("total", 0) == archive_body["total"]
+        and len(body.get("data", [])) > 0,
+        timeout_seconds=60,
+    )
+    assert archive_body["page"] == 1
+    assert archive_body["per_page"] == 1000
+    assert archive_tail_body["page"] == 2
+    assert archive_tail_body["per_page"] == 1000
+    lines = [
+        *(entry["line"] for entry in archive_body["data"]),
+        *(entry["line"] for entry in archive_tail_body["data"]),
+    ]
     joined_lines = "\n".join(lines)
     assert worker_secret not in joined_lines
     assert "active stdout secret: [REDACTED]" in joined_lines
     assert "active stderr secret: [REDACTED]" in joined_lines
+    assert "active bulk secret: [REDACTED]" in joined_lines
+    assert collect_bulk_indexes(lines) == list(range(bulk_log_count))
     assert any("Repository cloned successfully" in line for line in lines)
     for artifact_name in expected_artifacts:
         assert any(f"Uploaded artifact: {artifact_name}" in line for line in lines)
@@ -1405,16 +1443,33 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     token_archive_resp = await api_client.get(
         f"/api/v1/runs/{run_id}/logs/archive",
         headers=run_read_headers,
-        params={"page": 1, "per_page": 100},
+        params={"page": 1, "per_page": 1000},
+    )
+    token_archive_tail_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers=run_read_headers,
+        params={"page": 2, "per_page": 1000},
     )
     assert token_archive_resp.status_code == 200, token_archive_resp.text
+    assert token_archive_tail_resp.status_code == 200, token_archive_tail_resp.text
     token_archive_body = token_archive_resp.json()
-    token_lines = [entry["line"] for entry in token_archive_body["data"]]
+    token_archive_tail_body = token_archive_tail_resp.json()
+    assert token_archive_body["page"] == 1
+    assert token_archive_body["per_page"] == 1000
+    assert token_archive_tail_body["page"] == 2
+    assert token_archive_tail_body["per_page"] == 1000
+    assert token_archive_tail_body["total"] == token_archive_body["total"]
+    token_lines = [
+        *(entry["line"] for entry in token_archive_body["data"]),
+        *(entry["line"] for entry in token_archive_tail_body["data"]),
+    ]
     token_joined_lines = "\n".join(token_lines)
     assert any("Repository cloned successfully" in line for line in token_lines)
     assert any("Run completed: done" in line for line in token_lines)
     assert "active stdout secret: [REDACTED]" in token_joined_lines
     assert "active stderr secret: [REDACTED]" in token_joined_lines
+    assert "active bulk secret: [REDACTED]" in token_joined_lines
+    assert collect_bulk_indexes(token_lines) == list(range(bulk_log_count))
     assert worker_secret not in token_joined_lines
 
     for artifact_name, (artifact_type, expected_text) in expected_artifacts.items():
@@ -1445,6 +1500,8 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         "Uploaded artifact:",
         "active stdout secret:",
         "active stderr secret:",
+        "active bulk secret:",
+        bulk_marker,
         "[REDACTED]",
         *expected_artifacts.keys(),
         *(expected_text for _, expected_text in expected_artifacts.values()),
