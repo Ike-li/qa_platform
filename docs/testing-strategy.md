@@ -33,6 +33,8 @@
 | Webhook/schedule 幂等与失败路径 | schedule worker 成功触发与 enqueue conflict 的系统 `run.trigger` audit、schedule missing pipeline 的系统 skip audit、HMAC 缺失/成功签名、branch filter、dedup、filtered/duplicate 决策 audit、terminal same commit、cross-tenant 404、archived project、missing pipeline/environment、enqueue conflict、保留 metadata 防覆盖、webhook 与 schedule 入队 SLO | Webhook/API/schedule worker 主风险已进 required integration；filtered/duplicate 和 schedule missing-pipeline 这类不创建 Run 的分支已有 AuditEvent 且 after_state 只含非敏感决策/排障字段；nightly/manual 额外观察 webhook 和 schedule worker tick 入队 p99 |
 | 三条关键 E2E 冒烟 | 登录/权限、创建项目到触发 run、查看 run/result/artifact/归档日志 | 已有 Playwright 用例；`special-regressions` 已覆盖真实 DB+S3 准备后的归档日志回放、搜索和 HTML artifact 预览；PR 只跑轻量 auth-flow，nightly 固定跑真实链路，完整链路 manual |
 
+补充：`worker_lost` external-stack smoke 还会对 reclaimer 创建的 attempt=2 retry Run 使用真实 `run.read` API token 重读 archived logs、artifact list 和 JUnit download；空 scope token 对三面均 403，且响应不回显日志 key、artifact 路径/名称或 JUnit 内容片段。
+
 ## Warning 登记
 
 | Warning | 来源 | Owner / 截止条件 | 状态 |
