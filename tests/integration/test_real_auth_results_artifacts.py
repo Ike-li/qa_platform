@@ -962,6 +962,110 @@ async def test_archived_logs_api_token_requires_run_read_scope(
 
 
 @pytest.mark.asyncio
+async def test_run_read_token_replays_logs_and_presigns_artifact_without_extra_s3_reads(
+    real_auth_app,
+    real_auth_client,
+    integration_db_session,
+):
+    from qaplatform.engine.log_stream import LogStream
+    from qaplatform.infra.database.repositories.run_repo import ArtifactRepository
+
+    access_token = await _register_real_user(
+        real_auth_client,
+        prefix="run_read_bundle",
+    )
+    stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
+
+    trigger_resp = await real_auth_client.post(
+        "/api/v1/runs",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+    )
+    assert trigger_resp.status_code == 201, trigger_resp.text
+    run_id = trigger_resp.json()["id"]
+
+    s3 = _MemoryS3()
+    bucket = real_auth_app.state.container.settings.s3_bucket
+    stream = LogStream(real_auth_app.state.container.redis_client)
+    log_lines = [
+        {"stream": "stdout", "line": f"bundle-log-{uuid4().hex}-0"},
+        {"stream": "stderr", "line": f"bundle-log-{uuid4().hex}-1"},
+    ]
+    for entry in log_lines:
+        await stream.write_log(run_id, entry["line"], stream=entry["stream"])
+    assert await stream.archive_logs(run_id, s3, bucket) is True
+
+    storage_path = f"reports/{run_id}/bundle-summary.html"
+    artifact_repo = ArtifactRepository(integration_db_session)
+    artifact = await artifact_repo.create(
+        run_id=run_id,
+        type="html",
+        name="bundle-summary.html",
+        storage_path=storage_path,
+        size_bytes=512,
+        mime_type="text/html",
+    )
+    await integration_db_session.commit()
+
+    run_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="run-read-log-artifact-bundle",
+        scopes=["run.read"],
+    )
+    headers = {"Authorization": f"Bearer {run_read_token}"}
+
+    old_s3 = real_auth_app.state.container.s3_client
+    real_auth_app.state.container.s3_client = s3
+    try:
+        logs_resp = await real_auth_client.get(
+            f"/api/v1/runs/{run_id}/logs/archive",
+            headers=headers,
+            params={"page": 1, "per_page": 10},
+        )
+        list_resp = await real_auth_client.get(
+            f"/api/v1/runs/{run_id}/artifacts",
+            headers=headers,
+            params={"page": 1, "per_page": 10},
+        )
+        download_resp = await real_auth_client.get(
+            f"/api/v1/artifacts/{artifact.id}/download",
+            headers=headers,
+        )
+    finally:
+        real_auth_app.state.container.s3_client = old_s3
+
+    assert logs_resp.status_code == 200, logs_resp.text
+    logs_body = logs_resp.json()
+    assert logs_body["total"] == 2
+    assert logs_body["data"] == log_lines
+
+    assert list_resp.status_code == 200, list_resp.text
+    artifacts_body = list_resp.json()
+    assert artifacts_body["total"] == 1
+    assert artifacts_body["data"][0]["id"] == str(artifact.id)
+    assert artifacts_body["data"][0]["storage_path"] == storage_path
+
+    assert download_resp.status_code == 200, download_resp.text
+    ttl = real_auth_app.state.container.settings.s3_presigned_url_ttl
+    assert download_resp.json() == {
+        "download_url": f"http://s3.local/{storage_path}?expires={ttl}",
+        "expires_in": ttl,
+    }
+    assert s3.get_calls == [{"bucket": bucket, "key": f"logs/{run_id}.jsonl"}]
+    assert s3.presign_calls == [
+        {
+            "method": "get_object",
+            "params": {
+                "Bucket": bucket,
+                "Key": storage_path,
+            },
+            "expires_in": ttl,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_log_archive_retry_worker_uses_real_redis_marker(real_auth_app):
     from qaplatform.engine.log_stream import LogStream
     from qaplatform.worker.settings import retry_failed_archives
