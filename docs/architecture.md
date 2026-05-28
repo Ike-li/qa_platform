@@ -362,7 +362,7 @@ Run 1──N NotificationLog
 ### 9.1 认证
 
 - JWT access token（短期，1 小时）+ refresh token（长期，7 天）
-- API Token 用于机器对机器调用；当前创建、过期、吊销、认证与 scope enforcement 已实现，tenant/project 权限依赖会传递 token scopes；真实 API 测试覆盖只读、`run.trigger`、artifact download 与 archived logs 的 `run.read`、错误/空 scope
+- API Token 用于机器对机器调用；当前创建、过期、吊销、认证与 scope enforcement 已实现，tenant/project 权限依赖会传递 token scopes；真实 API 测试覆盖只读、`run.trigger`、artifact download 与 archived logs 的 `run.read`、audit-events 的 `audit.read`、错误/空 scope
 - 密码使用 Argon2id 哈希
 
 ### 9.2 授权
