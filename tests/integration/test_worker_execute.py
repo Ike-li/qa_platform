@@ -1414,6 +1414,54 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
     assert "x-access-token" not in serialized_clone_archive
     assert missing_repo_url not in serialized_clone_archive
 
+    run_read_token = await _create_external_api_token(
+        api_client,
+        admin_token,
+        name=f"worker-failure-run-read-{suffix}",
+        scopes=["run.read"],
+    )
+    empty_scope_token = await _create_external_api_token(
+        api_client,
+        admin_token,
+        name=f"worker-failure-empty-{suffix}",
+        scopes=[],
+    )
+    run_read_headers = {"Authorization": f"Bearer {run_read_token}"}
+    empty_scope_headers = {"Authorization": f"Bearer {empty_scope_token}"}
+
+    clone_token_archive_resp = await api_client.get(
+        f"/api/v1/runs/{clone_run_id}/logs/archive",
+        headers=run_read_headers,
+    )
+    assert clone_token_archive_resp.status_code == 200, clone_token_archive_resp.text
+    clone_token_archive = clone_token_archive_resp.json()
+    assert isinstance(clone_token_archive.get("data"), list)
+    assert isinstance(clone_token_archive.get("total"), int)
+    serialized_clone_token_archive = json.dumps(
+        clone_token_archive,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert secret not in serialized_clone_token_archive
+    assert "x-access-token" not in serialized_clone_token_archive
+    assert missing_repo_url not in serialized_clone_token_archive
+
+    clone_denied_archive_resp = await api_client.get(
+        f"/api/v1/runs/{clone_run_id}/logs/archive",
+        headers=empty_scope_headers,
+    )
+    assert clone_denied_archive_resp.status_code == 403, (
+        clone_denied_archive_resp.text
+    )
+    for fragment in (
+        f"logs/{clone_run_id}.jsonl",
+        secret,
+        "x-access-token",
+        missing_repo_url,
+        "git clone failed",
+    ):
+        assert fragment not in clone_denied_archive_resp.text
+
     setup_project_id, setup_run_id = await _create_run(
         label="setup",
         git_url=EXTERNAL_STACK_GIT_URL,
@@ -1459,3 +1507,30 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
     assert any("Repository cloned successfully" in line for line in lines)
     assert any("Running setup script..." in line for line in lines)
     assert any("setup-boundary-failure" in line for line in lines)
+
+    setup_token_archive_resp = await api_client.get(
+        f"/api/v1/runs/{setup_run_id}/logs/archive",
+        headers=run_read_headers,
+    )
+    assert setup_token_archive_resp.status_code == 200, setup_token_archive_resp.text
+    setup_token_lines = [
+        entry["line"] for entry in setup_token_archive_resp.json()["data"]
+    ]
+    assert any("Repository cloned successfully" in line for line in setup_token_lines)
+    assert any("Running setup script..." in line for line in setup_token_lines)
+    assert any("setup-boundary-failure" in line for line in setup_token_lines)
+
+    setup_denied_archive_resp = await api_client.get(
+        f"/api/v1/runs/{setup_run_id}/logs/archive",
+        headers=empty_scope_headers,
+    )
+    assert setup_denied_archive_resp.status_code == 403, (
+        setup_denied_archive_resp.text
+    )
+    for fragment in (
+        f"logs/{setup_run_id}.jsonl",
+        "Repository cloned successfully",
+        "Running setup script...",
+        "setup-boundary-failure",
+    ):
+        assert fragment not in setup_denied_archive_resp.text
