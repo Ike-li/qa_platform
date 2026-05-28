@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import time
@@ -677,7 +678,14 @@ async def create_sse_ticket(
     redis = request.app.state.container.redis_client
     ticket = secrets.token_urlsafe(32)
     key = f"sse_ticket:{ticket}"
-    payload = f"{current_user.user_id}:{current_user.role}:{current_user.tenant_id}"
+    payload = json.dumps(
+        {
+            "user_id": current_user.user_id,
+            "role": current_user.role,
+            "tenant_id": current_user.tenant_id,
+            "scopes": current_user.scopes,
+        }
+    )
     await redis.setex(key, SSE_TICKET_TTL, payload)
 
     async with session_factory() as audit_session:
