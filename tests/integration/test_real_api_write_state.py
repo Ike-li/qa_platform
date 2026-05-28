@@ -984,7 +984,8 @@ async def test_schedule_and_run_apis_persist_next_run_metadata_and_audit_rows(
         json={"pipeline_id": str(pipeline_id), "git_ref": "feature/p0", "priority": 0},
     )
     assert run_resp.status_code == 201, run_resp.text
-    run_id = run_resp.json()["id"]
+    created_run = run_resp.json()
+    run_id = created_run["id"]
 
     run = await integration_db_session.get(Run, run_id)
     assert run is not None
@@ -1035,6 +1036,14 @@ async def test_schedule_and_run_apis_persist_next_run_metadata_and_audit_rows(
         user_id=seed_run["user"].id,
         resource_id=run.id,
     )
+    run_audit = await _audit_event(
+        integration_db_session,
+        action="run.trigger",
+        resource_id=run.id,
+    )
+    assert run_audit is not None
+    assert run_audit.before_state is None
+    assert run_audit.after_state == created_run
 
 
 @pytest.mark.asyncio
@@ -1047,6 +1056,8 @@ async def test_manual_run_priority_persists_worker_queue_metadata_with_real_db(
     from qaplatform.infra.database.models import Run
 
     pipeline_id = str(seed_run["pipeline"].id)
+    tenant_id = seed_run["tenant"].id
+    user_id = seed_run["user"].id
     arq = _RecordingArq()
     original_arq_pool = integration_app.state.container.arq_pool
     settings = integration_app.state.container.settings
@@ -1074,16 +1085,37 @@ async def test_manual_run_priority_persists_worker_queue_metadata_with_real_db(
                 },
             )
             assert response.status_code == 201, response.text
-            run_id = UUID(response.json()["id"])
+            body = response.json()
+            run_id = UUID(body["id"])
             run_ids.append(run_id)
 
             integration_db_session.expire_all()
             run = await integration_db_session.get(Run, run_id)
             assert run is not None
+            assert body["priority"] == priority
+            assert body["git_ref"] == run.git_ref
+            assert body["status"] == "queued"
             assert run.priority == priority
             assert run.queue_name == expected_queue
             assert run.arq_job_id == f"run:{run_id}"
             assert run.enqueued_at is not None
+
+            audit = await _audit_event(
+                integration_db_session,
+                action="run.trigger",
+                resource_id=run_id,
+            )
+            assert audit is not None
+            assert audit.tenant_id == tenant_id
+            assert audit.user_id == user_id
+            assert audit.resource_type == "run"
+            assert audit.before_state is None
+            assert audit.after_state == body
+            serialized_audit = repr(audit.after_state)
+            assert "queue_name" not in serialized_audit
+            assert "arq_job_id" not in serialized_audit
+            assert "git_url" not in serialized_audit
+            assert "credential_id" not in serialized_audit
 
         assert [call["args"] for call in arq.calls] == [
             ("execute_run", str(run_id)) for run_id in run_ids

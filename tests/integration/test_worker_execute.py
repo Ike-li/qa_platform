@@ -386,6 +386,7 @@ async def _assert_run_trigger_audit_event(
     *,
     expected_git_ref: str,
     expected_priority: int,
+    expected_after_state: dict | None = None,
     forbidden_texts: tuple[str, ...] = (),
 ) -> None:
     response = await api_client.get(
@@ -412,6 +413,8 @@ async def _assert_run_trigger_audit_event(
     assert event["before_state"] is None
     after_state = event["after_state"]
     assert after_state is not None
+    if expected_after_state is not None:
+        assert after_state == expected_after_state
     assert after_state["id"] == run_id
     assert after_state["status"] == "queued"
     assert after_state["trigger_type"] == "manual"
@@ -633,13 +636,15 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         },
     )
     assert trigger_resp.status_code in (200, 201), trigger_resp.text
-    run_id = trigger_resp.json()["id"]
+    run_body = trigger_resp.json()
+    run_id = run_body["id"]
     await _assert_run_trigger_audit_event(
         api_client,
         headers,
         run_id,
         expected_git_ref=EXTERNAL_STACK_GIT_REF,
         expected_priority=1,
+        expected_after_state=run_body,
         forbidden_texts=(worker_secret,),
     )
 
@@ -899,13 +904,15 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
             },
         )
         assert trigger_resp.status_code in (200, 201), trigger_resp.text
-        original_run_id = trigger_resp.json()["id"]
+        original_run_body = trigger_resp.json()
+        original_run_id = original_run_body["id"]
         await _assert_run_trigger_audit_event(
             api_client,
             headers,
             original_run_id,
             expected_git_ref=EXTERNAL_STACK_GIT_REF,
             expected_priority=1,
+            expected_after_state=original_run_body,
         )
 
         await _wait_for_run_status(
@@ -1199,6 +1206,7 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
                 body["id"],
                 expected_git_ref=EXTERNAL_STACK_GIT_REF,
                 expected_priority=priority,
+                expected_after_state=body,
             )
 
         await asyncio.gather(
@@ -1447,13 +1455,15 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
             },
         )
         assert trigger_resp.status_code in (200, 201), trigger_resp.text
-        run_id = trigger_resp.json()["id"]
+        run_body = trigger_resp.json()
+        run_id = run_body["id"]
         await _assert_run_trigger_audit_event(
             api_client,
             headers,
             run_id,
             expected_git_ref=EXTERNAL_STACK_GIT_REF,
             expected_priority=1,
+            expected_after_state=run_body,
             forbidden_texts=(secret,),
         )
         return project_id, run_id
