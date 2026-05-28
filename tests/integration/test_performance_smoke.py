@@ -2947,6 +2947,48 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
         )
         assert await count_self_audits() == before_self_audits + 7
 
+        self_audit_result = await integration_db_session.execute(
+            select(AuditEvent)
+            .where(
+                AuditEvent.tenant_id == tenant_id,
+                AuditEvent.user_id == user_id,
+                AuditEvent.action == "audit_events.list",
+                AuditEvent.resource_type == "audit_event",
+            )
+            .order_by(AuditEvent.created_at.desc())
+            .limit(7)
+        )
+        self_audits = list(self_audit_result.scalars())
+        assert len(self_audits) == 7
+        expected_self_audit_after_state = {
+            "actor_id": None,
+            "action": audit_action,
+            "resource_type": "project",
+            "resource_id": None,
+            "start_at": None,
+            "end_at": None,
+            "page": 1,
+            "per_page": 30,
+            "total": 90,
+        }
+        forbidden_self_audit_fragments = (
+            "data",
+            f"logs/{run_id}.jsonl",
+            *(entry["line"] for entry in archive_entries),
+            *(item.name for item in artifacts),
+            *(item.storage_path for item in artifacts),
+        )
+        for self_audit in self_audits:
+            assert self_audit.before_state is None
+            assert self_audit.after_state == expected_self_audit_after_state
+            serialized_self_audit = json.dumps(
+                self_audit.after_state,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            for fragment in forbidden_self_audit_fragments:
+                assert fragment not in serialized_self_audit
+
         _assert_p99_under(
             "real API token log/artifact/audit concurrent read paths",
             samples,

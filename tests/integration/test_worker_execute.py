@@ -712,6 +712,12 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         name=f"worker-run-read-{suffix}",
         scopes=["run.read"],
     )
+    project_read_token = await _create_external_api_token(
+        api_client,
+        admin_token,
+        name=f"worker-project-read-{suffix}",
+        scopes=["project.read"],
+    )
     empty_scope_token = await _create_external_api_token(
         api_client,
         admin_token,
@@ -719,7 +725,20 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         scopes=[],
     )
     run_read_headers = {"Authorization": f"Bearer {run_read_token}"}
+    project_read_headers = {"Authorization": f"Bearer {project_read_token}"}
     empty_scope_headers = {"Authorization": f"Bearer {empty_scope_token}"}
+
+    token_detail_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}",
+        headers=run_read_headers,
+    )
+    assert token_detail_resp.status_code == 200, token_detail_resp.text
+    token_detail = token_detail_resp.json()
+    assert token_detail["id"] == run_id
+    assert token_detail["status"] == "done"
+    assert token_detail["summary"]["total"] == 1
+    assert token_detail["summary"]["passed"] == 1
+    assert worker_secret not in json.dumps(token_detail, sort_keys=True)
 
     token_artifacts_resp = await api_client.get(
         f"/api/v1/runs/{run_id}/artifacts",
@@ -780,6 +799,14 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         f"/api/v1/runs/{run_id}/logs/archive",
         headers=empty_scope_headers,
     )
+    denied_detail_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}",
+        headers=empty_scope_headers,
+    )
+    denied_project_detail_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}",
+        headers=project_read_headers,
+    )
     denied_list_resp = await api_client.get(
         f"/api/v1/runs/{run_id}/artifacts",
         headers=empty_scope_headers,
@@ -794,6 +821,8 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
             )
         )
     for response in (
+        denied_detail_resp,
+        denied_project_detail_resp,
         denied_archive_resp,
         denied_list_resp,
         *denied_download_responses,
