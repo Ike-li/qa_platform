@@ -9,7 +9,9 @@ import json
 import os
 import subprocess
 import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 
 import pytest
 import httpx
@@ -139,6 +141,40 @@ def _skip_or_fail_external_stack(reason: str) -> None:
     if _external_stack_required():
         pytest.fail(reason)
     pytest.skip(reason)
+
+
+def _threshold(name: str, default_ms: float) -> float:
+    return float(os.environ.get(name, str(default_ms)))
+
+
+def _assert_elapsed_under(name: str, elapsed_ms: float, threshold_ms: float) -> None:
+    summary_path = os.environ.get("QAP_PERFORMANCE_SUMMARY_JSONL")
+    if summary_path:
+        path = Path(summary_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "name": name,
+                        "elapsed_ms": round(elapsed_ms, 3),
+                        "threshold_ms": threshold_ms,
+                        "samples": 1,
+                        "passed": elapsed_ms <= threshold_ms,
+                        "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    if elapsed_ms > threshold_ms:
+        pytest.fail(
+            f"{name} elapsed {elapsed_ms:.1f}ms exceeded {threshold_ms:.1f}ms"
+        )
+
+
+def _elapsed_ms(started: float) -> float:
+    return (perf_counter() - started) * 1000
 
 
 @pytest.fixture(scope="module")
@@ -868,6 +904,242 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
     assert any(start_marker in line for line in archive_lines)
     assert any(end_marker in line for line in archive_lines)
     assert any("Run completed: done" in line for line in archive_lines)
+
+
+@pytest.mark.performance
+@pytest.mark.skipif(
+    os.environ.get("RUN_PERFORMANCE_TESTS") != "1",
+    reason="set RUN_PERFORMANCE_TESTS=1 to run performance smoke tests",
+)
+@pytest.mark.asyncio
+async def test_external_stack_worker_e2e_slo_smoke(
+    docker_available, api_client, admin_token
+):
+    """真实外部栈：API 触发到 worker 日志、终态、归档和 MinIO artifact 下载的 SLO smoke。"""
+    _require_compose_worker_stack()
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    suffix = os.urandom(4).hex()
+    first_marker = f"worker-e2e-first-log-{suffix}"
+    done_marker = f"worker-e2e-done-log-{suffix}"
+    live_sleep_seconds = 8
+
+    pytest_source = (
+        "from pathlib import Path\n"
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        f"first_marker = {first_marker!r}\n"
+        f"done_marker = {done_marker!r}\n"
+        "print(first_marker, flush=True)\n"
+        "time.sleep(float(os.environ.get('QAP_EXTERNAL_STACK_SLO_LIVE_SLEEP', '8')))\n"
+        "junit = 'results/junit.xml'\n"
+        "for arg in sys.argv[1:]:\n"
+        "    if arg.startswith('--junitxml='):\n"
+        "        junit = arg.split('=', 1)[1]\n"
+        "path = Path(junit)\n"
+        "path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "path.write_text(\"<testsuite name='external-stack-worker-slo' tests='1' "
+        "failures='0' errors='0' skipped='0'><testcase "
+        "classname='external_stack_worker_slo' name='smoke' "
+        "time='0.01'/></testsuite>\")\n"
+        "(path.parent / 'logs').mkdir(exist_ok=True)\n"
+        "(path.parent / 'logs' / 'e2e-slo.txt').write_text('external-stack-worker-slo-artifact')\n"
+        "print(done_marker, flush=True)\n"
+        "print('===== 1 passed in 0.01s =====', flush=True)\n"
+    )
+    setup_script = (
+        "python - <<'PY'\n"
+        "from pathlib import Path\n"
+        "workspace = Path('/workspace')\n"
+        "(workspace / 'tests').mkdir(exist_ok=True)\n"
+        "(workspace / 'tests' / 'test_external_stack_worker_slo.py').write_text(\n"
+        "    'def test_external_stack_worker_slo():\\n    assert True\\n'\n"
+        ")\n"
+        f"(workspace / 'pytest.py').write_text({pytest_source!r})\n"
+        "PY"
+    )
+
+    project_resp = await api_client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={
+            "name": f"Worker E2E SLO {suffix}",
+            "slug": f"worker-e2e-slo-{suffix}",
+            "git_url": EXTERNAL_STACK_GIT_URL,
+            "default_branch": EXTERNAL_STACK_GIT_REF,
+        },
+    )
+    assert project_resp.status_code in (200, 201), project_resp.text
+    project_id = project_resp.json()["id"]
+
+    env_resp = await api_client.post(
+        f"/api/v1/projects/{project_id}/environments",
+        headers=headers,
+        json={
+            "name": "Worker E2E SLO Env",
+            "base_image": "python:3.12-alpine",
+            "memory_mb": 512,
+            "cpu_cores": 1.0,
+            "network_policy": "allow",
+            "env_vars": {"QAP_EXTERNAL_STACK_SLO_LIVE_SLEEP": str(live_sleep_seconds)},
+            "setup_script": setup_script,
+            "max_artifact_size_mb": 10,
+            "max_artifacts_count": 5,
+        },
+    )
+    assert env_resp.status_code in (200, 201), env_resp.text
+
+    pipeline_resp = await api_client.post(
+        f"/api/v1/projects/{project_id}/pipelines",
+        headers=headers,
+        json={
+            "name": "Worker E2E SLO Pipeline",
+            "stages": [
+                {
+                    "name": "pytest",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {"test_path": "tests/", "args": ["-s"]},
+                }
+            ],
+            "timeout_seconds": 300,
+            "selector": {"include_paths": ["tests"], "on_empty": "warn"},
+            "trigger_config": {"type": "manual"},
+            "enabled": True,
+        },
+    )
+    assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+    pipeline_id = pipeline_resp.json()["id"]
+
+    e2e_started = perf_counter()
+    trigger_resp = await api_client.post(
+        "/api/v1/runs",
+        headers=headers,
+        json={
+            "pipeline_id": pipeline_id,
+            "git_ref": EXTERNAL_STACK_GIT_REF,
+            "priority": 1,
+        },
+    )
+    assert trigger_resp.status_code in (200, 201), trigger_resp.text
+    run_body = trigger_resp.json()
+    assert run_body["status"] == "queued"
+    assert run_body["priority"] == 1
+    run_id = run_body["id"]
+    await _assert_run_trigger_audit_event(
+        api_client,
+        headers,
+        run_id,
+        expected_git_ref=EXTERNAL_STACK_GIT_REF,
+        expected_priority=1,
+        expected_after_state=run_body,
+    )
+
+    ticket_resp = await api_client.post("/api/v1/auth/sse-ticket", headers=headers)
+    assert ticket_resp.status_code == 200, ticket_resp.text
+    first_events = await _read_sse_until_log_line(
+        run_id,
+        ticket_resp.json()["ticket"],
+        first_marker,
+        timeout_seconds=180,
+    )
+    first_signal_elapsed_ms = _elapsed_ms(e2e_started)
+    _assert_elapsed_under(
+        "external stack worker first live log",
+        first_signal_elapsed_ms,
+        _threshold("PERF_EXTERNAL_STACK_WORKER_FIRST_SIGNAL_MS", 180000),
+    )
+
+    first_lines = [_sse_log_line(event) for event in first_events]
+    assert any("Starting stage: pytest" in line for line in first_lines), (
+        _format_sse_transcript(first_events)
+    )
+    live_detail_resp = await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
+    assert live_detail_resp.status_code == 200, live_detail_resp.text
+    live_status = live_detail_resp.json()["status"]
+    assert live_status not in TERMINAL_STATUSES, (
+        "first live log should arrive before the real worker run reaches terminal; "
+        f"status={live_status}; transcript:\n{_format_sse_transcript(first_events)}"
+    )
+
+    final_status = await _wait_for_terminal(
+        api_client, headers, run_id, timeout_seconds=240
+    )
+    terminal_elapsed_ms = _elapsed_ms(e2e_started)
+    _assert_elapsed_under(
+        "external stack worker terminal",
+        terminal_elapsed_ms,
+        _threshold("PERF_EXTERNAL_STACK_WORKER_TERMINAL_MS", 240000),
+    )
+    assert final_status == "done", f"run did not complete successfully: {final_status}"
+
+    archive_started = perf_counter()
+    archive_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers,
+        lambda body: any(
+            done_marker in entry["line"] or "Run completed: done" in entry["line"]
+            for entry in body["data"]
+        ),
+        timeout_seconds=60,
+    )
+    archive_elapsed_ms = _elapsed_ms(archive_started)
+    _assert_elapsed_under(
+        "external stack worker archived logs ready",
+        archive_elapsed_ms,
+        _threshold("PERF_EXTERNAL_STACK_WORKER_ARCHIVE_READY_MS", 60000),
+    )
+    archive_lines = [entry["line"] for entry in archive_body["data"]]
+    assert any(first_marker in line for line in archive_lines)
+    assert any(done_marker in line for line in archive_lines)
+    assert any("Run completed: done" in line for line in archive_lines)
+
+    artifact_started = perf_counter()
+    artifacts_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{run_id}/artifacts",
+        headers,
+        lambda body: body["total"] >= 2,
+        timeout_seconds=30,
+    )
+    artifact_elapsed_ms = _elapsed_ms(artifact_started)
+    _assert_elapsed_under(
+        "external stack worker artifacts ready",
+        artifact_elapsed_ms,
+        _threshold("PERF_EXTERNAL_STACK_WORKER_ARTIFACT_READY_MS", 30000),
+    )
+    artifacts_by_name = {
+        artifact["name"]: artifact for artifact in artifacts_body["data"]
+    }
+    assert {"junit.xml", "logs/e2e-slo.txt"} <= artifacts_by_name.keys(), artifacts_body
+    junit_artifact = artifacts_by_name["junit.xml"]
+    assert junit_artifact["type"] == "junit"
+    assert junit_artifact["storage_path"] == f"reports/{run_id}/junit.xml"
+
+    download_started = perf_counter()
+    download_resp = await api_client.get(
+        f"/api/v1/artifacts/{junit_artifact['id']}/download",
+        headers=headers,
+    )
+    assert download_resp.status_code == 200, download_resp.text
+    downloaded_text = await _download_presigned_text(
+        download_resp.json()["download_url"]
+    )
+    artifact_download_elapsed_ms = _elapsed_ms(download_started)
+    _assert_elapsed_under(
+        "external stack worker artifact download",
+        artifact_download_elapsed_ms,
+        _threshold("PERF_EXTERNAL_STACK_WORKER_ARTIFACT_DOWNLOAD_MS", 30000),
+    )
+    assert "<testsuite name='external-stack-worker-slo'" in downloaded_text
+    assert "<testcase " in downloaded_text
+
+    _assert_elapsed_under(
+        "external stack worker end-to-end",
+        _elapsed_ms(e2e_started),
+        _threshold("PERF_EXTERNAL_STACK_WORKER_E2E_MS", 300000),
+    )
 
 
 @pytest.mark.asyncio
