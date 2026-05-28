@@ -413,6 +413,12 @@ async def test_audit_events_api_token_requires_audit_read_scope_without_self_aud
         name="audit-project-read-denied",
         scopes=["project.read"],
     )
+    empty_scope_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="audit-empty-scope-denied",
+        scopes=[],
+    )
     audit_read_token = await _create_real_api_token(
         real_auth_client,
         access_token,
@@ -421,13 +427,20 @@ async def test_audit_events_api_token_requires_audit_read_scope_without_self_aud
     )
 
     before_self_audits = await count_self_audits()
-    for denied_token in (run_read_token, project_read_token):
+    denied_tokens = (
+        ("run.read", run_read_token),
+        ("project.read", project_read_token),
+        ("empty scope", empty_scope_token),
+    )
+    for label, denied_token in denied_tokens:
         denied_resp = await real_auth_client.get(
             "/api/v1/audit-events",
             headers={"Authorization": f"Bearer {denied_token}"},
             params=params,
         )
-        assert denied_resp.status_code == 403, denied_resp.text
+        assert denied_resp.status_code == 403, f"{label}: {denied_resp.text}"
+        assert action not in denied_resp.text, label
+        assert str(resource_id) not in denied_resp.text, label
 
     assert await count_self_audits() == before_self_audits
 
@@ -925,11 +938,24 @@ async def test_archived_logs_api_token_requires_run_read_scope(
         name="log-project-read-only",
         scopes=["project.read"],
     )
-    denied_resp = await real_auth_client.get(
-        f"/api/v1/runs/{run_id}/logs/archive",
-        headers={"Authorization": f"Bearer {project_read_token}"},
+    empty_scope_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="log-empty-scope",
+        scopes=[],
     )
-    assert denied_resp.status_code == 403, denied_resp.text
+    denied_tokens = (
+        ("project.read", project_read_token),
+        ("empty scope", empty_scope_token),
+    )
+    for label, denied_token in denied_tokens:
+        denied_resp = await real_auth_client.get(
+            f"/api/v1/runs/{run_id}/logs/archive",
+            headers={"Authorization": f"Bearer {denied_token}"},
+        )
+        assert denied_resp.status_code == 403, f"{label}: {denied_resp.text}"
+        assert f"logs/{run_id}.jsonl" not in denied_resp.text, label
+        assert "scope-line-" not in denied_resp.text, label
     assert s3.get_calls == []
     assert s3.presign_calls == []
 
@@ -1358,19 +1384,38 @@ async def test_artifact_list_api_token_requires_run_read_scope(
         name="artifact-list-project-read",
         scopes=["project.read"],
     )
+    empty_scope_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="artifact-list-empty-scope",
+        scopes=[],
+    )
     old_s3 = real_auth_app.state.container.s3_client
     s3 = _MemoryS3()
     real_auth_app.state.container.s3_client = s3
     try:
-        denied_resp = await real_auth_client.get(
-            f"/api/v1/runs/{run_id}/artifacts",
-            headers={"Authorization": f"Bearer {project_read_token}"},
+        denied_responses = []
+        denied_tokens = (
+            ("project.read", project_read_token),
+            ("empty scope", empty_scope_token),
         )
+        for label, denied_token in denied_tokens:
+            denied_responses.append(
+                (
+                    label,
+                    await real_auth_client.get(
+                        f"/api/v1/runs/{run_id}/artifacts",
+                        headers={"Authorization": f"Bearer {denied_token}"},
+                    ),
+                )
+            )
     finally:
         real_auth_app.state.container.s3_client = old_s3
-    assert denied_resp.status_code == 403, denied_resp.text
-    assert "summary.html" not in denied_resp.text
-    assert "results.xml" not in denied_resp.text
+    for label, denied_resp in denied_responses:
+        assert denied_resp.status_code == 403, f"{label}: {denied_resp.text}"
+        assert "summary.html" not in denied_resp.text, label
+        assert "results.xml" not in denied_resp.text, label
+        assert f"reports/{run_id}/" not in denied_resp.text, label
     assert s3.presign_calls == []
     assert s3.get_calls == []
 
@@ -1533,11 +1578,24 @@ async def test_artifact_download_api_token_requires_run_read_scope(
         name="project-read-only",
         scopes=["project.read"],
     )
-    denied_resp = await real_auth_client.get(
-        f"/api/v1/artifacts/{artifact.id}/download",
-        headers={"Authorization": f"Bearer {project_read_token}"},
+    empty_scope_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="artifact-download-empty-scope",
+        scopes=[],
     )
-    assert denied_resp.status_code == 403, denied_resp.text
+    denied_tokens = (
+        ("project.read", project_read_token),
+        ("empty scope", empty_scope_token),
+    )
+    for label, denied_token in denied_tokens:
+        denied_resp = await real_auth_client.get(
+            f"/api/v1/artifacts/{artifact.id}/download",
+            headers={"Authorization": f"Bearer {denied_token}"},
+        )
+        assert denied_resp.status_code == 403, f"{label}: {denied_resp.text}"
+        assert artifact.name not in denied_resp.text, label
+        assert artifact.storage_path not in denied_resp.text, label
     assert s3.presign_calls == []
     assert s3.get_calls == []
 
