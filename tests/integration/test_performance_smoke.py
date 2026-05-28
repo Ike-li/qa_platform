@@ -2484,6 +2484,106 @@ async def test_audit_events_denied_queries_no_self_audit_p99_smoke(
 
 
 @pytest.mark.asyncio
+async def test_audit_events_api_token_denied_no_self_audit_p99_smoke(
+    test_settings,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import AuditEvent
+
+    async with _real_auth_perf_client(test_settings) as (_app, client):
+        registration = await _register_perf_user(
+            client,
+            prefix="perf_audit_scope_denied",
+        )
+        access_token = registration["access_token"]
+        user = registration["user"]
+        tenant_id = UUID(user["tenant_id"])
+        user_id = UUID(user["id"])
+        stack = await _create_perf_project_environment_and_pipeline(
+            client,
+            access_token,
+        )
+        project_id = UUID(stack["project_id"])
+        action = f"audit.scope_denied_probe.{uuid4().hex}"
+
+        integration_db_session.add(
+            AuditEvent(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                action=action,
+                resource_type="project",
+                resource_id=project_id,
+                after_state={"scope_denied": True},
+            )
+        )
+        await integration_db_session.commit()
+
+        async def count_self_audits() -> int:
+            result = await integration_db_session.execute(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(
+                    AuditEvent.tenant_id == tenant_id,
+                    AuditEvent.user_id == user_id,
+                    AuditEvent.action == "audit_events.list",
+                    AuditEvent.resource_type == "audit_event",
+                )
+            )
+            return result.scalar_one()
+
+        denied_tokens = [
+            await _create_perf_api_token(
+                client,
+                access_token,
+                name="audit-denied-run-read",
+                scopes=["run.read"],
+            ),
+            await _create_perf_api_token(
+                client,
+                access_token,
+                name="audit-denied-project-read",
+                scopes=["project.read"],
+            ),
+            await _create_perf_api_token(
+                client,
+                access_token,
+                name="audit-denied-empty",
+                scopes=[],
+            ),
+        ]
+        params = {
+            "action": action,
+            "resource_type": "project",
+            "resource_id": str(project_id),
+            "per_page": 20,
+        }
+        before_self_audits = await count_self_audits()
+        samples: list[float] = []
+
+        for token in denied_tokens:
+            headers = {"Authorization": f"Bearer {token}"}
+            for _ in range(7):
+                elapsed_ms, response = await _timed(
+                    client.get(
+                        "/api/v1/audit-events",
+                        headers=headers,
+                        params=params,
+                    )
+                )
+                assert response.status_code == 403, response.text
+                assert action not in response.text
+                assert str(project_id) not in response.text
+                samples.append(elapsed_ms)
+
+        assert await count_self_audits() == before_self_audits
+        _assert_p99_under(
+            "audit events API token denied no-self-audit API",
+            samples,
+            _threshold("PERF_AUDIT_EVENTS_API_TOKEN_DENIED_P99_MS", 1000),
+        )
+
+
+@pytest.mark.asyncio
 async def test_real_api_token_concurrent_read_paths_p99_smoke(
     test_settings,
     integration_db_session,
