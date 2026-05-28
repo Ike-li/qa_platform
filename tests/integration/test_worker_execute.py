@@ -1218,6 +1218,21 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
         )
         assert final_statuses == ["done", "done"]
 
+        run_read_token = await _create_external_api_token(
+            api_client,
+            admin_token,
+            name=f"priority-run-read-{suffix}",
+            scopes=["run.read"],
+        )
+        empty_scope_token = await _create_external_api_token(
+            api_client,
+            admin_token,
+            name=f"priority-empty-{suffix}",
+            scopes=[],
+        )
+        run_read_headers = {"Authorization": f"Bearer {run_read_token}"}
+        empty_scope_headers = {"Authorization": f"Bearer {empty_scope_token}"}
+
         for label, run_id in triggered_runs.items():
             detail = (
                 await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
@@ -1261,6 +1276,91 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
             assert any("Repository cloned successfully" in line for line in lines)
             assert any("Uploaded artifact: junit.xml" in line for line in lines)
             assert any("Run completed: done" in line for line in lines), label
+
+            token_detail_resp = await api_client.get(
+                f"/api/v1/runs/{run_id}",
+                headers=run_read_headers,
+            )
+            assert token_detail_resp.status_code == 200, token_detail_resp.text
+            token_detail = token_detail_resp.json()
+            assert token_detail["status"] == "done", label
+            assert token_detail["summary"]["total"] == 1, label
+            assert token_detail["summary"]["passed"] == 1, label
+
+            token_archive_resp = await api_client.get(
+                f"/api/v1/runs/{run_id}/logs/archive",
+                headers=run_read_headers,
+            )
+            assert token_archive_resp.status_code == 200, token_archive_resp.text
+            token_lines = [
+                entry["line"] for entry in token_archive_resp.json()["data"]
+            ]
+            assert any(
+                "Repository cloned successfully" in line for line in token_lines
+            ), label
+            assert any("Uploaded artifact: junit.xml" in line for line in token_lines)
+            assert any("Run completed: done" in line for line in token_lines), label
+
+            token_artifacts_resp = await api_client.get(
+                f"/api/v1/runs/{run_id}/artifacts",
+                headers=run_read_headers,
+            )
+            assert token_artifacts_resp.status_code == 200, (
+                token_artifacts_resp.text
+            )
+            token_artifacts_body = token_artifacts_resp.json()
+            token_junit_artifacts = [
+                artifact
+                for artifact in token_artifacts_body["data"]
+                if artifact["name"] == "junit.xml"
+            ]
+            assert token_junit_artifacts, token_artifacts_body
+            token_junit_artifact = token_junit_artifacts[0]
+            assert token_junit_artifact["type"] == "junit", label
+            assert token_junit_artifact["storage_path"] == (
+                f"reports/{run_id}/junit.xml"
+            )
+
+            token_download_resp = await api_client.get(
+                f"/api/v1/artifacts/{token_junit_artifact['id']}/download",
+                headers=run_read_headers,
+            )
+            assert token_download_resp.status_code == 200, token_download_resp.text
+            await _assert_presigned_junit_download(
+                token_download_resp.json()["download_url"],
+                expected_suite="priority-queue",
+            )
+
+            forbidden_fragments = (
+                f"logs/{run_id}.jsonl",
+                f"reports/{run_id}/",
+                "junit.xml",
+                "priority-queue",
+                "Repository cloned successfully",
+                "Uploaded artifact:",
+                "Run completed: done",
+                "<testsuite name='priority-queue'",
+            )
+            denied_archive_resp = await api_client.get(
+                f"/api/v1/runs/{run_id}/logs/archive",
+                headers=empty_scope_headers,
+            )
+            denied_list_resp = await api_client.get(
+                f"/api/v1/runs/{run_id}/artifacts",
+                headers=empty_scope_headers,
+            )
+            denied_download_resp = await api_client.get(
+                f"/api/v1/artifacts/{token_junit_artifact['id']}/download",
+                headers=empty_scope_headers,
+            )
+            for response in (
+                denied_archive_resp,
+                denied_list_resp,
+                denied_download_resp,
+            ):
+                assert response.status_code == 403, response.text
+                for fragment in forbidden_fragments:
+                    assert fragment not in response.text
     finally:
         _compose(["start", "worker-high", "worker-low"], timeout=60, check=False)
 
