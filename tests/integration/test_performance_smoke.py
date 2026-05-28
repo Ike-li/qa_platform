@@ -1706,6 +1706,129 @@ async def test_artifact_list_api_p99_smoke(
 
 
 @pytest.mark.asyncio
+async def test_artifact_list_large_collection_page_p99_smoke(
+    test_settings,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import Artifact
+
+    async with _real_auth_perf_client(test_settings) as (app, client):
+        registration = await _register_perf_user(
+            client,
+            prefix="perf_artifact_page",
+        )
+        access_token = registration["access_token"]
+        stack = await _create_perf_project_environment_and_pipeline(
+            client,
+            access_token,
+        )
+        trigger_resp = await client.post(
+            "/api/v1/runs",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
+        )
+        assert trigger_resp.status_code == 201, trigger_resp.text
+        run_id = UUID(trigger_resp.json()["id"])
+
+        created_count = 1000
+        page = 10
+        per_page = 100
+        marker = f"large-artifact-page-{uuid4().hex}"
+        base_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        artifacts = []
+        for index in range(created_count):
+            name = f"{marker}-{index:04}.html"
+            artifacts.append(
+                Artifact(
+                    run_id=run_id,
+                    type="report",
+                    name=name,
+                    storage_path=f"reports/{run_id}/{name}",
+                    size_bytes=2048 + index,
+                    mime_type="text/html",
+                    created_at=base_time + timedelta(seconds=index),
+                )
+            )
+        integration_db_session.add_all(artifacts)
+        await integration_db_session.commit()
+
+        expected_window = [
+            {
+                "name": f"{marker}-{index:04}.html",
+                "storage_path": (
+                    f"reports/{run_id}/{marker}-{index:04}.html"
+                ),
+                "size_bytes": 2048 + index,
+            }
+            for index in range(99, -1, -1)
+        ]
+        read_token = await _create_perf_api_token(
+            client,
+            access_token,
+            name="large-artifact-page-read",
+            scopes=["run.read"],
+        )
+        headers = {"Authorization": f"Bearer {read_token}"}
+        params = {"page": page, "per_page": per_page}
+
+        old_s3 = app.state.container.s3_client
+        s3 = _MemoryS3()
+        app.state.container.s3_client = s3
+        try:
+            for _ in range(3):
+                response = await client.get(
+                    f"/api/v1/runs/{run_id}/artifacts",
+                    params=params,
+                    headers=headers,
+                )
+                assert response.status_code == 200, response.text
+                body = response.json()
+                assert body["total"] == created_count
+                assert body["page"] == page
+                assert body["per_page"] == per_page
+                assert [item["name"] for item in body["data"]] == [
+                    expected["name"] for expected in expected_window
+                ]
+
+            samples: list[float] = []
+            for _ in range(20):
+                elapsed_ms, response = await _timed(
+                    client.get(
+                        f"/api/v1/runs/{run_id}/artifacts",
+                        params=params,
+                        headers=headers,
+                    )
+                )
+                assert response.status_code == 200, response.text
+                body = response.json()
+                assert body["total"] == created_count
+                assert body["page"] == page
+                assert body["per_page"] == per_page
+                assert len(body["data"]) == per_page
+                assert [
+                    {
+                        "name": item["name"],
+                        "storage_path": item["storage_path"],
+                        "size_bytes": item["size_bytes"],
+                    }
+                    for item in body["data"]
+                ] == expected_window
+                assert {item["run_id"] for item in body["data"]} == {str(run_id)}
+                samples.append(elapsed_ms)
+        finally:
+            app.state.container.s3_client = old_s3
+
+        assert s3.presign_calls == []
+        assert s3.get_calls == []
+
+        _assert_p99_under(
+            "artifact large collection page API",
+            samples,
+            _threshold("PERF_ARTIFACT_LIST_LARGE_PAGE_P99_MS", 1500),
+        )
+
+
+@pytest.mark.asyncio
 async def test_artifact_list_denied_no_metadata_p99_smoke(
     integration_client_as,
     integration_db_session,
@@ -2104,6 +2227,183 @@ async def test_audit_events_list_api_p99_smoke(
         samples,
         _threshold("PERF_AUDIT_EVENTS_LIST_P99_MS", 1000),
     )
+
+
+@pytest.mark.asyncio
+async def test_audit_events_large_filtered_page_api_token_p99_smoke(
+    test_settings,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import AuditEvent
+
+    async with _real_auth_perf_client(test_settings) as (_app, client):
+        registration = await _register_perf_user(
+            client,
+            prefix="perf_audit_page",
+        )
+        access_token = registration["access_token"]
+        user = registration["user"]
+        tenant_id = UUID(user["tenant_id"])
+        user_id = UUID(user["id"])
+        stack = await _create_perf_project_environment_and_pipeline(
+            client,
+            access_token,
+        )
+        project_id = UUID(stack["project_id"])
+        action = f"audit.large_page_probe.{uuid4().hex}"
+        noise_action = f"audit.large_page_noise.{uuid4().hex}"
+        target_count = 600
+        base_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        target_events = [
+            AuditEvent(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                action=action,
+                resource_type="project",
+                resource_id=project_id,
+                after_state={"index": index},
+                created_at=base_time + timedelta(seconds=index),
+            )
+            for index in range(target_count)
+        ]
+        noise_events = [
+            AuditEvent(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                action=noise_action,
+                resource_type="project",
+                resource_id=project_id,
+                after_state={"noise": index},
+                created_at=base_time + timedelta(seconds=index),
+            )
+            for index in range(80)
+        ] + [
+            AuditEvent(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                action=action,
+                resource_type="run",
+                resource_id=project_id,
+                after_state={"wrong_resource_type": index},
+                created_at=base_time + timedelta(seconds=index),
+            )
+            for index in range(80)
+        ]
+        integration_db_session.add_all(target_events + noise_events)
+        await integration_db_session.commit()
+
+        async def count_self_audits() -> int:
+            result = await integration_db_session.execute(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(
+                    AuditEvent.tenant_id == tenant_id,
+                    AuditEvent.user_id == user_id,
+                    AuditEvent.action == "audit_events.list",
+                    AuditEvent.resource_type == "audit_event",
+                )
+            )
+            return result.scalar_one()
+
+        read_token = await _create_perf_api_token(
+            client,
+            access_token,
+            name="large-audit-page-read",
+            scopes=["audit.read"],
+        )
+        headers = {"Authorization": f"Bearer {read_token}"}
+        start_at = (base_time - timedelta(seconds=1)).isoformat().replace(
+            "+00:00", "Z"
+        )
+        end_at = (base_time + timedelta(seconds=target_count)).isoformat().replace(
+            "+00:00", "Z"
+        )
+        params = {
+            "actor_id": str(user_id),
+            "action": action,
+            "resource_type": "project",
+            "start_at": start_at,
+            "end_at": end_at,
+            "page": 5,
+            "per_page": 100,
+        }
+        expected_indices = list(range(199, 99, -1))
+        before_self_audits = await count_self_audits()
+
+        for _ in range(3):
+            response = await client.get(
+                "/api/v1/audit-events",
+                params=params,
+                headers=headers,
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] == target_count
+            assert body["page"] == 5
+            assert body["per_page"] == 100
+            assert [
+                item["after_state"]["index"] for item in body["data"]
+            ] == expected_indices
+
+        samples: list[float] = []
+        for _ in range(20):
+            elapsed_ms, response = await _timed(
+                client.get(
+                    "/api/v1/audit-events",
+                    params=params,
+                    headers=headers,
+                )
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] == target_count
+            assert body["page"] == 5
+            assert body["per_page"] == 100
+            assert len(body["data"]) == 100
+            assert {item["tenant_id"] for item in body["data"]} == {str(tenant_id)}
+            assert {item["user_id"] for item in body["data"]} == {str(user_id)}
+            assert {item["action"] for item in body["data"]} == {action}
+            assert {item["resource_type"] for item in body["data"]} == {"project"}
+            assert [
+                item["after_state"]["index"] for item in body["data"]
+            ] == expected_indices
+            samples.append(elapsed_ms)
+
+        assert await count_self_audits() == before_self_audits + 23
+        latest_self_audit = (
+            (
+                await integration_db_session.execute(
+                    select(AuditEvent)
+                    .where(
+                        AuditEvent.tenant_id == tenant_id,
+                        AuditEvent.user_id == user_id,
+                        AuditEvent.action == "audit_events.list",
+                        AuditEvent.resource_type == "audit_event",
+                    )
+                    .order_by(AuditEvent.created_at.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert latest_self_audit.after_state == {
+            "actor_id": str(user_id),
+            "action": action,
+            "resource_type": "project",
+            "resource_id": None,
+            "start_at": params["start_at"],
+            "end_at": params["end_at"],
+            "page": 5,
+            "per_page": 100,
+            "total": target_count,
+        }
+
+        _assert_p99_under(
+            "audit events large filtered page API token",
+            samples,
+            _threshold("PERF_AUDIT_EVENTS_LARGE_FILTERED_PAGE_P99_MS", 2000),
+        )
 
 
 @pytest.mark.asyncio
