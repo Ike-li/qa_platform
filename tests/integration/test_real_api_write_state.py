@@ -700,6 +700,118 @@ async def test_environment_api_persists_encrypted_env_vars_limits_and_soft_delet
 
 
 @pytest.mark.asyncio
+async def test_environment_api_reads_resource_limits_without_audit_secret_leak(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Environment
+
+    project_id = seed_run["project"].id
+    name = f"env-resource-read-{uuid4().hex[:8]}"
+    secret = f"resource-secret-{uuid4().hex}"
+
+    def assert_resource_fields(body: dict, *, max_count: int) -> None:
+        assert body["name"] == name
+        assert body["memory_mb"] == 768
+        assert body["cpu_cores"] == 1.25
+        assert body["max_artifact_size_mb"] == 77
+        assert body["max_artifacts_count"] == max_count
+        assert body["network_policy"] == "restricted"
+        assert body["env_vars"] == {"RESOURCE_TOKEN": secret}
+        assert body["cache_key"] == "resource-cache-v1"
+
+    create_resp = await integration_client.post(
+        f"/api/v1/projects/{project_id}/environments",
+        json={
+            "name": name,
+            "base_image": "python:3.12-alpine",
+            "setup_script": "python -V",
+            "memory_mb": 768,
+            "cpu_cores": 1.25,
+            "max_artifact_size_mb": 77,
+            "max_artifacts_count": 11,
+            "network_policy": "restricted",
+            "env_vars": {"RESOURCE_TOKEN": secret},
+            "cache_key": "resource-cache-v1",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    create_body = create_resp.json()
+    assert_resource_fields(create_body, max_count=11)
+    env_id = UUID(create_body["id"])
+
+    get_resp = await integration_client.get(
+        f"/api/v1/projects/{project_id}/environments/{env_id}"
+    )
+    assert get_resp.status_code == 200, get_resp.text
+    assert_resource_fields(get_resp.json(), max_count=11)
+
+    list_resp = await integration_client.get(
+        f"/api/v1/projects/{project_id}/environments",
+        params={"page": 1, "per_page": 100},
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    list_body = list_resp.json()
+    listed = next(
+        item for item in list_body["data"] if item["id"] == str(env_id)
+    )
+    assert_resource_fields(listed, max_count=11)
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}/environments/{env_id}",
+        json={"max_artifacts_count": 13},
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    update_body = update_resp.json()
+    assert_resource_fields(update_body, max_count=13)
+
+    env = await integration_db_session.get(Environment, env_id)
+    assert env is not None
+    assert env.memory_mb == 768
+    assert env.cpu_cores == 1.25
+    assert env.resource_limits == {
+        "max_artifact_size_mb": 77,
+        "max_artifacts_count": 13,
+    }
+    assert secret not in repr(env.env_vars)
+
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="environment.create",
+        resource_id=env_id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="environment.update",
+        resource_id=env_id,
+    )
+    assert create_audit is not None
+    assert update_audit is not None
+    serialized_audit = repr(
+        [
+            create_audit.before_state,
+            create_audit.after_state,
+            update_audit.before_state,
+            update_audit.after_state,
+        ]
+    )
+    assert secret not in serialized_audit
+    assert create_audit.before_state is None
+    assert create_audit.after_state["env_vars"] == {"redacted": True, "count": 1}
+    assert create_audit.after_state["memory_mb"] == 768
+    assert create_audit.after_state["cpu_cores"] == 1.25
+    assert create_audit.after_state["max_artifact_size_mb"] == 77
+    assert create_audit.after_state["max_artifacts_count"] == 11
+    assert update_audit.before_state["max_artifact_size_mb"] == 77
+    assert update_audit.before_state["max_artifacts_count"] == 11
+    assert update_audit.after_state["max_artifact_size_mb"] == 77
+    assert update_audit.after_state["max_artifacts_count"] == 13
+    assert update_audit.before_state["env_vars"] == {"redacted": True, "count": 1}
+    assert update_audit.after_state["env_vars"] == {"redacted": True, "count": 1}
+
+
+@pytest.mark.asyncio
 async def test_notification_rule_api_persists_updates_and_hides_soft_deleted_rule(
     integration_client,
     integration_db_session,
