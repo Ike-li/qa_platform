@@ -440,6 +440,102 @@ async def _wait_for_worker_heartbeat_keys(*, timeout_seconds: int = 20) -> list[
     pytest.fail(f"worker heartbeat key was not written; last keys={last_seen}")
 
 
+def _parse_sse_event_block(raw_block: str) -> dict[str, str]:
+    event: dict[str, str] = {"event": "message", "data": ""}
+    data_lines: list[str] = []
+    for line in raw_block.splitlines():
+        if not line or line.startswith(":"):
+            continue
+        field, sep, value = line.partition(":")
+        if not sep:
+            continue
+        if value.startswith(" "):
+            value = value[1:]
+        if field == "data":
+            data_lines.append(value)
+        elif field in {"id", "event"}:
+            event[field] = value
+    event["data"] = "\n".join(data_lines)
+    return event
+
+
+def _sse_log_line(event: dict[str, str]) -> str:
+    if event.get("event") != "log":
+        return ""
+    try:
+        payload = json.loads(event.get("data", ""))
+    except json.JSONDecodeError:
+        return ""
+    return str(payload.get("line") or "")
+
+
+def _format_sse_transcript(events: list[dict[str, str]]) -> str:
+    lines: list[str] = []
+    for event in events[-20:]:
+        lines.append(
+            "id={id} event={event} data={data}".format(
+                id=event.get("id", ""),
+                event=event.get("event", ""),
+                data=event.get("data", "")[:500],
+            )
+        )
+    return "\n".join(lines)
+
+
+async def _read_sse_until_log_line(
+    run_id: str,
+    ticket: str,
+    expected_line_fragment: str,
+    *,
+    last_event_id: str | None = None,
+    timeout_seconds: int = 90,
+) -> list[dict[str, str]]:
+    headers = {"Last-Event-ID": last_event_id} if last_event_id else None
+    url = f"/api/v1/runs/{run_id}/logs?ticket={ticket}"
+    timeout = httpx.Timeout(10.0, connect=5.0, read=None)
+
+    events: list[dict[str, str]] = []
+    buffer = ""
+    try:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=timeout) as client:
+            async with client.stream("GET", url, headers=headers) as response:
+                if response.status_code != 200:
+                    body = (await response.aread()).decode(errors="replace")
+                    pytest.fail(
+                        f"SSE logs stream returned {response.status_code}: {body[:1000]}"
+                    )
+                content_type = response.headers.get("content-type", "")
+                assert "text/event-stream" in content_type
+
+                async with asyncio.timeout(timeout_seconds):
+                    async for chunk in response.aiter_text():
+                        buffer += chunk.replace("\r\n", "\n")
+                        while "\n\n" in buffer:
+                            raw_block, buffer = buffer.split("\n\n", 1)
+                            event = _parse_sse_event_block(raw_block)
+                            events.append(event)
+
+                            line = _sse_log_line(event)
+                            if expected_line_fragment in line:
+                                return events
+                            if event.get("event") == "done":
+                                pytest.fail(
+                                    "SSE logs stream reached done before expected "
+                                    f"line {expected_line_fragment!r}; transcript:\n"
+                                    f"{_format_sse_transcript(events)}"
+                                )
+    except TimeoutError:
+        pytest.fail(
+            f"SSE logs stream did not emit {expected_line_fragment!r} within "
+            f"{timeout_seconds}s; transcript:\n{_format_sse_transcript(events)}"
+        )
+
+    pytest.fail(
+        f"SSE logs stream closed before {expected_line_fragment!r}; transcript:\n"
+        f"{_format_sse_transcript(events)}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_trigger_run_completes_terminal_state(
     docker_available, fixture_git_repo, api_client, admin_token
@@ -528,6 +624,250 @@ async def test_trigger_run_completes_terminal_state(
     ticket_resp = await api_client.post("/api/v1/auth/sse-ticket", headers=headers)
     assert ticket_resp.status_code == 200
     # 注意：SSE 流测试这里跳过，已被 E2E 验证过
+
+
+@pytest.mark.asyncio
+async def test_real_worker_streams_live_logs_over_sse_external_stack(
+    docker_available, api_client, admin_token
+):
+    """真实外部栈：compose worker 运行中，/logs SSE 能实时读到 worker 日志并保留权限边界。"""
+    _require_compose_worker_stack()
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    suffix = os.urandom(4).hex()
+    start_marker = f"sse-live-start-{suffix}"
+    end_marker = f"sse-live-end-{suffix}"
+    live_sleep_seconds = 60
+
+    pytest_source = (
+        "from pathlib import Path\n"
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        f"start_marker = {start_marker!r}\n"
+        f"end_marker = {end_marker!r}\n"
+        "print(start_marker, flush=True)\n"
+        "time.sleep(float(os.environ.get('QAP_SSE_LIVE_SLEEP', '60')))\n"
+        "junit = 'results/junit.xml'\n"
+        "for arg in sys.argv[1:]:\n"
+        "    if arg.startswith('--junitxml='):\n"
+        "        junit = arg.split('=', 1)[1]\n"
+        "path = Path(junit)\n"
+        "path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "path.write_text(\"<testsuite name='sse-live-worker' tests='1' "
+        "failures='0' errors='0' skipped='0'><testcase "
+        "classname='sse_live_worker' name='smoke' "
+        "time='0.01'/></testsuite>\")\n"
+        "print(end_marker, flush=True)\n"
+        "print('===== 1 passed in 0.01s =====', flush=True)\n"
+    )
+    setup_script = (
+        "python - <<'PY'\n"
+        "from pathlib import Path\n"
+        "workspace = Path('/workspace')\n"
+        "(workspace / 'tests').mkdir(exist_ok=True)\n"
+        "(workspace / 'tests' / 'test_sse_live_worker.py').write_text(\n"
+        "    'def test_sse_live_worker():\\n    assert True\\n'\n"
+        ")\n"
+        f"(workspace / 'pytest.py').write_text({pytest_source!r})\n"
+        "PY"
+    )
+
+    project_resp = await api_client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={
+            "name": f"SSE Live Worker {suffix}",
+            "slug": f"sse-live-worker-{suffix}",
+            "git_url": EXTERNAL_STACK_GIT_URL,
+            "default_branch": EXTERNAL_STACK_GIT_REF,
+        },
+    )
+    assert project_resp.status_code in (200, 201), project_resp.text
+    project_id = project_resp.json()["id"]
+
+    env_resp = await api_client.post(
+        f"/api/v1/projects/{project_id}/environments",
+        headers=headers,
+        json={
+            "name": "SSE Live Worker Env",
+            "base_image": "python:3.12-alpine",
+            "memory_mb": 512,
+            "cpu_cores": 1.0,
+            "network_policy": "allow",
+            "env_vars": {"QAP_SSE_LIVE_SLEEP": str(live_sleep_seconds)},
+            "setup_script": setup_script,
+            "max_artifact_size_mb": 10,
+            "max_artifacts_count": 5,
+        },
+    )
+    assert env_resp.status_code in (200, 201), env_resp.text
+
+    pipeline_resp = await api_client.post(
+        f"/api/v1/projects/{project_id}/pipelines",
+        headers=headers,
+        json={
+            "name": "SSE Live Worker Pipeline",
+            "stages": [
+                {
+                    "name": "pytest",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {"test_path": "tests/", "args": ["-s"]},
+                }
+            ],
+            "timeout_seconds": 300,
+            "selector": {"include_paths": ["tests"], "on_empty": "warn"},
+            "trigger_config": {"type": "manual"},
+            "enabled": True,
+        },
+    )
+    assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+    pipeline_id = pipeline_resp.json()["id"]
+
+    trigger_resp = await api_client.post(
+        "/api/v1/runs",
+        headers=headers,
+        json={
+            "pipeline_id": pipeline_id,
+            "git_ref": EXTERNAL_STACK_GIT_REF,
+            "priority": 1,
+        },
+    )
+    assert trigger_resp.status_code in (200, 201), trigger_resp.text
+    run_body = trigger_resp.json()
+    assert run_body["status"] == "queued"
+    assert run_body["priority"] == 1
+    run_id = run_body["id"]
+    await _assert_run_trigger_audit_event(
+        api_client,
+        headers,
+        run_id,
+        expected_git_ref=EXTERNAL_STACK_GIT_REF,
+        expected_priority=1,
+        expected_after_state=run_body,
+    )
+
+    no_ticket_resp = await api_client.get(f"/api/v1/runs/{run_id}/logs")
+    assert no_ticket_resp.status_code in (401, 422), no_ticket_resp.text
+
+    first_ticket_resp = await api_client.post(
+        "/api/v1/auth/sse-ticket",
+        headers=headers,
+    )
+    assert first_ticket_resp.status_code == 200, first_ticket_resp.text
+    first_ticket = first_ticket_resp.json()["ticket"]
+
+    first_events = await _read_sse_until_log_line(
+        run_id,
+        first_ticket,
+        start_marker,
+        timeout_seconds=180,
+    )
+    first_lines = [_sse_log_line(event) for event in first_events]
+    assert any("Starting stage: pytest" in line for line in first_lines), (
+        _format_sse_transcript(first_events)
+    )
+    first_marker_event = next(
+        event for event in first_events if start_marker in _sse_log_line(event)
+    )
+    first_marker_id = first_marker_event["id"]
+
+    live_detail_resp = await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
+    assert live_detail_resp.status_code == 200, live_detail_resp.text
+    live_status = live_detail_resp.json()["status"]
+    assert live_status not in TERMINAL_STATUSES, (
+        "SSE start marker should arrive while the real worker run is still live; "
+        f"status={live_status}; transcript:\n{_format_sse_transcript(first_events)}"
+    )
+
+    reuse_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}/logs?ticket={first_ticket}",
+        headers={"Last-Event-ID": first_marker_id},
+    )
+    assert reuse_resp.status_code == 401, reuse_resp.text
+
+    second_ticket_resp = await api_client.post(
+        "/api/v1/auth/sse-ticket",
+        headers=headers,
+    )
+    assert second_ticket_resp.status_code == 200, second_ticket_resp.text
+    second_events = await _read_sse_until_log_line(
+        run_id,
+        second_ticket_resp.json()["ticket"],
+        end_marker,
+        last_event_id=first_marker_id,
+        timeout_seconds=120,
+    )
+    second_lines = [_sse_log_line(event) for event in second_events]
+    assert all(start_marker not in line for line in second_lines), (
+        _format_sse_transcript(second_events)
+    )
+    assert any(end_marker in line for line in second_lines), (
+        _format_sse_transcript(second_events)
+    )
+
+    empty_scope_token = await _create_external_api_token(
+        api_client,
+        admin_token,
+        name=f"sse-live-empty-{suffix}",
+        scopes=[],
+    )
+    empty_scope_headers = {"Authorization": f"Bearer {empty_scope_token}"}
+    empty_ticket_resp = await api_client.post(
+        "/api/v1/auth/sse-ticket",
+        headers=empty_scope_headers,
+    )
+    assert empty_ticket_resp.status_code == 200, empty_ticket_resp.text
+    denied_resp = await api_client.get(
+        f"/api/v1/runs/{run_id}/logs?ticket={empty_ticket_resp.json()['ticket']}",
+        headers={"Last-Event-ID": first_marker_id},
+    )
+    assert denied_resp.status_code == 403, denied_resp.text
+    for fragment in (
+        start_marker,
+        end_marker,
+        f"logs/{run_id}.jsonl",
+        f"reports/{run_id}/",
+    ):
+        assert fragment not in denied_resp.text
+
+    final_status = await _wait_for_terminal(
+        api_client, headers, run_id, timeout_seconds=240
+    )
+    assert final_status == "done", f"run did not complete successfully: {final_status}"
+
+    artifacts_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{run_id}/artifacts",
+        headers,
+        lambda body: body["total"] >= 1,
+        timeout_seconds=30,
+    )
+    junit_artifacts = [
+        artifact for artifact in artifacts_body["data"] if artifact["name"] == "junit.xml"
+    ]
+    assert junit_artifacts, artifacts_body
+    junit_download_resp = await api_client.get(
+        f"/api/v1/artifacts/{junit_artifacts[0]['id']}/download",
+        headers=headers,
+    )
+    assert junit_download_resp.status_code == 200, junit_download_resp.text
+    await _assert_presigned_junit_download(
+        junit_download_resp.json()["download_url"],
+        expected_suite="sse-live-worker",
+    )
+
+    archive_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers,
+        lambda body: body["total"] >= 1,
+        timeout_seconds=60,
+    )
+    archive_lines = [entry["line"] for entry in archive_body["data"]]
+    assert any(start_marker in line for line in archive_lines)
+    assert any(end_marker in line for line in archive_lines)
+    assert any("Run completed: done" in line for line in archive_lines)
 
 
 @pytest.mark.asyncio

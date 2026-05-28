@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -408,7 +409,14 @@ async def test_authenticate_sse_ticket_consumes_atomically():
     user_id = uuid.uuid4()
     role = "platform_admin"
     tenant_id = uuid.uuid4()
-    payload = f"{user_id}:{role}:{tenant_id}"
+    payload = json.dumps(
+        {
+            "user_id": str(user_id),
+            "role": role,
+            "tenant_id": str(tenant_id),
+            "scopes": None,
+        }
+    )
     
     # Mock redis with getdel that returns payload on first call, None on second
     call_count = 0
@@ -448,6 +456,7 @@ async def test_authenticate_sse_ticket_consumes_atomically():
     assert success.user_id == user_id
     assert success.role == role
     assert success.tenant_id == tenant_id
+    assert success.scopes is None
     
     # Verify the failure is 401
     failure = failures[0]
@@ -457,3 +466,57 @@ async def test_authenticate_sse_ticket_consumes_atomically():
     assert call_count == 2
     mock_redis.get.assert_not_called()
     mock_redis.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_authenticate_sse_ticket_rejects_legacy_payload_without_scopes():
+    from fastapi import HTTPException
+
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
+
+    mock_redis = MagicMock()
+    mock_redis.getdel = AsyncMock(
+        return_value=f"{uuid.uuid4()}:owner:{uuid.uuid4()}"
+    )
+
+    mock_request = MagicMock()
+    mock_request.app.state.container.redis_client = mock_redis
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _authenticate_sse_ticket(mock_request, "legacy-ticket")
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_authenticate_sse_ticket_preserves_api_token_scopes():
+    from fastapi import HTTPException
+
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
+
+    user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    payload = json.dumps(
+        {
+            "user_id": str(user_id),
+            "role": "owner",
+            "tenant_id": str(tenant_id),
+            "scopes": ["run.read"],
+        }
+    )
+    mock_redis = MagicMock()
+    mock_redis.getdel = AsyncMock(return_value=payload)
+
+    mock_request = MagicMock()
+    mock_request.app.state.container.redis_client = mock_redis
+
+    identity = await _authenticate_sse_ticket(mock_request, "scoped-ticket")
+
+    assert identity.user_id == user_id
+    assert identity.role == "owner"
+    assert identity.tenant_id == tenant_id
+    assert identity.scopes == ["run.read"]
+
+    mock_redis.getdel.return_value = None
+    with pytest.raises(HTTPException):
+        await _authenticate_sse_ticket(mock_request, "scoped-ticket")

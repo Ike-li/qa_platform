@@ -43,11 +43,34 @@ async def _authenticate_sse_ticket(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired SSE ticket",
         )
-    user_id, role, tenant_id = payload.split(":", 2)
+    raw_payload = _decode(payload)
+    try:
+        payload_body = json.loads(raw_payload)
+        if not isinstance(payload_body, dict):
+            raise ValueError("SSE ticket payload must be a JSON object")
+        user_id = payload_body["user_id"]
+        role = payload_body["role"]
+        tenant_id = payload_body["tenant_id"]
+        scopes = payload_body.get("scopes")
+        if not isinstance(role, str):
+            raise ValueError("SSE ticket role must be a string")
+        if scopes is not None and (
+            not isinstance(scopes, list)
+            or not all(isinstance(scope, str) for scope in scopes)
+        ):
+            raise ValueError("SSE ticket scopes must be a string list or null")
+        user_uuid = UUID(str(user_id))
+        tenant_uuid = UUID(str(tenant_id))
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired SSE ticket",
+        )
     return UserIdentity(
-        user_id=UUID(user_id),
+        user_id=user_uuid,
         role=role,
-        tenant_id=UUID(tenant_id),
+        tenant_id=tenant_uuid,
+        scopes=scopes,
     )
 
 

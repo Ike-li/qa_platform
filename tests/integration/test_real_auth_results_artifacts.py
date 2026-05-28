@@ -693,6 +693,19 @@ async def test_real_sse_logs_resume_after_last_event_id_uses_ticket_rbac_and_red
         previous=RunStatusEnum.RUNNING.value,
     )
 
+    run_read_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="sse-run-read",
+        scopes=["run.read"],
+    )
+    empty_scope_token = await _create_real_api_token(
+        real_auth_client,
+        access_token,
+        name="sse-empty-scope",
+        scopes=[],
+    )
+
     ticket_resp = await real_auth_client.post(
         "/api/v1/auth/sse-ticket",
         headers={"Authorization": f"Bearer {access_token}"},
@@ -716,6 +729,32 @@ async def test_real_sse_logs_resume_after_last_event_id_uses_ticket_rbac_and_red
         headers={"Last-Event-ID": entries[0]["id"]},
     )
     assert reuse_resp.status_code == 401, reuse_resp.text
+
+    run_read_ticket_resp = await real_auth_client.post(
+        "/api/v1/auth/sse-ticket",
+        headers={"Authorization": f"Bearer {run_read_token}"},
+    )
+    assert run_read_ticket_resp.status_code == 200, run_read_ticket_resp.text
+    run_read_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/logs?ticket={run_read_ticket_resp.json()['ticket']}",
+        headers={"Last-Event-ID": entries[0]["id"]},
+    )
+    assert run_read_resp.status_code == 200, run_read_resp.text
+    assert first_line not in run_read_resp.text
+    assert second_line in run_read_resp.text
+
+    empty_ticket_resp = await real_auth_client.post(
+        "/api/v1/auth/sse-ticket",
+        headers={"Authorization": f"Bearer {empty_scope_token}"},
+    )
+    assert empty_ticket_resp.status_code == 200, empty_ticket_resp.text
+    empty_resp = await real_auth_client.get(
+        f"/api/v1/runs/{run_id}/logs?ticket={empty_ticket_resp.json()['ticket']}",
+        headers={"Last-Event-ID": entries[0]["id"]},
+    )
+    assert empty_resp.status_code == 403, empty_resp.text
+    assert first_line not in empty_resp.text
+    assert second_line not in empty_resp.text
 
 
 @pytest.mark.asyncio
