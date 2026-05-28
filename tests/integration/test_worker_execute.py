@@ -1000,6 +1000,94 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
         assert any("Repository cloned successfully" in line for line in lines)
         assert any("Uploaded artifact: junit.xml" in line for line in lines)
         assert any("Run completed: done" in line for line in lines)
+
+        run_read_token = await _create_external_api_token(
+            api_client,
+            admin_token,
+            name=f"worker-lost-run-read-{suffix}",
+            scopes=["run.read"],
+        )
+        empty_scope_token = await _create_external_api_token(
+            api_client,
+            admin_token,
+            name=f"worker-lost-empty-{suffix}",
+            scopes=[],
+        )
+        run_read_headers = {"Authorization": f"Bearer {run_read_token}"}
+        empty_scope_headers = {"Authorization": f"Bearer {empty_scope_token}"}
+
+        token_archive_resp = await api_client.get(
+            f"/api/v1/runs/{retry_run_id}/logs/archive",
+            headers=run_read_headers,
+        )
+        assert token_archive_resp.status_code == 200, token_archive_resp.text
+        token_lines = [
+            entry["line"] for entry in token_archive_resp.json()["data"]
+        ]
+        assert any("Repository cloned successfully" in line for line in token_lines)
+        assert any("Uploaded artifact: junit.xml" in line for line in token_lines)
+        assert any("Run completed: done" in line for line in token_lines)
+
+        token_artifacts_resp = await api_client.get(
+            f"/api/v1/runs/{retry_run_id}/artifacts",
+            headers=run_read_headers,
+        )
+        assert token_artifacts_resp.status_code == 200, token_artifacts_resp.text
+        token_artifacts_body = token_artifacts_resp.json()
+        token_junit_artifacts = [
+            artifact
+            for artifact in token_artifacts_body["data"]
+            if artifact["name"] == "junit.xml"
+        ]
+        assert token_junit_artifacts, token_artifacts_body
+        token_junit_artifact = token_junit_artifacts[0]
+        assert token_junit_artifact["type"] == "junit"
+        assert token_junit_artifact["storage_path"] == (
+            f"reports/{retry_run_id}/junit.xml"
+        )
+
+        token_download_resp = await api_client.get(
+            f"/api/v1/artifacts/{token_junit_artifact['id']}/download",
+            headers=run_read_headers,
+        )
+        assert token_download_resp.status_code == 200, token_download_resp.text
+        token_download_body = token_download_resp.json()
+        assert token_download_body["expires_in"] > 0
+        await _assert_presigned_junit_download(
+            token_download_body["download_url"],
+            expected_suite="worker-lost-retry",
+        )
+
+        forbidden_fragments = (
+            f"logs/{retry_run_id}.jsonl",
+            f"reports/{retry_run_id}/",
+            "junit.xml",
+            "worker-lost-retry",
+            "Repository cloned successfully",
+            "Uploaded artifact:",
+            "Run completed: done",
+            "<testsuite name='worker-lost-retry'",
+        )
+        denied_archive_resp = await api_client.get(
+            f"/api/v1/runs/{retry_run_id}/logs/archive",
+            headers=empty_scope_headers,
+        )
+        denied_list_resp = await api_client.get(
+            f"/api/v1/runs/{retry_run_id}/artifacts",
+            headers=empty_scope_headers,
+        )
+        denied_download_resp = await api_client.get(
+            f"/api/v1/artifacts/{token_junit_artifact['id']}/download",
+            headers=empty_scope_headers,
+        )
+        for response in (
+            denied_archive_resp,
+            denied_list_resp,
+            denied_download_resp,
+        ):
+            assert response.status_code == 403, response.text
+            for fragment in forbidden_fragments:
+                assert fragment not in response.text
     finally:
         _compose(["start", "worker"], timeout=60, check=False)
 
