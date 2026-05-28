@@ -110,6 +110,17 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Run backend tenant isolation audit
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          python scripts/check_tenant_isolation.py --self-test \
+            2>&1 | tee artifacts/backend-test/tenant-isolation-audit.log
+          status=$?
+          set -e
+          exit "$status"
+
       - name: Install backend dependencies
         run: python -m pip install -e '.[dev]'
 
@@ -150,7 +161,8 @@ jobs:
             artifacts/backend-test/backend-unit.log \
             artifacts/backend-test/backend-unit.xml \
             artifacts/backend-test/backend-coverage.xml \
-            artifacts/backend-test/backend-coverage.json
+            artifacts/backend-test/backend-coverage.json \
+            artifacts/backend-test/tenant-isolation-audit.log
           do
             if [ ! -s "$path" ]; then
               echo "missing_or_empty=$path" | tee -a "$manifest"
