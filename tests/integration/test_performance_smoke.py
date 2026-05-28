@@ -861,6 +861,230 @@ async def test_dequeue_waiting_runs_slo_smoke(
 
 
 @pytest.mark.asyncio
+async def test_dequeue_waiting_prioritizes_newer_high_runs_over_older_low_backlog_slo_smoke(
+    integration_app,
+    integration_client,
+    integration_db_engine,
+    integration_db_session,
+    seed_run,
+):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from qaplatform.infra.database.models import AuditEvent, Run, RunStatusEnum
+    from qaplatform.worker.settings import dequeue_waiting
+
+    arq = _FakeArq()
+    settings = integration_app.state.container.settings
+    old_arq_pool = integration_app.state.container.arq_pool
+    old_total = settings.max_concurrent_runs
+    old_per_project = settings.max_concurrent_per_project
+    ctx = {
+        "db_session_factory": async_sessionmaker(
+            integration_db_engine,
+            expire_on_commit=False,
+        ),
+        "arq_pool": arq,
+        "settings": settings,
+    }
+    tenant_id = seed_run["tenant"].id
+    pipeline_id = seed_run["pipeline"].id
+    user_id = seed_run["user"].id
+    seed_run["run"].queue_name = "queue:medium"
+    seed_run["run"].arq_job_id = f"run:{seed_run['run'].id}"
+    seed_run["run"].enqueued_at = datetime.now(timezone.utc)
+    await integration_db_session.commit()
+
+    low_run_ids: list[UUID] = []
+    high_run_ids: list[UUID] = []
+    all_run_ids: set[UUID] = set()
+    triggered_refs: dict[UUID, tuple[int, str]] = {}
+
+    async def trigger_waiting_run(priority: int, label: str, index: int) -> UUID:
+        git_ref = f"perf-priority-backlog/{label}/{index}/{uuid4().hex}"
+        response = await integration_client.post(
+            "/api/v1/runs",
+            json={
+                "pipeline_id": str(pipeline_id),
+                "git_ref": git_ref,
+                "priority": priority,
+            },
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["status"] == "queued"
+        assert body["priority"] == priority
+        assert body["pipeline_id"] == str(pipeline_id)
+        assert body["git_ref"] == git_ref
+        run_id = UUID(body["id"])
+        triggered_refs[run_id] = (priority, git_ref)
+        all_run_ids.add(run_id)
+        return run_id
+
+    try:
+        integration_app.state.container.arq_pool = arq
+        settings.max_concurrent_runs = 0
+        settings.max_concurrent_per_project = 10_000
+
+        for index in range(12):
+            low_run_ids.append(await trigger_waiting_run(2, "low", index))
+        for index in range(3):
+            high_run_ids.append(await trigger_waiting_run(0, "high", index))
+
+        assert arq.calls == []
+
+        integration_db_session.expire_all()
+        created_result = await integration_db_session.execute(
+            select(Run).where(Run.id.in_(list(all_run_ids)))
+        )
+        created_rows = {run.id: run for run in created_result.scalars()}
+        assert set(created_rows) == all_run_ids
+        for run_id, row in created_rows.items():
+            priority, git_ref = triggered_refs[run_id]
+            assert row.status == RunStatusEnum.QUEUED
+            assert row.priority == priority
+            assert row.git_ref == git_ref
+            assert row.queue_name is None
+            assert row.arq_job_id is None
+            assert row.enqueued_at is None
+
+        audit_result = await integration_db_session.execute(
+            select(AuditEvent).where(
+                AuditEvent.tenant_id == tenant_id,
+                AuditEvent.user_id == user_id,
+                AuditEvent.resource_id.in_(list(all_run_ids)),
+            )
+        )
+        audits = list(audit_result.scalars())
+        assert len(audits) == len(all_run_ids)
+        audits_by_run_id = {event.resource_id: event for event in audits}
+        assert set(audits_by_run_id) == all_run_ids
+        for run_id, (priority, git_ref) in triggered_refs.items():
+            event = audits_by_run_id[run_id]
+            assert event.action == "run.trigger"
+            assert event.resource_type == "run"
+            assert event.before_state is None
+            assert event.after_state is not None
+            assert event.after_state["id"] == str(run_id)
+            assert event.after_state["status"] == "queued"
+            assert event.after_state["trigger_type"] == "manual"
+            assert event.after_state["priority"] == priority
+            assert event.after_state["git_ref"] == git_ref
+            assert event.after_state["pipeline_id"] == str(pipeline_id)
+
+        active_count = (
+            await integration_db_session.execute(
+                select(func.count())
+                .select_from(Run)
+                .where(
+                    Run.deleted_at.is_(None),
+                    (Run.status.in_(
+                        [
+                            RunStatusEnum.PREPARING,
+                            RunStatusEnum.RUNNING,
+                            RunStatusEnum.COLLECTING,
+                        ]
+                    ))
+                    | (
+                        (Run.status == RunStatusEnum.QUEUED)
+                        & (Run.enqueued_at.isnot(None))
+                    ),
+                )
+            )
+        ).scalar_one()
+        existing_waiting_high_count = (
+            await integration_db_session.execute(
+                select(func.count())
+                .select_from(Run)
+                .where(
+                    Run.deleted_at.is_(None),
+                    Run.status == RunStatusEnum.QUEUED,
+                    Run.enqueued_at.is_(None),
+                    Run.priority == 0,
+                    ~Run.id.in_(high_run_ids),
+                )
+            )
+        ).scalar_one()
+        settings.max_concurrent_runs = (
+            active_count + existing_waiting_high_count + len(high_run_ids)
+        )
+        settings.max_concurrent_per_project = 10_000
+
+        started_at = datetime.now(timezone.utc)
+        rows_by_id: dict[UUID, Run] = {}
+        for _ in range(100):
+            await dequeue_waiting(ctx)
+            integration_db_session.expire_all()
+            result = await integration_db_session.execute(
+                select(Run).where(Run.id.in_(list(all_run_ids)))
+            )
+            rows_by_id = {run.id: run for run in result.scalars()}
+            if rows_by_id and all(
+                (row := rows_by_id.get(run_id)) is not None
+                and row.enqueued_at is not None
+                for run_id in high_run_ids
+            ):
+                break
+        else:
+            missing = [
+                str(run_id)
+                for run_id in high_run_ids
+                if rows_by_id.get(run_id) is None
+                or rows_by_id[run_id].enqueued_at is None
+            ]
+            pytest.fail(f"high-priority backlog runs were not dequeued: {missing}")
+
+        high_calls = [
+            call for call in arq.calls if UUID(call["args"][1]) in set(high_run_ids)
+        ]
+        low_calls = [
+            call for call in arq.calls if UUID(call["args"][1]) in set(low_run_ids)
+        ]
+        assert {UUID(call["args"][1]) for call in high_calls} == set(high_run_ids)
+        assert low_calls == []
+        assert {call["kwargs"]["_job_id"] for call in high_calls} == {
+            f"run:{run_id}" for run_id in high_run_ids
+        }
+        assert {call["kwargs"]["_queue_name"] for call in high_calls} == {
+            "queue:high"
+        }
+
+        samples: list[float] = []
+        for run_id in high_run_ids:
+            row = rows_by_id[run_id]
+            assert row.status == RunStatusEnum.QUEUED
+            assert row.priority == 0
+            assert row.queue_name == "queue:high"
+            assert row.arq_job_id == f"run:{run_id}"
+            assert row.enqueued_at is not None
+            samples.append((row.enqueued_at - started_at).total_seconds() * 1000)
+        for run_id in low_run_ids:
+            row = rows_by_id[run_id]
+            assert row.status == RunStatusEnum.QUEUED
+            assert row.priority == 2
+            assert row.queue_name is None
+            assert row.arq_job_id is None
+            assert row.enqueued_at is None
+
+        audit_after_dequeue = await integration_db_session.execute(
+            select(AuditEvent).where(AuditEvent.resource_id.in_(list(all_run_ids)))
+        )
+        assert {
+            (event.resource_id, event.action)
+            for event in audit_after_dequeue.scalars()
+        } == {(run_id, "run.trigger") for run_id in all_run_ids}
+
+        _assert_p99_under(
+            "dequeue waiting priority preemption SLO",
+            samples,
+            _threshold("PERF_DEQUEUE_PRIORITY_PREEMPT_P99_MS", 5000),
+        )
+    finally:
+        settings.max_concurrent_runs = old_total
+        settings.max_concurrent_per_project = old_per_project
+        integration_app.state.container.arq_pool = old_arq_pool
+
+
+@pytest.mark.asyncio
 async def test_cancel_run_api_p99_smoke(
     integration_app,
     integration_client,
