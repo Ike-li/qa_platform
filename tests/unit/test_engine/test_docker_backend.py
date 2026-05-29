@@ -108,6 +108,8 @@ class TestDockerBackend:
         config = call_kwargs.kwargs["config"]
         assert config["Image"] == "python:3.12"
         assert config["User"] == "1000:1000"
+        assert config["AttachStdout"] is True
+        assert config["AttachStderr"] is True
         assert config["HostConfig"]["ReadonlyRootfs"] is True
         assert config["HostConfig"]["PidsLimit"] == 256
         assert config["HostConfig"]["NetworkMode"] == "none"  # deny -> none

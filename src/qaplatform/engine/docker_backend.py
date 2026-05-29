@@ -126,6 +126,8 @@ class DockerBackend:
             "Cmd": spec.command,
             "Env": [f"{k}={v}" for k, v in spec.env_vars.items()],
             "User": spec.user,
+            "AttachStdout": True,
+            "AttachStderr": True,
             "HostConfig": {
                 "Memory": spec.resource_limits.memory_bytes,
                 # Match MemorySwap to Memory so Docker doesn't silently
