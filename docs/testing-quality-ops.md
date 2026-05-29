@@ -125,6 +125,42 @@
 | 2026-05-27 | E2E targeted `special-regressions -g "archived logs"` 1 passed | frontend lint `--quiet` passed | 本地旧 Uvicorn/Vite 复用会造成归档接口路由级假阴性；验证时已用 `CI=1` 强制新进程 | 归档日志回看 + artifact 预览进入 nightly/manual 真实 E2E 证据；本地复现该链路时优先停旧服务或使用 `CI=1` |
 | 2026-05-27 | required integration 94 passed / 18 deselected；完整 integration 102 passed / 10 skipped（未启动外部 API/worker 栈）；performance smoke 5 passed | unit + coverage 758 passed，coverage 83.37% | 已清理项目内 warning；第三方 testcontainers warning 精确过滤并登记；nightly/manual external-stack 主动启动 compose 后跑真实 worker smoke 与 worker_lost retry 黑盒 | 可继续作为 PR 门禁，nightly 承担重型/性能路径 |
 
+## 发版候选签字清单
+
+测试负责人不能只看 GitHub Actions 绿色状态签字。每个发版候选必须用目标分支或目标 commit 触发 `workflow_dispatch`，并选择 `gate=release_candidate`；`pull_request`、`push`、`nightly` 或本地测试都只能作为补充证据，不能替代发版签字证据。
+
+| 阶段 | 必须证据 | 拒签条件 |
+| --- | --- | --- |
+| 触发 | GitHub Actions run URL、目标分支、commit SHA、`gate=release_candidate` | run 不是目标 commit；使用 PR/default CI 代替；workflow 输入不是 `release_candidate` |
+| Backend unit / lint | `backend-test` 通过，unit JUnit 有 testcase，failure/error/skipped 均为 0，coverage XML/JSON 可解析 | unit 空跑、coverage 缺失、tenant isolation audit 缺失或不可解析 |
+| Frontend/API contract | OpenAPI schema 导出成功，frontend API contract、typecheck/build 通过 | 前后端 DTO/关键 hook 映射漂移，或 build/typecheck 失败 |
+| Backend integration | required/heavy/external-stack/performance JUnit 均有 testcase；`collect_validation=passed`、`strict_skips=True`、`integration_skip_inventory=written skipped=0`、`nodeid_validation=passed` | 任一 lane 空跑；failure/error/skipped 非 0；unknown skip；collect 基线低于预期 |
+| Worker/runtime evidence | external-stack worker 能写回终态、logs、artifacts、archived logs；`release_candidate_oom_tests=passed` | OOMKilled opt-in 用例缺失、skip 或失败；worker 结果没有真实入库/入对象存储证据 |
+| E2E evidence | `mode=release_candidate`；关键 spec 均存在；`testcase_count` 与 `actual_testcase_count` 一致；failure/error/skipped/unexpected/flaky 均为 0 | 跑错 spec 子集；JUnit 与 Playwright list 不一致；任何 skip/fail/flaky |
+| Performance SLO | `performance_summary_gate_profile=release_candidate`、`performance_trend_validation=passed`，summary 与 manifest/baseline 匹配 | SLO 名称缺失/意外新增、阈值漂移、样本不足、`passed=false`、超过 baseline 回退预算 |
+| 签字记录 | PR 或 release note 记录 run URL、commit SHA、主要 artifact 名称和已知非阻塞风险 | 只写“CI 通过”但没有可追溯 run/artifact；非阻塞风险没有 owner/复核点 |
+
+## 合并后复验
+
+合并 PR #12 或任何修改 CI gate、测试分层、E2E、worker 结果入库、性能 SLO manifest/baseline 的 PR 后，必须在 `main` 上重新运行一次 `workflow_dispatch.gate=release_candidate`。复验通过后，把新的 run URL 写回 release 记录或后续 PR 描述；如果 `main` 复验失败，即使 PR 分支曾经通过，也要按 P0 release blocker 处理，直到同一 `main` commit 的 release candidate run 重新通过。
+
+复验时先看 `Release Candidate Gate` 汇总，再抽查 artifacts：backend integration evidence manifest、integration skip inventory、E2E evidence manifest、performance trend JSON 和 release evidence markdown。若 GitHub runner、Docker registry、external stack 启动等基础设施故障导致失败，可以登记为 infra blocker，但不能把失败 run 改判为可签字。
+
+## Skip 与 SLO 治理规则
+
+- `release_candidate` 下 skipped 必须为 0；nightly 只允许已登记的环境门控或 OOM opt-in 类 skip，且必须能被 `scripts/report_integration_skips.py` 归类。
+- 新增 skip 时先写原因、owner、恢复条件和对应 marker；unknown skip 不得进入发版候选签字。
+- 集成测试清单变化要同步更新 collect 基线和 review slice 说明，避免删除/改 marker 后空跑仍绿。
+- `.github/performance-slo-manifest.json` 新增或删除 SLO 时必须说明用户路径、阈值来源、`min_samples` 和归属 lane。
+- `.github/performance-slo-baseline.json` 只能随证据更新：放宽 baseline 需要关联退化原因或容量变化；收紧 baseline 需要引用最近稳定 run；不得为了让单次 run 通过而临时改 baseline。
+
+## 非阻塞风险台账
+
+| ID | 风险 | 来源/信号 | Owner | 状态 | 下次复核 |
+| --- | --- | --- | --- | --- | --- |
+| RISK-CI-001 | GitHub Actions Node.js 20 deprecation 预警可能影响未来 hosted runner action 执行 | 2026-05-29 远端 CI run 日志中出现 action runtime deprecation 类 warning；当前 release_candidate 仍通过 | CI 维护者 | open / non-blocking | 下次修改 `.github/workflows/ci.yml` 或 GitHub 宣布 Node 20 removal 前，确认 `actions/checkout`、`setup-python`、`setup-node`、`upload/download-artifact` 等 action 已支持当前推荐 runtime |
+| RISK-DEP-001 | 默认分支仍有 Dependabot moderate vulnerabilities 提示 | 2026-05-29 `git push` 后 GitHub security summary 提示 9 个 moderate vulnerabilities | 依赖维护者 | open / non-blocking | 合并 release gate PR 后单独开依赖治理 PR，先分离 runtime dependency 与 dev/test dependency，再跑 unit/integration/frontend build 回归 |
+
 ## 缺陷回归流程
 
 | 阶段 | 要求 |
