@@ -85,6 +85,7 @@ def test_release_gate_validates_downloaded_evidence_markers():
     assert "frontend-api-contract-artifacts/openapi.json" in release_block
     assert "backend-integration-artifacts/evidence-manifest.txt" in release_block
     assert "e2e-artifacts/evidence-manifest.txt" in release_block
+    assert "e2e-artifacts/artifacts/e2e/evidence-manifest.txt" in release_block
     for marker in (
         "backend_test_artifacts_validation=passed",
         "collect_validation=passed",
