@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 PLAYWRIGHT_CONFIG = ROOT / "playwright.config.ts"
 DOCKERFILE = ROOT / "Dockerfile"
+DOCKER_COMPOSE = ROOT / "docker-compose.yml"
 SLO_MANIFEST = ROOT / ".github" / "performance-slo-manifest.json"
 SLO_BASELINE = ROOT / ".github" / "performance-slo-baseline.json"
 E2E_DIR = ROOT / "tests" / "e2e"
@@ -120,6 +121,7 @@ def test_release_candidate_jobs_have_realistic_time_budgets():
 def test_release_candidate_backend_gate_runs_real_stack_and_slo_validation():
     text = _workflow_text()
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    docker_compose = DOCKER_COMPOSE.read_text(encoding="utf-8")
 
     for step in (
         "Run heavy docker integration tests (nightly/release candidate)",
@@ -139,6 +141,9 @@ def test_release_candidate_backend_gate_runs_real_stack_and_slo_validation():
     assert "scripts/validate_performance_summary.py" in text
     assert "scripts/report_integration_skips.py" in text
     assert "scripts/validate_backend_integration_artifacts.py" in text
+    assert "QAP_DOCKER_SOCK_GROUP_ID=$(stat -c '%g' /var/run/docker.sock)" in text
+    assert docker_compose.count("- /var/run/docker.sock:/var/run/docker.sock") >= 3
+    assert docker_compose.count('${QAP_DOCKER_SOCK_GROUP_ID:-0}') >= 3
     assert "python -m alembic upgrade head" in text
     assert "python scripts/seed_admin.py" in text
     assert "COPY alembic.ini ." in dockerfile

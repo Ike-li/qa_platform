@@ -455,6 +455,7 @@ jobs:
           sed -i 's/^QAP_MAX_CONCURRENT_RUNS=.*/QAP_MAX_CONCURRENT_RUNS=10/' .env
           sed -i 's/^QAP_MAX_CONCURRENT_PER_PROJECT=.*/QAP_MAX_CONCURRENT_PER_PROJECT=10/' .env
           sed -i 's/^QAP_WORKER_MAX_JOBS=.*/QAP_WORKER_MAX_JOBS=10/' .env
+          echo "QAP_DOCKER_SOCK_GROUP_ID=$(stat -c '%g' /var/run/docker.sock)" >> .env
 
       - name: Start external API/worker stack (nightly/release candidate)
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.gate == 'nightly' || inputs.gate == 'release_candidate'))
