@@ -3,11 +3,20 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import AsyncIterator, Protocol
+from typing import Any, AsyncIterator, Protocol
 
 import aiodocker
 
 log = logging.getLogger(__name__)
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -31,6 +40,17 @@ class ExitResult:
     finished_at: datetime
     oom_killed: bool = False
     timed_out: bool = False
+    resource_usage: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ResourceUsageSample:
+    timestamp: datetime
+    memory_usage_bytes: int | None = None
+    memory_limit_bytes: int | None = None
+    memory_max_usage_bytes: int | None = None
+    cpu_percent: float | None = None
+    pids_current: int | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +180,11 @@ class DockerBackend:
                 content=content,
             )
 
+    async def stream_resource_usage(self, execution_id: str) -> AsyncIterator[ResourceUsageSample]:
+        container = self.client.containers.container(execution_id)
+        async for stats in container.stats(stream=True):
+            yield self._parse_resource_usage(stats)
+
     async def wait(self, execution_id: str, timeout: int) -> ExitResult:
         container = self.client.containers.container(execution_id)
         started_at = datetime.now(timezone.utc)
@@ -173,8 +198,8 @@ class DockerBackend:
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
                 oom_killed=False,
-                timed_out=True,
-            )
+            timed_out=True,
+        )
 
         finished_at = datetime.now(timezone.utc)
         exit_code = result.get("StatusCode", -1)
@@ -194,6 +219,44 @@ class DockerBackend:
             finished_at=finished_at,
             oom_killed=oom_killed,
         )
+
+    @staticmethod
+    def _parse_resource_usage(stats: dict[str, Any]) -> ResourceUsageSample:
+        memory_stats = stats.get("memory_stats") or {}
+        cpu_stats = stats.get("cpu_stats") or {}
+        precpu_stats = stats.get("precpu_stats") or {}
+        cpu_percent = DockerBackend._cpu_percent(cpu_stats, precpu_stats)
+        return ResourceUsageSample(
+            timestamp=datetime.now(timezone.utc),
+            memory_usage_bytes=_int_or_none(memory_stats.get("usage")),
+            memory_limit_bytes=_int_or_none(memory_stats.get("limit")),
+            memory_max_usage_bytes=_int_or_none(memory_stats.get("max_usage")),
+            cpu_percent=cpu_percent,
+            pids_current=_int_or_none((stats.get("pids_stats") or {}).get("current")),
+        )
+
+    @staticmethod
+    def _cpu_percent(
+        cpu_stats: dict[str, Any],
+        precpu_stats: dict[str, Any],
+    ) -> float | None:
+        cpu_usage = cpu_stats.get("cpu_usage") or {}
+        precpu_usage = precpu_stats.get("cpu_usage") or {}
+        cpu_delta = _int_or_none(cpu_usage.get("total_usage"))
+        precpu_delta = _int_or_none(precpu_usage.get("total_usage"))
+        system_delta = _int_or_none(cpu_stats.get("system_cpu_usage"))
+        presystem_delta = _int_or_none(precpu_stats.get("system_cpu_usage"))
+        if None in (cpu_delta, precpu_delta, system_delta, presystem_delta):
+            return None
+        cpu_delta -= precpu_delta
+        system_delta -= presystem_delta
+        if cpu_delta < 0 or system_delta <= 0:
+            return None
+        online_cpus = _int_or_none(cpu_stats.get("online_cpus"))
+        if online_cpus is None:
+            percpu_usage = cpu_usage.get("percpu_usage")
+            online_cpus = len(percpu_usage) if isinstance(percpu_usage, list) else 1
+        return (cpu_delta / system_delta) * online_cpus * 100.0
 
     async def cancel(self, execution_id: str) -> None:
         """Send SIGTERM to the container (graceful stop)."""

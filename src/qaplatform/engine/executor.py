@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import mimetypes
+import re
 import shutil
 import tempfile
+from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +25,7 @@ from qaplatform.engine.docker_backend import (
     ExitResult,
     Mount,
     ResourceLimits,
+    ResourceUsageSample,
     SandboxSecurity,
 )
 from qaplatform.engine.events import publish_status_event
@@ -50,8 +55,107 @@ GRACE_PERIOD_SECONDS = 30
 # coroutine would block the run's finally block forever, leaving subsequent
 # stages, the workdir teardown, and worker release dangling.
 _LOG_DRAIN_TIMEOUT = 5
+_FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 _INFRA_EXCEPTIONS = (ConnectionError, TimeoutError, OSError)
+
+
+def _resource_termination_summary(exit_result: ExitResult) -> dict[str, Any] | None:
+    oom_killed = exit_result.oom_killed is True
+    timed_out = exit_result.timed_out is True
+    if not (oom_killed or timed_out):
+        return None
+    reasons = []
+    if oom_killed:
+        reasons.append("oom")
+    if timed_out:
+        reasons.append("timeout")
+    duration_ms = max(
+        0,
+        int((exit_result.finished_at - exit_result.started_at).total_seconds() * 1000),
+    )
+    summary = {
+        "reason": "+".join(reasons),
+        "exit_code": exit_result.exit_code,
+        "oom_killed": oom_killed,
+        "timed_out": timed_out,
+        "duration_ms": duration_ms,
+        "started_at": exit_result.started_at.isoformat(),
+        "finished_at": exit_result.finished_at.isoformat(),
+    }
+    resource_usage = getattr(exit_result, "resource_usage", None)
+    if resource_usage:
+        summary["resource_usage"] = resource_usage
+    return summary
+
+
+class _ResourceUsageTracker:
+    def __init__(self) -> None:
+        self.sample_count = 0
+        self.memory_peak_bytes: int | None = None
+        self.memory_limit_bytes: int | None = None
+        self.cpu_peak_percent: float | None = None
+        self.pids_peak: int | None = None
+
+    def observe(self, sample: ResourceUsageSample) -> None:
+        self.sample_count += 1
+        memory_candidates = [
+            value
+            for value in (sample.memory_max_usage_bytes, sample.memory_usage_bytes)
+            if value is not None
+        ]
+        if memory_candidates:
+            memory_peak = max(memory_candidates)
+            self.memory_peak_bytes = (
+                memory_peak
+                if self.memory_peak_bytes is None
+                else max(self.memory_peak_bytes, memory_peak)
+            )
+        if sample.memory_limit_bytes is not None:
+            self.memory_limit_bytes = sample.memory_limit_bytes
+        if sample.cpu_percent is not None:
+            self.cpu_peak_percent = (
+                sample.cpu_percent
+                if self.cpu_peak_percent is None
+                else max(self.cpu_peak_percent, sample.cpu_percent)
+            )
+        if sample.pids_current is not None:
+            self.pids_peak = (
+                sample.pids_current
+                if self.pids_peak is None
+                else max(self.pids_peak, sample.pids_current)
+            )
+
+    def summary(self) -> dict[str, Any] | None:
+        if self.sample_count == 0:
+            return None
+        summary: dict[str, Any] = {"sample_count": self.sample_count}
+        if self.memory_peak_bytes is not None:
+            summary["memory_peak_bytes"] = self.memory_peak_bytes
+        if self.memory_limit_bytes is not None:
+            summary["memory_limit_bytes"] = self.memory_limit_bytes
+        if self.memory_peak_bytes is not None and self.memory_limit_bytes:
+            summary["memory_peak_percent"] = (
+                self.memory_peak_bytes / self.memory_limit_bytes
+            ) * 100.0
+        if self.cpu_peak_percent is not None:
+            summary["cpu_peak_percent"] = self.cpu_peak_percent
+        if self.pids_peak is not None:
+            summary["pids_peak"] = self.pids_peak
+        return summary
+
+
+def _attach_resource_usage(
+    exit_result: ExitResult,
+    resource_usage: dict[str, Any] | None,
+) -> ExitResult:
+    if not resource_usage:
+        return exit_result
+    if isinstance(exit_result, ExitResult):
+        return replace(exit_result, resource_usage=resource_usage)
+    with suppress(Exception):
+        setattr(exit_result, "resource_usage", resource_usage)
+    return exit_result
 
 
 # --------------------------------------------------------------------------- #
@@ -83,6 +187,20 @@ class StageDefinition:
         self.continue_on_error = continue_on_error
 
 
+class CollectorDefinition:
+    """Represents a result collector plugin configured for a pipeline."""
+
+    def __init__(
+        self,
+        plugin: str = "junit",
+        config: dict[str, Any] | None = None,
+        enabled: bool = True,
+    ) -> None:
+        self.plugin = plugin
+        self.config = config or {}
+        self.enabled = enabled
+
+
 class PipelineConfig:
     """Pipeline configuration for an execution run."""
 
@@ -95,6 +213,8 @@ class PipelineConfig:
         network_policy: str = "deny",
         timeout_seconds: int = 1800,
         setup_script: str | None = None,
+        collectors: list[CollectorDefinition] | None = None,
+        source_auth: dict[str, str] | None = None,
     ) -> None:
         self.image = image
         self.stages = stages
@@ -103,6 +223,8 @@ class PipelineConfig:
         self.network_policy = network_policy
         self.timeout_seconds = timeout_seconds
         self.setup_script = setup_script
+        self.collectors = collectors if collectors is not None else [CollectorDefinition()]
+        self.source_auth = source_auth
 
 
 # --------------------------------------------------------------------------- #
@@ -132,6 +254,7 @@ class RunExecutor:
         s3_bucket: str = "qa-platform",
         workspace_dir: str = "/workspace",
         artifact_repo: Any = None,
+        test_result_repo: Any = None,
         redis: Any = None,
     ) -> None:
         self.backend = backend
@@ -142,6 +265,7 @@ class RunExecutor:
         self.s3_bucket = s3_bucket
         self.workspace_dir = workspace_dir
         self.artifact_repo = artifact_repo
+        self.test_result_repo = test_result_repo
         self.redis = redis
         # P1-D: persistent flag the cancel watcher sets on every signal.
         # Initialised here (not just in execute()) so direct callers of
@@ -151,6 +275,37 @@ class RunExecutor:
 
     async def _publish(self, run_id: str, status: str, previous: str | None = None) -> None:
         await publish_status_event(self.redis, run_id, status, previous=previous)
+
+    def _collector_accepts_config(self, collector: Any) -> bool:
+        try:
+            signature = inspect.signature(collector.collect)
+        except (TypeError, ValueError):
+            return True
+
+        params = list(signature.parameters.values())
+        if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
+            return True
+        positional = [
+            p for p in params
+            if p.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        # Bound methods expose run_id, working_dir, config as three positional
+        # parameters. Older collectors only expose run_id and working_dir.
+        return len(positional) >= 3
+
+    async def _collect_from_plugin(
+        self,
+        collector: Any,
+        run_id: UUID,
+        working_dir: Path,
+        config: dict[str, Any],
+    ) -> list[Any]:
+        if self._collector_accepts_config(collector):
+            return await collector.collect(run_id, working_dir, config)
+        return await collector.collect(run_id, working_dir)
 
     async def execute(self, run: Run, pipeline: PipelineConfig) -> RunStatus:
         """Execute a full pipeline run. Returns the terminal RunStatus."""
@@ -183,7 +338,7 @@ class RunExecutor:
                 "source_clone",
                 attributes=source_clone_attributes,
             ):
-                await self._clone_repo(run, working_dir)
+                await self._clone_repo(run, working_dir, pipeline.source_auth)
             await self.log_stream.write_log(run_id, "Repository cloned successfully")
 
             # 2. Run setup script
@@ -217,6 +372,18 @@ class RunExecutor:
                     f"Pipeline failed with code {exit_result.exit_code}",
                     stream="stderr",
                 )
+            resource_termination = _resource_termination_summary(exit_result)
+            if resource_termination:
+                await self.log_stream.write_log(
+                    run_id,
+                    "Resource termination: "
+                    f"reason={resource_termination['reason']} "
+                    f"exit_code={resource_termination['exit_code']} "
+                    f"duration_ms={resource_termination['duration_ms']} "
+                    f"oom_killed={resource_termination['oom_killed']} "
+                    f"timed_out={resource_termination['timed_out']}",
+                    stream="stderr",
+                )
 
             # 4. Collect results
             if not await self.run_repo.mark_collecting(run_id):
@@ -235,13 +402,26 @@ class RunExecutor:
             await self._publish(run_id, RunStatus.COLLECTING.value, previous=RunStatus.RUNNING.value)
             await self.log_stream.write_log(run_id, "Collecting test results...")
 
+            enabled_collectors = [c for c in pipeline.collectors if c.enabled]
+            collector_names = ",".join(c.plugin for c in enabled_collectors)
             with tracer.start_as_current_span(
                 "collect_results",
-                attributes={"run.id": run_id, "collector": "junit"},
+                attributes={
+                    "run.id": run_id,
+                    "collector.count": len(enabled_collectors),
+                    "collector.plugins": collector_names,
+                },
             ):
-                collector = self.plugin_registry.get_collector("junit")
-
-                results = await collector.collect(run.id, working_dir)
+                results = []
+                for collector_config in enabled_collectors:
+                    collector = self.plugin_registry.get_collector(collector_config.plugin)
+                    collector_results = await self._collect_from_plugin(
+                        collector,
+                        run.id,
+                        working_dir,
+                        collector_config.config,
+                    )
+                    results.extend(collector_results)
                 passed = sum(1 for r in results if r.status == "passed")
                 failed = sum(1 for r in results if r.status == "failed")
                 skipped = sum(1 for r in results if r.status == "skipped")
@@ -256,6 +436,26 @@ class RunExecutor:
                     "error": error,
                     "pass_rate": passed / total if total > 0 else 0.0,
                 }
+                if resource_termination:
+                    summary["resource_termination"] = resource_termination
+
+                if self.test_result_repo is not None and results:
+                    await self.test_result_repo.bulk_create(
+                        [
+                            {
+                                "run_id": run.id,
+                                "suite": result.suite,
+                                "name": result.name,
+                                "status": result.status,
+                                "duration_ms": result.duration_ms,
+                                "error_message": result.error_message,
+                                "stack_trace": result.stack_trace,
+                                "tags": result.tags,
+                                "metadata_": result.metadata,
+                            }
+                            for result in results
+                        ]
+                    )
 
             # 5. Upload artifacts to S3
             with tracer.start_as_current_span(
@@ -274,7 +474,7 @@ class RunExecutor:
 
             # 6. Write terminal state
             status = RunStatus.DONE
-            if exit_result.oom_killed or exit_result.timed_out:
+            if exit_result.oom_killed is True or exit_result.timed_out is True:
                 status = RunStatus.TIMEOUT
             elif exit_result.exit_code != 0:
                 status = RunStatus.FAILED
@@ -342,6 +542,43 @@ class RunExecutor:
             await asyncio.gather(log_task, return_exceptions=True)
         except Exception:
             log.warning("log task raised during drain", exc_info=True)
+
+    async def _collect_resource_usage(
+        self,
+        execution_id: str,
+        tracker: _ResourceUsageTracker,
+    ) -> None:
+        """Collect best-effort resource stats for backends that expose them."""
+        stream_usage = getattr(self.backend, "stream_resource_usage", None)
+        if stream_usage is None:
+            return
+        try:
+            usage_stream = stream_usage(execution_id)
+            if inspect.isawaitable(usage_stream):
+                usage_stream = await usage_stream
+            if usage_stream is None:
+                return
+            async for sample in usage_stream:
+                tracker.observe(sample)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.debug("resource usage streaming ended for container %s", execution_id)
+
+    async def _drain_resource_usage_task(self, usage_task: asyncio.Task | None) -> None:
+        if usage_task is None:
+            return
+        if usage_task.done():
+            with suppress(Exception):
+                usage_task.result()
+            return
+        usage_task.cancel()
+        try:
+            await asyncio.wait_for(usage_task, timeout=1)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        except Exception:
+            log.debug("resource usage task raised during drain", exc_info=True)
 
     async def _graceful_stop(self, execution_id: str, *, reason: str) -> None:
         """SIGTERM → bounded wait (≤30 s) → SIGKILL teardown.
@@ -503,6 +740,10 @@ class RunExecutor:
                     redact_env_vars=pipeline.env_vars,
                 )
             )
+            usage_tracker = _ResourceUsageTracker()
+            usage_task = asyncio.create_task(
+                self._collect_resource_usage(execution_id, usage_tracker)
+            )
 
             stage_started_at = datetime.now(timezone.utc)
             try:
@@ -544,7 +785,9 @@ class RunExecutor:
                 except Exception:
                     log.warning("failed to cleanup container %s", execution_id)
                 await self._drain_log_task(log_task)
+                await self._drain_resource_usage_task(usage_task)
                 self._active_execution_id = None
+            exit_result = _attach_resource_usage(exit_result, usage_tracker.summary())
 
             if exit_result.exit_code != 0:
                 final_exit = exit_result
@@ -553,7 +796,12 @@ class RunExecutor:
                     
         return final_exit
 
-    async def _clone_repo(self, run: Run, dest: Path) -> None:
+    async def _clone_repo(
+        self,
+        run: Run,
+        dest: Path,
+        source_auth: dict[str, str] | None = None,
+    ) -> None:
         """Clone the repository using the SourceProtocol plugin."""
         metadata = getattr(run, "metadata_", None)
         if metadata is None:
@@ -566,7 +814,15 @@ class RunExecutor:
             return
 
         source = self.plugin_registry.get_source("git")
-        revision = await source.clone(git_url, run.git_ref, dest)
+        clone_ref = (
+            run.git_sha
+            if run.git_sha and _FULL_GIT_SHA_RE.match(run.git_sha)
+            else run.git_ref
+        )
+        if source_auth:
+            revision = await source.clone(git_url, clone_ref, dest, source_auth)
+        else:
+            revision = await source.clone(git_url, clone_ref, dest)
 
         if revision.sha:
             await self.run_repo.update_git_sha(run.id, revision.sha)

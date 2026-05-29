@@ -34,12 +34,204 @@ async def _webhook_run_count(
     return int(result.scalar_one())
 
 
+def _github_push_payload(repo_url: str, *, git_ref: str, git_sha: str) -> dict:
+    full_name = "/".join(repo_url.removesuffix(".git").split("/")[-2:])
+    return {
+        "ref": git_ref,
+        "after": git_sha,
+        "repository": {
+            "full_name": full_name,
+            "clone_url": repo_url,
+            "html_url": repo_url.removesuffix(".git"),
+            "ssh_url": f"git@github.com:{full_name}.git",
+        },
+    }
+
+
 class _ConflictArq:
     async def enqueue_job(self, *_args, _job_id: str, **_kwargs):
         return None
 
     async def close(self):
         return None
+
+
+@pytest.mark.asyncio
+async def test_provider_github_push_matches_repo_url_without_user_and_audits_system_identity(
+    seed_run,
+    integration_app,
+    integration_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import AuditEvent, Run
+    from qaplatform.infra.webhook_signature import generate_webhook_signature
+
+    project = seed_run["project"]
+    integration_app.state.container.arq_pool = None
+    project.git_url = f"https://github.com/acme/qa-platform-{project.id}.git"
+    secret = "github-provider-secret"
+    await _save_project_settings(
+        integration_db_session,
+        project,
+        {"webhook_secret": secret, "allowed_branches": ["main"]},
+    )
+    payload = _github_push_payload(
+        project.git_url,
+        git_ref="refs/heads/main",
+        git_sha="a" * 40,
+    )
+    raw_body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    signature = generate_webhook_signature(secret, raw_body)
+
+    resp = await integration_client.post(
+        "/webhooks/github",
+        content=raw_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-GitHub-Event": "push",
+            "X-GitHub-Delivery": f"delivery-{project.id}",
+            "X-Hub-Signature-256": signature,
+        },
+    )
+
+    assert resp.status_code == 201, resp.text
+    response_body = resp.json()
+    run_id = UUID(response_body["id"])
+    run = await integration_db_session.get(Run, run_id)
+    assert run is not None
+    assert run.tenant_id == project.tenant_id
+    assert run.project_id == project.id
+    assert run.triggered_by is None
+    assert run.git_ref == "refs/heads/main"
+    assert run.git_sha == "a" * 40
+    assert run.metadata_["provider"] == "github"
+    assert run.metadata_["event"] == "push"
+    assert run.metadata_["delivery_id"] == f"delivery-{project.id}"
+    assert run.metadata_["git_url"] == project.git_url
+    assert run.dedup_key == f"github:{project.git_url}:{'a' * 40}:main"
+
+    audit = (
+        (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == "run.trigger",
+                    AuditEvent.resource_id == run.id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert audit.tenant_id == project.tenant_id
+    assert audit.user_id is None
+    assert audit.after_state == response_body
+
+
+@pytest.mark.asyncio
+async def test_provider_github_push_rejects_invalid_signature_without_run(
+    seed_run,
+    integration_app,
+    integration_client,
+    integration_db_session,
+):
+    project = seed_run["project"]
+    integration_app.state.container.arq_pool = None
+    project.git_url = f"https://github.com/acme/qa-platform-{project.id}.git"
+    await _save_project_settings(
+        integration_db_session,
+        project,
+        {"webhook_secret": "github-provider-secret"},
+    )
+    before = await _webhook_run_count(integration_db_session, project.id)
+    payload = _github_push_payload(
+        project.git_url,
+        git_ref="refs/heads/main",
+        git_sha="b" * 40,
+    )
+    raw_body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+
+    resp = await integration_client.post(
+        "/webhooks/github",
+        content=raw_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-GitHub-Event": "push",
+            "X-Hub-Signature-256": "sha256=bad",
+        },
+    )
+
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["detail"] == "Invalid webhook signature"
+    assert await _webhook_run_count(integration_db_session, project.id) == before
+
+
+@pytest.mark.asyncio
+async def test_provider_github_push_filtered_branch_uses_api_v1_alias_and_system_audit(
+    seed_run,
+    integration_app,
+    integration_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import AuditEvent
+    from qaplatform.infra.webhook_signature import generate_webhook_signature
+
+    project = seed_run["project"]
+    integration_app.state.container.arq_pool = None
+    project.git_url = f"https://github.com/acme/qa-platform-{project.id}.git"
+    secret = "github-provider-secret"
+    await _save_project_settings(
+        integration_db_session,
+        project,
+        {"webhook_secret": secret, "allowed_branches": ["main"]},
+    )
+    before = await _webhook_run_count(integration_db_session, project.id)
+    payload = _github_push_payload(
+        project.git_url,
+        git_ref="refs/heads/feature/nope",
+        git_sha="c" * 40,
+    )
+    raw_body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    signature = generate_webhook_signature(secret, raw_body)
+
+    resp = await integration_client.post(
+        "/api/v1/webhooks/github",
+        content=raw_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-GitHub-Event": "push",
+            "X-GitHub-Delivery": f"provider-filtered-{project.id}",
+            "X-Hub-Signature-256": signature,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "filtered", "reason": "branch_not_allowed"}
+    assert await _webhook_run_count(integration_db_session, project.id) == before
+
+    audit = (
+        (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == "webhook.filtered",
+                    AuditEvent.resource_id == project.id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert audit.user_id is None
+    assert audit.after_state == {
+        "project_id": str(project.id),
+        "status": "filtered",
+        "reason": "branch_not_allowed",
+        "git_ref": "refs/heads/feature/nope",
+        "git_sha": "c" * 40,
+        "branch_name": "feature/nope",
+        "provider": "github",
+        "delivery_id": f"provider-filtered-{project.id}",
+    }
+    assert project.git_url not in repr(audit.after_state)
 
 
 @pytest.mark.asyncio

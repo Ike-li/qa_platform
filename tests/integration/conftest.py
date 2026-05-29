@@ -32,6 +32,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
+def pytest_collection_modifyitems(items):
+    """Attach exact nodeids to integration JUnit rows for CI evidence checks."""
+    for item in items:
+        item.user_properties.append(("nodeid", item.nodeid))
+
+
 @pytest.fixture(scope="session")
 def pull_docker_image():
     """Pull a Docker image, skipping heavy integration tests on registry issues.

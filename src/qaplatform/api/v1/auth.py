@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 
@@ -20,6 +20,7 @@ from qaplatform.api.auth.jwt_service import JWTService
 from qaplatform.api.auth.middleware import CurrentUser, get_current_user
 from qaplatform.api.auth.permissions import Role
 from qaplatform.api.auth.token_service import TokenService
+from qaplatform.api.schemas import PaginatedResponse
 from qaplatform.infra.database.models import AppUser, Tenant
 from qaplatform.infra.database.repositories.audit_repo import AuditEventRepository
 from qaplatform.infra.database.repositories.user_repo import (
@@ -636,27 +637,38 @@ async def revoke_token(
             raise
 
 
-@router.get("/tokens", response_model=list[ApiTokenListItem])
+@router.get("/tokens", response_model=PaginatedResponse[ApiTokenListItem])
 async def list_tokens(
     current_user: CurrentUser = Depends(get_current_user),
     session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
-) -> list[ApiTokenListItem]:
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+) -> PaginatedResponse[ApiTokenListItem]:
     async with session_factory() as session:
         api_token_repo = ApiTokenRepository(session)
-        tokens, _ = await api_token_repo.list_by_user(UUID(current_user.user_id))
-
-    return [
-        ApiTokenListItem(
-            token_id=t.token_id,
-            name=t.name,
-            scopes=t.scopes,
-            expires_at=t.expires_at,
-            last_used_at=t.last_used_at,
-            is_revoked=t.is_revoked,
-            created_at=t.created_at,
+        tokens, total = await api_token_repo.list_by_user(
+            UUID(current_user.user_id),
+            offset=(page - 1) * per_page,
+            limit=per_page,
         )
-        for t in tokens
-    ]
+
+    return PaginatedResponse(
+        data=[
+            ApiTokenListItem(
+                token_id=t.token_id,
+                name=t.name,
+                scopes=t.scopes,
+                expires_at=t.expires_at,
+                last_used_at=t.last_used_at,
+                is_revoked=t.is_revoked,
+                created_at=t.created_at,
+            )
+            for t in tokens
+        ],
+        page=page,
+        per_page=per_page,
+        total=total,
+    )
 
 
 # --- SSE Ticket ---

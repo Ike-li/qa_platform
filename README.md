@@ -30,7 +30,7 @@ QA 自动化执行平台 —— 管理项目、配置流水线、执行测试、
 ## 核心功能
 
 - **多租户 RBAC** — 租户级 (Owner/Admin/Member/Viewer) + 项目级 (Admin/Developer/Viewer) 双层权限
-- **流水线管理** — 定义测试流水线，配置运行环境与凭据存储；私有仓库凭据注入 clone 闭环见 TODO
+- **流水线管理** — 定义测试流水线，配置运行环境与凭据存储；私有 HTTPS token / SSH key 可在执行时安全注入 Git clone
 - **容器化执行** — 测试在隔离 Docker 容器中运行，支持超时、取消与 Docker OOMKilled 状态识别
 - **实时日志** — SSE 推送执行日志，前端实时展示
 - **插件系统** — Runner / Collector / Source 三类插件协议，内置 pytest、Jest、Playwright、Go test、JUnit、Git

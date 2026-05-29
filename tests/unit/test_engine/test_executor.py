@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -76,6 +76,7 @@ def sample_run():
     run.id = uuid4()
     run.project_id = uuid4()
     run.git_ref = "main"
+    run.git_sha = None
     run.metadata = {"git_url": "https://github.com/org/repo.git"}
     return run
 
@@ -323,6 +324,39 @@ class TestExecutorUsesSourcePlugin:
         )
 
     @pytest.mark.asyncio
+    async def test_clone_repo_prefers_full_commit_sha(
+        self, executor, sample_run, mock_plugin_registry
+    ):
+        dest = Path("/tmp/test")
+        sample_run.git_sha = "0123456789abcdef0123456789abcdef01234567"
+
+        await executor._clone_repo(sample_run, dest)
+
+        source = mock_plugin_registry.get_source.return_value
+        source.clone.assert_called_once_with(
+            "https://github.com/org/repo.git",
+            "0123456789abcdef0123456789abcdef01234567",
+            dest,
+        )
+
+    @pytest.mark.asyncio
+    async def test_clone_repo_passes_source_auth(
+        self, executor, sample_run, mock_plugin_registry
+    ):
+        dest = Path("/tmp/test")
+        auth = {"method": "token", "secret": "secret-token"}
+
+        await executor._clone_repo(sample_run, dest, auth)
+
+        source = mock_plugin_registry.get_source.return_value
+        source.clone.assert_called_once_with(
+            "https://github.com/org/repo.git",
+            "main",
+            dest,
+            auth,
+        )
+
+    @pytest.mark.asyncio
     async def test_clone_repo_updates_git_sha(self, executor, sample_run, mock_run_repo, mock_plugin_registry):
         dest = Path("/tmp/test")
         await executor._clone_repo(sample_run, dest)
@@ -336,6 +370,7 @@ class TestExecutorUsesSourcePlugin:
         run = MagicMock(spec=Run)
         run.id = uuid4()
         run.git_ref = "main"
+        run.git_sha = None
         run.metadata = {}
 
         dest = Path("/tmp/test")
@@ -785,6 +820,87 @@ class TestExecutorCommitsAfterStateTransitions:
             "upload_artifacts",
         ]
         assert spans[0][1]["run.id"] == str(sample_run.id)
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_configured_collector_plugin_and_config(
+        self, happy_executor, sample_run
+    ):
+        from qaplatform.engine.executor import CollectorDefinition, PipelineConfig, StageDefinition
+
+        sample_run.metadata = {}
+        pipeline = PipelineConfig(
+            image="python:3.12-alpine",
+            stages=[StageDefinition(name="pytest", plugin="pytest")],
+            collectors=[
+                CollectorDefinition(
+                    plugin="custom-junit",
+                    config={"path": "reports/custom.xml"},
+                )
+            ],
+        )
+
+        await happy_executor.execute(sample_run, pipeline)
+
+        happy_executor.plugin_registry.get_collector.assert_called_with("custom-junit")
+        collector = happy_executor.plugin_registry.get_collector.return_value
+        collector.collect.assert_awaited_once_with(
+            sample_run.id,
+            ANY,
+            {"path": "reports/custom.xml"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_persists_collected_test_results(
+        self, happy_executor, sample_run
+    ):
+        from qaplatform.plugins.protocols import TestResultData
+
+        sample_run.metadata = {}
+        test_result = TestResultData(
+            suite="worker-suite",
+            name="test_worker_smoke",
+            status="passed",
+            duration_ms=12,
+            tags=["e2e"],
+            metadata={"source": "junit"},
+        )
+        collector = AsyncMock()
+        collector.collect = AsyncMock(return_value=[test_result])
+        happy_executor.plugin_registry.get_collector = MagicMock(return_value=collector)
+        happy_executor.test_result_repo = AsyncMock()
+
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        happy_executor.test_result_repo.bulk_create.assert_awaited_once_with(
+            [
+                {
+                    "run_id": sample_run.id,
+                    "suite": "worker-suite",
+                    "name": "test_worker_smoke",
+                    "status": "passed",
+                    "duration_ms": 12,
+                    "error_message": None,
+                    "stack_trace": None,
+                    "tags": ["e2e"],
+                    "metadata_": {"source": "junit"},
+                }
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_old_collector_signature_still_works(self, happy_executor, sample_run, tmp_path):
+        class OldCollector:
+            async def collect(self, run_id, working_dir):
+                return []
+
+        results = await happy_executor._collect_from_plugin(
+            OldCollector(),
+            sample_run.id,
+            tmp_path,
+            {"path": "reports/custom.xml"},
+        )
+
+        assert results == []
 
     @pytest.mark.asyncio
     async def test_commit_ordering_running_then_collecting(

@@ -1,12 +1,21 @@
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig, devices, type PlaywrightTestConfig } from "@playwright/test";
 
 const useSystemChrome = process.env.PLAYWRIGHT_USE_SYSTEM_CHROME === "1";
+const reporter: PlaywrightTestConfig["reporter"] = process.env.CI
+  ? [
+      ["list"],
+      ["html", { outputFolder: "artifacts/e2e/playwright-report", open: "never" }],
+      ["junit", { outputFile: "artifacts/e2e/playwright-results.xml" }],
+      ["json", { outputFile: "artifacts/e2e/playwright-run.json" }],
+    ]
+  : "list";
 
 export default defineConfig({
   testDir: "tests/e2e",
   fullyParallel: true,
-  reporter: "list",
+  reporter,
   globalSetup: "./tests/e2e/global-setup.ts",
+  globalTeardown: "./tests/e2e/global-teardown.ts",
   use: {
     baseURL: "http://localhost:5173",
     trace: "on-first-retry",

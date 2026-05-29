@@ -1,10 +1,11 @@
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import i18n from "../../i18n";
 import { useCreateProject } from "../../hooks/use-projects";
+import { isGitUrlAllowedForAuth } from "../../lib/contracts";
 import {
   Dialog,
   DialogContent,
@@ -31,10 +32,18 @@ function createProjectSchema() {
     name: z.string().min(1, i18n.t('validation.nameRequired')),
     slug: z.string().min(1, i18n.t('validation.slugRequired')).regex(/^[a-z0-9-]+$/, i18n.t('validation.slugFormat')),
     description: z.string().optional(),
-    git_url: z.string().url(i18n.t('validation.invalidUrl')),
+    git_url: z.string().min(1, i18n.t('validation.invalidUrl')),
     git_auth_method: z.enum(["none", "token", "ssh_key"]),
     default_branch: z.string().min(1, i18n.t('validation.defaultBranchRequired')),
     root_path: z.string().min(1, i18n.t('validation.rootPathRequired')),
+  }).superRefine((value, context) => {
+    if (!isGitUrlAllowedForAuth(value.git_url, value.git_auth_method)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["git_url"],
+        message: i18n.t('validation.invalidUrl'),
+      });
+    }
   });
 }
 
@@ -48,8 +57,8 @@ export function CreateProjectModal({ open, onOpenChange }: { open: boolean; onOp
   const {
     register,
     handleSubmit,
+    control,
     setValue,
-    watch,
     reset,
     formState: { errors },
   } = useForm<ProjectFormValues>({
@@ -61,7 +70,7 @@ export function CreateProjectModal({ open, onOpenChange }: { open: boolean; onOp
     },
   });
 
-  const name = watch("name");
+  const name = useWatch({ control, name: "name" });
   useEffect(() => {
     if (name) {
       setValue("slug", name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""));

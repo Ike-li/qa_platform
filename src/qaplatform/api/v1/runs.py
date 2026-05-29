@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -122,16 +123,21 @@ async def trigger_run(
 
     git_ref = body.git_ref or project.default_branch
 
-    environment_id = project.default_env_id
+    environment_id = body.environment_id or project.default_env_id
     if environment_id is None:
         envs, _ = await repos.environment.list_by_project(project.id, limit=1)
         if envs:
             environment_id = envs[0].id
         else:
             raise HTTPException(status_code=409, detail="No environment configured for project")
-            
+    elif body.environment_id is not None:
+        environment = await repos.environment.get_by_id(body.environment_id)
+        if environment is None or environment.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Environment not found")
+
     metadata = {'git_url': project.git_url}
     if project.git_auth_method != 'none' and project.credential_id:
+        metadata['git_auth_method'] = project.git_auth_method
         metadata['credential_id'] = str(project.credential_id)
     if project.shallow_clone:
         metadata['shallow_clone'] = True
@@ -144,6 +150,7 @@ async def trigger_run(
         pipeline_id=pipeline.id,
         environment_id=environment_id,
         git_ref=git_ref,
+        git_sha=body.git_sha,
         triggered_by=user.user_id,
         trigger_type="manual",
         priority=body.priority,
@@ -186,6 +193,10 @@ async def list_runs(
     ),
     sort: str = Query("-created_at", description="排序字段"),
     project_id: UUID | None = Query(None, description="按项目筛选"),
+    pipeline_id: UUID | None = Query(None, description="按管道筛选"),
+    git_ref: str | None = Query(None, description="按分支或 Git ref 筛选"),
+    created_from: datetime | None = Query(None, description="按创建时间下限筛选"),
+    created_to: datetime | None = Query(None, description="按创建时间上限筛选"),
     session: AsyncSession = Depends(_get_db_session),
 ):
     filters = [RunORM.tenant_id == user.tenant_id]
@@ -223,6 +234,15 @@ async def list_runs(
             if not member_projects:
                 return PaginatedResponse(data=[], page=page, per_page=per_page, total=0)
             filters.append(RunORM.project_id.in_(member_projects))
+
+    if pipeline_id is not None:
+        filters.append(RunORM.pipeline_id == pipeline_id)
+    if git_ref is not None:
+        filters.append(RunORM.git_ref == git_ref)
+    if created_from is not None:
+        filters.append(RunORM.created_at >= created_from)
+    if created_to is not None:
+        filters.append(RunORM.created_at <= created_to)
 
     order_by = desc(RunORM.created_at) if sort == "-created_at" else RunORM.created_at
 

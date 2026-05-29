@@ -78,6 +78,7 @@ def mock_project(project_id, tenant_id):
     obj.git_url = "https://github.com/org/repo.git"
     obj.git_auth_method = "none"
     obj.credential_id = None
+    obj.shallow_clone = False
     obj.default_branch = "main"
     obj.default_env_id = uuid.uuid4()
     obj.settings = {}
@@ -101,6 +102,7 @@ def mock_repos(mock_project, mock_pipeline):
     repos.run = AsyncMock()
     repos.run.create = AsyncMock()
     repos.run.get_for_tenant = AsyncMock()
+    repos.run.get_active_by_dedup = AsyncMock(return_value=None)
     repos.run.cancel_if_current = AsyncMock(return_value=True)
     repos.audit = AsyncMock()
     repos.audit.create = AsyncMock()
@@ -206,9 +208,46 @@ class TestWebhookTrigger:
         )
 
     @pytest.mark.asyncio
+    async def test_webhook_trigger_preserves_project_git_auth_metadata(
+        self, app, mock_repos, project_id, mock_project, mock_pipeline
+    ):
+        credential_id = uuid.uuid4()
+        mock_project.git_auth_method = "token"
+        mock_project.credential_id = credential_id
+        run = _make_run(
+            tenant_id=mock_project.tenant_id,
+            project_id=project_id,
+            status="queued",
+        )
+        run.pipeline_id = mock_pipeline.id
+        run.trigger_type = "webhook"
+        mock_repos.run.create = AsyncMock(return_value=run)
+
+        with patch("qaplatform.worker.scheduler.enqueue_run", new_callable=AsyncMock):
+            async with await _make_client(app) as client:
+                resp = await client.post(
+                    f"/api/v1/webhooks/{project_id}/trigger",
+                    json={
+                        "git_ref": "refs/heads/main",
+                        "git_sha": "abc123",
+                        "metadata": {
+                            "git_auth_method": "ssh_key",
+                            "credential_id": str(uuid.uuid4()),
+                            "delivery_id": "delivery-1",
+                        },
+                    },
+                )
+
+        assert resp.status_code == 201, resp.text
+        metadata = mock_repos.run.create.call_args.kwargs["metadata_"]
+        assert metadata["git_auth_method"] == "token"
+        assert metadata["credential_id"] == str(credential_id)
+        assert metadata["delivery_id"] == "delivery-1"
+
+    @pytest.mark.asyncio
     async def test_webhook_trigger_archived_project_409(self, app, mock_repos, project_id):
         mock_repos.project.get_for_tenant = AsyncMock(
-            return_value=MagicMock(status="archived", id=project_id)
+            return_value=SimpleNamespace(status="archived", id=project_id, settings={})
         )
 
         async with await _make_client(app) as client:

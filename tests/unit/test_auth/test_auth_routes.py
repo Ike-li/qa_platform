@@ -532,10 +532,15 @@ class TestTokenRoutes:
             resp = await auth_client.get("/api/v1/auth/tokens")
 
         assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["token_id"] == "tok1"
-        assert data[0]["name"] == "ci"
+        body = resp.json()
+        assert body["page"] == 1
+        assert body["per_page"] == 20
+        assert body["total"] == 1
+        assert len(body["data"]) == 1
+        assert body["data"][0]["token_id"] == "tok1"
+        assert body["data"][0]["name"] == "ci"
+        api_token_repo.list_by_user.assert_awaited_once()
+        assert api_token_repo.list_by_user.await_args.kwargs == {"offset": 0, "limit": 20}
 
 
 # --- JWT Blacklist / Logout tests ---

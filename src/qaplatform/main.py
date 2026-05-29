@@ -182,6 +182,7 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     from qaplatform.api.v1.runs import router as run_router
     from qaplatform.api.v1.schedules import router as schedule_router
     from qaplatform.api.v1.sse import router as sse_router
+    from qaplatform.api.v1.webhooks import provider_router as webhook_provider_router
     from qaplatform.api.v1.webhooks import router as webhook_router
 
     api_prefix = "/api/v1"
@@ -200,6 +201,8 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     app.include_router(artifact_router, prefix=api_prefix)
     app.include_router(sse_router, prefix=api_prefix)
     app.include_router(webhook_router, prefix=api_prefix)
+    app.include_router(webhook_provider_router, prefix=api_prefix)
+    app.include_router(webhook_provider_router)
 
     # ── Health checks ────────────────────────────────────────────────────
     app.add_route("/metrics", metrics_route.endpoint, methods=["GET"], include_in_schema=False)

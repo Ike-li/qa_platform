@@ -10,8 +10,10 @@ import pytest
 from qaplatform.domain.models.run import RunStatus
 from qaplatform.worker.settings import (
     after_job_end,
+    cleanup_old_audit_events,
     cleanup_old_runs,
     dequeue_waiting,
+    _get_worker_max_jobs,
     on_shutdown,
     reclaim_resources,
     retry_failed_archives,
@@ -31,10 +33,23 @@ def _ctx_with_session(**overrides):
         "redis": AsyncMock(),
         "docker_backend": MagicMock(),
         "arq_pool": AsyncMock(),
-        "settings": SimpleNamespace(retention_runs_days=14),
+        "settings": SimpleNamespace(retention_runs_days=14, retention_audit_days=365),
     }
     ctx.update(overrides)
     return ctx, session
+
+
+def test_get_worker_max_jobs_defaults_to_arq_concurrency_default(monkeypatch):
+    monkeypatch.delenv("QAP_WORKER_MAX_JOBS", raising=False)
+
+    assert _get_worker_max_jobs() == 10
+
+
+def test_get_worker_max_jobs_rejects_non_positive_values(monkeypatch):
+    monkeypatch.setenv("QAP_WORKER_MAX_JOBS", "0")
+
+    with pytest.raises(ValueError):
+        _get_worker_max_jobs()
 
 
 @pytest.mark.asyncio
@@ -134,6 +149,32 @@ async def test_cleanup_old_runs_deletes_terminal_runs_and_commits():
         await cleanup_old_runs(ctx)
 
     run_repo.delete_terminal_older_than.assert_awaited_once()
+    session.commit.assert_awaited_once()
+    log.info.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_old_audit_events_exits_without_session_or_settings():
+    await cleanup_old_audit_events({"db_session_factory": None, "settings": SimpleNamespace()})
+    await cleanup_old_audit_events({"db_session_factory": MagicMock(), "settings": None})
+
+
+@pytest.mark.asyncio
+async def test_cleanup_old_audit_events_deletes_expired_events_and_commits():
+    ctx, session = _ctx_with_session()
+    audit_repo = AsyncMock()
+    audit_repo.delete_older_than.return_value = 2
+
+    with (
+        patch(
+            "qaplatform.infra.database.repositories.audit_repo.AuditEventRepository",
+            return_value=audit_repo,
+        ),
+        patch("qaplatform.worker.settings.log") as log,
+    ):
+        await cleanup_old_audit_events(ctx)
+
+    audit_repo.delete_older_than.assert_awaited_once()
     session.commit.assert_awaited_once()
     log.info.assert_called_once()
 

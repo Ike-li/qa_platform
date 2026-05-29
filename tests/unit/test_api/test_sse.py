@@ -393,6 +393,63 @@ async def test_stream_logs_same_project_returns_200_event_stream(
 
 
 @pytest.mark.asyncio
+async def test_stream_logs_accepts_last_event_id_query_param(
+    client, mock_redis, mock_run_repo, tenant_id
+):
+    run_id = uuid.uuid4()
+    mock_run_repo.get_for_tenant.return_value = _make_run(
+        run_id=run_id, tenant_id=tenant_id
+    )
+
+    stream_key = f"run:{run_id}:logs"
+    mock_redis.xread = AsyncMock(
+        side_effect=[
+            [(stream_key.encode(), [(b"1235-0", {"message": "resumed"})])],
+            [],
+        ]
+    )
+    mock_redis.hget = AsyncMock(return_value=RunStatus.DONE.value)
+
+    resp = await client.get(
+        f"/api/v1/runs/{run_id}/logs?ticket=test-ticket&last_event_id=1234-0"
+    )
+
+    assert resp.status_code == 200
+    assert mock_redis.xread.await_args_list[0].args[0] == {stream_key: "1234-0"}
+
+
+@pytest.mark.asyncio
+async def test_stream_events_accepts_last_event_id_query_param(
+    client, mock_redis, mock_run_repo, tenant_id
+):
+    run_id = uuid.uuid4()
+    mock_run_repo.get_for_tenant.return_value = _make_run(
+        run_id=run_id, tenant_id=tenant_id
+    )
+
+    stream_key = f"run:{run_id}:events"
+    mock_redis.xread = AsyncMock(
+        side_effect=[
+            [
+                (
+                    stream_key.encode(),
+                    [(b"5679-0", {"type": "status_change", "status": "done"})],
+                )
+            ],
+            [],
+        ]
+    )
+    mock_redis.hget = AsyncMock(return_value=RunStatus.DONE.value)
+
+    resp = await client.get(
+        f"/api/v1/runs/{run_id}/events?ticket=test-ticket&last_event_id=5678-0"
+    )
+
+    assert resp.status_code == 200
+    assert mock_redis.xread.await_args_list[0].args[0] == {stream_key: "5678-0"}
+
+
+@pytest.mark.asyncio
 async def test_authenticate_sse_ticket_consumes_atomically():
     """Two concurrent calls with the same ticket must yield exactly one success
     and one failure — the getdel operation must be atomic.

@@ -100,17 +100,25 @@ async def test_list_project_members_returns_rows(app, mock_user, tenant_id, mock
     project_id = uuid.uuid4()
     member1 = _make_orm_member(project_id, uuid.uuid4(), tenant_id, role="admin")
     member2 = _make_orm_member(project_id, uuid.uuid4(), tenant_id, role="viewer")
-    mock_repos.project_member.list_by_project_tenant.return_value = [member1, member2]
+    mock_repos.project_member.list_by_project_tenant.return_value = ([member1, member2], 2)
 
     async with await _make_client(app) as ac:
         resp = await ac.get(
-            f"/api/v1/projects/{project_id}/members",
+            f"/api/v1/projects/{project_id}/members?page=2&per_page=1",
             headers={"Authorization": "Bearer fake"},
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert len(body) == 2
-    assert {m["role"] for m in body} == {"admin", "viewer"}
+    assert body["page"] == 2
+    assert body["per_page"] == 1
+    assert body["total"] == 2
+    assert len(body["data"]) == 2
+    assert {m["role"] for m in body["data"]} == {"admin", "viewer"}
+    mock_repos.project_member.list_by_project_tenant.assert_awaited_once()
+    assert mock_repos.project_member.list_by_project_tenant.await_args.kwargs == {
+        "offset": 1,
+        "limit": 1,
+    }
 
 
 @pytest.mark.asyncio

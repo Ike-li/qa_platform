@@ -183,3 +183,53 @@ async def test_update_rule(app, mock_repos, project_id):
     assert audit_kwargs["action"] == "notification_rule.update"
     assert audit_kwargs["before_state"]["channels"]["redacted"] is True
     assert audit_kwargs["after_state"]["channels"]["redacted"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_rule_rejects_empty_channels(app, mock_repos, project_id):
+    rule = _make_orm_rule(project_id)
+    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+
+    async with await _make_client(app) as client:
+        resp = await client.put(
+            f"/api/v1/projects/{project_id}/notification-rules/{rule.id}",
+            json={"channels": []},
+        )
+
+    assert resp.status_code == 422
+    mock_repos.notification_rule.get_by_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_rule_clears_template_when_null_submitted(
+    app, mock_repos, project_id
+):
+    rule = _make_orm_rule(project_id)
+    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+
+    async with await _make_client(app) as client:
+        resp = await client.put(
+            f"/api/v1/projects/{project_id}/notification-rules/{rule.id}",
+            json={"template": None},
+        )
+
+    assert resp.status_code == 200
+    assert rule.template is None
+    assert resp.json()["template"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_rule_keeps_template_when_omitted(app, mock_repos, project_id):
+    rule = _make_orm_rule(project_id)
+    original_template = rule.template
+    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+
+    async with await _make_client(app) as client:
+        resp = await client.put(
+            f"/api/v1/projects/{project_id}/notification-rules/{rule.id}",
+            json={"name": "Updated Rule"},
+        )
+
+    assert resp.status_code == 200
+    assert rule.template == original_template
+    assert resp.json()["template"] == original_template

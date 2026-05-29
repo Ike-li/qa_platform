@@ -99,7 +99,7 @@ Base URL: `/api/v1`
 - `POST /auth/refresh` → Refresh access token using cookie
 - `POST /auth/tokens` → Create API token
 - `DELETE /auth/tokens/{token_id}` → Revoke API token
-- `GET /auth/tokens` → List API tokens
+- `GET /auth/tokens?page=1&per_page=20` → Paginated API token list
 
 ### Projects
 - `GET /projects?page=1&per_page=20&q=&status=active` → Paginated list
@@ -195,6 +195,11 @@ interface Pipeline {
     conditions: Record<string, unknown>;
     target: Record<string, unknown>;
   };
+  collectors: Array<{
+    plugin: string;
+    config: Record<string, unknown>;
+    enabled: boolean;
+  }>;
   timeout_seconds: number;
   retry_policy: {
     max_attempts: number;
@@ -333,7 +338,7 @@ interface Artifact {
 
 ### 5. User Settings (`/settings`)
 - API Tokens management
-  - List existing tokens (token_id, name, scopes, expires_at, last_used_at, is_revoked, created_at)
+  - List existing tokens from `data[]` plus `page/per_page/total` metadata (token_id, name, scopes, expires_at, last_used_at, is_revoked, created_at)
   - "Create Token" button → modal (name input, shows token ONCE)
   - Revoke button per token
 

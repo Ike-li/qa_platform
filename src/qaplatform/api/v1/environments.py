@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from uuid import UUID, uuid4
 
@@ -28,10 +27,6 @@ router = APIRouter(
     tags=["environments"],
 )
 
-_IMAGE_TAG_RE = re.compile(r"^[a-zA-Z0-9._/\-]+:[a-zA-Z0-9._\-]+$")
-_BLOCKED_TAGS = {"latest", "stable", "edge"}
-
-
 class _EnvironmentAuditState(BaseModel):
     id: UUID
     project_id: UUID
@@ -40,6 +35,7 @@ class _EnvironmentAuditState(BaseModel):
     setup_script: str | None = None
     memory_mb: int
     cpu_cores: float
+    disk_mb: int | None = None
     max_artifact_size_mb: int
     max_artifacts_count: int
     network_policy: str
@@ -53,21 +49,6 @@ class _EnvVarsCryptoFailure(BaseModel):
     project_id: UUID
     environment_id: UUID | None = None
     error_type: str
-
-
-def _validate_base_image(image: str) -> None:
-    """Validate Docker image name to prevent arbitrary registry pulls."""
-    if not _IMAGE_TAG_RE.match(image):
-        raise HTTPException(
-            status_code=422,
-            detail="Image must use format 'registry/name:tag' (no :latest allowed)",
-        )
-    tag = image.rsplit(":", 1)[-1]
-    if tag in _BLOCKED_TAGS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Tag ':{tag}' is not allowed; pin a specific version",
-        )
 
 
 def _get_crypto(request: Request) -> CryptoService:
@@ -88,6 +69,7 @@ def _to_response(orm, crypto: CryptoService) -> EnvironmentResponse:
         setup_script=orm.setup_script,
         memory_mb=orm.memory_mb,
         cpu_cores=orm.cpu_cores,
+        disk_mb=rl.get("disk_mb"),
         max_artifact_size_mb=rl.get("max_artifact_size_mb", 100),
         max_artifacts_count=rl.get("max_artifacts_count", 50),
         network_policy=orm.network_policy,
@@ -243,12 +225,13 @@ async def create_environment(
     _perm=require_project_permission(Action.CONFIG_EDIT),
 ):
     await _verify_project_access(project_id, repos, user)
-    _validate_base_image(body.base_image)
 
     resource_limits = {
         "max_artifact_size_mb": body.max_artifact_size_mb,
         "max_artifacts_count": body.max_artifacts_count,
     }
+    if body.disk_mb is not None:
+        resource_limits["disk_mb"] = body.disk_mb
     crypto = _get_crypto(request)
     env_id = uuid4()
     encrypted_env_vars = await _encrypt_or_500(
@@ -347,8 +330,6 @@ async def update_environment(
         project_id=project_id,
     )
     update_data = body.model_dump(exclude_unset=True)
-    if "base_image" in update_data:
-        _validate_base_image(update_data["base_image"])
     if "env_vars" in update_data:
         update_data["env_vars"] = await _encrypt_or_500(
             update_data["env_vars"],
@@ -358,11 +339,15 @@ async def update_environment(
             user=user,
             project_id=project_id,
         )
-    limits_fields = {"max_artifact_size_mb", "max_artifacts_count"}
+    limits_fields = {"disk_mb", "max_artifact_size_mb", "max_artifacts_count"}
     limits_update = {k: update_data.pop(k) for k in list(update_data) if k in limits_fields}
     if limits_update:
         current_rl = dict(env.resource_limits or {})
-        current_rl.update(limits_update)
+        for key, value in limits_update.items():
+            if key == "disk_mb" and value is None:
+                current_rl.pop(key, None)
+            else:
+                current_rl[key] = value
         update_data["resource_limits"] = current_rl
 
     updated = await repos.environment.update(env, **update_data)

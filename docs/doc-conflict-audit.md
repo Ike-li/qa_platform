@@ -44,7 +44,7 @@
 | README / development | 对齐本地启动、seed、SSE ticket 路径、插件清单、测试入口与 `qaplatform.main:create_app`；常用 Makefile 命令说明为依赖已激活虚拟环境，README 项目树的内置插件清单已同步为 pytest / Jest / Playwright / Go / JUnit / Git；单元测试、testcontainers 集成测试、`RUN_INTEGRATION_TESTS=1` 重型集成测试和 E2E 入口已拆开说明，E2E 本地运行说明已补充根目录 npm 依赖、`frontend/` 依赖和 `.venv` 前置条件。 |
 | Python/Node toolchain | README、development 和 frontend README 的 Python/Node 前置条件已对齐：后端为 Python 3.12+，前端从过低的旧 Node 前置条件调整为 Node 22.13+ 或 20.19+，对齐 Vite 8 / ESLint 10 的 lockfile engines 与 CI Node 22。 |
 | PRD / catalog / TODO | 拆分当前验收与远期愿景；修正 Slack、CSV、日志搜索、跨分支对比、F-AU-01 登录口径、F-AU-02 API token scope enforcement 状态、F-PM-01/F-PM-02 Git 凭证执行链路状态、F-PL-01 collector 配置状态、F-PL-03 资源限制状态、F-EX-01 手动触发 commit/environment/入队验收状态、F-EX-05 实时日志归档回看状态、F-EX-07 自动重试状态、F-EX-08 优先级队列状态、F-LS-01/02/03 列表搜索状态、F-RE-04 产物/Allure 预览状态、F-RE-05 单用例趋势状态、F-NT-01 AND 语义、F-NT-03 模板变量/每渠道模板状态、分支未合并状态、Phase 1/2/3 阶段进度、worker_lost 自动重试目标与当前实现边界、审计查询来源、审计写入覆盖率、审计保留状态、数据保留清理闭环和路径缩写约定。 |
-| architecture / runbook | 对齐 React 前端、Pipeline 字段与 collector 当前固定 JUnit 边界、Git 凭证存储与 clone 注入链路边界、JSONB 设置、Redis Stream TTL、健康检查路径、API 路径、rate limit / 账户锁定口径、环境变量加密未达状态、审计写入覆盖边界、审计保留配置、审计查询 API 当前状态、实时日志与归档回看边界、状态事件 Redis Stream 机制、日志产物路径、资源限制与产物上传/预览当前边界、执行隔离默认网络策略与显式联网例外、重试与优先级队列当前闭环边界、开发/完整 Compose 栈边界、数据保留/S3 lifecycle 边界，以及 Docker socket 当前暴露与生产加固边界。 |
+| architecture / runbook | 对齐 React 前端、Pipeline 字段与 collector 配置边界、Git 凭证存储与 clone 注入链路边界、JSONB 设置、Redis Stream TTL、健康检查路径、API 路径、rate limit / 账户锁定口径、环境变量加密未达状态、审计写入覆盖边界、审计保留配置、审计查询 API 当前状态、实时日志与归档回看边界、状态事件 Redis Stream 机制、日志产物路径、资源限制与产物上传/预览当前边界、执行隔离默认网络策略与显式联网例外、重试与优先级队列当前闭环边界、开发/完整 Compose 栈边界、数据保留/S3 lifecycle 边界，以及 Docker socket 当前暴露与生产加固边界。 |
 | frontend docs | 将 `FRONTEND_PROMPT.md` 标为历史提示词，补强“不可直接作为实现输入”的警示并修正其中最容易误用的 auth / SSE / artifact / Run / Pipeline schema / route / component library 示例；重写 `frontend/README.md` 为当前前端维护指南，并补充 `frontend/src/types/api.ts` 目前不可作为原始后端契约源。 |
 | design | 将 `DESIGN.md` 从外部产品视觉参考重写为 QA Platform 当前产品设计系统；同时清理历史 frontend prompt 中与当前设计系统冲突的负字距与新卡片圆角口径。 |
 | CI / E2E / frontend lint | CI 增加 `workflow_dispatch`；push / PR 跑稳定 `tests/e2e/auth-flow.spec.ts`，手动触发跑全量 E2E；Playwright config、CI 和本地文档已统一为根目录 E2E 项目、`frontend/` Vite dev server、`.venv/bin/python` 后端入口；real E2E specs 改用 `E2E_ADMIN_PASSWORD`；CI/test 默认 JWT secret 已满足 32 bytes 校验；frontend type/build 改为债务感知，只允许 3 个已知 TS 债务文件失败；修复 `environment-editor.tsx` 的 lint error，未触碰 3 个历史 TS 债务文件。 |
@@ -72,7 +72,7 @@
 | Docker socket / 执行隔离文档对照 | 通过，`docker-compose.yml` worker 仍直接挂载 `/var/run/docker.sock`；Docker backend 默认 `network_policy=deny` → `NetworkMode=none`，但 `allow` 会显式使用 bridge，`restricted` 需要部署侧创建 `qap-restricted` 网络；architecture 已改成当前事实 + 生产加固建议，runbook 已新增 Docker socket 风险章节 |
 | 数据保留 / 日志归档闭环对照 | 有已知偏移，`LogStream.archive_logs` 成功后设置 1h TTL、失败后设置 24h TTL 并登记失败 Run；`worker/settings.py::retry_failed_archives` 会重试失败归档；`cleanup_old_runs` 已注册 cron 并硬删超期终态 Run（`done/failed/cancelled/timeout`）且覆盖 result/artifact/event 级联；归档日志读回 API 已补真实 DB/RBAC/API/API token scope 测试，前端终态 Run 已接入归档日志 API；仍未发现 Redis 内存阈值拒绝入队实现 |
 | F-EX-05 实时日志 / 归档回看对照 | 有已知偏移，`api/v1/sse.py` 已支持 `/runs/{run_id}/logs` 和 `Last-Event-ID`，`engine/log_stream.py` 已把日志归档到 `logs/{run_id}.jsonl`；后端已提供归档日志读回 API，且 required integration 覆盖分页、缺失对象、API token `run.read` scope 与跨租户 404；前端 `log-viewer.tsx` 会在终态 Run 优先读取归档 API，Redis TTL 过期后的 UI 回看主路径已有 E2E |
-| 资源限制 / 产物 / Allure 预览闭环对照 | 有已知偏移，CPU/内存/超时已实现；worker 已把环境级产物 size/count 限制传入 executor，上传侧已在写 S3/DB 前强制校验；上传侧会递归上传 `results/` 下文件并标记 Allure 目录文件；内部 `disk_mb` 已能传到 Docker `StorageOpt.size`，但 API 尚未暴露磁盘配额；OOM/timeout 能映射为 `timeout`，但未发现资源用量记录闭环；`api/v1/artifacts.py` 已返回 `download_url` / `expires_in`；`frontend` 对 `artifact.type === "allure-report"` 展示预览按钮，HTML artifact 预览主路径已有 E2E |
+| 资源限制 / 产物 / Allure 预览闭环对照 | 有已知偏移，CPU/内存/超时已实现；worker 已把环境级产物 size/count 限制传入 executor，上传侧已在写 S3/DB 前强制校验；上传侧会递归上传 `results/` 下文件并标记 Allure 目录文件；API `disk_mb` 已能读写到 `Environment.resource_limits` 并传到 Docker `StorageOpt.size`；OOM/timeout 能映射为 `timeout`，终止原因、退出码、耗时和 Docker stats 峰值 CPU/内存采样已写 Run summary/日志；真实 Docker stats stream 黑盒已覆盖内存/限制/timestamp 采样；release_candidate 会强制真实 OOMKilled 经 executor 落 DB summary/Redis/log 的 heavy-docker 用例不被 skip/fail；`api/v1/artifacts.py` 已返回 `download_url` / `expires_in`；`frontend` 对 `artifact.type === "allure-report"` 展示预览按钮，HTML artifact 预览主路径已有 E2E；剩余偏移是多资源报告加载体验 |
 | Playwright / E2E 配置对照 | 通过，根目录 `package.json` 提供 `npm run test:e2e`；`playwright.config.ts` 的 `testDir` 为 `tests/e2e`，会启动 `frontend` dev server 和 `.venv/bin/python -m uvicorn qaplatform.main:create_app --factory --app-dir src`，`global-setup.ts` 会启动 postgres/redis/minio、执行 alembic upgrade 与 seed |
 | E2E 辅助脚本入口复核 | 发现 `scripts/run-e2e.sh` 仍直接用 `ADMIN_PASSWORD=admin123` seed 后运行 `tests/e2e/real-*.spec.ts`；默认值与 real specs 的 `E2E_ADMIN_PASSWORD || "admin123"` fallback 一致，但若调用者显式设置 `E2E_ADMIN_PASSWORD`，该脚本不会同步 seed 密码。当前 README/development/CI 的推荐入口仍是根目录 `npm run test:e2e`，不受此脚本偏差影响；若后续保留脚本，应让它透传 `E2E_ADMIN_PASSWORD`。 |
 | Git refs / merge state 对照 | 审计快照通过：本地 8 个 `feature/T*` 分支与对应 `origin/feature/T*` SHA 一致且均未合入本地 `main`；审计时本地 `main` 比 `origin/main` 多 5 个 docs commit，`origin/HEAD` 指向 `origin/phase1-release-prep`。该行保留为快照，实时状态以现场 git 命令为准。 |
@@ -83,8 +83,8 @@
 | Analytics / Flaky 实现口径对照 | 通过，项目级趋势与 flaky API / 前端入口存在；flaky 当前是同一 suite/name 在窗口内既有 passed 又有 failed/error 的聚合启发式，feature-catalog 已写清该口径 |
 | smoke 脚本覆盖数对照 | 通过，`scripts/smoke/` 当前有 6 个页面脚本；原 catalog 固定写“83 测试点”已改为“检查点以脚本内 `log_step` 为准”，避免数字随脚本增长失真 |
 | 审计写入覆盖对照 | 有已知偏移，多数主路径 mutating routes 已写 audit；`api/v1/runs.py` 的 `/batch/cancel`、`/batch/retry` 与 `/auth/sse-ticket` 临时票据创建已补审计写入；仍需按业务风险矩阵继续覆盖剩余写路径 |
-| 前端 API 类型 vs 后端 schema 对照 | 有已知偏移，`frontend/src/types/api.ts` 中 `Run` 使用 UI 归一化字段 `branch`、`duration_seconds`、`total_tests` 等，而后端 `RunResponse` 是 `git_ref`、`duration_ms`、`summary`；`use-runs.ts` 触发 payload 仍带后端不接收的 `env_overrides/params`，且归一化时读取复数 `summary.errors`；Environment 仍有 `variables` 旧字段且缺 `env_vars` / resource limit 字段，`environment-editor.tsx` 也提交旧 `variables` payload；Pipeline 嵌套 selector / retry shape 仍是旧前端形状，`pipeline-modal.tsx` 也提交旧 payload；`use-projects.ts` 搜索参数仍传 `search` 而后端使用 `q`；`use-pipelines.ts` 仍调用不存在的 `/pipelines/{id}`；`use-notifications.ts` 把 paginated 通知规则列表当成裸数组；`use-sse.ts` fallback 会把 SSE URL 当 JSON API 轮询；当前部分页面由 hook 做适配，需单独 T-FRONTEND-API 拆分 DTO / view model 并修正 hook 路径/响应形状 |
-| Run summary 字段口径对照 | 有已知偏移，当前执行摘要字段为 `total/passed/failed/skipped/error/pass_rate`，其中 `error` 为单数；feature-catalog 已从 `errors` 复数修正为 `error` 单数，但前端 `use-runs.ts::normalizeRun` 仍读取 `summary.errors`，已归入 `T-FRONTEND-API` |
+| 前端 API 类型 vs 后端 schema 对照 | 通过主线收敛：Environment 和 Run 均已拆出后端 response DTO 与 UI view model；Environment editor 新建提交 `base_image` + `env_vars`，变量更新只提交 `env_vars`；Pipeline payload、project search `q`、pipeline 嵌套路由、notification pagination 与渠道类型、run trigger payload、summary `error`、SSE 重连游标和 TestResult `xfail` 均已对齐。后续硬化建议是从 OpenAPI 生成 DTO，减少手写类型漂移 |
+| Run summary 字段口径对照 | 通过，当前执行摘要字段为 `total/passed/failed/skipped/error/pass_rate`，其中 `error` 为单数；feature-catalog 与前端 `use-runs.ts::normalizeRun` 均已使用单数 `summary.error` |
 | 历史前端 prompt schema 复扫 | 通过，`frontend/FRONTEND_PROMPT.md` 虽仍是历史资料，但 Data Models 示例已把 Run status 对齐为 `done/timeout`，并把 Pipeline `retry_policy` / `selector` / `trigger_config` 对齐当前 `api/schemas.py` 字段 |
 | API token scope enforcement 对照 | 通过，`api/deps.py::get_current_user` 已保留 middleware user scopes，tenant/project 权限依赖会传入 `PermissionContext.scopes`；真实 API 测试覆盖只读、`run.trigger`、artifact download 与 archived logs 的 `run.read`、错误/空 scope |
 | API token 传递方式对照 | 通过，architecture 已从旧 `X-API-Token` 口径改为当前 `Authorization: Bearer qap_<token_id>_<secret>`；T10 中剔除 `X-API-Token` 仅作为防御性敏感 header 过滤，不表示当前认证入口 |
@@ -100,7 +100,7 @@
 | 根目录 `npm run test:e2e -- --list tests/e2e/auth-flow.spec.ts` | 通过，列出 1 个稳定冒烟用例 |
 | `cd frontend && npm run lint` | 通过，0 error；剩余 4 个 warning 均为既有 hook dependency/watch 提示 |
 | frontend debt-aware build gate | 通过，5 个 TS 错误全部来自 `analytics-panel.tsx`、`notification-rules-panel.tsx`、`trigger-run-modal.tsx` |
-| 高风险旧口径关键词复扫 | 通过，unexpected matches 0；剩余旧口径仅在本报告原始发现、`fix-roadmap.md` 历史档案、负向约束、“不要存 localStorage”的安全说明，或 `T-FRONTEND-API` 已登记的 `search/q`、`env_overrides/params`、`summary.errors` 偏移中；随后又清理了 `FRONTEND_PROMPT.md` Authentication Flow、Run schema 与设计 token 段的旧口径，并去掉了 `feature-catalog` 中已过时的“部分 API 路径过期”当前偏移表述 |
+| 高风险旧口径关键词复扫 | 通过，unexpected matches 0；剩余旧口径仅在本报告原始发现、`fix-roadmap.md` 历史档案、负向约束、“不要存 localStorage”的安全说明，或已修复偏移的历史记录中；随后又清理了 `FRONTEND_PROMPT.md` Authentication Flow、Run schema 与设计 token 段的旧口径，并去掉了 `feature-catalog` 中已过时的“部分 API 路径过期”当前偏移表述 |
 | 资源限制旧口径复扫 | 通过，`F-PL-03` 不再标 ✅；architecture 不再把磁盘限制或 OOM/timeout 资源用量记录写成当前已实现；PRD §4 的 500MB 产物容量目标已在 catalog 非功能表中标为 ⚠️ |
 | Allure / 产物旧口径复扫 | 通过，`F-RE-04` 不再标 ✅；“Allure 已就位 / 需实测确认”只保留在本报告历史发现语境，当前 catalog / TODO / architecture 均改为部分完成与待补闭环 |
 | 执行隔离网络策略复扫 | 通过，PRD / catalog / architecture 已改为“默认 deny 隔离 + allow/restricted 显式例外”；`restricted` 需要部署侧提供 `qap-restricted` 网络 |
@@ -120,7 +120,7 @@
 | TODO 编号连续性 | 通过，表格编号 1-27 连续 |
 | catalog §4.1 vs TODO | 通过，catalog §4.1 的 22 个未达 PRD 验收项均可在 TODO 中找到 |
 | TODO / catalog / 审计任务映射当前复跑 | 通过，TODO 编号仍为 1-27 连续；catalog §4.1 仍为 22 个未达 PRD 验收项，§4.2 仍为 5 个增强项；本文 §15 的 21 个 `T-*` 后续任务别名均能在 TODO 或 catalog 找到落点；本文 §17 仍为 12 个 maintainer 决策项。 |
-| 高风险旧口径扫描 | 无意外命中；剩余 `PRD §9.6`、`X-API-Token`、CSV / Slack / 跨分支对比只出现在旧引用说明、防御性过滤或当前范围不做语境；`search`、`env_overrides/params`、`summary.errors` 只出现在 `T-FRONTEND-API` 前端债务说明或历史档案语境 |
+| 高风险旧口径扫描 | 无意外命中；剩余 `PRD §9.6`、`X-API-Token`、CSV / Slack / 跨分支对比只出现在旧引用说明、防御性过滤或当前范围不做语境；旧 `search`、`env_overrides/params`、`summary.errors` 仅保留在历史档案语境 |
 | 改动 Python 文件 ruff | 通过，`tests/e2e/backend_app.py`、`tests/integration/conftest.py`、`tests/unit/test_auth_middleware.py` 均干净 |
 | 历史 frontend prompt 接口示例复扫 | 发现并修正项目列表搜索参数：当前 `api/v1/projects.py::list_projects` 使用 `q`，不是旧示例里的 `search` |
 | 历史 frontend prompt 设计/路由复扫 | 继续清理旧 Linear 命名和 pipeline detail 路由暗示，并把文件结构示例补到当前 `runs/list.tsx`、`admin/status.tsx`、`not-found.tsx`、`index.css`、layout wrappers 等入口；当前设计源以 `DESIGN.md` 为准，当前前端没有独立 pipeline detail route |
@@ -163,21 +163,21 @@
 | 分层 import / DB access 复核 | 发现当前实现偏离 architecture 目标：`engine` 仍反向依赖 `api.metrics` / `worker._redact`，部分 API 路由仍直接 SQLAlchemy 查询；architecture 已改为“目标规则 + 当前偏差”，TODO 已新增 `T-ARCH-LAYERS` 技术债。 |
 | S3 / MinIO 路径与 lifecycle 复核 | 通过，`engine/log_stream.py` 归档日志到 `logs/{run_id}.jsonl`，`engine/executor.py::_upload_artifacts` 上传 `results/` 文件到 `reports/{run_id}/{relative_path}`；runbook 的 `logs/` 与 `reports/` lifecycle 前缀和当前代码一致。 |
 | 插件协议示例复核 | 通过，README 插件开发示例包含当前 `RunnerProtocol` 要求的 `build_command()` 与 `run_tests(..., env_vars=None)`；architecture §7.2 的协议片段与 `plugins/protocols.py` 当前签名一致。 |
-| Run / TestResult 状态枚举复核 | 通过并发现前端类型债：Run 后端枚举与前端 README 映射说明已对齐；TestResult 后端枚举含 `xfail`，PRD / catalog / T07 / TODO / frontend README / historical frontend prompt 已同步为“PRD 最低验收 + 后端扩展”，前端运行类型缺口归入 `T-FRONTEND-API`。 |
+| Run / TestResult 状态枚举复核 | 通过，Run 后端枚举与前端 README 映射说明已对齐；TestResult 后端枚举含 `xfail`，PRD / catalog / T07 / TODO / frontend README / historical frontend prompt 已同步为“PRD 最低验收 + 后端扩展”，前端运行类型已补齐。 |
 | 文档端点示例复核 | 通过，README、architecture、historical frontend prompt 中列出的端点均能和当前 FastAPI router 对齐；T05 任务包和 feature-catalog 的静默窗口项目更新示例均已统一为完整 `PUT /api/v1/projects/{project_id}`。 |
-| 前端 API 类型字段复核 | 发现并登记前端类型债扩大面：`Project` / `TestResult` / `Artifact` 顶层字段与后端响应基本对齐，但 `Run`、`Environment`、Pipeline 嵌套 selector / retry shape 仍与后端 schema 偏离；frontend README、TODO 与本文 §3.9 已同步，代码修复留给 `T-FRONTEND-API`。 |
-| 历史 frontend prompt Pipeline 示例复核 | 通过，`FRONTEND_PROMPT.md` 的 Pipeline 示例已补齐 stage `plugin/config/continue_on_error/phase` 字段，不再保留未定义的 `Stage[]` 类型；运行代码里的旧 Pipeline 类型偏移仍归 `T-FRONTEND-API`。 |
+| 前端 API 类型字段复核 | 通过主线收敛：`Project` / `TestResult` / `Artifact` 顶层字段与后端响应基本对齐；Environment response/view/create/update payload 已拆分；Run response/view model 已拆分；Pipeline 嵌套 selector / retry payload 已对齐；NotificationRule 渠道枚举和 SSE reconnect 游标已收敛。后续可用 OpenAPI 生成式 DTO 做进一步硬化。 |
+| 历史 frontend prompt Pipeline 示例复核 | 通过，`FRONTEND_PROMPT.md` 的 Pipeline 示例已补齐 stage `plugin/config/continue_on_error/phase` 字段，不再保留未定义的 `Stage[]` 类型；运行代码里的 Pipeline 类型与 payload 已对齐当前后端 schema。 |
 | architecture 实体字段表复核 | 发现 Environment 行过于抽象，只写 `resource_limits(JSONB)` 容易遮蔽当前 API 暴露的 `memory_mb`、`cpu_cores`、产物限制、`cache_key` 等离散字段；architecture §8.2 已补齐这些字段并说明 ORM 仍保留 `resource_limits` JSONB。 |
 | Environment 资源字段存储复核 | 通过并细化，`alembic/versions/002_add_environment_resource_fields.py` 只新增 `memory_mb` / `cpu_cores` 两个离散列；`api/v1/environments.py` 将 `max_artifact_size_mb` / `max_artifacts_count` 写入 `Environment.resource_limits` JSONB 后再映射到 API response。architecture §8.2 已改为明确这两个产物限制字段不是 ORM 独立列。 |
 | 历史 frontend prompt API token 字段复核 | 发现 settings 页文案仍写旧 `last_used` / `prefix`；已改为当前 `ApiTokenListItem` 返回的 `token_id/name/scopes/expires_at/last_used_at/is_revoked/created_at`。 |
-| 历史 frontend prompt 项目详情字段复核 | 发现项目详情示例仍把 pipeline 列表写成旧 `framework` 字段、environment 列表写成纯 key-value；已改成 stage/trigger/retry 摘要与 base image/resource/env vars 口径，运行代码中的 API 形状偏移仍归 `T-FRONTEND-API`。 |
-| 前端 pipeline hook 路径复核 | 发现 `frontend/src/hooks/use-pipelines.ts` 的详情/更新/删除仍调用不存在的 `/pipelines/{id}`；后端实际路由是 `/api/v1/projects/{project_id}/pipelines/{pipeline_id}`。已登记到 `T-FRONTEND-API`，本轮文档审计不修改运行代码。 |
-| 前端 notification hook 响应形状复核 | 发现 `frontend/src/hooks/use-notifications.ts` 将通知规则列表声明为 `NotificationRule[]`，但后端 `api/v1/notifications.py::list_notification_rules` 返回 `PaginatedResponse[NotificationRuleResponse]`；已登记到 `T-FRONTEND-API`。 |
-| 前端 SSE fallback 复核 | 发现 `frontend/src/hooks/use-sse.ts` 的 fallback 会对传入 SSE URL 执行 `api.get<T>(url)`；当前日志组件传入 `/api/v1/runs/{id}/logs`，该路径是 SSE ticket 流，不是普通 JSON API，且可能与 axios baseURL 形成双 `/api/v1`。历史 prompt 已从“polling fallback”改为“重连或另建 JSON 端点”。 |
-| 前端 pipeline modal payload 复核 | 发现 `frontend/src/components/projects/pipeline-modal.tsx` 仍以 `framework/pattern/on_push/on_schedule/max_retries/backoff` 构造 payload；后端 `PipelineCreate/Update` 接收的是 `stages`、`selector.include_paths/exclude_paths/tags/expression/regex/on_empty`、`trigger_config.type/source/conditions/target/dedup_window_seconds`、`retry_policy.max_attempts/retry_on/backoff_seconds/scope`。已登记到 `T-FRONTEND-API`。 |
-| 前端 environment editor payload 复核 | 发现 `frontend/src/components/projects/environment-editor.tsx` 创建/更新仍提交 `variables` 字段；后端 `EnvironmentCreate/Update` 使用 `base_image`、`env_vars`、资源/产物限制、`network_policy`、`cache_key` 等字段。已登记到 `T-FRONTEND-API`，本轮不改运行代码。 |
-| 前端 project search 参数复核 | 发现 `frontend/src/hooks/use-projects.ts` 的列表查询参数仍是 `search`；后端 `api/v1/projects.py::list_projects` 当前只声明 `q`。已登记到 `T-FRONTEND-API`，运行代码修复留给专项任务。 |
-| 前端 run trigger / summary 归一化复核 | 发现 `frontend/src/hooks/use-runs.ts::useTriggerRun` 仍提交 `env_overrides` / `params`，但后端 `RunTrigger` 只接收 `pipeline_id`、`git_ref`、`priority`；同文件 `normalizeRun` 仍读取复数 `summary.errors`，而后端 executor / runner summary 使用单数 `error`。已登记到 `T-FRONTEND-API`。 |
+| 历史 frontend prompt 项目详情字段复核 | 发现项目详情示例曾把 pipeline 列表写成旧 `framework` 字段、environment 列表写成纯 key-value；已改成 stage/trigger/retry 摘要与 base image/resource/env vars 口径，运行代码中的 Environment/Pipeline API 形状也已对齐。 |
+| 前端 pipeline hook 路径复核 | 已修复：`frontend/src/hooks/use-pipelines.ts` 详情/更新/删除均调用 `/projects/{project_id}/pipelines/{pipeline_id}` 嵌套路由。 |
+| 前端 notification hook 响应形状复核 | 已修复分页解包和渠道类型：`frontend/src/hooks/use-notifications.ts` 支持 `PaginatedResponse[NotificationRuleResponse]`，`NotificationChannel.type` 覆盖 email/webhook/dingtalk/wecom/slack。 |
+| 前端 SSE fallback 复核 | 已修复旧 JSON polling fallback 和 reconnect 游标：`frontend/src/hooks/use-sse.ts` 只走 ticket + EventSource 重连，并把 `last_event_id` 随新 ticket URL 传回后端；后端 SSE endpoint 同时接受 `Last-Event-ID` header 与 `last_event_id` query。 |
+| 前端 pipeline modal payload 复核 | 已修复：`frontend/src/components/projects/pipeline-modal.tsx` 构造 `stages`、`selector`、`collectors`、`trigger_config`、`retry_policy` 等当前后端 payload。 |
+| 前端 environment editor payload 复核 | 已修复：`frontend/src/types/api.ts` 拆出 `EnvironmentResponse` / `Environment` / create/update payload；`environment-editor.tsx` 新建环境显式提交 `base_image` 与 `env_vars`，保存变量时只提交 `env_vars`，不再把旧 `variables` 视图字段当后端 payload。 |
+| 前端 project search 参数复核 | 已修复：`frontend/src/hooks/use-projects.ts` 保留 UI 层 `search` 入参，但提交给后端的是 `q`。 |
+| 前端 run trigger / summary 归一化复核 | 已修复主契约：`frontend/src/hooks/use-runs.ts::useTriggerRun` 提交 `pipeline_id`、`git_ref`、`git_sha`、`environment_id`、`priority`；`normalizeRun` 读取单数 `summary.error`；Run 输入输出类型已明确拆成 `RunResponse -> Run`。 |
 | 历史 frontend prompt health 路径复核 | 通过，当前健康检查在根路径 `/health` 而非 `/api/v1/health`；`FRONTEND_PROMPT.md` 已把 Health 小节标为 outside `/api/v1`，避免被前面的 Base URL 误读。 |
 | 文档源码路径存在性复核 | 通过，非历史文档里的源码路径均存在；仅 `docs/tasks/T02_audit_query_api.md` 的 `src/qaplatform/api/v1/audit_events.py` 与 `docs/tasks/T10_opentelemetry.md` 的 `src/qaplatform/observability/tracing.py` 是任务包明确要求新增的计划文件。 |
 | Markdown 本地链接复核 | 通过，README、DESIGN、frontend 文档与 `docs/**/*.md` 中的相对 Markdown 链接均能解析到现有文件。 |
@@ -191,14 +191,15 @@
 | PRD / catalog / task 索引续扫 | 通过，PRD 30 个 `F-*` 功能 ID 与 feature-catalog 完全一致；`docs/tasks/` 的 8 个任务包均在任务索引中，索引无过期引用。 |
 | 任务包结构误报复核 | 通过，任务包使用顶部元信息块记录“来源 / 必要性 / 预计”，再用“背景 / 缺什么 / 实施起点 / 验收标准 / 约束 / 不要做”等章节承载执行内容；简单按固定 `## 来源` 标题扫描会误报，不代表任务包缺少这些信息。 |
 | 任务包索引与提交口径复核 | 通过，`docs/tasks/` 当前 8 个 `T*.md` 文件与索引 8 条记录完全一致，无缺失/悬空；索引必要性与任务文件 `**必要性**` 元信息一致；8 个任务包均有来源/必要性/预计元信息、验收标准、约束、不要做和 commit 建议。 |
-| FastAPI 路由续扫 | 通过，重新通过 `create_app()` 导出路由清单；非历史文档中 `/api/v1/audit-events` 仍是 T02 待办，`/pipelines/{id}` 仅出现在 `T-FRONTEND-API` 前端债务语境，`/health/live` / `/health/ready` 仅在 T10 “当前源码不是该路径”的负向说明中出现。 |
+| FastAPI 路由续扫 | 通过，重新通过 `create_app()` 导出路由清单；非历史文档中 `/api/v1/audit-events` 仍是 T02 待办，旧 `/pipelines/{id}` 路径仅保留在历史审计说明中，`/health/live` / `/health/ready` 仅在 T10 “当前源码不是该路径”的负向说明中出现。 |
 | catalog ✅ 项续扫 | 通过，复核 `F-PM-02` 凭据 AES-GCM + `credential:{project_id}:{name}` AAD、`F-PM-03` archived 项目触发返回 409、项目成员 CRUD、通知规则 CRUD、SSE ticket、iframe sandbox `allow-scripts` 和 `frontend/nginx.conf` 安全头；其中 `F-PM-02` 在后续更细复核中发现 Git clone 使用链路缺口，已降为 ⚠️。 |
 | catalog 结构化日志状态复核 | 发现 `structlog（JSON 格式）` 原标记为全局 ✅ 过强；当前 `qaplatform.logging.configure_logging` 只在 API app 默认 factory 路径调用，worker/arq 入口未调用该配置，engine / worker / plugin 多数模块仍直接使用 stdlib `logging.getLogger`。已把 catalog 该项降为 ⚠️，新增 `结构化日志全局化` backlog，并在 TODO 中登记 `T-LOGGING` 技术债。 |
 | catalog 执行隔离 / 取消 / smoke 续扫 | 通过，`engine/docker_backend.py::DockerBackend.create_execution` 会把 `container_config` 传给 `aiodocker.containers.create_or_replace`，其中包含默认 `NetworkMode=none`、`User=1000:1000`、只读 rootfs、`CapDrop`、`no-new-privileges`、`PidsLimit`、`MemorySwap == Memory`、`Init=True` 与 `/tmp` tmpfs；单测覆盖网络/内存 swap/init/SIGTERM，集成测试覆盖 HTTP cancel → 容器退出 < 10s 与重复 cancel 不 5xx。`scripts/smoke/` 当前 9 个 shell 入口中 02-07 为 6 个页面 smoke 脚本，catalog 的“6 个页面脚本”口径准确。 |
 | PRD 日志容量口径复核 | 发现 PRD §4 把 `MAXLEN 10000 条 + 单条 4KB` 写成 50MB，和当前 `engine/log_stream.py` 的 `_MAXLEN = 10_000`、`_MAX_LINE_BYTES = 4096` 不严格一致；该约束对应约 40MB 日志 payload，且 Redis Stream 使用 approximate auto-trim，不是精确硬上限。已把 PRD 非功能表改为“约 40MB / 最近约 10000 条”。 |
 | F-AU-04 跨租户 404 细化复核 | 发现 catalog 把租户隔离标为 ✅ 过强。当前聚合根查询、Owner/Admin 主要路径、run/artifact/SSE 等路径通过 `get_for_tenant` 或 tenant filter 返回 404；但 `api/deps.py::require_project_permission` 对非 Owner/Admin 的 path `project_id` 路由会先查 `ProjectMember`，无成员关系时直接 403，路由体内的 `get_for_tenant` 还未执行。现有 `tests/integration/test_cross_tenant_isolation.py` 主要用 owner 身份验证 404，部分路由还把 403 分支标成 xfail，因此不能证明“所有跨租户 ID 访问返回 404”。已把 catalog `F-AU-04` 降为 ⚠️，新增 catalog/TODO 项 `F-AU-04 跨租户 404 完整收敛`。 |
+| F-AU-04 跨租户 404 当前复核 | 2026-05-29 复核当前代码与测试：`api/deps.py::require_project_permission` 已先调用 `_ensure_project_visible()`，对非 Owner/Admin 的 path `project_id` 路由先把跨 tenant / 软删除 / 随机 UUID 收敛为同一 404，再做 `ProjectMember` RBAC；`tests/integration/test_cross_tenant_isolation.py::test_project_scoped_routes_member_viewer_cross_tenant_return_same_404` / `...soft_deleted_return_same_404` 与 `tests/unit/test_api/test_rbac_deps.py::TestRequireProjectPermission::*` 已作为证据。catalog `F-AU-04` 恢复为 ✅；本报告上一行保留为历史发现。 |
 | 项目质量仪表盘状态复核 | 发现 catalog 扩展项 `项目质量仪表盘` 原标 ✅ 过强。当前 `api/v1/analytics.py` 的 trends / flaky API、`frontend/src/hooks/use-analytics.ts`、项目详情 analytics tab 和 `AnalyticsPanel` 均存在；但当前 `cd frontend && npm run build 2>&1 | grep "error TS"` 仍显示 `frontend/src/components/projects/analytics-panel.tsx` 有 2 个 TS2322 错误，属于已知 `T-FRONTEND-TS` 债务。已把该扩展项降为 ⚠️，说明“功能入口存在，但生产 build 需先清 TS 债”。 |
-| 扩展功能与非功能 ✅ 续扫 | 通过，`api/v1/runs.py` 的 batch cancel / retry 有单元测试覆盖，审计缺口已由 TODO 中的“审计写入覆盖补齐”承接；`api/v1/notifications.py` 提供通知规则 list/create/get/update/delete 且写 audit，前端 paginated response 适配问题已归入 `T-FRONTEND-API`；`api/v1/admin.py` + `frontend/src/pages/admin/status.tsx` 对齐 `/api/v1/admin/status`；Jest / Playwright / Go runner 插件文件均存在并实现 `RunnerProtocol` 风格的 `build_command` / `run_tests`；`engine/log_stream.py` 使用 `_MAXLEN = 10_000` + Redis Stream `maxlen` auto-trim 和 `_MAX_LINE_BYTES = 4096`，已把 catalog 非功能表的日志缓冲措辞从精确“10000 条”改为“近似 10000 条”。 |
+| 扩展功能与非功能 ✅ 续扫 | 通过，`api/v1/runs.py` 的 batch cancel / retry 有单元测试覆盖，审计缺口已由 TODO 中的“审计写入覆盖补齐”承接；`api/v1/notifications.py` 提供通知规则 list/create/get/update/delete 且写 audit，前端已解包 paginated response；`api/v1/admin.py` + `frontend/src/pages/admin/status.tsx` 对齐 `/api/v1/admin/status`；Jest / Playwright / Go runner 插件文件均存在并实现 `RunnerProtocol` 风格的 `build_command` / `run_tests`；`engine/log_stream.py` 使用 `_MAXLEN = 10_000` + Redis Stream `maxlen` auto-trim 和 `_MAX_LINE_BYTES = 4096`，已把 catalog 非功能表的日志缓冲措辞从精确“10000 条”改为“近似 10000 条”。 |
 | T01 加密服务命名复核 | 发现 T01 / catalog / TODO 仍写旧 `CredentialCipher` 名称；当前源码为 `dependencies.py::CryptoService`，凭据路由经 `container.crypto_service` 调用。已修正文档引用和 T01 中的迁移示例，避免后续按不存在的类实施。 |
 | T02 权限口径复核 | 发现 T02 同时参考 `api/v1/admin.py` 和要求租户 Owner/Admin 访问，容易误抄 `admin.py::_require_platform_admin` 的平台管理员校验。T02 已补充说明：`admin.py` 只作路由组织参考，权限应按租户 Owner/Admin 实现；响应也应新增 `AuditEventResponse` schema，而不是直接暴露 SQLAlchemy ORM。 |
 | T03/T04 通知渠道安全口径复核 | 发现 T03 写“用 redact”，但当前仓库只有 URL userinfo 脱敏 helper，没有通用 token/key redaction helper；T03/T04 已改为要求不在日志或错误信息中构造完整 URL、签名串或配置，并明确新渠道单独使用 10s 超时，不改既有 `WebhookChannel.TIMEOUT = 30`。 |
@@ -218,7 +219,7 @@
 | T10 tenant span 属性复核 | 发现 catalog 说 FastAPI span “含 tenant_id”，但当前认证用户在 FastAPI dependency 中解析，不会自动出现在 `server_request_hook` 的 ASGI scope。T10/catalog 已改为：HTTP span 自动能力只声明 path/status 等；若需要 tenant 维度，应在 `src/qaplatform/api/deps.py::get_current_user` 归一化后手动设置当前 span 的低敏属性，且不得写 token/user_id。 |
 | 旧口径关键字续扫 | 通过，`PRD §9.6`、`/health/live`、`/health/ready`、`make frontend-test`、`httpx_mock`、`pytest-httpx`、`X-API-Token`、`/admin/audit-events`、`POST /webhooks/{provider}` 等剩余命中均在历史冲突说明、负向说明、防御性过滤或当前不做语境中；任务包执行要求未继续引用这些旧口径。 |
 | 固定源码行号续扫 | 通过，当前执行性文档不再依赖易漂移的源码 line number；剩余 `path:line` / `path:line-line` 主要集中在 `docs/fix-roadmap.md` 的历史 review 档案中，且该文件顶部已声明非当前实现状态真相源。 |
-| 最终收口复扫 | 通过，继续复扫 `PRD §9.6`、`/admin/audit-events`、`/health/live`、`/health/ready`、`make frontend-test`、`pytest-httpx`、`httpx_mock`、`X-API-Token`、`env_overrides/params`、`summary.errors`、OTel `instrument_app` / `http_capture_headers_sanitize_fields`、T01 `raw bytes` / `environment_id`、T03/T04 完整敏感 URL、T05 audit metadata、T06 `return {...}, 200` 等高风险词；剩余命中均为历史说明、负向约束、防御性过滤或已登记债务，未发现新的执行性文档冲突。 |
+| 最终收口复扫 | 通过，继续复扫 `PRD §9.6`、`/admin/audit-events`、`/health/live`、`/health/ready`、`make frontend-test`、`pytest-httpx`、`httpx_mock`、`X-API-Token`、旧 `env_overrides/params`、旧 `summary.errors`、OTel `instrument_app` / `http_capture_headers_sanitize_fields`、T01 `raw bytes` / `environment_id`、T03/T04 完整敏感 URL、T05 audit metadata、T06 `return {...}, 200` 等高风险词；剩余命中均为历史说明、负向约束、防御性过滤或已登记债务，未发现新的执行性文档冲突。 |
 | 机械抽取复核 | 通过，非历史文档中 49 个源码路径候选均存在；14 个 `make` 目标与 1 个 `npm run` script 均能在 Makefile / package scripts 中找到；当前 `create_app()` 导出 65 个 HTTP 路由，非历史文档抽取到 76 个显式端点候选，其中 68 个匹配当前路由、4 个为 T02 `/api/v1/audit-events` 计划新增、2 个为 T10 旧 `/health/live` / `/health/ready` 负向说明、1 个为 backlog/负向语境，未发现新的未归类端点。 |
 | 章节引用深扫 | 通过，显式章节引用已和对应文档标题编号对照；唯一特殊项仍是刻意保留的旧 `PRD §9.6` 负向/历史说明。非历史文档中裸 `§x` 引用已无无法归属的问题；T05/T10 顶部的“设计见 §4.3”、TODO 的 `PRD §3.2 / §3.4` 和 feature-catalog 的 architecture 章节来源已补成完整目标文档名。 |
 | backlog / 任务包必要性复核 | 发现 `feature-catalog.md` 第 4.1 节的 F-LS-04 待办写成 P1，但 `feature-catalog.md` 第 1.7 节与 T07 任务包均为 P0；已把第 4.1 节行修正为 P0。复核结果：首批任务包的必要性与 PRD 功能表一致，catalog 第 4.1 节的 F-* 待办必要性也与 `feature-catalog.md` 第 1 节 PRD 功能表一致。 |
@@ -229,10 +230,11 @@
 | F-RE-02 摘要生成时延复核 | 通过并补验收归属，`engine/executor.py` 在 collector 产出结果后同步汇总 `total/passed/failed/skipped/error/pass_rate`，随后写入终态 Run；未发现单独的后台摘要任务缺口。但 PRD §3.4 的“执行结束后 < 3s 生成摘要”属于性能验收，已并入 TODO / catalog 的“非功能性能压测”。 |
 | F-RE-03 失败详情路由命名复核 | 通过并细化，当前后端路径是 `api/v1/runs.py` 的 `/runs/{run_id}/results`，响应含 `error_message` / `stack_trace`；前端 `components/test-results-table.tsx` 对 failed/error 用例支持点击展开详情。feature-catalog 已从模糊的 “test-results endpoint” 改为真实 `/runs/{run_id}/results`。 |
 | F-PM-01 / F-PM-02 Git 凭证执行链路复核 | 发现项目 schema 与 API 可保存 `git_auth_method` / `credential_id`，凭证 CRUD 已加密存储并支持轮换；manual/webhook 创建 Run 时也会把 `credential_id` 放进 metadata。但 `engine/executor.py::_clone_repo` 只读取 `git_url` 并调用 `GitSource.clone(git_url, run.git_ref, dest)`，没有解密 token / SSH key，也没有将凭证安全注入 Git clone。因此私有 HTTPS/SSH 仓库执行链路未达 PRD §3.1 验收。已把 F-PM-01 / F-PM-02 降为 ⚠️，新增 Git 凭证执行闭环 TODO。 |
-| Git source / 凭证文档口径复核 | 发现 architecture 内置插件表写“Git clone（HTTPS/SSH）”容易被误读为私有 HTTPS token / SSH key 执行链路已闭环；实际 `GitSource` 只校验/执行 `https://` 或 SSH URL 形态并默认 shallow clone，不解密项目凭证。已把 README 与 architecture 改为“凭据存储已就位，私有仓库凭据注入 clone 待补”。 |
-| F-PL-01 collector 配置复核 | 发现 PRD §3.2 要求 Pipeline 可配置测试运行器、结果收集器、超时、重试策略；当前 `PipelineCreate/Update` 与 ORM 只有 `stages`、`selector`、`trigger_config`、`timeout_seconds`、`retry_policy`，`worker/tasks.py::_build_pipeline_config` 也没有 collector 字段，`RunExecutor.execute()` 固定 `self.plugin_registry.get_collector("junit")`。因此“多 Pipeline / runner stage / timeout / retry”已部分实现，但结果收集器配置未达验收。已把 F-PL-01 降为 ⚠️，新增 collector 配置 TODO 与 maintainer 决策项。 |
+| Git source / 凭证文档口径复核 | 当时发现 architecture 内置插件表写“Git clone（HTTPS/SSH）”容易被误读为私有 HTTPS token / SSH key 执行链路已闭环；当时 `GitSource` 只校验/执行 `https://` 或 SSH URL 形态并默认 shallow clone，不解密项目凭证。该历史发现已由后续 F-PM-01/F-PM-02 修复行覆盖。 |
+| F-PL-01 collector 配置复核 | 2026-05-29 已补实现：`PipelineCreate/Update/Response`、ORM `pipeline.collectors` JSONB、migration `008`、worker `_build_pipeline_config`、`RunExecutor.execute()` 和内置 JUnit collector 均贯通 `collectors[]`；默认 JUnit 兼容旧 Pipeline，JUnit 支持 `config.path` / `config.junit_xml` 相对路径。F-PL-01 状态已恢复为 ✅，对应 TODO/decision 项改为验收档案。 |
+| F-PM-01 / F-PM-02 Git 凭证执行链路修复 | 2026-05-29 已补实现：项目更新校验凭证归属/类型与 Git URL 形态，manual/webhook/schedule Run metadata 保留 `git_auth_method` / `credential_id` 引用，worker 执行时按项目/租户读取并解密凭证，`PipelineConfig.source_auth` 传到 `RunExecutor._clone_repo()`，`GitSource.clone()` 支持 HTTPS token askpass 与 SSH key 临时文件注入并脱敏 clone 错误。targeted unit 143 passed，required integration 覆盖真实 API/DB 下 token 绑定后触发 Run 且 metadata/audit 不含 token 明文。F-PM-01/F-PM-02 状态恢复为 ✅；剩余是受控私有仓库成功 clone / 凭证轮换黑盒增强。 |
 | 任务包 / 分支状态续扫 | 审计快照通过：`docs/tasks/` 当时为 T01/T02/T03/T04/T05/T06/T07/T10 这 8 个首批任务包；本地 8 个 `feature/T*` 分支与 `origin/feature/T*` SHA 一致，且均未合入本地 `main`。本地 `main=34937a3`，`origin/main=302ede0` 且是本地 `main` 祖先，`origin/HEAD` 指向 `origin/phase1-release-prep`。任务包旧全量 `make lint` / `npm run build` 验收口径仅保留在本文历史冲突说明中，执行性任务 README 已改为改动文件干净口径。 |
-| 配置 / 命令 / 前端 API 当前续扫 | 通过，`Settings` 仍有 39 个 `QAP_` 字段且 `.env.example` 缺失 0，额外 `QAP_DB_USER` / `QAP_DB_PASSWORD` / `QAP_DB_NAME` 仍只服务 Compose；Makefile 目标为 `up/down/infra-up/logs/migrate/migrate-create/test/lint/format/seed`，根目录 npm script 仍只有 `test:e2e`，frontend scripts 为 `dev/build/lint/preview`。前端源码当前抽取到 24 个 API 字面量调用；除 `frontend/src/hooks/use-pipelines.ts` 的 3 个 `/pipelines/{id}` 旧路径外，其余路径形状均能映射到当前 `/api/v1` backend 路由或已知 SSE / auth / artifact 入口；该旧路径仍由 `T-FRONTEND-API` 承接。 |
+| 配置 / 命令 / 前端 API 当前续扫 | 通过，`Settings` 仍有 39 个 `QAP_` 字段且 `.env.example` 缺失 0，额外 `QAP_DB_USER` / `QAP_DB_PASSWORD` / `QAP_DB_NAME` 仍只服务 Compose；Makefile 目标为 `up/down/infra-up/logs/migrate/migrate-create/test/lint/format/seed`，根目录 npm script 仍只有 `test:e2e`，frontend scripts 为 `dev/build/lint/preview`。前端源码 API 字面量调用均能映射到当前 `/api/v1` backend 路由或已知 SSE / auth / artifact 入口；旧 `/pipelines/{id}` 路径已改为项目嵌套路由。 |
 | 最终机器校验复跑 | 通过，`git diff --check` 无输出；`docs/TODO.md` 编号 1-27 连续；`feature-catalog` §4.1 为 22 个必做项、§4.2 为 5 个增强项；PRD 与 catalog 均含 30 个 `F-*` 功能 ID 且无缺失/额外；catalog 非绿色项均能在 TODO 中找到承接；本文 §15 当前有 21 个 `T-*` 后续任务别名且均有 TODO / catalog 落点；Markdown 相对链接检查 20 个链接、缺失 0；旧计数/旧编号残留扫描无命中。 |
 | Git refs / 配置命令最终复跑 | 审计快照通过：本地 `main=34937a3`、`origin/main=302ede0` 且 `origin/main` 是本地 `main` 祖先，`origin/HEAD` 指向 `origin/phase1-release-prep`；8 个 `feature/T*` 分支本地 SHA 与对应 `origin/feature/*` 一致且均未合入 `main`。配置命令部分仍按当时源码复核：`Settings` 为 39 个 `QAP_` 字段，`.env.example` 缺失 0，额外 `QAP_DB_USER` / `QAP_DB_PASSWORD` / `QAP_DB_NAME` 只服务 Compose；Makefile 与 npm scripts 与 README / development / frontend README 引用一致。 |
 | Runbook 变量命名最终复跑 | 发现 `docs/runbook.md` 轮换章节标题和正文仍使用无前缀 `JWT_SECRET` / `ENCRYPTION_KEY`，而当前 `Settings` 使用 `QAP_` 前缀；已改为 `QAP_JWT_SECRET` / `QAP_ENCRYPTION_KEY`，并同步 `.env.example` 注释。 |
@@ -506,27 +508,25 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 现状：
 
 - 后端 `RunResponse` 字段为 `git_ref`、`duration_ms`、`summary`、`triggered_by: UUID | None` 等。
-- `frontend/src/types/api.ts` 的 `Run` 仍包含 `branch`、`duration_seconds`、`total_tests`、`passed_tests`、`failed_tests`、`env_overrides`、`params` 等 UI 视图字段，且缺后端 `tenant_id`、`environment_id`、`attempt`、`git_ref`、`duration_ms`、`summary` 等原始字段。
-- `frontend/src/types/api.ts` 的 `Environment` 仍使用旧 `variables` 字段，并缺后端 `base_image`、`setup_script`、`memory_mb`、`cpu_cores`、`max_artifact_size_mb`、`max_artifacts_count`、`network_policy`、`env_vars`、`cache_key` 等字段。
-- `frontend/src/components/projects/environment-editor.tsx` 创建环境时提交 `{ name, variables: {} }`，更新时提交 `{ ...env, variables }`，同样沿用旧 Environment payload，且没有填写后端 `EnvironmentCreate` 必需的 `base_image`。
-- `frontend/src/types/api.ts` 的 `Pipeline` 顶层字段名与后端响应接近，但嵌套 `selector` / `trigger_config` / `retry_policy` shape 仍是旧前端形状；历史 `FRONTEND_PROMPT.md` 已改为当前后端 shape，并补齐 stage 的 `plugin/config/continue_on_error/phase` 字段，不应再从运行类型反推 API 契约。
-- `frontend/src/components/projects/pipeline-modal.tsx` 的表单和 payload 同样沿用旧 `framework/pattern/on_push/max_retries/backoff` 口径，不能直接满足当前 `PipelineCreate/Update` schema。
-- `frontend/src/hooks/use-projects.ts` 列表查询传 `search`，但后端 `api/v1/projects.py::list_projects` 查询参数是 `q`。
-- `frontend/src/hooks/use-runs.ts::useTriggerRun` 仍提交 `env_overrides` / `params`，但后端 `RunTrigger` 只接收 `pipeline_id`、`git_ref`、`priority`，这些旧字段不会形成真实执行参数覆盖。
-- `frontend/src/hooks/use-runs.ts::normalizeRun` 仍用 `summary.errors` 判断 `done` 是否应映射成 failed，但后端 executor / runner summary 使用单数 `error`。
-- `frontend/src/hooks/use-pipelines.ts` 的详情/更新/删除仍调用 `/pipelines/{id}`，但后端当前只有 `/api/v1/projects/{project_id}/pipelines/{pipeline_id}` 嵌套路由。
-- `frontend/src/hooks/use-notifications.ts` 把 `GET /projects/{project_id}/notification-rules` 声明为 `NotificationRule[]`，但后端当前返回 `PaginatedResponse[NotificationRuleResponse]`。
-- `frontend/src/hooks/use-sse.ts` 的 fallback 会把传入 URL 交给 `api.get<T>(url)`；当前 `LogViewer` 传的是 `/api/v1/runs/{run_id}/logs`，这是 ticket SSE 流，不是 JSON API。
+- `frontend/src/types/api.ts` 已拆出后端 `RunResponse` 和 UI `Run`；UI `Run` 保留 `branch`、`duration_seconds`、`total_tests`、`passed_tests`、`failed_tests` 等视图字段，但不再伪装成后端 DTO。
+- `frontend/src/types/api.ts` 的 Environment 已拆出后端 `EnvironmentResponse`、UI `Environment` 和 create/update payload；UI `variables` 只作为由 `env_vars` 归一化出来的视图字段。
+- `frontend/src/components/projects/environment-editor.tsx` 新建环境时提交 `{ name, base_image, env_vars: {} }`，更新变量时只提交 `{ env_vars }`，不再把整份响应或旧 `variables` 视图字段回塞给后端。
+- `frontend/src/types/api.ts` 的 `Pipeline` 顶层与嵌套 `selector` / `trigger_config` / `retry_policy` shape 已对齐后端；`frontend/src/components/projects/pipeline-modal.tsx` 已构造当前 `PipelineCreate/Update` payload。
+- `frontend/src/hooks/use-projects.ts` 已将 UI `search` 参数映射为后端 `q`。
+- `frontend/src/hooks/use-runs.ts::useTriggerRun` 已提交当前后端接收的 `pipeline_id`、`git_ref`、`git_sha`、`environment_id`、`priority`；`normalizeRun` 已读取单数 `summary.error`。
+- `frontend/src/hooks/use-pipelines.ts` 的详情/更新/删除已调用 `/projects/{project_id}/pipelines/{pipeline_id}` 嵌套路由。
+- `frontend/src/hooks/use-notifications.ts` 已解包 `PaginatedResponse[NotificationRuleResponse]`，渠道枚举覆盖 email/webhook/dingtalk/wecom/slack。
+- `frontend/src/hooks/use-sse.ts` 已移除把 SSE URL 当 JSON API 轮询的 fallback，reconnect 时会把游标以 `last_event_id` query 显式带回后端。
 - 后端 Run 状态枚举为 `queued/preparing/running/collecting/done/failed/cancelled/timeout`；当前前端 UI 视图会把 `done` 结合 summary 映射成 `passed` 或 `failed`，把 `timeout` 映射成 `timed_out`。
-- 后端 TestResult 状态枚举为 `passed/failed/error/skipped/xfail`；当前 `frontend/src/types/api.ts` 的 TestResult 状态未列 `xfail`，历史前端 prompt 中的示例类型已补入 `xfail`，避免继续传播旧四态口径。
-- `frontend/src/hooks/use-runs.ts::normalizeRun` 会把后端 `git_ref` / `duration_ms` / `summary` 归一化成这些 UI 字段，所以当前页面能继续使用，但类型文件命名容易让维护者误以为它等同后端 API DTO。
+- 后端 TestResult 状态枚举为 `passed/failed/error/skipped/xfail`；当前 `frontend/src/types/api.ts` 的 TestResult 状态已列 `xfail`。
+- `frontend/src/hooks/use-runs.ts::normalizeRun` 会把后端 `git_ref` / `duration_ms` / `summary` 归一化成 UI 字段，且输入输出类型已明确为 `RunResponse -> Run`。
 
 影响：
 
 - 后续从 `frontend/src/types/api.ts` 反推 API 契约，会重新引入历史 prompt 中的旧字段。
 - 若新增前端功能直接使用 `Run` 作为 axios 响应类型，TypeScript 可能掩盖真实后端响应字段缺失。
 
-修复进度：`frontend/README.md` 已明确后端 schemas / OpenAPI 是契约源，并提示 `types/api.ts` 目前混合 DTO 与 view model、部分 hook 路径/响应形状也需对齐；同时补充 Run status 的后端枚举与前端 UI 映射关系、Run / Environment / Pipeline 嵌套类型偏移、run trigger payload 偏移、run summary `error/errors` 偏移、environment editor payload 偏移、pipeline modal payload 偏移、project search 参数偏移、pipeline hook 路径偏移、notification hook pagination 偏移、SSE fallback 偏移、TestResult `xfail` 类型缺口；`FRONTEND_PROMPT.md` 的历史示例类型已补入 `xfail`，并把 polling fallback 降级为需另建 JSON 端点或重连策略；`docs/TODO.md` 已新增 `T-FRONTEND-API`，建议后续拆分 `Backend*` DTO / `*ViewModel` 或引入生成式 DTO，并修正 hook 路径/响应形状。
+修复进度：`frontend/README.md` 已明确后端 schemas / OpenAPI 是契约源；Run status 的后端枚举与前端 UI 映射、Run response/view model、run trigger payload、run summary `error`、project search 参数、pipeline hook 路径、notification hook pagination 与渠道类型、SSE fallback 与 reconnect 游标、TestResult `xfail`、Environment response/view/create/update payload 与 editor create/update payload 均已对齐。剩余建议是引入 OpenAPI 生成式 DTO，避免后续手写类型漂移。
 
 ### 3.10 Run summary 字段名单细节
 
@@ -536,7 +536,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - `domain/models/run.py::RunSummary` 与内置 runner 示例也使用 `error` 单数字段。
 - `feature-catalog.md` 原把 F-RE-02 写成 `passed/failed/skipped/errors`，容易让后续前端或通知模板误用 `errors`。
 
-修复进度：feature-catalog 已改为 `passed` / `failed` / `skipped` / `error` / `pass_rate`；前端 `use-runs.ts::normalizeRun` 的旧 `summary.errors` 读取已登记到 `T-FRONTEND-API`，本轮不改运行代码。
+修复进度：feature-catalog 已改为 `passed` / `failed` / `skipped` / `error` / `pass_rate`；前端 `use-runs.ts::normalizeRun` 已读取单数 `summary.error`。
 
 ## 4. 任务包与代码现状冲突
 
@@ -1049,10 +1049,10 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 冲突：
 
 - `docs/feature-catalog.md` 原把 F-LS-02 标为 ✅，并写“全局 PaginatedResponse”。
-- 当前大部分列表已经分页，但并非“所有列表”：`credentials.py::list_credentials`、`project_members.py::list_project_members`、`auth.py::list_api_tokens` 返回直接 list。
+- 当前大部分列表已经分页；2026-05-29 已补 `credentials.py::list_credentials`、`project_members.py::list_project_members`、`auth.py::list_tokens` 的 `PaginatedResponse` 响应体。
 - `docs/prd.md` §3.7 写“所有列表接口支持分页”，严格按 PRD 仍有缺口。
 
-修复进度：feature-catalog 已把 F-LS-02 改为 ⚠️，并列出已分页主列表与仍未分页的 credentials / project members / auth tokens；TODO 已新增“F-LS-02 剩余列表分页补齐”项。
+修复进度：F-LS-02 已补齐，feature-catalog / TODO 改为 ✅ / 已完成；新增 unit 与 required integration 覆盖 credentials、project members、auth tokens 的分页 wrapper、越界页空数组和敏感 token 不回显。
 
 ### 9.4 F-LS-03 项目搜索排序状态过度声明
 
@@ -1132,16 +1132,16 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 - PRD F-PL-03 的描述是“限制单次执行的 CPU/内存/产物大小”。
 - 当前 CPU / 内存限制已在 `engine/docker_backend.py` HostConfig 中设置，timeout 也有 SIGTERM → 30s → SIGKILL 路径。
 - `worker/tasks.py::_build_pipeline_config` 已把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入执行配置。
-- `engine/executor.py::_upload_artifacts` 已在上传和写 DB 行前检查单文件大小与数量，并递归上传 `results/` 下文件；总大小、API 磁盘配额暴露、资源用量记录与前端 Allure HTML 入口仍未闭环。
-- `ResourceLimits.disk_bytes` 字段存在，worker 已支持内部 `disk_mb` 映射，Docker backend 已能在该值存在时写入 `HostConfig.StorageOpt.size`；architecture 仍需避免把这写成已完成 API 磁盘配额。
-- PRD 还要求 OOM/timeout 记录终止原因和资源用量；当前代码可把 OOM/timeout 映射为 `timeout`，但本轮未发现资源用量写入日志或 summary 的闭环。
+- `engine/executor.py::_upload_artifacts` 已在上传和写 DB 行前检查单文件大小与数量，并递归上传 `results/` 下文件；总大小口径和多资源报告加载体验仍需后续专项。
+- `ResourceLimits.disk_bytes` 字段存在，API 已支持 `disk_mb` 读写，worker 已支持映射，Docker backend 已能在该值存在时写入 `HostConfig.StorageOpt.size`。
+- PRD 还要求 OOM/timeout 记录终止原因和资源用量；当前代码可把 OOM/timeout 映射为 `timeout`，并已把终止原因、退出码、耗时和 Docker stats 峰值 CPU/内存采样写入日志与 summary；真实 Docker stats stream 已有黑盒证据，release_candidate 会强制真实 OOMKilled 经 executor 落 DB summary/Redis/log 的 heavy-docker 用例不被 skip/fail。
 
 建议：
 
 - catalog 中 F-PL-03 改为部分完成。
 - 将 F-PL-03 的产物大小限制与 F-RE-04 的上传/预览闭环合并成一个实施任务，避免两个任务重复改 `_upload_artifacts`。
 
-修复进度：feature-catalog 已把 F-PL-03 改为 ⚠️；TODO / catalog §4.1 已把待办改为 `F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐`；architecture §6.1 / architecture §9.3 已补 CPU/内存、磁盘、产物限制与资源用量记录边界；环境级产物 size/count 限制、内部 disk_mb 到 Docker StorageOpt 传递与递归上传已补 worker 映射、executor/backend 强制配置与真实 DB/S3/单元测试，前端 HTML artifact 预览主路径已有 E2E，剩余 API 磁盘配额暴露、资源用量记录和多资源报告加载体验。
+修复进度：feature-catalog 已把 F-PL-03 改为 ⚠️；TODO / catalog §4.1 已把待办改为 `F-PL-03 / F-RE-04 产物限制与上传/预览闭环补齐`；architecture §6.1 / architecture §9.3 已补 CPU/内存、磁盘、产物限制与资源用量记录边界；环境级产物 size/count 限制、API disk_mb 到 Docker StorageOpt 传递、递归上传、executor/backend 强制配置和真实 DB/S3/单元测试已补，真实 Docker stats stream 黑盒、release_candidate OOMKilled 平台语义 gate 与前端 HTML artifact 预览主路径 E2E 已覆盖，剩余多资源报告加载体验。
 
 ### 9.11 通知条件 AND/OR 与模板能力过度声明
 
@@ -1371,7 +1371,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
   - 部分实现。
   - 文档愿景。
 
-修复进度：architecture 已补当前资源限制与产物上传边界；feature-catalog / TODO 已把 F-PL-03 与 F-RE-04 标为部分完成，并新增待办；README 插件开发示例已改为“当前内置 JUnit XML；Allure JSON/TAP 等可作为后续扩展”；产物 size/count 已补自动化证据，Allure 目录/预览与磁盘/资源用量仍待补。
+修复进度：architecture 已补当前资源限制与产物上传边界；feature-catalog / TODO 已把 F-PL-03 与 F-RE-04 标为部分完成，并新增待办；README 插件开发示例已改为“当前内置 JUnit XML；Allure JSON/TAP 等可作为后续扩展”；产物 size/count、Allure/HTML 目录递归上传、HTML 预览主路径、Docker stats 资源用量采样和 release_candidate OOMKilled 平台语义 gate 均已有自动化证据，剩余多资源报告加载体验。
 
 ### 12.4 F-EX-07 自动重试状态过度乐观
 
@@ -1471,7 +1471,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 ## 15. 后续建议拆分任务
 
-建议新增独立文档任务，避免混入功能 PR。当前本轮文档修复已覆盖 `T-DOC-01` 到 `T-DOC-05`；Git 凭证执行链路、Pipeline collector 配置、手动触发参数验收、审计覆盖、API token scope、数据保留运维闭环、分层边界、结构化日志全局化、lint、TS 与前端 API 类型债务仍应独立处理：
+建议新增独立文档任务，避免混入功能 PR。当前本轮文档修复已覆盖 `T-DOC-01` 到 `T-DOC-05`；Pipeline collector 配置已在后续实现中补齐，Git 凭证执行链路、手动触发参数验收、审计覆盖、API token scope、数据保留运维闭环、分层边界、结构化日志全局化、lint、TS 与前端 API 类型债务仍应独立处理：
 
 | 任务 | 内容 | 状态 |
 |---|---|---|
@@ -1480,10 +1480,10 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 | `T-DOC-03` | 修正 PRD、feature-catalog、TODO 的状态与引用。 | 已完成第一轮修复 |
 | `T-DOC-04` | 修正 architecture/runbook 与当前实现冲突。 | 已完成第一轮修复 |
 | `T-DOC-05` | 重写 frontend README / FRONTEND_PROMPT / DESIGN 定位。 | 已完成第一轮修复 |
-| `T-GIT-CREDENTIALS` | 补齐 F-PM-01 / F-PM-02 Git 凭证执行闭环：解密项目绑定的 HTTPS token / SSH key 并安全注入 Git clone，确保错误与日志脱敏，覆盖私有仓库成功、认证失败、凭证轮换后的执行路径。 | 未处理，已记录为 PRD F-PM-01/F-PM-02 缺口 |
-| `T-PIPELINE-COLLECTOR` | 补齐 F-PL-01 Pipeline collector 配置：决定当前 JUnit-only 是正式产品限制还是实现 collector 选择/配置；若补实现，需贯通 API schema、ORM/JSONB、worker `PipelineConfig`、executor `get_collector(...)` 与测试。 | 未处理，已记录为 PRD F-PL-01 缺口 |
+| `T-GIT-CREDENTIALS` | 补齐 F-PM-01 / F-PM-02 Git 凭证执行闭环：解密项目绑定的 HTTPS token / SSH key 并安全注入 Git clone，确保错误与日志脱敏，覆盖私有仓库成功、认证失败、凭证轮换后的执行路径。 | 已完成基线：API/worker/executor/GitSource 贯通 token 与 SSH key 注入，错误脱敏和真实 API/DB token 不落 metadata/audit 已覆盖；剩余受控私有仓库成功 clone 与凭证轮换黑盒可作为 nightly/manual 增强 |
+| `T-PIPELINE-COLLECTOR` | 补齐 F-PL-01 Pipeline collector 配置：贯通 API schema、ORM/JSONB、worker `PipelineConfig`、executor `get_collector(...)` 与测试。 | 已完成：Pipeline 暴露 `collectors[]`，默认 JUnit；JUnit collector 支持 `config.path` / `config.junit_xml` 相对路径，API/worker/executor/unit/required integration 已覆盖 |
 | `T-AUDIT-COVERAGE` | 补齐审计写入覆盖：批量取消/批量重试至少应有 audit；SSE ticket 是否审计需产品确认。 | 批量取消/批量重试与 SSE ticket 已补审计写入；剩余写路径按业务风险矩阵继续补齐 |
-| `T-ARTIFACT-PREVIEW` | 补齐 F-PL-03 / F-RE-04 产物限制与上传/预览闭环：传递并执行上传侧 size/count 限制，决定是否实现磁盘限制，补 OOM/timeout 资源用量记录，递归或打包上传 Allure HTML 报告、明确入口 URL 并补测试。 | 已补 size/count 限制映射、内部 disk_mb 到 Docker StorageOpt 传递、上传侧强制校验、递归上传 Allure/HTML 目录文件和真实 DB/S3 测试，前端 HTML artifact 预览主路径已有 E2E；API 磁盘配额暴露、资源用量记录、多资源加载仍缺 |
+| `T-ARTIFACT-PREVIEW` | 补齐 F-PL-03 / F-RE-04 产物限制与上传/预览闭环：传递并执行上传侧 size/count 限制，决定是否实现磁盘限制，补 OOM/timeout 资源用量记录，递归或打包上传 Allure HTML 报告、明确入口 URL 并补测试。 | 已补 size/count 限制映射、API disk_mb 到 Docker StorageOpt 传递、上传侧强制校验、递归上传 Allure/HTML 目录文件、真实 DB/S3 测试、真实 Docker stats stream 黑盒、release_candidate OOMKilled 平台语义 gate 和前端 HTML artifact 预览主路径 E2E；多资源加载仍缺 |
 | `T-LOG-REPLAY` | 补齐 F-EX-05 日志归档回看闭环：提供从 `logs/{run_id}.jsonl` 读取历史日志的 API / 前端入口，并处理 Redis Stream TTL 过期后的回放体验。 | 后端归档日志读回 API 与真实 DB/RBAC/API/API token scope 测试已补；前端终态 Run 回看入口已补，并用真实 DB+S3 E2E 覆盖回放/搜索 |
 | `T-AUTH-SCOPE` | 补齐 API token scope enforcement 在 tenant-scoped / project-scoped / token 管理端点的传递与测试。 | 已完成：scopes 已贯通权限依赖，真实 API 测试覆盖只读、`run.trigger`、artifact download 与 archived logs 的 `run.read`、错误/空 scope |
 | `T-MANUAL-TRIGGER` | 补齐 F-EX-01 手动触发参数与入队验收：让后端可指定 commit / environment，明确与前端触发 payload 的边界，并补“触发后 < 5s 入队”的可验证测试或压测口径。 | 未处理，已记录为 PRD F-EX-01 缺口 |
@@ -1495,7 +1495,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 | `T-LOGGING` | 结构化日志全局化：在 worker/arq 入口调用统一日志配置，收敛 engine / worker / plugin 的 stdlib logger 输出形态，保证 API 与后台任务日志字段一致。 | 未处理，已记录为技术债专项 |
 | `T-LINT` | 清理 main 既有 ruff 历史债务。 | 已处理，CI `backend-test` 已加入 `ruff check src tests` |
 | `T-FRONTEND-TS` | 清理前端 3 个历史 TS 错误文件。 | 未处理，保持独立任务 |
-| `T-FRONTEND-API` | 拆分或对齐前端 API DTO、hook 路径/响应形状与 UI view model 类型，覆盖 Run、run trigger payload、run summary `error/errors` 归一化、Environment、environment editor payload、Pipeline 嵌套 selector / retry shape、pipeline modal payload、`use-projects.ts` search/q 参数、`use-pipelines.ts` 路径、`use-notifications.ts` pagination、`use-sse.ts` fallback、TestResult `xfail` 等已登记偏移。 | 未处理，避免在文档审计中改运行代码 |
+| `T-FRONTEND-API` | 拆分或对齐前端 API DTO、hook 路径/响应形状与 UI view model 类型；Environment、Run、Pipeline、project search、notification pagination/channel type、SSE fallback/reconnect cursor、TestResult `xfail` 已对齐。 | 已处理主线；后续可用 OpenAPI 生成式 DTO 防止漂移 |
 
 ## 16. 不建议做的事
 
@@ -1516,7 +1516,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 4. 是否需要实现独立的审计日志清理任务；当前配置有 `retention_audit_days=1095`，但本轮只发现执行记录清理 cron。
 5. 是否需要 DB 行冷归档；失败归档自动补偿、归档日志读回 API 与前端终态 Run 回看入口已实现。
 6. `/auth/sse-ticket` 这种短期临时凭证写入已纳入审计；后续是否需要审计查询 UI 与告警规则仍待产品决策。
-7. Pipeline collector 配置是补实现，还是把当前 JUnit-only 写成正式产品限制并调整 PRD F-PL-01 验收口径。
+7. Pipeline collector 配置已选择补实现：Pipeline 暴露 `collectors[]`，默认 JUnit，JUnit 支持自定义相对 report path；后续只需在新增 collector 插件时补对应配置 schema/验收。
 8. Allure/HTML 报告后端已递归上传静态目录文件；前端当前采用直接预签并 iframe 预览 HTML artifact，完整多资源报告加载体验仍需决策。
 9. 真实 worker 黑盒自动重试是否要从 nightly/manual 提升为 PR 必跑门禁。
 10. F-EX-08 采用 high/medium/low 多 worker 部署；后续如改为单 worker 多队列，需要重新补 runbook/CI 覆盖。

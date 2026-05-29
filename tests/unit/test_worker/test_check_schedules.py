@@ -90,6 +90,10 @@ class TestCheckSchedules:
 
         project = MagicMock()
         project.tenant_id = pipeline.project.tenant_id
+        project.git_url = "https://github.com/org/repo.git"
+        project.git_auth_method = "none"
+        project.credential_id = None
+        project.shallow_clone = True
         project.default_branch = "main"
         project.settings = {}
         project_repo = AsyncMock()
@@ -150,6 +154,12 @@ class TestCheckSchedules:
         assert audit_kwargs["after_state"]["trigger_type"] == "schedule"
         assert audit_kwargs["after_state"]["schedule_id"] == str(sample_schedule.id)
         assert audit_kwargs["after_state"]["enqueued"] is True
+        assert run_repo.create.await_args.kwargs["metadata_"] == {
+            "schedule_id": str(sample_schedule.id),
+            "git_url": "https://github.com/org/repo.git",
+            "shallow_clone": True,
+            "default_branch": "main",
+        }
 
     @pytest.mark.asyncio
     async def test_skips_in_quiet_window(self, ctx, sample_schedule):
@@ -232,6 +242,10 @@ class TestCheckSchedules:
 
         project = MagicMock()
         project.tenant_id = pipeline.project.tenant_id
+        project.git_url = "https://github.com/org/repo.git"
+        project.git_auth_method = "none"
+        project.credential_id = None
+        project.shallow_clone = True
         project.default_branch = "main"
         project.settings = {}
         project_repo = AsyncMock()

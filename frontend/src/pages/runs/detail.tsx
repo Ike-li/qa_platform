@@ -20,6 +20,7 @@ import { LogViewer } from "../../components/runs/log-viewer";
 import { TestResultsTable } from "../../components/test-results-table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Button } from "../../components/ui/button";
+import type { RunStatus } from "../../types/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -70,7 +71,7 @@ export default function RunDetail() {
   }
 
   if (!run) return <div>{t('runs.notFound')}</div>;
-  const terminalRunStatuses = ["passed", "failed", "cancelled", "timed_out"];
+  const terminalRunStatuses: readonly RunStatus[] = ["passed", "failed", "cancelled", "timed_out"];
   const archivedLogsEnabled = terminalRunStatuses.includes(run.status);
 
   return (

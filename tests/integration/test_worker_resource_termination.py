@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -49,6 +50,7 @@ class _TerminationBackend:
     async def wait(self, _execution_id, _timeout):
         from qaplatform.engine.docker_backend import ExitResult
 
+        await asyncio.sleep(0)
         now = datetime.now(timezone.utc)
         return ExitResult(
             exit_code=self.exit_code,
@@ -56,6 +58,19 @@ class _TerminationBackend:
             finished_at=now,
             oom_killed=self.oom_killed,
             timed_out=self.timed_out,
+        )
+
+    async def stream_resource_usage(self, _execution_id):
+        from qaplatform.engine.docker_backend import ResourceUsageSample
+
+        now = datetime.now(timezone.utc)
+        yield ResourceUsageSample(
+            timestamp=now,
+            memory_usage_bytes=64 * 1024 * 1024,
+            memory_limit_bytes=128 * 1024 * 1024,
+            memory_max_usage_bytes=96 * 1024 * 1024,
+            cpu_percent=125.5,
+            pids_current=4,
         )
 
     async def cleanup(self, _execution_id):
@@ -153,13 +168,32 @@ async def test_executor_resource_termination_persists_timeout_status_and_redis_e
         assert persisted is not None
         assert persisted.status == RunStatusEnum.TIMEOUT
         assert persisted.finished_at is not None
-        assert persisted.summary == {
+        assert persisted.summary is not None
+        summary = dict(persisted.summary)
+        resource_termination = summary.pop("resource_termination")
+        assert summary == {
             "total": 0,
             "passed": 0,
             "failed": 0,
             "skipped": 0,
             "error": 0,
             "pass_rate": 0.0,
+        }
+        expected_reason = "oom" if backend.oom_killed else "timeout"
+        assert resource_termination["reason"] == expected_reason
+        assert resource_termination["exit_code"] == backend.exit_code
+        assert resource_termination["oom_killed"] is backend.oom_killed
+        assert resource_termination["timed_out"] is backend.timed_out
+        assert resource_termination["duration_ms"] >= 0
+        assert resource_termination["started_at"]
+        assert resource_termination["finished_at"]
+        assert resource_termination["resource_usage"] == {
+            "sample_count": 1,
+            "memory_peak_bytes": 96 * 1024 * 1024,
+            "memory_limit_bytes": 128 * 1024 * 1024,
+            "memory_peak_percent": 75.0,
+            "cpu_peak_percent": 125.5,
+            "pids_peak": 4,
         }
 
         status_hash = await redis.hgetall(STATUS_HASH_KEY.format(run_id=str(run_id)))
@@ -177,6 +211,10 @@ async def test_executor_resource_termination_persists_timeout_status_and_redis_e
         assert any(f"Starting stage: {scenario}" in line for line in lines)
         assert any(
             f"Pipeline failed with code {backend.exit_code}" in line
+            for line in lines
+        )
+        assert any(
+            f"Resource termination: reason={expected_reason}" in line
             for line in lines
         )
         assert any("Run completed: timeout" in line for line in lines)

@@ -156,9 +156,9 @@ Worker 抢占 (queued → preparing)
 触发通知 (按规则)
 ```
 
-当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；worker 可把内部 `resource_limits.disk_mb` 转成 `ResourceLimits.disk_bytes`，Docker backend 会在该值存在时写入 `HostConfig.StorageOpt.size`。API 目前还不暴露磁盘配额字段，OOM/timeout 的资源用量记录也未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；上传侧会递归扫描工作目录 `results/` 下文件，保留相对路径写入 S3/Artifact 行，并把 `allure-report/`、`allure-results/` 目录下文件标记为 `allure-report` 类型。前端 Allure/HTML 报告预览主路径已有 E2E 覆盖，多资源报告加载体验仍需后续设计。
+当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；环境 API 暴露 `disk_mb`，worker 可把 `Environment.resource_limits["disk_mb"]` 转成 `ResourceLimits.disk_bytes`，Docker backend 会在该值存在时写入 `HostConfig.StorageOpt.size`。OOM/timeout 会写 `summary.resource_termination` 与日志终止原因；Docker stats 峰值 CPU/内存采样已写 `summary.resource_termination.resource_usage`；稳定 Linux real-Docker 黑盒证据尚未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；上传侧会递归扫描工作目录 `results/` 下文件，保留相对路径写入 S3/Artifact 行，并把 `allure-report/`、`allure-results/` 目录下文件标记为 `allure-report` 类型。前端 Allure/HTML 报告预览主路径已有 E2E 覆盖，多资源报告加载体验仍需后续设计。
 
-当前 collector 边界：Pipeline 的 stage `plugin` 可以选择测试运行器，但结果收集器还不是 pipeline 级配置项；`RunExecutor.execute()` 当前固定调用 JUnit collector。PRD F-PL-01 中“配置结果收集器”的验收需后续补实现，或由 maintainer 决定把 JUnit-only 写成正式产品限制。
+当前 collector 边界：Pipeline 的 stage `plugin` 可以选择测试运行器，`collectors[]` 可以配置结果收集器；默认保持 JUnit。`RunExecutor.execute()` 会按 Pipeline 配置调用对应 collector，内置 JUnit collector 支持 `config.path` / `config.junit_xml` 相对路径。
 
 当前队列边界：`worker/scheduler.py` 会按 Run `priority` 把任务写入 `queue:high` / `queue:medium` / `queue:low`，并在入队前执行全局并发与单项目并发配额；`RunRepository.find_waiting()` 对等待队列按 `priority, created_at` 排序。部署侧 `docker-compose.yml` 明确启动 high / medium / low 三个 worker 队列，单测覆盖 manual priority 到三类队列，真实 API/DB 测试覆盖 manual priority 写入 queue metadata，真实 DB 测试覆盖 priority + FIFO 排序。worker_lost 后自动重试仍归 F-EX-07。
 
@@ -258,12 +258,12 @@ class RunnerProtocol(Protocol):
 @runtime_checkable
 class CollectorProtocol(Protocol):
     name: str
-    async def collect(self, run_id: UUID, working_dir: Path) -> list[TestResultData]: ...
+    async def collect(self, run_id: UUID, working_dir: Path, config: dict | None = None) -> list[TestResultData]: ...
 
 @runtime_checkable
 class SourceProtocol(Protocol):
     name: str
-    async def clone(self, url: str, ref: str, dest: Path) -> SourceRevision: ...
+    async def clone(self, url: str, ref: str, dest: Path, auth: dict | None = None) -> SourceRevision: ...
 ```
 
 `SourceRevision` 包含 `path: Path`、`sha: str`、`ref: str`，用于填充 Run 的 `git_sha` 字段。
@@ -272,7 +272,7 @@ class SourceProtocol(Protocol):
 
 | 插件 | 类型 | 说明 |
 |------|------|------|
-| git_source | Source | Git clone（支持 `https://` 与 SSH URL 形态校验，默认 `--depth 1` shallow clone）；私有 HTTPS token / SSH key 注入执行链路仍待补 |
+| git_source | Source | Git clone（支持 `https://` 与 SSH URL 形态校验，默认 `--depth 1` shallow clone）；HTTPS token 通过临时 `GIT_ASKPASS` 注入，SSH key 通过 0600 临时 key + `GIT_SSH_COMMAND` 注入，错误消息会脱敏 token/userinfo |
 | pytest_runner | Runner | 执行 pytest |
 | jest_runner | Runner | 执行 Jest |
 | playwright_runner | Runner | 执行 Playwright |
@@ -320,9 +320,9 @@ Run 1──N NotificationLog
 | Tenant | name, settings(JSONB) | 租户级配置（默认资源限制等） |
 | AppUser | username, email, role, is_platform_admin, is_active, last_login_at | 登录用户与租户级角色 |
 | ApiToken | token_id, secret_hash, scopes, expires_at, is_revoked | 机器访问 token，明文 token 不落库 |
-| Project | slug, git_url, git_auth_method, credential_id, default_branch, settings(JSONB), status | 项目聚合根，settings 当前承载 `webhook_secret`、`allowed_branches` 等嵌入配置；`silent_windows` 为 T05 计划写入同一 JSONB 的字段；`credential_id` 已可绑定但执行侧 clone 使用待补 |
-| Environment | base_image, setup_script, memory_mb, cpu_cores, resource_limits(JSONB), network_policy, env_vars(JSONB), cache_key | 执行环境；`memory_mb` / `cpu_cores` 是 ORM 离散列；API 暴露的 `max_artifact_size_mb` / `max_artifacts_count` 当前存放在 `resource_limits` JSONB 中，不是独立列；内部 `resource_limits.disk_mb` 可传到 Docker `StorageOpt.size`，但尚未暴露为 API 字段；`env_vars` 当前在 JSONB 中保存 AES-256-GCM envelope，API 读写和 worker 执行侧会按 environment_id AAD 解密 |
-| Pipeline | stages(JSONB), selector(JSONB), trigger_config(JSONB), retry_policy(JSONB), timeout_seconds, enabled | 管道定义，使用 JSONB 支持多阶段执行与不同 runner；当前没有 collector 选择字段，执行器固定 JUnit collector |
+| Project | slug, git_url, git_auth_method, credential_id, default_branch, settings(JSONB), status | 项目聚合根，settings 当前承载 `webhook_secret`、`allowed_branches` 等嵌入配置；`silent_windows` 为 T05 计划写入同一 JSONB 的字段；`credential_id` 可绑定项目内 Git 凭证，执行侧按 Run metadata 解密并注入 clone |
+| Environment | base_image, setup_script, memory_mb, cpu_cores, resource_limits(JSONB), network_policy, env_vars(JSONB), cache_key | 执行环境；`memory_mb` / `cpu_cores` 是 ORM 离散列；API 暴露的 `disk_mb` / `max_artifact_size_mb` / `max_artifacts_count` 当前存放在 `resource_limits` JSONB 中，不是独立列；`disk_mb` 可传到 Docker `StorageOpt.size`；`env_vars` 当前在 JSONB 中保存 AES-256-GCM envelope，API 读写和 worker 执行侧会按 environment_id AAD 解密 |
+| Pipeline | stages(JSONB), selector(JSONB), trigger_config(JSONB), collectors(JSONB), retry_policy(JSONB), timeout_seconds, enabled | 管道定义，使用 JSONB 支持多阶段执行、不同 runner 和 collector；默认 JUnit collector |
 | Schedule | cron_expr, timezone, quiet_windows(JSONB), next_run_at, last_run_at, last_error | 定时触发配置，当前已有 schedule 级 quiet window |
 | Run | status, trigger_type, priority, git_ref, git_sha, retry_group_id, attempt, dedup_key, duration_ms, summary | 执行记录，status 为状态机核心 |
 | TestResult | suite, name, status, duration_ms, error_message, stack_trace | 单条用例结果 |
@@ -393,13 +393,13 @@ Run 1──N NotificationLog
 - 每次执行在独立容器中运行
 - 容器网络策略按环境配置：默认 `deny` 对应 Docker `NetworkMode=none`；`allow` 显式使用 bridge；`restricted` 映射到 `qap-restricted`，该网络需部署侧预先创建
 - 容器默认以 `1000:1000` 运行，rootfs 只读，drop all capabilities，并启用 `no-new-privileges`
-- 资源限制：CPU / 内存已在 Docker HostConfig 中设置；内部 `disk_mb` 可传到 Docker `StorageOpt.size`，产物大小/数量上传侧会校验；API 磁盘配额暴露和 OOM/timeout 资源用量记录仍待补齐
+- 资源限制：CPU / 内存已在 Docker HostConfig 中设置；API `disk_mb` 可传到 Docker `StorageOpt.size`，产物大小/数量上传侧会校验；OOM/timeout 终止原因已写 summary/日志；稳定 Linux real-Docker 峰值 CPU/内存黑盒证据仍待补齐
 - 执行结束后容器和临时文件销毁
 - 当前 Compose worker 直接挂载 `/var/run/docker.sock` 以创建测试容器；生产部署必须按风险表加固为 Socket Proxy / rootless Docker / gVisor，或迁移到 K8s Job 后端
 
 ### 9.4 敏感数据
 
-- Git 凭证使用 AES-256-GCM 加密存储；执行侧解密并安全注入 Git clone 仍待 F-PM-01 / F-PM-02 补齐
+- Git 凭证使用 AES-256-GCM 加密存储；Run metadata 只保存 `git_auth_method` / `credential_id` 引用，worker 执行时按项目/租户校验后解密并安全注入 Git clone
 - 环境变量 `env_vars` 使用 AES-256-GCM envelope 加密存入 JSONB，AAD 绑定 environment_id；API 响应和 worker 执行侧按需解密，审计状态只记录 redacted/count
 - 加密密钥通过环境变量注入，不落盘
 - API 响应中不返回凭证明文

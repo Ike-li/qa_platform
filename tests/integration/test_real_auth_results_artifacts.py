@@ -349,6 +349,56 @@ async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_re
 
 
 @pytest.mark.asyncio
+async def test_auth_tokens_list_is_paginated(real_auth_client):
+    suffix = uuid4().hex[:8]
+    username = f"api_token_page_{suffix}"
+    password = "correct-horse-battery"
+
+    register_resp = await real_auth_client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": username,
+            "email": f"{username}@example.com",
+            "password": password,
+        },
+    )
+    assert register_resp.status_code == 201, register_resp.text
+    access_token = register_resp.json()["access_token"]
+
+    token_names = [f"ci-page-{idx}-{suffix}" for idx in range(3)]
+    for name in token_names:
+        create_resp = await real_auth_client.post(
+            "/api/v1/auth/tokens",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"name": name, "scopes": ["project.read"], "expires_days": 7},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+    page_resp = await real_auth_client.get(
+        "/api/v1/auth/tokens",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={"page": 2, "per_page": 2},
+    )
+    assert page_resp.status_code == 200, page_resp.text
+    page_body = page_resp.json()
+    assert page_body["page"] == 2
+    assert page_body["per_page"] == 2
+    assert page_body["total"] == 3
+    assert len(page_body["data"]) == 1
+    assert page_body["data"][0]["name"] in token_names
+    assert "token" not in page_body["data"][0]
+
+    empty_resp = await real_auth_client.get(
+        "/api/v1/auth/tokens",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={"page": 99, "per_page": 2},
+    )
+    assert empty_resp.status_code == 200, empty_resp.text
+    assert empty_resp.json()["data"] == []
+    assert empty_resp.json()["total"] == 3
+
+
+@pytest.mark.asyncio
 async def test_audit_events_api_token_requires_audit_read_scope_without_self_audit_on_denial(
     real_auth_app,
     real_auth_client,

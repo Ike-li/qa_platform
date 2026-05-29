@@ -200,6 +200,26 @@ async def cleanup_old_runs(ctx: dict) -> None:
         log.info("retention_cleanup_done deleted=%s cutoff=%s", deleted, cutoff.isoformat())
 
 
+async def cleanup_old_audit_events(ctx: dict) -> None:
+    """Periodic task: delete audit events older than retention_audit_days."""
+    from datetime import timedelta
+
+    from qaplatform.infra.database.repositories.audit_repo import AuditEventRepository
+
+    session_factory = ctx.get("db_session_factory")
+    settings = ctx.get("settings")
+    if session_factory is None or settings is None:
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.retention_audit_days)
+    async with session_factory() as session:
+        audit_repo = AuditEventRepository(session)
+        deleted = await audit_repo.delete_older_than(cutoff=cutoff)
+        await session.commit()
+    if deleted:
+        log.info("audit_retention_cleanup_done deleted=%s cutoff=%s", deleted, cutoff.isoformat())
+
+
 async def retry_failed_archives(ctx: dict) -> None:
     """Periodic task: retry failed log archival."""
     log_stream = ctx.get("log_stream")
@@ -332,6 +352,17 @@ async def check_schedules(ctx: dict) -> None:
 
                 # Determine git_ref from pipeline's project default
                 git_ref = project.default_branch or "main"
+                metadata = {
+                    "schedule_id": str(schedule.id),
+                    "git_url": project.git_url,
+                }
+                if project.git_auth_method != "none" and project.credential_id:
+                    metadata["git_auth_method"] = project.git_auth_method
+                    metadata["credential_id"] = str(project.credential_id)
+                if project.shallow_clone:
+                    metadata["shallow_clone"] = True
+                if project.default_branch:
+                    metadata["default_branch"] = project.default_branch
 
                 run = await run_repo.create(
                     tenant_id=project.tenant_id,
@@ -340,7 +371,7 @@ async def check_schedules(ctx: dict) -> None:
                     environment_id=environment_id,
                     git_ref=git_ref,
                     trigger_type="schedule",
-                    metadata_={"schedule_id": str(schedule.id)},
+                    metadata_=metadata,
                 )
                 run.retry_group_id = run.id
                 await session.commit()
@@ -424,10 +455,22 @@ def _get_redis_settings() -> RedisSettings:
     return RedisSettings.from_dsn(redis_url)
 
 
+def _get_worker_max_jobs() -> int:
+    raw_value = os.environ.get("QAP_WORKER_MAX_JOBS", "10")
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("QAP_WORKER_MAX_JOBS must be an integer") from exc
+    if value < 1:
+        raise ValueError("QAP_WORKER_MAX_JOBS must be >= 1")
+    return value
+
+
 class WorkerSettings:
     """arq WorkerSettings for the QA Platform."""
 
     queue_name: str = os.environ.get("QAP_WORKER_QUEUE", "queue:medium")
+    max_jobs: int = _get_worker_max_jobs()
     functions = [func(execute_run, name="execute_run", max_tries=1)]
     on_startup = on_startup
     on_shutdown = on_shutdown
@@ -438,5 +481,6 @@ class WorkerSettings:
         cron(check_schedules, second={15}),
         cron(retry_failed_archives, second={45}),
         cron(cleanup_old_runs, minute={0}, second={0}),  # hourly retention sweep
+        cron(cleanup_old_audit_events, minute={5}, second={0}),  # hourly audit retention sweep
     ]
     redis_settings = _get_redis_settings()

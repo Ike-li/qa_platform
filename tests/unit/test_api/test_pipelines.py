@@ -25,6 +25,7 @@ def _make_orm_pipeline(project_id):
     ]
     obj.selector = {"include_paths": ["tests"], "on_empty": "warn"}
     obj.trigger_config = {"type": "manual"}
+    obj.collectors = [{"plugin": "junit", "config": {}, "enabled": True}]
     obj.timeout_seconds = 300
     obj.retry_policy = {
         "max_attempts": 2,
@@ -74,7 +75,7 @@ def mock_repos(mock_project, project_id):
     repos.project.get_for_tenant = AsyncMock(return_value=mock_project)
     repos.pipeline.list_by_project = AsyncMock(return_value=([pipeline], 1))
     repos.pipeline.get_by_id = AsyncMock(return_value=None)
-    repos.pipeline.create = AsyncMock(return_value=pipeline)
+    repos.pipeline.create = AsyncMock(side_effect=lambda **kw: _apply(pipeline, kw))
     repos.pipeline.update = AsyncMock(side_effect=lambda obj, **kw: _apply(obj, kw))
     repos.pipeline.delete = AsyncMock()
     repos.audit.create = AsyncMock()
@@ -153,6 +154,13 @@ async def test_create_pipeline_persists_nested_payload_and_writes_audit(
                 ],
                 "selector": {"include_paths": ["tests/unit"], "on_empty": "warn"},
                 "trigger_config": {"type": "manual"},
+                "collectors": [
+                    {
+                        "plugin": "junit",
+                        "config": {"path": "reports/junit.xml"},
+                        "enabled": True,
+                    }
+                ],
                 "retry_policy": {"max_attempts": 2, "retry_on": ["infra"]},
                 "timeout_seconds": 600,
             },
@@ -163,7 +171,11 @@ async def test_create_pipeline_persists_nested_payload_and_writes_audit(
     assert create_kwargs["project_id"] == project_id
     assert create_kwargs["stages"][0]["config"] == {"command": "pytest -q"}
     assert create_kwargs["selector"]["include_paths"] == ["tests/unit"]
+    assert create_kwargs["collectors"] == [
+        {"plugin": "junit", "config": {"path": "reports/junit.xml"}, "enabled": True}
+    ]
     assert create_kwargs["retry_policy"]["max_attempts"] == 2
+    assert resp.json()["collectors"][0]["config"]["path"] == "reports/junit.xml"
     mock_repos.audit.create.assert_awaited_once()
 
 
@@ -219,6 +231,13 @@ async def test_update_pipeline_translates_partial_nested_updates(
                         "clone_url": f"https://x-access-token:{raw_token}@git.example/repo.git",
                     },
                 },
+                "collectors": [
+                    {
+                        "plugin": "junit",
+                        "config": {"path": "custom/junit.xml", "api_token": raw_token},
+                        "enabled": True,
+                    }
+                ],
                 "retry_policy": None,
                 "enabled": False,
             },
@@ -230,6 +249,7 @@ async def test_update_pipeline_translates_partial_nested_updates(
     assert update_kwargs["stages"][0]["config"]["env"]["API_TOKEN"] == raw_token
     assert update_kwargs["selector"]["exclude_paths"] == ["tests/e2e"]
     assert update_kwargs["trigger_config"]["source"]["webhook_secret"] == raw_token
+    assert update_kwargs["collectors"][0]["config"]["api_token"] == raw_token
     assert update_kwargs["retry_policy"] is None
     assert update_kwargs["enabled"] is False
     mock_repos.audit.create.assert_awaited_once()
@@ -247,6 +267,9 @@ async def test_update_pipeline_translates_partial_nested_updates(
     assert audit_kwargs["after_state"]["trigger_config"]["source"]["clone_url"] == (
         "https://***@git.example/repo.git"
     )
+    assert audit_kwargs["after_state"]["collectors"][0]["config"]["api_token"] == {
+        "redacted": True
+    }
 
 
 @pytest.mark.asyncio

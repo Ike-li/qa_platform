@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
@@ -16,6 +16,7 @@ from qaplatform.api.schemas import (
     ProjectMemberCreate,
     ProjectMemberResponse,
     ProjectMemberUpdate,
+    PaginatedResponse,
 )
 
 router = APIRouter(
@@ -44,18 +45,30 @@ async def _verify_project_access(project_id: UUID, repos: Repos, user: CurrentUs
 
 @router.get(
     "",
-    response_model=list[ProjectMemberResponse],
+    response_model=PaginatedResponse[ProjectMemberResponse],
     summary="项目成员列表",
 )
 async def list_project_members(
     project_id: UUID,
     repos: Repos,
     user: CurrentUser,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
     _perm=require_project_permission(Action.MEMBER_READ),
 ):
     await _verify_project_access(project_id, repos, user)
-    rows = await repos.project_member.list_by_project_tenant(project_id, user.tenant_id)
-    return [_to_response(m, m.user) for m in rows]
+    rows, total = await repos.project_member.list_by_project_tenant(
+        project_id,
+        user.tenant_id,
+        offset=(page - 1) * per_page,
+        limit=per_page,
+    )
+    return PaginatedResponse(
+        data=[_to_response(m, m.user) for m in rows],
+        page=page,
+        per_page=per_page,
+        total=total,
+    )
 
 
 @router.post(

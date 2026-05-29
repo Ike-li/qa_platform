@@ -13,8 +13,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 
-import pytest
+from aiobotocore.session import get_session
+from botocore.exceptions import ClientError
 import httpx
+import pytest
 
 pytestmark = [
     pytest.mark.skipif(
@@ -35,6 +37,16 @@ EXTERNAL_STACK_S3_URL = os.environ.get(
     "QAP_EXTERNAL_STACK_S3_URL",
     "http://localhost:9000",
 )
+EXTERNAL_STACK_S3_ACCESS_KEY = os.environ.get(
+    "QAP_S3_ACCESS_KEY",
+    os.environ.get("MINIO_ROOT_USER", "minioadmin"),
+)
+EXTERNAL_STACK_S3_SECRET_KEY = os.environ.get(
+    "QAP_S3_SECRET_KEY",
+    os.environ.get("MINIO_ROOT_PASSWORD", "minioadmin"),
+)
+EXTERNAL_STACK_S3_BUCKET = os.environ.get("QAP_S3_BUCKET", "qa-platform")
+EXTERNAL_STACK_S3_REGION = os.environ.get("QAP_S3_REGION", "us-east-1")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TERMINAL_STATUSES = {"done", "failed", "cancelled", "timeout"}
 
@@ -133,6 +145,43 @@ def _compose_redis_delete(keys: list[str]) -> int:
     return int((result.stdout or "0").strip() or "0")
 
 
+def _running_qaplatform_container_run_ids() -> set[str]:
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "--filter",
+                "label=managed-by=qaplatform",
+                "--format",
+                "{{.Labels}}",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        _skip_or_fail_external_stack("docker is not available")
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(f"docker ps timed out after 30s: {exc}")
+
+    if result.returncode != 0:
+        _skip_or_fail_external_stack(
+            "docker ps for qaplatform containers failed: "
+            f"{result.stderr or result.stdout}"
+        )
+
+    run_ids: set[str] = set()
+    for labels in result.stdout.splitlines():
+        for label in labels.split(","):
+            key, _, value = label.partition("=")
+            if key == "run_id" and value:
+                run_ids.add(value)
+    return run_ids
+
+
 def _external_stack_required() -> bool:
     return os.environ.get("QAP_EXTERNAL_STACK_REQUIRED") == "1"
 
@@ -145,6 +194,10 @@ def _skip_or_fail_external_stack(reason: str) -> None:
 
 def _threshold(name: str, default_ms: float) -> float:
     return float(os.environ.get(name, str(default_ms)))
+
+
+def _performance_gate_profile() -> str:
+    return os.environ.get("QAP_PERFORMANCE_GATE_PROFILE", "local")
 
 
 def _assert_elapsed_under(name: str, elapsed_ms: float, threshold_ms: float) -> None:
@@ -161,6 +214,7 @@ def _assert_elapsed_under(name: str, elapsed_ms: float, threshold_ms: float) -> 
                         "threshold_ms": threshold_ms,
                         "samples": 1,
                         "passed": elapsed_ms <= threshold_ms,
+                        "gate_profile": _performance_gate_profile(),
                         "recorded_at": datetime.now(timezone.utc).isoformat(),
                     },
                     sort_keys=True,
@@ -290,6 +344,60 @@ async def _wait_for_terminal(api_client, headers, run_id: str, *, timeout_second
     return final_status
 
 
+async def _wait_for_project_runs_terminal(
+    api_client,
+    headers,
+    project_id: str,
+    expected_run_ids: set[str],
+    *,
+    timeout_seconds: int = 300,
+) -> dict[str, str]:
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    last_seen: dict[str, str] = {}
+    while asyncio.get_event_loop().time() < deadline:
+        response = await api_client.get(
+            f"/api/v1/runs?project_id={project_id}&per_page=100",
+            headers=headers,
+        )
+        if response.status_code == 200:
+            body = response.json()
+            last_seen = {
+                run["id"]: run["status"]
+                for run in body["data"]
+                if run["id"] in expected_run_ids
+            }
+            if expected_run_ids <= last_seen.keys() and all(
+                status in TERMINAL_STATUSES for status in last_seen.values()
+            ):
+                return last_seen
+        await asyncio.sleep(3)
+    pytest.fail(
+        "project runs did not all reach terminal within "
+        f"{timeout_seconds}s; expected={sorted(expected_run_ids)} last={last_seen}"
+    )
+
+
+async def _wait_for_running_qaplatform_container_count(
+    run_ids: set[str],
+    *,
+    minimum: int,
+    timeout_seconds: int = 240,
+) -> int:
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    best_count = 0
+    while asyncio.get_event_loop().time() < deadline:
+        running_run_ids = await asyncio.to_thread(_running_qaplatform_container_run_ids)
+        count = len(run_ids & running_run_ids)
+        best_count = max(best_count, count)
+        if count >= minimum:
+            return count
+        await asyncio.sleep(2)
+    pytest.fail(
+        "external stack did not show enough concurrent QA containers; "
+        f"required={minimum} best={best_count} run_ids={sorted(run_ids)}"
+    )
+
+
 async def _wait_for_run_status(
     api_client,
     headers,
@@ -407,6 +515,28 @@ async def _download_presigned_text(download_url: str) -> str:
         response = await client.get(request_url, headers=headers)
     assert response.status_code == 200, response.text[:500]
     return response.text
+
+
+async def _external_stack_s3_object_exists(key: str) -> bool:
+    session = get_session()
+    async with session.create_client(
+        "s3",
+        endpoint_url=EXTERNAL_STACK_S3_URL,
+        aws_access_key_id=EXTERNAL_STACK_S3_ACCESS_KEY,
+        aws_secret_access_key=EXTERNAL_STACK_S3_SECRET_KEY,
+        region_name=EXTERNAL_STACK_S3_REGION,
+    ) as client:
+        try:
+            await client.head_object(Bucket=EXTERNAL_STACK_S3_BUCKET, Key=key)
+        except ClientError as exc:
+            status_code = exc.response.get("ResponseMetadata", {}).get(
+                "HTTPStatusCode"
+            )
+            error_code = exc.response.get("Error", {}).get("Code")
+            if status_code == 404 or error_code in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            raise
+    return True
 
 
 async def _assert_presigned_junit_download(download_url: str, *, expected_suite: str) -> None:
@@ -1142,6 +1272,161 @@ async def test_external_stack_worker_e2e_slo_smoke(
     )
 
 
+@pytest.mark.performance
+@pytest.mark.skipif(
+    os.environ.get("RUN_PERFORMANCE_TESTS") != "1",
+    reason="set RUN_PERFORMANCE_TESTS=1 to run performance smoke tests",
+)
+@pytest.mark.asyncio
+async def test_external_stack_single_worker_runs_ten_containers_concurrently(
+    docker_available, api_client, admin_token
+):
+    """真实外部栈：单个 medium worker 必须能同时跑 10 个 QA 容器。"""
+    _require_compose_worker_stack()
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    suffix = os.urandom(4).hex()
+    run_count = 10
+    sleep_seconds = int(os.environ.get("QAP_EXTERNAL_STACK_CONCURRENCY_SLEEP_SECONDS", "45"))
+
+    pytest_source = (
+        "from pathlib import Path\n"
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        "marker = os.environ.get('QAP_CONCURRENCY_MARKER', 'missing-marker')\n"
+        "sleep_seconds = float(os.environ.get('QAP_CONCURRENCY_SLEEP_SECONDS', '45'))\n"
+        "print(f'{marker}: started', flush=True)\n"
+        "time.sleep(sleep_seconds)\n"
+        "junit = 'results/junit.xml'\n"
+        "for arg in sys.argv[1:]:\n"
+        "    if arg.startswith('--junitxml='):\n"
+        "        junit = arg.split('=', 1)[1]\n"
+        "path = Path(junit)\n"
+        "path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "path.write_text(\"<testsuite name='external-stack-worker-concurrency' tests='1' "
+        "failures='0' errors='0' skipped='0'><testcase "
+        "classname='external_stack_worker_concurrency' name='smoke' "
+        "time='0.01'/></testsuite>\")\n"
+        "print(f'{marker}: finished', flush=True)\n"
+        "print('===== 1 passed in 0.01s =====', flush=True)\n"
+    )
+    setup_script = (
+        "python - <<'PY'\n"
+        "from pathlib import Path\n"
+        "workspace = Path('/workspace')\n"
+        "(workspace / 'tests').mkdir(exist_ok=True)\n"
+        "(workspace / 'tests' / 'test_external_stack_worker_concurrency.py').write_text(\n"
+        "    'def test_external_stack_worker_concurrency():\\n    assert True\\n'\n"
+        ")\n"
+        f"(workspace / 'pytest.py').write_text({pytest_source!r})\n"
+        "PY"
+    )
+
+    project_resp = await api_client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={
+            "name": f"Worker Concurrency SLO {suffix}",
+            "slug": f"worker-concurrency-slo-{suffix}",
+            "git_url": EXTERNAL_STACK_GIT_URL,
+            "default_branch": EXTERNAL_STACK_GIT_REF,
+        },
+    )
+    assert project_resp.status_code in (200, 201), project_resp.text
+    project_id = project_resp.json()["id"]
+
+    env_resp = await api_client.post(
+        f"/api/v1/projects/{project_id}/environments",
+        headers=headers,
+        json={
+            "name": "Worker Concurrency SLO Env",
+            "base_image": "python:3.12-alpine",
+            "memory_mb": 128,
+            "cpu_cores": 0.1,
+            "network_policy": "allow",
+            "env_vars": {
+                "QAP_CONCURRENCY_MARKER": f"worker-concurrency-{suffix}",
+                "QAP_CONCURRENCY_SLEEP_SECONDS": str(sleep_seconds),
+            },
+            "setup_script": setup_script,
+            "max_artifact_size_mb": 2,
+            "max_artifacts_count": 1,
+        },
+    )
+    assert env_resp.status_code in (200, 201), env_resp.text
+
+    pipeline_resp = await api_client.post(
+        f"/api/v1/projects/{project_id}/pipelines",
+        headers=headers,
+        json={
+            "name": "Worker Concurrency SLO Pipeline",
+            "stages": [
+                {
+                    "name": "pytest",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {"test_path": "tests/", "args": ["-s"]},
+                }
+            ],
+            "timeout_seconds": 300,
+            "selector": {"include_paths": ["tests"], "on_empty": "warn"},
+            "trigger_config": {"type": "manual"},
+            "enabled": True,
+        },
+    )
+    assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+    pipeline_id = pipeline_resp.json()["id"]
+
+    started = perf_counter()
+    run_ids: set[str] = set()
+    for index in range(run_count):
+        trigger_resp = await api_client.post(
+            "/api/v1/runs",
+            headers=headers,
+            json={
+                "pipeline_id": pipeline_id,
+                "git_ref": EXTERNAL_STACK_GIT_REF,
+                "priority": 1,
+            },
+        )
+        assert trigger_resp.status_code in (200, 201), (
+            f"trigger {index} failed: {trigger_resp.text}"
+        )
+        body = trigger_resp.json()
+        assert body["status"] == "queued"
+        assert body["priority"] == 1
+        run_ids.add(body["id"])
+
+    assert len(run_ids) == run_count
+    running_count = await _wait_for_running_qaplatform_container_count(
+        run_ids,
+        minimum=run_count,
+        timeout_seconds=240,
+    )
+    ready_elapsed_ms = _elapsed_ms(started)
+    assert running_count >= run_count
+    _assert_elapsed_under(
+        "external stack worker 10 containers ready",
+        ready_elapsed_ms,
+        _threshold("PERF_EXTERNAL_STACK_WORKER_10_CONTAINERS_READY_MS", 240000),
+    )
+
+    final_statuses = await _wait_for_project_runs_terminal(
+        api_client,
+        headers,
+        project_id,
+        run_ids,
+        timeout_seconds=360,
+    )
+    assert set(final_statuses) == run_ids
+    assert all(status == "done" for status in final_statuses.values()), final_statuses
+    _assert_elapsed_under(
+        "external stack worker 10 containers terminal",
+        _elapsed_ms(started),
+        _threshold("PERF_EXTERNAL_STACK_WORKER_10_CONTAINERS_TERMINAL_MS", 360000),
+    )
+
+
 @pytest.mark.asyncio
 async def test_real_worker_persists_artifacts_and_archived_logs(
     docker_available, api_client, admin_token
@@ -1328,6 +1613,9 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     assert "zz-over-limit.txt" not in artifacts_by_name
     assert worker_secret not in str(artifacts_body)
     assert "over-limit-artifact-content" not in str(artifacts_body)
+    assert not await _external_stack_s3_object_exists(
+        f"reports/{run_id}/zz-over-limit.txt"
+    )
 
     for artifact_name, (artifact_type, expected_text) in expected_artifacts.items():
         artifact = artifacts_by_name[artifact_name]
