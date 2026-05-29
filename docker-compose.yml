@@ -145,6 +145,8 @@ services:
       QAP_S3_ENDPOINT: http://minio:9000
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${QAP_DOCKER_SOCK_GROUP_ID:-0}"
     deploy:
       resources:
         limits:
@@ -177,6 +179,8 @@ services:
       QAP_S3_ENDPOINT: http://minio:9000
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${QAP_DOCKER_SOCK_GROUP_ID:-0}"
     deploy:
       resources:
         limits:
@@ -209,6 +213,8 @@ services:
       QAP_S3_ENDPOINT: http://minio:9000
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${QAP_DOCKER_SOCK_GROUP_ID:-0}"
     deploy:
       resources:
         limits:
