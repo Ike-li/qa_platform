@@ -4,7 +4,8 @@ This branch is intentionally broad because it turns the release candidate gate i
 
 ## Remote Evidence
 
-- GitHub Actions run: https://github.com/Ike-li/qa_platform/actions/runs/26615972963
+- Release candidate run: https://github.com/Ike-li/qa_platform/actions/runs/26616290290
+- PR default CI run: https://github.com/Ike-li/qa_platform/actions/runs/26616577287
 - Gate profile: `release_candidate`
 - Result: all jobs passed, including `Release Candidate Gate`
 - Release evidence markers:
@@ -21,6 +22,12 @@ This branch is intentionally broad because it turns the release candidate gate i
   - external stack performance: 2 tests, 0 skipped
   - backend performance smoke: 31 tests, 0 skipped
   - skip inventory: `total skipped: 0`
+
+## QA Sign-Off And Post-Merge
+
+Use `docs/testing-quality-ops.md` as the operator checklist before signing off this branch. The release sign-off evidence is the `workflow_dispatch.gate=release_candidate` run, not the pull request CI run; PR CI remains useful to prove the normal pull request path still passes and intentionally skips the final release gate.
+
+After this PR or any follow-up gate change lands, rerun `workflow_dispatch.gate=release_candidate` on `main` and record that run URL in the release note or follow-up PR. A green branch run does not waive a failed `main` run, because workflow context, merge result, action cache state, and dependency resolution can change after merge.
 
 ## Slice 1: Contract And CI Gate
 
