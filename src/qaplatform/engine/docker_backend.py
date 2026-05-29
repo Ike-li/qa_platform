@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -204,14 +205,11 @@ class DockerBackend:
         finished_at = datetime.now(timezone.utc)
         exit_code = result.get("StatusCode", -1)
 
-        # Docker /containers/{id}/wait only returns {StatusCode, Error}; OOMKilled
-        # lives on the container State, so inspect via /containers/{id}/json.
-        try:
-            info = await container.show()
-            oom_killed = bool(info.get("State", {}).get("OOMKilled", False))
-        except Exception:
-            log.warning("failed to inspect OOMKilled for execution %s", execution_id[:12])
-            oom_killed = False
+        oom_killed = await self._inspect_oom_killed(
+            container=container,
+            execution_id=execution_id,
+            exit_code=exit_code,
+        )
 
         return ExitResult(
             exit_code=exit_code,
@@ -219,6 +217,31 @@ class DockerBackend:
             finished_at=finished_at,
             oom_killed=oom_killed,
         )
+
+    async def _inspect_oom_killed(
+        self,
+        *,
+        container: Any,
+        execution_id: str,
+        exit_code: int,
+    ) -> bool:
+        # Docker /containers/{id}/wait only returns {StatusCode, Error}; OOMKilled
+        # lives on the container State, which can lag briefly after a SIGKILL 137.
+        attempts = 4 if exit_code == 137 else 1
+        for attempt in range(attempts):
+            try:
+                info = await container.show()
+            except Exception:
+                log.warning(
+                    "failed to inspect OOMKilled for execution %s",
+                    execution_id[:12],
+                )
+                return False
+            oom_killed = bool(info.get("State", {}).get("OOMKilled", False))
+            if oom_killed or attempt == attempts - 1:
+                return oom_killed
+            await asyncio.sleep(0.25)
+        return False
 
     @staticmethod
     def _parse_resource_usage(stats: dict[str, Any]) -> ResourceUsageSample:

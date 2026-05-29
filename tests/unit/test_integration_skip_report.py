@@ -73,3 +73,11 @@ def test_report_integration_skips_writes_json_and_markdown_inventory(tmp_path: P
     markdown = output_md.read_text(encoding="utf-8")
     assert "# Integration Skip Inventory" in markdown
     assert "temporary local fixture unavailable" in markdown
+
+
+def test_report_integration_skips_ignores_missing_junit_files(tmp_path: Path):
+    reporter = _load_skip_report_module()
+
+    entries = reporter.collect_skips([tmp_path / "missing.xml"])
+
+    assert entries == []
