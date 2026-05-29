@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -17,8 +17,10 @@ def _make_orm_rule(project_id):
     obj.name = "Test Rule"
     obj.enabled = True
     obj.conditions = [{"field": "status", "operator": "eq", "value": "failed"}]
-    obj.channels = [{"type": "webhook", "config": {"url": "https://example.com"}}]
-    obj.template = None
+    obj.channels = [
+        {"type": "webhook", "config": {"url": "https://example.com/secret-token"}}
+    ]
+    obj.template = "Run {{run_id}} token"
     obj.created_at = datetime.now(timezone.utc)
     return obj
 
@@ -120,6 +122,15 @@ async def test_create_rule(app, mock_repos, project_id):
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "Test Rule"
+    audit_kwargs = mock_repos.audit.create.call_args.kwargs
+    assert audit_kwargs["action"] == "notification_rule.create"
+    assert audit_kwargs["after_state"]["channels"] == {
+        "redacted": True,
+        "count": 1,
+        "types": ["webhook"],
+    }
+    assert "secret-token" not in repr(audit_kwargs)
+    assert "Run {{run_id}} token" not in repr(audit_kwargs)
 
 
 @pytest.mark.asyncio
@@ -145,6 +156,14 @@ async def test_delete_rule(app, mock_repos, project_id):
 
     assert resp.status_code == 204
     mock_repos.notification_rule.delete.assert_awaited_once_with(rule)
+    audit_kwargs = mock_repos.audit.create.call_args.kwargs
+    assert audit_kwargs["action"] == "notification_rule.delete"
+    assert audit_kwargs["before_state"]["channels"] == {
+        "redacted": True,
+        "count": 1,
+        "types": ["webhook"],
+    }
+    assert "secret-token" not in repr(audit_kwargs)
 
 
 @pytest.mark.asyncio
@@ -160,3 +179,57 @@ async def test_update_rule(app, mock_repos, project_id):
 
     assert resp.status_code == 200
     assert rule.name == "Updated Rule"
+    audit_kwargs = mock_repos.audit.create.call_args.kwargs
+    assert audit_kwargs["action"] == "notification_rule.update"
+    assert audit_kwargs["before_state"]["channels"]["redacted"] is True
+    assert audit_kwargs["after_state"]["channels"]["redacted"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_rule_rejects_empty_channels(app, mock_repos, project_id):
+    rule = _make_orm_rule(project_id)
+    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+
+    async with await _make_client(app) as client:
+        resp = await client.put(
+            f"/api/v1/projects/{project_id}/notification-rules/{rule.id}",
+            json={"channels": []},
+        )
+
+    assert resp.status_code == 422
+    mock_repos.notification_rule.get_by_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_rule_clears_template_when_null_submitted(
+    app, mock_repos, project_id
+):
+    rule = _make_orm_rule(project_id)
+    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+
+    async with await _make_client(app) as client:
+        resp = await client.put(
+            f"/api/v1/projects/{project_id}/notification-rules/{rule.id}",
+            json={"template": None},
+        )
+
+    assert resp.status_code == 200
+    assert rule.template is None
+    assert resp.json()["template"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_rule_keeps_template_when_omitted(app, mock_repos, project_id):
+    rule = _make_orm_rule(project_id)
+    original_template = rule.template
+    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+
+    async with await _make_client(app) as client:
+        resp = await client.put(
+            f"/api/v1/projects/{project_id}/notification-rules/{rule.id}",
+            json={"name": "Updated Rule"},
+        )
+
+    assert resp.status_code == 200
+    assert rule.template == original_template
+    assert resp.json()["template"] == original_template

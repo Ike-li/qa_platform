@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import time
-
-log = logging.getLogger(__name__)
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 
@@ -21,14 +20,16 @@ from qaplatform.api.auth.jwt_service import JWTService
 from qaplatform.api.auth.middleware import CurrentUser, get_current_user
 from qaplatform.api.auth.permissions import Role
 from qaplatform.api.auth.token_service import TokenService
-
-_password_hasher = _PasswordHasher()
+from qaplatform.api.schemas import PaginatedResponse
 from qaplatform.infra.database.models import AppUser, Tenant
 from qaplatform.infra.database.repositories.audit_repo import AuditEventRepository
 from qaplatform.infra.database.repositories.user_repo import (
     ApiTokenRepository,
     UserRepository,
 )
+
+log = logging.getLogger(__name__)
+_password_hasher = _PasswordHasher()
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -255,7 +256,11 @@ async def login(
                 await audit_session.commit()
             except Exception:
                 await audit_session.rollback()
-                log.warning("audit_write_failed", action="auth.login_failed", exc_info=True)
+                log.warning(
+                    "audit_write_failed",
+                    extra={"action": "auth.login_failed"},
+                    exc_info=True,
+                )
 
     async with session_factory() as session:
         try:
@@ -369,7 +374,11 @@ async def refresh(
                 await audit_session.commit()
             except Exception:
                 await audit_session.rollback()
-                log.warning("audit_write_failed", action="auth.refresh_failed", exc_info=True)
+                log.warning(
+                    "audit_write_failed",
+                    extra={"action": "auth.refresh_failed"},
+                    exc_info=True,
+                )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
@@ -391,7 +400,11 @@ async def refresh(
                 await audit_session.commit()
             except Exception:
                 await audit_session.rollback()
-                log.warning("audit_write_failed", action="auth.refresh_failed", exc_info=True)
+                log.warning(
+                    "audit_write_failed",
+                    extra={"action": "auth.refresh_failed"},
+                    exc_info=True,
+                )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token type",
@@ -419,7 +432,11 @@ async def refresh(
                 try:
                     await jwt_svc.revoke(old_jti, ttl)
                 except Exception:
-                    log.warning("token_revoke_failed", jti=old_jti, exc_info=True)
+                    log.warning(
+                        "token_revoke_failed",
+                        extra={"jti": old_jti},
+                        exc_info=True,
+                    )
 
             new_jti_placeholder = None
             audit_repo = AuditEventRepository(session)
@@ -477,7 +494,11 @@ async def logout(
                 try:
                     await jwt_svc.revoke(jti, ttl)
                 except Exception:
-                    log.warning("token_revoke_failed", jti=jti, exc_info=True)
+                    log.warning(
+                        "token_revoke_failed",
+                        extra={"jti": jti},
+                        exc_info=True,
+                    )
             sub = payload.get("sub")
             tid = payload.get("tenant_id")
             if sub:
@@ -503,7 +524,11 @@ async def logout(
                 try:
                     await jwt_svc.revoke(jti, ttl)
                 except Exception:
-                    log.warning("token_revoke_failed", jti=jti, exc_info=True)
+                    log.warning(
+                        "token_revoke_failed",
+                        extra={"jti": jti},
+                        exc_info=True,
+                    )
         except Exception:
             pass
 
@@ -523,7 +548,11 @@ async def logout(
             await audit_session.commit()
         except Exception:
             await audit_session.rollback()
-            log.warning("audit_write_failed", action="auth.logout", exc_info=True)
+            log.warning(
+                "audit_write_failed",
+                extra={"action": "auth.logout"},
+                exc_info=True,
+            )
 
 
 @router.post("/tokens", response_model=ApiTokenResponse, status_code=201)
@@ -608,27 +637,38 @@ async def revoke_token(
             raise
 
 
-@router.get("/tokens", response_model=list[ApiTokenListItem])
+@router.get("/tokens", response_model=PaginatedResponse[ApiTokenListItem])
 async def list_tokens(
     current_user: CurrentUser = Depends(get_current_user),
     session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
-) -> list[ApiTokenListItem]:
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+) -> PaginatedResponse[ApiTokenListItem]:
     async with session_factory() as session:
         api_token_repo = ApiTokenRepository(session)
-        tokens, _ = await api_token_repo.list_by_user(UUID(current_user.user_id))
-
-    return [
-        ApiTokenListItem(
-            token_id=t.token_id,
-            name=t.name,
-            scopes=t.scopes,
-            expires_at=t.expires_at,
-            last_used_at=t.last_used_at,
-            is_revoked=t.is_revoked,
-            created_at=t.created_at,
+        tokens, total = await api_token_repo.list_by_user(
+            UUID(current_user.user_id),
+            offset=(page - 1) * per_page,
+            limit=per_page,
         )
-        for t in tokens
-    ]
+
+    return PaginatedResponse(
+        data=[
+            ApiTokenListItem(
+                token_id=t.token_id,
+                name=t.name,
+                scopes=t.scopes,
+                expires_at=t.expires_at,
+                last_used_at=t.last_used_at,
+                is_revoked=t.is_revoked,
+                created_at=t.created_at,
+            )
+            for t in tokens
+        ],
+        page=page,
+        per_page=per_page,
+        total=total,
+    )
 
 
 # --- SSE Ticket ---
@@ -644,11 +684,43 @@ class SSETicketResponse(BaseModel):
 async def create_sse_ticket(
     request: Request,
     current_user: CurrentUser = Depends(get_current_user),
+    session_factory: async_sessionmaker = Depends(auth_deps.get_session_factory),
 ) -> SSETicketResponse:
     """Issue a short-lived, single-use ticket for SSE authentication."""
     redis = request.app.state.container.redis_client
     ticket = secrets.token_urlsafe(32)
     key = f"sse_ticket:{ticket}"
-    payload = f"{current_user.user_id}:{current_user.role}:{current_user.tenant_id}"
+    payload = json.dumps(
+        {
+            "user_id": current_user.user_id,
+            "role": current_user.role,
+            "tenant_id": current_user.tenant_id,
+            "scopes": current_user.scopes,
+        }
+    )
     await redis.setex(key, SSE_TICKET_TTL, payload)
+
+    async with session_factory() as audit_session:
+        try:
+            await AuditEventRepository(audit_session).create(
+                tenant_id=UUID(current_user.tenant_id),
+                user_id=UUID(current_user.user_id),
+                action="auth.sse_ticket_create",
+                resource_type="auth",
+                resource_id=None,
+                after_state={
+                    "ttl_seconds": SSE_TICKET_TTL,
+                    "single_use": True,
+                },
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
+            )
+            await audit_session.commit()
+        except Exception:
+            await audit_session.rollback()
+            log.warning(
+                "audit_write_failed",
+                extra={"action": "auth.sse_ticket_create"},
+                exc_info=True,
+            )
     return SSETicketResponse(ticket=ticket)

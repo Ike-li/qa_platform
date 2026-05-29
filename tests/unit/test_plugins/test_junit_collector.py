@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
 from qaplatform.plugins.builtin.junit_collector import JUnitCollector
-from qaplatform.plugins.protocols import CollectorProtocol, TestResultData
+from qaplatform.plugins.protocols import CollectorProtocol
 
 
 class TestJUnitCollectorProtocol:
@@ -197,6 +195,30 @@ class TestCollect:
 
         assert len(results) == 1
         assert results[0].name == "ok"
+
+    @pytest.mark.asyncio
+    async def test_collect_uses_configured_relative_path(self, tmp_path):
+        xml = """\
+<?xml version="1.0" ?>
+<testsuites>
+  <testsuite name="custom" tests="1">
+    <testcase name="from-custom-path" classname="custom" time="0.1"/>
+  </testsuite>
+</testsuites>"""
+        custom_dir = tmp_path / "custom"
+        custom_dir.mkdir()
+        (custom_dir / "junit.xml").write_text(xml)
+
+        collector = JUnitCollector()
+        run_id = uuid4()
+        results = await collector.collect(
+            run_id,
+            tmp_path,
+            {"path": "custom/junit.xml"},
+        )
+
+        assert len(results) == 1
+        assert results[0].name == "from-custom-path"
 
     @pytest.mark.asyncio
     async def test_collect_no_report_returns_empty(self, tmp_path):

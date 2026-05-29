@@ -1,0 +1,1497 @@
+"""API write-path integration tests with real database state assertions."""
+
+from __future__ import annotations
+
+import os
+from uuid import UUID, uuid4
+
+import pytest
+from sqlalchemy import func, select
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("RUN_INTEGRATION_TESTS") != "1",
+    reason="set RUN_INTEGRATION_TESTS=1 to run integration tests",
+)
+
+
+async def _audit_actions(integration_db_session, *, user_id, resource_id) -> set[str]:
+    from qaplatform.infra.database.models import AuditEvent
+
+    return set(
+        (
+            await integration_db_session.execute(
+                select(AuditEvent.action).where(
+                    AuditEvent.user_id == user_id,
+                    AuditEvent.resource_id == resource_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _audit_event(integration_db_session, *, action: str, resource_id):
+    from qaplatform.infra.database.models import AuditEvent
+
+    return (
+        await integration_db_session.execute(
+            select(AuditEvent)
+            .where(
+                AuditEvent.action == action,
+                AuditEvent.resource_id == resource_id,
+            )
+            .order_by(AuditEvent.created_at.desc())
+        )
+    ).scalars().first()
+
+
+async def _row_count(integration_db_session, model, *filters) -> int:
+    stmt = select(func.count()).select_from(model)
+    for clause in filters:
+        stmt = stmt.where(clause)
+    result = await integration_db_session.execute(stmt)
+    return int(result.scalar_one())
+
+
+def _error_detail(body: dict) -> str | None:
+    error = body.get("error")
+    return body.get("detail") or (error or {}).get("message")
+
+
+def _decode_redis_mapping(mapping: dict) -> dict[str, str]:
+    return {
+        key.decode() if isinstance(key, bytes) else key: (
+            value.decode() if isinstance(value, bytes) else value
+        )
+        for key, value in mapping.items()
+    }
+
+
+class _RecordingArq:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def enqueue_job(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+
+        class _Job:
+            def __init__(self, job_id: str) -> None:
+                self.job_id = job_id
+
+        return _Job(kwargs["_job_id"])
+
+
+@pytest.mark.asyncio
+async def test_project_api_audits_lifecycle_without_git_url_userinfo_leak(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Project
+
+    slug = f"audit-project-{uuid4().hex[:8]}"
+    create_secret = f"create-token-{uuid4().hex}"
+    update_secret = f"update-token-{uuid4().hex}"
+    create_git_url = (
+        f"https://x-access-token:{create_secret}@example.com/org/repo.git"
+    )
+    update_git_url = f"https://oauth2:{update_secret}@git.example.com/new/repo.git"
+
+    create_resp = await integration_client.post(
+        "/api/v1/projects",
+        json={
+            "name": f"Audit Project {slug}",
+            "slug": slug,
+            "description": "initial",
+            "git_url": create_git_url,
+            "default_branch": "main",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    project_id = create_resp.json()["id"]
+    assert create_resp.json()["git_url"] == create_git_url
+
+    project = await integration_db_session.get(Project, project_id)
+    assert project is not None
+    assert project.tenant_id == seed_run["tenant"].id
+    assert project.created_by == seed_run["user"].id
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}",
+        json={
+            "description": "archived for audit evidence",
+            "git_url": update_git_url,
+            "status": "archived",
+        },
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    assert update_resp.json()["git_url"] == update_git_url
+    await integration_db_session.refresh(project)
+    assert project.status == "archived"
+    assert project.git_url == update_git_url
+
+    delete_resp = await integration_client.delete(f"/api/v1/projects/{project_id}")
+    assert delete_resp.status_code == 204, delete_resp.text
+    await integration_db_session.refresh(project)
+    assert project.deleted_at is not None
+
+    assert {"project.create", "project.update", "project.delete"}.issubset(
+        await _audit_actions(
+            integration_db_session,
+            user_id=seed_run["user"].id,
+            resource_id=project.id,
+        )
+    )
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="project.create",
+        resource_id=project.id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="project.update",
+        resource_id=project.id,
+    )
+    delete_audit = await _audit_event(
+        integration_db_session,
+        action="project.delete",
+        resource_id=project.id,
+    )
+    assert create_audit is not None
+    assert update_audit is not None
+    assert delete_audit is not None
+
+    serialized_audit = repr(
+        [
+            create_audit.before_state,
+            create_audit.after_state,
+            update_audit.before_state,
+            update_audit.after_state,
+            delete_audit.before_state,
+            delete_audit.after_state,
+        ]
+    )
+    assert create_secret not in serialized_audit
+    assert update_secret not in serialized_audit
+    assert "x-access-token" not in serialized_audit
+    assert "oauth2" not in serialized_audit
+    assert create_audit.before_state is None
+    assert create_audit.after_state["git_url"] == "https://***@example.com/org/repo.git"
+    assert update_audit.before_state["git_url"] == "https://***@example.com/org/repo.git"
+    assert update_audit.after_state["git_url"] == "https://***@git.example.com/new/repo.git"
+    assert update_audit.after_state["status"] == "archived"
+    assert delete_audit.before_state["git_url"] == "https://***@git.example.com/new/repo.git"
+    assert delete_audit.before_state["status"] == "archived"
+    assert delete_audit.after_state is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_api_persists_audit_states_for_lifecycle(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Pipeline
+
+    project_id = seed_run["project"].id
+    name = f"audit-pipeline-{uuid4().hex[:8]}"
+    create_secret = f"create-pipeline-secret-{uuid4().hex}"
+    update_secret = f"update-pipeline-secret-{uuid4().hex}"
+
+    create_resp = await integration_client.post(
+        f"/api/v1/projects/{project_id}/pipelines",
+        json={
+            "name": name,
+            "stages": [
+                {
+                    "name": "unit",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {
+                        "command": (
+                            "pytest tests/unit -q --index-url "
+                            f"https://user:{create_secret}@packages.example/simple"
+                        ),
+                        "env": {"API_TOKEN": create_secret, "REGION": "ap-east-1"},
+                        "headers": {"Authorization": f"Bearer {create_secret}"},
+                    },
+                }
+            ],
+            "selector": {"include_paths": ["tests/unit"], "on_empty": "warn"},
+            "trigger_config": {
+                "type": "manual",
+                "source": {
+                    "webhook_secret": create_secret,
+                    "credential_id": f"credential-{create_secret}",
+                    "clone_url": f"https://x-access-token:{create_secret}@git.example/repo.git",
+                },
+            },
+            "retry_policy": {"max_attempts": 2, "retry_on": ["infra"]},
+            "timeout_seconds": 900,
+            "enabled": True,
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    pipeline_id = create_resp.json()["id"]
+
+    pipeline = await integration_db_session.get(Pipeline, pipeline_id)
+    assert pipeline is not None
+    assert pipeline.project_id == project_id
+    assert pipeline.stages[0]["config"]["env"]["API_TOKEN"] == create_secret
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}/pipelines/{pipeline_id}",
+        json={
+            "name": f"{name}-disabled",
+            "stages": [
+                {
+                    "name": "integration",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {
+                        "command": (
+                            "pytest tests/integration -q --repo "
+                            f"https://user:{update_secret}@git.example/org/repo.git"
+                        ),
+                        "env": {"PASSWORD": update_secret, "REGION": "ap-east-1"},
+                        "tokens": [update_secret],
+                    },
+                }
+            ],
+            "selector": {"exclude_paths": ["tests/e2e"]},
+            "trigger_config": {
+                "type": "schedule",
+                "conditions": {"secret_header": update_secret},
+                "target": {
+                    "url": f"https://deploy:{update_secret}@deploy.example/hook",
+                    "access_token": update_secret,
+                },
+            },
+            "retry_policy": {"max_attempts": 3, "retry_on": ["infra", "timeout"]},
+            "enabled": False,
+        },
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    await integration_db_session.refresh(pipeline)
+    assert pipeline.enabled is False
+    assert pipeline.retry_policy["max_attempts"] == 3
+    assert pipeline.stages[0]["config"]["env"]["PASSWORD"] == update_secret
+    assert pipeline.trigger_config["target"]["access_token"] == update_secret
+
+    delete_resp = await integration_client.delete(
+        f"/api/v1/projects/{project_id}/pipelines/{pipeline_id}"
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+    await integration_db_session.refresh(pipeline)
+    assert pipeline.deleted_at is not None
+
+    assert {"pipeline.create", "pipeline.update", "pipeline.delete"}.issubset(
+        await _audit_actions(
+            integration_db_session,
+            user_id=seed_run["user"].id,
+            resource_id=pipeline.id,
+        )
+    )
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="pipeline.create",
+        resource_id=pipeline.id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="pipeline.update",
+        resource_id=pipeline.id,
+    )
+    delete_audit = await _audit_event(
+        integration_db_session,
+        action="pipeline.delete",
+        resource_id=pipeline.id,
+    )
+    assert create_audit is not None
+    assert update_audit is not None
+    assert delete_audit is not None
+    assert create_audit.before_state is None
+    assert create_audit.after_state["name"] == name
+    assert create_audit.after_state["retry_policy"]["max_attempts"] == 2
+    assert create_audit.after_state["stages"][0]["config"]["env"] == {
+        "API_TOKEN": {"redacted": True},
+        "REGION": "ap-east-1",
+    }
+    assert create_audit.after_state["stages"][0]["config"]["headers"] == {
+        "Authorization": {"redacted": True}
+    }
+    assert create_audit.after_state["stages"][0]["config"]["command"] == (
+        "pytest tests/unit -q --index-url https://***@packages.example/simple"
+    )
+    assert create_audit.after_state["trigger_config"]["source"] == {
+        "webhook_secret": {"redacted": True},
+        "credential_id": {"redacted": True},
+        "clone_url": "https://***@git.example/repo.git",
+    }
+    assert update_audit.before_state["enabled"] is True
+    assert update_audit.after_state["enabled"] is False
+    assert update_audit.after_state["retry_policy"]["retry_on"] == [
+        "infra",
+        "timeout",
+    ]
+    assert update_audit.after_state["stages"][0]["config"]["env"] == {
+        "PASSWORD": {"redacted": True},
+        "REGION": "ap-east-1",
+    }
+    assert update_audit.after_state["stages"][0]["config"]["tokens"] == {
+        "redacted": True
+    }
+    assert update_audit.after_state["stages"][0]["config"]["command"] == (
+        "pytest tests/integration -q --repo https://***@git.example/org/repo.git"
+    )
+    assert update_audit.after_state["trigger_config"]["conditions"] == {
+        "secret_header": {"redacted": True}
+    }
+    assert update_audit.after_state["trigger_config"]["target"] == {
+        "url": "https://***@deploy.example/hook",
+        "access_token": {"redacted": True},
+    }
+    assert delete_audit.before_state["enabled"] is False
+    assert delete_audit.after_state is None
+    serialized_audit = repr(
+        [
+            create_audit.before_state,
+            create_audit.after_state,
+            update_audit.before_state,
+            update_audit.after_state,
+            delete_audit.before_state,
+            delete_audit.after_state,
+        ]
+    )
+    assert create_secret not in serialized_audit
+    assert update_secret not in serialized_audit
+    assert "x-access-token" not in serialized_audit
+
+
+@pytest.mark.asyncio
+async def test_project_member_api_persists_audit_states_for_role_changes(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import AppUser, ProjectMember
+    from qaplatform.infra.database.repositories.project_repo import (
+        ProjectMemberRepository,
+    )
+
+    tenant_id = seed_run["tenant"].id
+    project_id = seed_run["project"].id
+    suffix = uuid4().hex[:8]
+    member_user = AppUser(
+        tenant_id=tenant_id,
+        username=f"member-{suffix}",
+        email=f"member-{suffix}@test.local",
+        password_hash="argon2:placeholder",
+        role="member",
+        is_platform_admin=False,
+        is_active=True,
+    )
+    integration_db_session.add(member_user)
+    await integration_db_session.commit()
+    await integration_db_session.refresh(member_user)
+
+    add_resp = await integration_client.post(
+        f"/api/v1/projects/{project_id}/members",
+        json={"user_id": str(member_user.id), "role": "developer"},
+    )
+    assert add_resp.status_code == 201, add_resp.text
+    assert add_resp.json()["role"] == "developer"
+
+    member = await integration_db_session.get(
+        ProjectMember,
+        {"project_id": project_id, "user_id": member_user.id},
+    )
+    assert member is not None
+    assert member.tenant_id == tenant_id
+    assert member.role == "developer"
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}/members/{member_user.id}",
+        json={"role": "viewer"},
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    await integration_db_session.refresh(member)
+    assert member.role == "viewer"
+
+    delete_resp = await integration_client.delete(
+        f"/api/v1/projects/{project_id}/members/{member_user.id}"
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+    await integration_db_session.refresh(member)
+    assert member.deleted_at is not None
+
+    repo = ProjectMemberRepository(integration_db_session)
+    assert await repo.get_by_project_user(project_id, member_user.id, tenant_id) is None
+
+    assert {
+        "project_member.add",
+        "project_member.update",
+        "project_member.remove",
+    }.issubset(
+        await _audit_actions(
+            integration_db_session,
+            user_id=seed_run["user"].id,
+            resource_id=project_id,
+        )
+    )
+    add_audit = await _audit_event(
+        integration_db_session,
+        action="project_member.add",
+        resource_id=project_id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="project_member.update",
+        resource_id=project_id,
+    )
+    remove_audit = await _audit_event(
+        integration_db_session,
+        action="project_member.remove",
+        resource_id=project_id,
+    )
+    assert add_audit is not None
+    assert update_audit is not None
+    assert remove_audit is not None
+    assert add_audit.before_state is None
+    assert add_audit.after_state["user_id"] == str(member_user.id)
+    assert add_audit.after_state["role"] == "developer"
+    assert update_audit.before_state == {
+        "user_id": str(member_user.id),
+        "role": "developer",
+    }
+    assert update_audit.after_state["role"] == "viewer"
+    assert remove_audit.before_state == {
+        "user_id": str(member_user.id),
+        "role": "viewer",
+    }
+    assert remove_audit.after_state is None
+
+
+@pytest.mark.asyncio
+async def test_credentials_api_persists_encrypted_value_rotates_and_soft_deletes(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Credential
+    from qaplatform.infra.database.repositories.project_repo import CredentialRepository
+
+    project_id = seed_run["project"].id
+    name = f"token-{uuid4().hex[:8]}"
+
+    create_resp = await integration_client.post(
+        f"/api/v1/projects/{project_id}/credentials",
+        json={"name": name, "type": "token", "value": "secret-v1"},
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    credential_id = create_resp.json()["id"]
+    assert "value" not in create_resp.json()
+
+    credential = await integration_db_session.get(Credential, credential_id)
+    assert credential is not None
+    assert credential.tenant_id == seed_run["tenant"].id
+    assert credential.project_id == project_id
+    assert credential.created_by == seed_run["user"].id
+    assert b"secret-v1" not in credential.encrypted_value
+
+    crypto = integration_app.state.container.crypto_service
+    assert crypto is not None
+    assert (
+        crypto.decrypt(
+            credential.encrypted_value,
+            context_id=f"credential:{project_id}:{name}",
+        )
+        == "secret-v1"
+    )
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}/credentials/{credential_id}",
+        json={"value": "secret-v2"},
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    await integration_db_session.refresh(credential)
+    assert (
+        crypto.decrypt(
+            credential.encrypted_value,
+            context_id=f"credential:{project_id}:{name}",
+        )
+        == "secret-v2"
+    )
+
+    delete_resp = await integration_client.delete(
+        f"/api/v1/projects/{project_id}/credentials/{credential_id}"
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+    await integration_db_session.refresh(credential)
+    assert credential.deleted_at is not None
+
+    repo = CredentialRepository(integration_db_session)
+    assert (
+        await repo.get_by_project_tenant(
+            credential.id,
+            project_id,
+            seed_run["tenant"].id,
+        )
+        is None
+    )
+    assert {"credential.create", "credential.rotate", "credential.delete"}.issubset(
+        await _audit_actions(
+            integration_db_session,
+            user_id=seed_run["user"].id,
+            resource_id=credential.id,
+        )
+    )
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="credential.create",
+        resource_id=credential.id,
+    )
+    rotate_audit = await _audit_event(
+        integration_db_session,
+        action="credential.rotate",
+        resource_id=credential.id,
+    )
+    delete_audit = await _audit_event(
+        integration_db_session,
+        action="credential.delete",
+        resource_id=credential.id,
+    )
+    assert create_audit is not None
+    assert rotate_audit is not None
+    assert delete_audit is not None
+    serialized_audit = repr(
+        [
+            create_audit.before_state,
+            create_audit.after_state,
+            rotate_audit.before_state,
+            rotate_audit.after_state,
+            delete_audit.before_state,
+            delete_audit.after_state,
+        ]
+    )
+    assert "secret-v1" not in serialized_audit
+    assert "secret-v2" not in serialized_audit
+    assert "encrypted_value" not in serialized_audit
+    assert create_audit.after_state["name"] == name
+    assert rotate_audit.after_state["name"] == name
+    assert delete_audit.before_state["name"] == name
+
+
+@pytest.mark.asyncio
+async def test_project_git_token_binding_reaches_trigger_metadata_without_secret(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import AuditEvent, Run
+
+    project = seed_run["project"]
+    project_id = project.id
+    token = f"git-token-{uuid4().hex}"
+    cred_name = f"git-token-{uuid4().hex[:8]}"
+
+    create_cred = await integration_client.post(
+        f"/api/v1/projects/{project_id}/credentials",
+        json={"name": cred_name, "type": "token", "value": token},
+    )
+    assert create_cred.status_code == 201, create_cred.text
+    credential_id = create_cred.json()["id"]
+
+    update_project = await integration_client.put(
+        f"/api/v1/projects/{project_id}",
+        json={
+            "git_url": "https://github.com/example/private.git",
+            "git_auth_method": "token",
+            "credential_id": credential_id,
+        },
+    )
+    assert update_project.status_code == 200, update_project.text
+
+    trigger = await integration_client.post(
+        "/api/v1/runs",
+        json={"pipeline_id": str(seed_run["pipeline"].id)},
+    )
+    assert trigger.status_code == 201, trigger.text
+    run_id = trigger.json()["id"]
+
+    run = await integration_db_session.get(Run, run_id)
+    assert run is not None
+    assert run.metadata_["git_url"] == "https://github.com/example/private.git"
+    assert run.metadata_["git_auth_method"] == "token"
+    assert run.metadata_["credential_id"] == credential_id
+    assert token not in repr(run.metadata_)
+
+    audit_rows = (
+        (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.resource_id.in_([project_id, run.id])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    serialized_audit = repr(
+        [row.before_state for row in audit_rows]
+        + [row.after_state for row in audit_rows]
+    )
+    assert token not in serialized_audit
+
+
+@pytest.mark.asyncio
+async def test_project_member_and_credential_lists_are_paginated(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import AppUser
+
+    tenant_id = seed_run["tenant"].id
+    project_id = seed_run["project"].id
+    suffix = uuid4().hex[:8]
+
+    credential_names = [f"page-token-{suffix}-{idx}" for idx in range(3)]
+    for name in credential_names:
+        create_resp = await integration_client.post(
+            f"/api/v1/projects/{project_id}/credentials",
+            json={"name": name, "type": "token", "value": f"secret-{name}"},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+    credentials_page = await integration_client.get(
+        f"/api/v1/projects/{project_id}/credentials",
+        params={"page": 2, "per_page": 2},
+    )
+    assert credentials_page.status_code == 200, credentials_page.text
+    credentials_body = credentials_page.json()
+    assert credentials_body["page"] == 2
+    assert credentials_body["per_page"] == 2
+    assert credentials_body["total"] == 3
+    assert len(credentials_body["data"]) == 1
+    assert "value" not in credentials_body["data"][0]
+    assert "encrypted_value" not in credentials_body["data"][0]
+
+    credentials_empty_page = await integration_client.get(
+        f"/api/v1/projects/{project_id}/credentials",
+        params={"page": 99, "per_page": 2},
+    )
+    assert credentials_empty_page.status_code == 200, credentials_empty_page.text
+    assert credentials_empty_page.json()["data"] == []
+    assert credentials_empty_page.json()["total"] == 3
+
+    member_users = []
+    for idx in range(3):
+        member_user = AppUser(
+            tenant_id=tenant_id,
+            username=f"page-member-{suffix}-{idx}",
+            email=f"page-member-{suffix}-{idx}@test.local",
+            password_hash="argon2:placeholder",
+            role="member",
+            is_platform_admin=False,
+            is_active=True,
+        )
+        integration_db_session.add(member_user)
+        member_users.append(member_user)
+    await integration_db_session.commit()
+    for member_user in member_users:
+        await integration_db_session.refresh(member_user)
+        add_resp = await integration_client.post(
+            f"/api/v1/projects/{project_id}/members",
+            json={"user_id": str(member_user.id), "role": "developer"},
+        )
+        assert add_resp.status_code == 201, add_resp.text
+
+    members_page = await integration_client.get(
+        f"/api/v1/projects/{project_id}/members",
+        params={"page": 2, "per_page": 2},
+    )
+    assert members_page.status_code == 200, members_page.text
+    members_body = members_page.json()
+    assert members_body["page"] == 2
+    assert members_body["per_page"] == 2
+    assert members_body["total"] == 3
+    assert len(members_body["data"]) == 1
+    assert members_body["data"][0]["role"] == "developer"
+
+    members_empty_page = await integration_client.get(
+        f"/api/v1/projects/{project_id}/members",
+        params={"page": 99, "per_page": 2},
+    )
+    assert members_empty_page.status_code == 200, members_empty_page.text
+    assert members_empty_page.json()["data"] == []
+    assert members_empty_page.json()["total"] == 3
+
+
+@pytest.mark.asyncio
+async def test_environment_api_persists_encrypted_env_vars_limits_and_soft_delete(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Environment
+    from qaplatform.infra.database.repositories.project_repo import (
+        EnvironmentRepository,
+    )
+
+    project_id = seed_run["project"].id
+    name = f"env-{uuid4().hex[:8]}"
+
+    create_resp = await integration_client.post(
+        f"/api/v1/projects/{project_id}/environments",
+        json={
+            "name": name,
+            "base_image": "python:3.12-alpine",
+            "memory_mb": 384,
+            "cpu_cores": 0.75,
+            "disk_mb": 2048,
+            "max_artifact_size_mb": 42,
+            "max_artifacts_count": 9,
+            "network_policy": "restricted",
+            "env_vars": {"API_TOKEN": "secret-token"},
+            "cache_key": "deps-v1",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    body = create_resp.json()
+    env_id = body["id"]
+    assert body["env_vars"] == {"API_TOKEN": "secret-token"}
+    assert body["disk_mb"] == 2048
+
+    env = await integration_db_session.get(Environment, env_id)
+    assert env is not None
+    assert env.project_id == project_id
+    assert env.resource_limits == {
+        "disk_mb": 2048,
+        "max_artifact_size_mb": 42,
+        "max_artifacts_count": 9,
+    }
+    assert env.env_vars != {"API_TOKEN": "secret-token"}
+    assert "secret-token" not in str(env.env_vars)
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}/environments/{env_id}",
+        json={
+            "memory_mb": 512,
+            "disk_mb": 4096,
+            "max_artifact_size_mb": 64,
+            "env_vars": {"API_TOKEN": "rotated-token"},
+        },
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    assert update_resp.json()["env_vars"] == {"API_TOKEN": "rotated-token"}
+
+    await integration_db_session.refresh(env)
+    assert env.memory_mb == 512
+    assert env.resource_limits["disk_mb"] == 4096
+    assert env.resource_limits["max_artifact_size_mb"] == 64
+    assert "rotated-token" not in str(env.env_vars)
+
+    delete_resp = await integration_client.delete(
+        f"/api/v1/projects/{project_id}/environments/{env_id}"
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+    await integration_db_session.refresh(env)
+    assert env.deleted_at is not None
+
+    repo = EnvironmentRepository(integration_db_session)
+    assert await repo.get_by_name(project_id, name) is None
+    assert {
+        "environment.create",
+        "environment.update",
+        "environment.delete",
+    }.issubset(
+        await _audit_actions(
+            integration_db_session,
+            user_id=seed_run["user"].id,
+            resource_id=env.id,
+        )
+    )
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="environment.create",
+        resource_id=env.id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="environment.update",
+        resource_id=env.id,
+    )
+    delete_audit = await _audit_event(
+        integration_db_session,
+        action="environment.delete",
+        resource_id=env.id,
+    )
+    assert create_audit is not None
+    assert update_audit is not None
+    assert delete_audit is not None
+    serialized_audit = repr(
+        [
+            create_audit.before_state,
+            create_audit.after_state,
+            update_audit.before_state,
+            update_audit.after_state,
+            delete_audit.before_state,
+            delete_audit.after_state,
+        ]
+    )
+    assert "secret-token" not in serialized_audit
+    assert "rotated-token" not in serialized_audit
+    assert create_audit.after_state["env_vars"] == {"redacted": True, "count": 1}
+    assert update_audit.before_state["env_vars"] == {"redacted": True, "count": 1}
+    assert update_audit.after_state["env_vars"] == {"redacted": True, "count": 1}
+    assert delete_audit.before_state["env_vars"] == {"redacted": True, "count": 1}
+
+
+@pytest.mark.asyncio
+async def test_environment_api_reads_resource_limits_without_audit_secret_leak(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Environment
+
+    project_id = seed_run["project"].id
+    name = f"env-resource-read-{uuid4().hex[:8]}"
+    secret = f"resource-secret-{uuid4().hex}"
+
+    def assert_resource_fields(body: dict, *, max_count: int, disk_mb: int) -> None:
+        assert body["name"] == name
+        assert body["memory_mb"] == 768
+        assert body["cpu_cores"] == 1.25
+        assert body["disk_mb"] == disk_mb
+        assert body["max_artifact_size_mb"] == 77
+        assert body["max_artifacts_count"] == max_count
+        assert body["network_policy"] == "restricted"
+        assert body["env_vars"] == {"RESOURCE_TOKEN": secret}
+        assert body["cache_key"] == "resource-cache-v1"
+
+    create_resp = await integration_client.post(
+        f"/api/v1/projects/{project_id}/environments",
+        json={
+            "name": name,
+            "base_image": "python:3.12-alpine",
+            "setup_script": "python -V",
+            "memory_mb": 768,
+            "cpu_cores": 1.25,
+            "disk_mb": 2048,
+            "max_artifact_size_mb": 77,
+            "max_artifacts_count": 11,
+            "network_policy": "restricted",
+            "env_vars": {"RESOURCE_TOKEN": secret},
+            "cache_key": "resource-cache-v1",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    create_body = create_resp.json()
+    assert_resource_fields(create_body, max_count=11, disk_mb=2048)
+    env_id = UUID(create_body["id"])
+
+    get_resp = await integration_client.get(
+        f"/api/v1/projects/{project_id}/environments/{env_id}"
+    )
+    assert get_resp.status_code == 200, get_resp.text
+    assert_resource_fields(get_resp.json(), max_count=11, disk_mb=2048)
+
+    list_resp = await integration_client.get(
+        f"/api/v1/projects/{project_id}/environments",
+        params={"page": 1, "per_page": 100},
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    list_body = list_resp.json()
+    listed = next(
+        item for item in list_body["data"] if item["id"] == str(env_id)
+    )
+    assert_resource_fields(listed, max_count=11, disk_mb=2048)
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}/environments/{env_id}",
+        json={"disk_mb": 4096, "max_artifacts_count": 13},
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    update_body = update_resp.json()
+    assert_resource_fields(update_body, max_count=13, disk_mb=4096)
+
+    env = await integration_db_session.get(Environment, env_id)
+    assert env is not None
+    assert env.memory_mb == 768
+    assert env.cpu_cores == 1.25
+    assert env.resource_limits == {
+        "disk_mb": 4096,
+        "max_artifact_size_mb": 77,
+        "max_artifacts_count": 13,
+    }
+    assert secret not in repr(env.env_vars)
+
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="environment.create",
+        resource_id=env_id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="environment.update",
+        resource_id=env_id,
+    )
+    assert create_audit is not None
+    assert update_audit is not None
+    serialized_audit = repr(
+        [
+            create_audit.before_state,
+            create_audit.after_state,
+            update_audit.before_state,
+            update_audit.after_state,
+        ]
+    )
+    assert secret not in serialized_audit
+    assert create_audit.before_state is None
+    assert create_audit.after_state["env_vars"] == {"redacted": True, "count": 1}
+    assert create_audit.after_state["memory_mb"] == 768
+    assert create_audit.after_state["cpu_cores"] == 1.25
+    assert create_audit.after_state["disk_mb"] == 2048
+    assert create_audit.after_state["max_artifact_size_mb"] == 77
+    assert create_audit.after_state["max_artifacts_count"] == 11
+    assert update_audit.before_state["disk_mb"] == 2048
+    assert update_audit.after_state["disk_mb"] == 4096
+    assert update_audit.before_state["max_artifact_size_mb"] == 77
+    assert update_audit.before_state["max_artifacts_count"] == 11
+    assert update_audit.after_state["max_artifact_size_mb"] == 77
+    assert update_audit.after_state["max_artifacts_count"] == 13
+    assert update_audit.before_state["env_vars"] == {"redacted": True, "count": 1}
+    assert update_audit.after_state["env_vars"] == {"redacted": True, "count": 1}
+
+
+@pytest.mark.asyncio
+async def test_notification_rule_api_persists_updates_and_hides_soft_deleted_rule(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import NotificationRule
+    from qaplatform.infra.database.repositories.project_repo import (
+        NotificationRuleRepository,
+    )
+
+    project_id = seed_run["project"].id
+    name = f"notify-{uuid4().hex[:8]}"
+    webhook_url = f"https://hooks.example.com/{uuid4().hex}/secret-webhook-token"
+    email_address = f"qa-{uuid4().hex[:8]}@example.com"
+
+    create_resp = await integration_client.post(
+        f"/api/v1/projects/{project_id}/notification-rules",
+        json={
+            "name": name,
+            "enabled": True,
+            "conditions": [{"field": "status", "operator": "eq", "value": "failed"}],
+            "channels": [{"type": "email", "address": email_address}],
+            "template": "Run {{run_id}} failed secret-template-marker",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    rule_id = create_resp.json()["id"]
+
+    rule = await integration_db_session.get(NotificationRule, rule_id)
+    assert rule is not None
+    assert rule.project_id == project_id
+    assert rule.conditions[0]["value"] == "failed"
+    assert rule.channels[0]["address"] == email_address
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}/notification-rules/{rule_id}",
+        json={
+            "enabled": False,
+            "channels": [{"type": "webhook", "webhook_url": webhook_url}],
+        },
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    await integration_db_session.refresh(rule)
+    assert rule.enabled is False
+    assert rule.channels[0]["type"] == "webhook"
+
+    delete_resp = await integration_client.delete(
+        f"/api/v1/projects/{project_id}/notification-rules/{rule_id}"
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+    await integration_db_session.refresh(rule)
+    assert rule.deleted_at is not None
+
+    repo = NotificationRuleRepository(integration_db_session)
+    visible, total = await repo.list_by_project(project_id, limit=100)
+    assert rule.id not in {item.id for item in visible}
+    assert total == 0
+    assert {
+        "notification_rule.create",
+        "notification_rule.update",
+        "notification_rule.delete",
+    }.issubset(
+        await _audit_actions(
+            integration_db_session,
+            user_id=seed_run["user"].id,
+            resource_id=rule.id,
+        )
+    )
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="notification_rule.create",
+        resource_id=rule.id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="notification_rule.update",
+        resource_id=rule.id,
+    )
+    delete_audit = await _audit_event(
+        integration_db_session,
+        action="notification_rule.delete",
+        resource_id=rule.id,
+    )
+    assert create_audit is not None
+    assert update_audit is not None
+    assert delete_audit is not None
+    serialized_audit = repr(
+        [
+            create_audit.before_state,
+            create_audit.after_state,
+            update_audit.before_state,
+            update_audit.after_state,
+            delete_audit.before_state,
+            delete_audit.after_state,
+        ]
+    )
+    assert webhook_url not in serialized_audit
+    assert email_address not in serialized_audit
+    assert "secret-template-marker" not in serialized_audit
+    assert create_audit.after_state["channels"] == {
+        "redacted": True,
+        "count": 1,
+        "types": ["email"],
+    }
+    assert update_audit.after_state["channels"] == {
+        "redacted": True,
+        "count": 1,
+        "types": ["webhook"],
+    }
+    assert delete_audit.before_state["channels"] == {
+        "redacted": True,
+        "count": 1,
+        "types": ["webhook"],
+    }
+    assert delete_audit.before_state["template"]["redacted"] is True
+
+
+@pytest.mark.asyncio
+async def test_schedule_and_run_apis_persist_next_run_metadata_and_audit_rows(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Run, Schedule
+
+    project_id = seed_run["project"].id
+    pipeline_id = seed_run["pipeline"].id
+
+    schedule_resp = await integration_client.post(
+        f"/api/v1/projects/{project_id}/schedules",
+        json={
+            "pipeline_id": str(pipeline_id),
+            "cron_expr": "*/15 * * * *",
+            "timezone": "Asia/Shanghai",
+            "missed_fire_policy": "run_once",
+            "quiet_windows": [{"start": "00:00", "end": "01:00"}],
+            "enabled": True,
+        },
+    )
+    assert schedule_resp.status_code == 201, schedule_resp.text
+    created_schedule = schedule_resp.json()
+    schedule_id = created_schedule["id"]
+
+    schedule = await integration_db_session.get(Schedule, schedule_id)
+    assert schedule is not None
+    assert schedule.project_id == project_id
+    assert schedule.pipeline_id == pipeline_id
+    assert schedule.next_run_at is not None
+    assert schedule.missed_fire_policy == "run_once"
+
+    update_resp = await integration_client.put(
+        f"/api/v1/projects/{project_id}/schedules/{schedule_id}",
+        json={"enabled": False, "cron_expr": "*/30 * * * *"},
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    updated_schedule = update_resp.json()
+    await integration_db_session.refresh(schedule)
+    assert schedule.enabled is False
+    assert schedule.cron_expr == "*/30 * * * *"
+
+    delete_resp = await integration_client.delete(
+        f"/api/v1/projects/{project_id}/schedules/{schedule_id}"
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+    await integration_db_session.refresh(schedule)
+    assert schedule.deleted_at is not None
+
+    run_resp = await integration_client.post(
+        "/api/v1/runs",
+        json={"pipeline_id": str(pipeline_id), "git_ref": "feature/p0", "priority": 0},
+    )
+    assert run_resp.status_code == 201, run_resp.text
+    created_run = run_resp.json()
+    run_id = created_run["id"]
+
+    run = await integration_db_session.get(Run, run_id)
+    assert run is not None
+    assert run.tenant_id == seed_run["tenant"].id
+    assert run.project_id == project_id
+    assert run.pipeline_id == pipeline_id
+    assert run.environment_id == seed_run["environment"].id
+    assert run.git_ref == "feature/p0"
+    assert run.priority == 0
+    assert run.retry_group_id == run.id
+    assert run.metadata_["git_url"] == seed_run["project"].git_url
+    assert run.metadata_["default_branch"] == seed_run["project"].default_branch
+
+    assert {"schedule.create", "schedule.update", "schedule.delete"}.issubset(
+        await _audit_actions(
+            integration_db_session,
+            user_id=seed_run["user"].id,
+            resource_id=schedule.id,
+        )
+    )
+    create_audit = await _audit_event(
+        integration_db_session,
+        action="schedule.create",
+        resource_id=schedule.id,
+    )
+    update_audit = await _audit_event(
+        integration_db_session,
+        action="schedule.update",
+        resource_id=schedule.id,
+    )
+    delete_audit = await _audit_event(
+        integration_db_session,
+        action="schedule.delete",
+        resource_id=schedule.id,
+    )
+    assert create_audit is not None
+    assert update_audit is not None
+    assert delete_audit is not None
+    assert create_audit.before_state is None
+    assert create_audit.after_state == created_schedule
+    assert update_audit.before_state == created_schedule
+    assert update_audit.after_state == updated_schedule
+    assert delete_audit.before_state["cron_expr"] == "*/30 * * * *"
+    assert delete_audit.before_state["enabled"] is False
+    assert delete_audit.after_state is None
+    assert "run.trigger" in await _audit_actions(
+        integration_db_session,
+        user_id=seed_run["user"].id,
+        resource_id=run.id,
+    )
+    run_audit = await _audit_event(
+        integration_db_session,
+        action="run.trigger",
+        resource_id=run.id,
+    )
+    assert run_audit is not None
+    assert run_audit.before_state is None
+    assert run_audit.after_state == created_run
+
+
+@pytest.mark.asyncio
+async def test_manual_run_priority_persists_worker_queue_metadata_with_real_db(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Run
+
+    pipeline_id = str(seed_run["pipeline"].id)
+    tenant_id = seed_run["tenant"].id
+    user_id = seed_run["user"].id
+    arq = _RecordingArq()
+    original_arq_pool = integration_app.state.container.arq_pool
+    settings = integration_app.state.container.settings
+    original_max_total = settings.max_concurrent_runs
+    original_max_per_project = settings.max_concurrent_per_project
+    integration_app.state.container.arq_pool = arq
+    settings.max_concurrent_runs = 1000
+    settings.max_concurrent_per_project = 1000
+
+    try:
+        cases = [
+            (0, "queue:high"),
+            (1, "queue:medium"),
+            (2, "queue:low"),
+        ]
+        run_ids: list[UUID] = []
+
+        for priority, expected_queue in cases:
+            response = await integration_client.post(
+                "/api/v1/runs",
+                json={
+                    "pipeline_id": pipeline_id,
+                    "git_ref": f"queue-priority-{priority}-{uuid4().hex}",
+                    "priority": priority,
+                },
+            )
+            assert response.status_code == 201, response.text
+            body = response.json()
+            run_id = UUID(body["id"])
+            run_ids.append(run_id)
+
+            integration_db_session.expire_all()
+            run = await integration_db_session.get(Run, run_id)
+            assert run is not None
+            assert body["priority"] == priority
+            assert body["git_ref"] == run.git_ref
+            assert body["status"] == "queued"
+            assert run.priority == priority
+            assert run.queue_name == expected_queue
+            assert run.arq_job_id == f"run:{run_id}"
+            assert run.enqueued_at is not None
+
+            audit = await _audit_event(
+                integration_db_session,
+                action="run.trigger",
+                resource_id=run_id,
+            )
+            assert audit is not None
+            assert audit.tenant_id == tenant_id
+            assert audit.user_id == user_id
+            assert audit.resource_type == "run"
+            assert audit.before_state is None
+            assert audit.after_state == body
+            serialized_audit = repr(audit.after_state)
+            assert "queue_name" not in serialized_audit
+            assert "arq_job_id" not in serialized_audit
+            assert "git_url" not in serialized_audit
+            assert "credential_id" not in serialized_audit
+
+        assert [call["args"] for call in arq.calls] == [
+            ("execute_run", str(run_id)) for run_id in run_ids
+        ]
+        assert [call["kwargs"]["_queue_name"] for call in arq.calls] == [
+            "queue:high",
+            "queue:medium",
+            "queue:low",
+        ]
+        assert [call["kwargs"]["_job_id"] for call in arq.calls] == [
+            f"run:{run_id}" for run_id in run_ids
+        ]
+    finally:
+        integration_app.state.container.arq_pool = original_arq_pool
+        settings.max_concurrent_runs = original_max_total
+        settings.max_concurrent_per_project = original_max_per_project
+
+
+@pytest.mark.asyncio
+async def test_single_run_cancel_persists_state_redis_event_and_audit_row(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.engine.events import EVENT_STREAM_KEY, STATUS_HASH_KEY
+    from qaplatform.infra.database.models import AuditEvent, RunStatusEnum
+
+    run = seed_run["run"]
+    run.status = RunStatusEnum.RUNNING
+    await integration_db_session.commit()
+
+    response = await integration_client.post(f"/api/v1/runs/{run.id}/cancel")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cancelled"
+
+    await integration_db_session.refresh(run)
+    assert run.status == RunStatusEnum.CANCELLED
+    assert run.cancel_requested_at is not None
+    assert run.finished_at is not None
+
+    redis = integration_app.state.container.redis_client
+    status_hash = await redis.hgetall(STATUS_HASH_KEY.format(run_id=str(run.id)))
+    decoded_status = _decode_redis_mapping(status_hash)
+    assert decoded_status["status"] == "cancelled"
+
+    events = await redis.xrange(EVENT_STREAM_KEY.format(run_id=str(run.id)))
+    assert events, "cancel API did not publish a Redis status event"
+    _event_id, latest_event = events[-1]
+    decoded_event = _decode_redis_mapping(latest_event)
+    assert decoded_event["status"] == "cancelled"
+    assert decoded_event["previous"] == "running"
+
+    audit = (
+        await integration_db_session.execute(
+            select(AuditEvent)
+            .where(
+                AuditEvent.action == "run.cancel",
+                AuditEvent.resource_id == run.id,
+            )
+            .order_by(AuditEvent.created_at.desc())
+        )
+    ).scalar_one()
+    assert audit.user_id == seed_run["user"].id
+    assert audit.before_state["status"] == "running"
+    assert audit.after_state["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_batch_run_apis_persist_state_and_audit_rows(
+    integration_app,
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.engine.events import EVENT_STREAM_KEY
+    from qaplatform.infra.database.models import Run, RunStatusEnum
+
+    run = seed_run["run"]
+    run.status = RunStatusEnum.RUNNING
+    await integration_db_session.commit()
+
+    cancel_resp = await integration_client.post(
+        "/api/v1/runs/batch/cancel",
+        json={"run_ids": [str(run.id)]},
+    )
+    assert cancel_resp.status_code == 200, cancel_resp.text
+    assert cancel_resp.json() == {"processed": 1, "failed": 0, "errors": []}
+    await integration_db_session.refresh(run)
+    assert run.status == RunStatusEnum.CANCELLED
+
+    events = await integration_app.state.container.redis_client.xrange(
+        EVENT_STREAM_KEY.format(run_id=str(run.id))
+    )
+    assert events, "batch cancel API did not publish a Redis status event"
+    _event_id, latest_event = events[-1]
+    decoded_event = _decode_redis_mapping(latest_event)
+    assert decoded_event["status"] == "cancelled"
+    assert decoded_event["previous"] == "running"
+
+    batch_cancel_audit = await _audit_event(
+        integration_db_session,
+        action="run.batch_cancel",
+        resource_id=run.id,
+    )
+    assert batch_cancel_audit is not None
+    assert batch_cancel_audit.before_state["status"] == "running"
+    assert batch_cancel_audit.after_state["status"] == "cancelled"
+
+    integration_app.state.container.arq_pool = None
+    retry_resp = await integration_client.post(
+        "/api/v1/runs/batch/retry",
+        json={"run_ids": [str(run.id)]},
+    )
+    assert retry_resp.status_code == 200, retry_resp.text
+    assert retry_resp.json() == {"processed": 1, "failed": 0, "errors": []}
+
+    retry_run = (
+        await integration_db_session.execute(
+            select(Run).where(Run.source_run_id == run.id)
+        )
+    ).scalar_one()
+    assert retry_run.status == RunStatusEnum.QUEUED
+    assert retry_run.tenant_id == seed_run["tenant"].id
+    assert retry_run.project_id == seed_run["project"].id
+    assert retry_run.pipeline_id == seed_run["pipeline"].id
+    assert retry_run.environment_id == seed_run["environment"].id
+    assert retry_run.chain_depth == 1
+
+    actions = await _audit_actions(
+        integration_db_session,
+        user_id=seed_run["user"].id,
+        resource_id=run.id,
+    )
+    assert {"run.batch_cancel", "run.batch_retry"}.issubset(actions)
+
+
+@pytest.mark.asyncio
+async def test_schedule_api_rejects_cross_project_pipeline_without_persisting(
+    integration_client_as,
+    integration_db_session,
+    seed_run,
+    seed_second_tenant,
+):
+    from qaplatform.infra.database.models import Schedule
+
+    user = seed_run["user"]
+    tenant = seed_run["tenant"]
+    project_id = seed_run["project"].id
+    before = await _row_count(
+        integration_db_session,
+        Schedule,
+        Schedule.project_id == project_id,
+    )
+
+    async with integration_client_as(user.id, tenant.id, role="owner") as client:
+        resp = await client.post(
+            f"/api/v1/projects/{project_id}/schedules",
+            json={
+                "pipeline_id": str(seed_second_tenant["pipeline"].id),
+                "cron_expr": "*/10 * * * *",
+                "timezone": "UTC",
+                "missed_fire_policy": "skip",
+                "quiet_windows": [],
+                "enabled": True,
+            },
+        )
+
+    assert resp.status_code == 404, resp.text
+    assert _error_detail(resp.json()) == "Pipeline not found"
+    assert (
+        await _row_count(
+            integration_db_session,
+            Schedule,
+            Schedule.project_id == project_id,
+        )
+        == before
+    )
+
+
+@pytest.mark.asyncio
+async def test_manual_run_archived_project_returns_409_without_persisting(
+    integration_client_as,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Run
+
+    user = seed_run["user"]
+    tenant = seed_run["tenant"]
+    project = seed_run["project"]
+    project.status = "archived"
+    await integration_db_session.commit()
+    await integration_db_session.refresh(project)
+    before = await _row_count(
+        integration_db_session,
+        Run,
+        Run.project_id == project.id,
+        Run.trigger_type == "manual",
+    )
+
+    async with integration_client_as(user.id, tenant.id, role="owner") as client:
+        resp = await client.post(
+            "/api/v1/runs",
+            json={
+                "pipeline_id": str(seed_run["pipeline"].id),
+                "git_ref": "main",
+            },
+        )
+
+    assert resp.status_code == 409, resp.text
+    assert "archived" in resp.json()["detail"].lower()
+    assert (
+        await _row_count(
+            integration_db_session,
+            Run,
+            Run.project_id == project.id,
+            Run.trigger_type == "manual",
+        )
+        == before
+    )

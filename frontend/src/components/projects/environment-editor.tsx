@@ -9,6 +9,7 @@ import {
   useDeleteEnvironment
 } from "../../hooks/use-projects";
 import type { Environment } from "../../types/api";
+import { isPinnedDockerImage } from "../../lib/contracts";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
@@ -24,6 +25,8 @@ import {
   AlertDialogTrigger
 } from "../../components/ui/alert-dialog";
 
+const DEFAULT_ENVIRONMENT_BASE_IMAGE = "python:3.12-alpine";
+
 export function EnvironmentEditor({ projectId }: { projectId: string }) {
   const { t } = useTranslation();
   const { data: environments, isLoading } = useProjectEnvironments(projectId);
@@ -31,6 +34,7 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
 
   const [isAdding, setIsAdding] = useState(false);
   const [newEnvName, setNewEnvName] = useState("");
+  const [newEnvBaseImage, setNewEnvBaseImage] = useState(DEFAULT_ENVIRONMENT_BASE_IMAGE);
 
   if (isLoading) return <div className="space-y-4 animate-pulse">
     <div className="h-32 bg-surface-1 rounded-lg" />
@@ -38,11 +42,18 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
   </div>;
 
   const handleAdd = async () => {
-    if (!newEnvName) return;
+    const name = newEnvName.trim();
+    const baseImage = newEnvBaseImage.trim();
+    if (!name || !baseImage) return;
+    if (!isPinnedDockerImage(baseImage)) {
+      toast.error(t('validation.invalidBaseImage'));
+      return;
+    }
     try {
-      await createEnv({ name: newEnvName, variables: {} });
+      await createEnv({ name, base_image: baseImage, env_vars: {} });
       toast.success(t('environments.toast.created'));
       setNewEnvName("");
+      setNewEnvBaseImage(DEFAULT_ENVIRONMENT_BASE_IMAGE);
       setIsAdding(false);
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } };
@@ -62,7 +73,7 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
       </div>
 
       {isAdding && (
-        <div className="rounded-lg border border-hairline bg-surface-1 p-4 flex items-end gap-4 animate-in fade-in slide-in-from-top-2">
+        <div className="grid grid-cols-1 gap-4 rounded-lg border border-hairline bg-surface-1 p-4 animate-in fade-in slide-in-from-top-2 md:grid-cols-[1fr_1.2fr_auto] md:items-end">
           <div className="flex-1 space-y-2">
             <Label>{t('environments.envNameLabel')}</Label>
             <Input
@@ -71,9 +82,34 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
               placeholder="e.g. Production, Staging"
             />
           </div>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setIsAdding(false)}>{t('common.cancel')}</Button>
-            <Button size="sm" onClick={handleAdd}>{t('common.create')}</Button>
+          <div className="flex-1 space-y-2">
+            <Label>{t('environments.baseImageLabel')}</Label>
+            <Input
+              value={newEnvBaseImage}
+              onChange={(e) => setNewEnvBaseImage(e.target.value)}
+              placeholder={t('environments.baseImagePlaceholder')}
+              className="font-mono text-xs"
+            />
+          </div>
+          <div className="flex gap-2 md:justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setNewEnvName("");
+                setNewEnvBaseImage(DEFAULT_ENVIRONMENT_BASE_IMAGE);
+                setIsAdding(false);
+              }}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleAdd}
+              disabled={!newEnvName.trim() || !isPinnedDockerImage(newEnvBaseImage.trim())}
+            >
+              {t('common.create')}
+            </Button>
           </div>
         </div>
       )}
@@ -108,7 +144,7 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
 
   const handleSave = async () => {
     try {
-      await updateEnv({ ...env, variables });
+      await updateEnv({ env_vars: variables });
       toast.success(t('environments.toast.saved'));
       setIsEditing(false);
     } catch {

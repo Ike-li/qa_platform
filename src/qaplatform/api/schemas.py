@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -13,7 +13,17 @@ from qaplatform.domain.models.common import (
 )
 from qaplatform.domain.models.project import SilentWindow
 
-_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._\-/:]*(:[a-zA-Z0-9._\-]+)?(@sha256:[a-f0-9]+)?$")
+_IMAGE_TAG_RE = re.compile(r"^[a-zA-Z0-9._/\-]+:[a-zA-Z0-9._\-]+$")
+_BLOCKED_IMAGE_TAGS = {"latest", "stable", "edge"}
+
+
+def validate_pinned_base_image(image: str) -> str:
+    if not _IMAGE_TAG_RE.match(image):
+        raise ValueError("Image must use format 'registry/name:tag'")
+    tag = image.rsplit(":", 1)[-1]
+    if tag.lower() in _BLOCKED_IMAGE_TAGS:
+        raise ValueError(f"Tag ':{tag}' is not allowed; pin a specific version")
+    return image
 
 
 # ── Unified error ────────────────────────────────────────────────────────────
@@ -154,6 +164,7 @@ class EnvironmentCreate(BaseModel):
     setup_script: str | None = Field(None, max_length=10000)
     memory_mb: int = 512
     cpu_cores: float = 1.0
+    disk_mb: int | None = Field(None, ge=1)
     max_artifact_size_mb: int = 100
     max_artifacts_count: int = 50
     network_policy: Literal["allow", "deny", "restricted"] = "deny"
@@ -163,9 +174,7 @@ class EnvironmentCreate(BaseModel):
     @field_validator("base_image")
     @classmethod
     def _validate_base_image(cls, v: str) -> str:
-        if not _IMAGE_RE.match(v):
-            raise ValueError(f"Invalid Docker image name: {v!r}")
-        return v
+        return validate_pinned_base_image(v)
 
     @field_validator("env_vars")
     @classmethod
@@ -179,6 +188,7 @@ class EnvironmentUpdate(BaseModel):
     setup_script: str | None = Field(None, max_length=10000)
     memory_mb: int | None = None
     cpu_cores: float | None = None
+    disk_mb: int | None = Field(None, ge=1)
     max_artifact_size_mb: int | None = None
     max_artifacts_count: int | None = None
     network_policy: Literal["allow", "deny", "restricted"] | None = None
@@ -188,9 +198,9 @@ class EnvironmentUpdate(BaseModel):
     @field_validator("base_image")
     @classmethod
     def _validate_base_image(cls, v: str | None) -> str | None:
-        if v is not None and not _IMAGE_RE.match(v):
-            raise ValueError(f"Invalid Docker image name: {v!r}")
-        return v
+        if v is None:
+            return v
+        return validate_pinned_base_image(v)
 
     @field_validator("env_vars")
     @classmethod
@@ -210,6 +220,7 @@ class EnvironmentResponse(BaseModel):
     setup_script: str | None = None
     memory_mb: int = 512
     cpu_cores: float = 1.0
+    disk_mb: int | None = None
     max_artifact_size_mb: int = 100
     max_artifacts_count: int = 50
     network_policy: Literal["allow", "deny", "restricted"] = "deny"
@@ -238,9 +249,9 @@ class TestSelectorInput(BaseModel):
 
 
 class RetryPolicyInput(BaseModel):
-    max_attempts: int = 1
+    max_attempts: int = Field(1, ge=1, le=5)
     retry_on: list[str] = Field(default_factory=list)
-    backoff_seconds: int = 0
+    backoff_seconds: int = Field(0, ge=0)
     scope: Literal["pipeline", "stage"] = "pipeline"
 
 
@@ -252,11 +263,22 @@ class TriggerConfigInput(BaseModel):
     target: dict = Field(default_factory=dict)
 
 
+class CollectorDefinitionInput(BaseModel):
+    plugin: str = Field("junit", min_length=1, max_length=50)
+    config: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+
 class PipelineCreate(BaseModel):
     name: str = Field(..., max_length=100)
     stages: list[StageDefinitionInput] = Field(default_factory=list)
     selector: TestSelectorInput = Field(default_factory=TestSelectorInput)
     trigger_config: TriggerConfigInput = Field(default_factory=TriggerConfigInput)
+    collectors: list[CollectorDefinitionInput] = Field(
+        default_factory=lambda: [CollectorDefinitionInput()],
+        min_length=1,
+        max_length=10,
+    )
     timeout_seconds: int = Field(default=1800, le=86400)
     retry_policy: RetryPolicyInput | None = None
     enabled: bool = True
@@ -267,6 +289,11 @@ class PipelineUpdate(BaseModel):
     stages: list[StageDefinitionInput] | None = None
     selector: TestSelectorInput | None = None
     trigger_config: TriggerConfigInput | None = None
+    collectors: list[CollectorDefinitionInput] | None = Field(
+        None,
+        min_length=1,
+        max_length=10,
+    )
     timeout_seconds: int | None = Field(None, le=86400)
     retry_policy: RetryPolicyInput | None = None
     enabled: bool | None = None
@@ -281,6 +308,9 @@ class PipelineResponse(BaseModel):
     stages: list[StageDefinitionInput] = Field(default_factory=list)
     selector: TestSelectorInput = Field(default_factory=TestSelectorInput)
     trigger_config: TriggerConfigInput = Field(default_factory=TriggerConfigInput)
+    collectors: list[CollectorDefinitionInput] = Field(
+        default_factory=lambda: [CollectorDefinitionInput()],
+    )
     timeout_seconds: int = 1800
     retry_policy: RetryPolicyInput | None = None
     enabled: bool = True
@@ -293,6 +323,12 @@ class PipelineResponse(BaseModel):
 class RunTrigger(BaseModel):
     pipeline_id: UUID
     git_ref: str | None = None
+    git_sha: str | None = Field(
+        None,
+        pattern=r"^[0-9a-fA-F]{40}$",
+        description="Optional full Git commit SHA to execute",
+    )
+    environment_id: UUID | None = None
     priority: int = Field(default=1, ge=0, le=2, description="0=HIGH, 1=MEDIUM, 2=LOW")
 
 
@@ -361,6 +397,13 @@ class ArtifactResponse(BaseModel):
     mime_type: str
     expires_at: datetime | None = None
     created_at: datetime
+
+
+class RunLogEntryResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    stream: str
+    line: str
 
 
 # ── Project member schemas ───────────────────────────────────────────────────
@@ -470,7 +513,7 @@ class NotificationRuleUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     enabled: bool | None = None
     conditions: list[dict] | None = None
-    channels: list[dict] | None = None
+    channels: list[dict] | None = Field(None, min_length=1)
     template: str | None = None
 
 

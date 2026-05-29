@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
@@ -16,6 +16,7 @@ from qaplatform.api.schemas import (
     CredentialResponse,
     CredentialUpdate,
     ErrorResponse,
+    PaginatedResponse,
 )
 
 router = APIRouter(
@@ -42,18 +43,30 @@ async def _verify_project_access(project_id: UUID, repos: Repos, user: CurrentUs
 
 @router.get(
     "",
-    response_model=list[CredentialResponse],
+    response_model=PaginatedResponse[CredentialResponse],
     summary="项目凭证列表",
 )
 async def list_credentials(
     project_id: UUID,
     repos: Repos,
     user: CurrentUser,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
     _perm=require_project_permission(Action.CREDENTIAL_READ),
 ):
     await _verify_project_access(project_id, repos, user)
-    rows = await repos.credential.list_by_project_tenant(project_id, user.tenant_id)
-    return [_to_response(c) for c in rows]
+    rows, total = await repos.credential.list_by_project_tenant(
+        project_id,
+        user.tenant_id,
+        offset=(page - 1) * per_page,
+        limit=per_page,
+    )
+    return PaginatedResponse(
+        data=[_to_response(c) for c in rows],
+        page=page,
+        per_page=per_page,
+        total=total,
+    )
 
 
 @router.post(

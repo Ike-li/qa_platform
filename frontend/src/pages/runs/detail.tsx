@@ -20,6 +20,7 @@ import { LogViewer } from "../../components/runs/log-viewer";
 import { TestResultsTable } from "../../components/test-results-table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Button } from "../../components/ui/button";
+import type { RunStatus } from "../../types/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -70,6 +71,8 @@ export default function RunDetail() {
   }
 
   if (!run) return <div>{t('runs.notFound')}</div>;
+  const terminalRunStatuses: readonly RunStatus[] = ["passed", "failed", "cancelled", "timed_out"];
+  const archivedLogsEnabled = terminalRunStatuses.includes(run.status);
 
   return (
     <div className="space-y-6">
@@ -162,7 +165,7 @@ export default function RunDetail() {
         </TabsList>
 
         <TabsContent value="logs" className="mt-4">
-          <LogViewer runId={id!} />
+          <LogViewer runId={id!} archivedEnabled={archivedLogsEnabled} />
         </TabsContent>
 
         <TabsContent value="results" className="mt-4 space-y-4">
@@ -203,6 +206,8 @@ export default function RunDetail() {
                         variant="ghost"
                         size="icon"
                         className="text-ink-subtle hover:text-primary"
+                        aria-label={t('runs.artifacts.previewArtifact', { name: artifact.name })}
+                        title={t('runs.artifacts.previewArtifact', { name: artifact.name })}
                         onClick={async () => {
                           try {
                             const url = await getArtifactDownloadUrl(artifact.id);
@@ -219,6 +224,8 @@ export default function RunDetail() {
                       variant="ghost"
                       size="icon"
                       className="text-ink-subtle hover:text-primary"
+                      aria-label={t('runs.artifacts.downloadArtifact', { name: artifact.name })}
+                      title={t('runs.artifacts.downloadArtifact', { name: artifact.name })}
                       onClick={async () => {
                         try {
                           const url = await getArtifactDownloadUrl(artifact.id);
@@ -268,4 +275,3 @@ function SummaryCard({ label, value, color }: { label: string; value: number; co
     </div>
   );
 }
-

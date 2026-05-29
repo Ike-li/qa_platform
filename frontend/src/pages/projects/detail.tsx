@@ -49,6 +49,7 @@ import { AnalyticsPanel } from "../../components/projects/analytics-panel";
 import { EnvironmentEditor } from "../../components/projects/environment-editor";
 import { NotificationRulesPanel } from "../../components/projects/notification-rules-panel";
 import { cn } from "../../lib/utils";
+import { isGitUrl } from "../../lib/contracts";
 import { usePageTitle } from "../../hooks/use-page-title";
 
 type SilentWindowFormValue = {
@@ -71,7 +72,7 @@ function createProjectSchema() {
   return z.object({
     name: z.string().min(1, i18n.t('validation.nameRequired')),
     description: z.string().optional(),
-    git_url: z.string().url(i18n.t('validation.invalidUrl')),
+    git_url: z.string().min(1, i18n.t('validation.invalidUrl')).refine(isGitUrl, i18n.t('validation.invalidUrl')),
     default_branch: z.string().min(1, i18n.t('validation.defaultBranchRequired')),
     root_path: z.string().min(1, i18n.t('validation.rootPathRequired')),
   });
@@ -374,7 +375,7 @@ export default function ProjectDetail() {
                     <div>
                       <h4 className="font-medium text-ink">{pipeline.name}</h4>
                       <div className="flex items-center gap-3 text-xs text-ink-muted">
-                        <span>{pipeline.selector.framework}</span>
+                        <span>{pipeline.stages[0]?.plugin ?? pipeline.trigger_config.type}</span>
                         <span>•</span>
                         <span>{t('pipelines.minuteTimeout', { minutes: pipeline.timeout_seconds / 60 })}</span>
                         {!pipeline.enabled && <span className="text-status-failed">{t('pipelines.disabled')}</span>}

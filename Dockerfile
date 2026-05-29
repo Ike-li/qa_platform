@@ -8,6 +8,9 @@ WORKDIR /app
 
 COPY pyproject.toml .
 COPY src/ src/
+COPY alembic.ini .
+COPY alembic/ alembic/
+COPY scripts/seed_admin.py scripts/seed_admin.py
 
 RUN pip install --no-cache-dir .
 

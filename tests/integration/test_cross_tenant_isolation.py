@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timezone
 
 import pytest
-import pytest_asyncio
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_INTEGRATION_TESTS") != "1",
@@ -41,6 +41,17 @@ async def _hit(client, method: str, path: str, **kw) -> tuple[int, dict]:
 def _detail(body: dict) -> str | None:
     """Extract the error detail string from a response body."""
     return body.get("detail") or body.get("error", {}).get("message")
+
+
+async def _assert_same_404(client, method: str, left_path: str, right_path: str, **kw):
+    status_l, body_l = await _hit(client, method, left_path, **kw)
+    status_r, body_r = await _hit(client, method, right_path, **kw)
+
+    assert status_l == status_r == 404
+    detail_l = _detail(body_l)
+    detail_r = _detail(body_r)
+    assert detail_l == detail_r
+    assert detail_l is not None and detail_l != ""
 
 
 # --------------------------------------------------------------------------- #
@@ -187,6 +198,69 @@ async def test_project_credentials_list_cross_tenant_returns_same_404(
 
 
 @pytest.mark.asyncio
+async def test_project_scoped_routes_member_viewer_cross_tenant_return_same_404(
+    seed_run, seed_second_tenant, integration_client_as
+):
+    """Member/Viewer cannot distinguish tenant_B project IDs from random IDs."""
+    tenant_a = seed_run["tenant"]
+    user_a = seed_run["user"]
+    proj_b_id = seed_second_tenant["project"].id
+
+    route_matrix = [
+        (
+            "PUT",
+            f"/api/v1/projects/{proj_b_id}",
+            f"/api/v1/projects/{uuid.uuid4()}",
+            {"json": {"name": "no-oracle"}},
+        ),
+        (
+            "GET",
+            f"/api/v1/projects/{proj_b_id}/credentials",
+            f"/api/v1/projects/{uuid.uuid4()}/credentials",
+            {},
+        ),
+        (
+            "GET",
+            f"/api/v1/projects/{proj_b_id}/pipelines",
+            f"/api/v1/projects/{uuid.uuid4()}/pipelines",
+            {},
+        ),
+    ]
+
+    for role in ("member", "viewer"):
+        async with integration_client_as(user_a.id, tenant_a.id, role=role) as client:
+            for method, tenant_b_path, random_path, kwargs in route_matrix:
+                await _assert_same_404(
+                    client,
+                    method,
+                    tenant_b_path,
+                    random_path,
+                    **kwargs,
+                )
+
+
+@pytest.mark.asyncio
+async def test_project_scoped_routes_member_viewer_soft_deleted_return_same_404(
+    seed_run, integration_db_session, integration_client_as
+):
+    """Soft-deleted project IDs collapse to the same 404 as random UUIDs."""
+    tenant = seed_run["tenant"]
+    user = seed_run["user"]
+    project = seed_run["project"]
+    project.deleted_at = datetime.now(timezone.utc)
+    await integration_db_session.commit()
+
+    for role in ("member", "viewer"):
+        async with integration_client_as(user.id, tenant.id, role=role) as client:
+            await _assert_same_404(
+                client,
+                "GET",
+                f"/api/v1/projects/{project.id}/credentials",
+                f"/api/v1/projects/{uuid.uuid4()}/credentials",
+            )
+
+
+@pytest.mark.asyncio
 async def test_trigger_run_cross_tenant_pipeline_returns_same_404(
     seed_run, seed_second_tenant, integration_client_as
 ):
@@ -293,6 +367,35 @@ async def test_run_artifacts_cross_tenant_returns_same_404(
     async with integration_client_as(user_a.id, tenant_a.id) as client:
         status_b, body_b = await _hit(client, "GET", f"/api/v1/runs/{run_b_id}/artifacts")
         status_r, body_r = await _hit(client, "GET", f"/api/v1/runs/{random_id}/artifacts")
+
+    assert status_b == status_r == 404
+    detail_b = _detail(body_b)
+    detail_r = _detail(body_r)
+    assert detail_b == detail_r
+    assert detail_b is not None and detail_b != ""
+
+
+@pytest.mark.asyncio
+async def test_archived_logs_cross_tenant_returns_same_404(
+    seed_run, seed_second_tenant, integration_client_as
+):
+    """GET /runs/{id}/logs/archive — tenant_A cannot probe tenant_B archived logs."""
+    tenant_a = seed_run["tenant"]
+    user_a = seed_run["user"]
+    run_b_id = seed_second_tenant["run"].id
+    random_id = uuid.uuid4()
+
+    async with integration_client_as(user_a.id, tenant_a.id) as client:
+        status_b, body_b = await _hit(
+            client,
+            "GET",
+            f"/api/v1/runs/{run_b_id}/logs/archive",
+        )
+        status_r, body_r = await _hit(
+            client,
+            "GET",
+            f"/api/v1/runs/{random_id}/logs/archive",
+        )
 
     assert status_b == status_r == 404
     detail_b = _detail(body_b)

@@ -168,6 +168,57 @@ async def test_trigger_run(client, mock_pipeline_repo, mock_project_repo, mock_e
 
 
 @pytest.mark.asyncio
+async def test_trigger_run_includes_git_auth_metadata_without_plaintext(
+    client, mock_pipeline_repo, mock_project_repo, mock_run_repo, tenant_id, app
+):
+    project_id = uuid.uuid4()
+    pipeline_id = uuid.uuid4()
+    env_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    run = _make_orm_run(
+        project_id=project_id,
+        pipeline_id=pipeline_id,
+        environment_id=env_id,
+        tenant_id=tenant_id,
+    )
+
+    pl = MagicMock()
+    pl.id = pipeline_id
+    pl.project_id = project_id
+    mock_pipeline_repo.get_by_id.return_value = pl
+
+    proj = MagicMock()
+    proj.id = project_id
+    proj.tenant_id = tenant_id
+    proj.default_branch = "main"
+    proj.default_env_id = env_id
+    proj.git_url = "https://github.com/example/private.git"
+    proj.git_auth_method = "token"
+    proj.credential_id = credential_id
+    proj.shallow_clone = True
+    mock_project_repo.get_for_tenant.return_value = proj
+    mock_run_repo.create.return_value = run
+
+    app.state.container.arq_pool = None
+
+    resp = await client.post(
+        "/api/v1/runs",
+        json={"pipeline_id": str(pipeline_id)},
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 201, resp.text
+    metadata = mock_run_repo.create.call_args.kwargs["metadata_"]
+    assert metadata == {
+        "git_url": "https://github.com/example/private.git",
+        "git_auth_method": "token",
+        "credential_id": str(credential_id),
+        "shallow_clone": True,
+        "default_branch": "main",
+    }
+
+
+@pytest.mark.asyncio
 async def test_trigger_run_enqueues_without_arq_pool(client, mock_pipeline_repo, mock_project_repo, mock_environment_repo, mock_run_repo, tenant_id, app):
     """When arq_pool is None, run stays queued (cron will pick it up)."""
     project_id = uuid.uuid4()
@@ -396,6 +447,52 @@ async def test_get_run_artifacts(client, mock_run_repo, mock_artifact_repo, tena
     )
     assert resp.status_code == 200
     assert resp.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_archived_run_logs_reads_s3_jsonl(
+    client, mock_run_repo, tenant_id, app
+):
+    run = _make_orm_run(tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.return_value = run
+
+    s3_client = AsyncMock()
+    s3_client.get_object.return_value = {
+        "Body": b'{"stream": "stdout", "line": "first"}\n'
+        b'{"stream": "stderr", "line": "second"}\n'
+    }
+    app.state.container.redis_client = AsyncMock()
+    app.state.container.s3_client = s3_client
+    app.state.container.settings.s3_bucket = "qa-platform"
+
+    resp = await client.get(
+        f"/api/v1/runs/{run.id}/logs/archive",
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 2
+    assert body["data"] == [
+        {"stream": "stdout", "line": "first"},
+        {"stream": "stderr", "line": "second"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_archived_run_logs_returns_503_without_s3(
+    client, mock_run_repo, tenant_id, app
+):
+    run = _make_orm_run(tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.return_value = run
+    app.state.container.s3_client = None
+
+    resp = await client.get(
+        f"/api/v1/runs/{run.id}/logs/archive",
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 503
 
 
 @pytest.mark.asyncio

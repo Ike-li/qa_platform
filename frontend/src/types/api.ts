@@ -11,7 +11,7 @@ export interface Project {
   slug: string;
   description: string | null;
   git_url: string;
-  git_auth_method: "none" | "token" | "ssh_key";
+  git_auth_method: GitAuthMethod;
   credential_id: string | null;
   default_branch: string;
   root_path: string;
@@ -25,12 +25,77 @@ export interface Project {
   updated_at: string;
 }
 
+export type GitAuthMethod = "none" | "token" | "ssh_key";
+
+export interface ProjectCreatePayload {
+  name: string;
+  slug: string;
+  description?: string | null;
+  git_url: string;
+  git_auth_method: GitAuthMethod;
+  credential_id?: string | null;
+  default_branch: string;
+  root_path: string;
+  shallow_clone?: boolean;
+  default_env_id?: string | null;
+  settings?: Record<string, unknown>;
+}
+
+export type ProjectUpdatePayload = Partial<
+  Pick<
+    ProjectCreatePayload,
+    | "name"
+    | "description"
+    | "git_url"
+    | "git_auth_method"
+    | "credential_id"
+    | "default_branch"
+    | "root_path"
+    | "shallow_clone"
+    | "default_env_id"
+    | "settings"
+  >
+> & {
+  silent_windows?: SilentWindow[];
+  status?: "active" | "archived";
+};
+
 export interface PipelineStage {
   name: string;
-  command: string;
-  timeout_seconds?: number;
-  env?: Record<string, string>;
-  depends_on?: string[];
+  plugin: string;
+  config: Record<string, unknown>;
+  continue_on_error: boolean;
+  phase: "prepare" | "execute" | "collect" | "notify" | null;
+}
+
+export interface PipelineSelector {
+  include_paths: string[];
+  exclude_paths: string[];
+  tags: string[];
+  expression: string | null;
+  regex: string | null;
+  on_empty: "fail" | "skip" | "warn";
+}
+
+export interface PipelineTriggerConfig {
+  type: string;
+  dedup_window_seconds: number | null;
+  source: Record<string, unknown>;
+  conditions: Record<string, unknown>;
+  target: Record<string, unknown>;
+}
+
+export interface PipelineRetryPolicy {
+  max_attempts: number;
+  retry_on: string[];
+  backoff_seconds: number;
+  scope: "pipeline" | "stage";
+}
+
+export interface PipelineCollector {
+  plugin: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
 }
 
 export interface Pipeline {
@@ -38,38 +103,134 @@ export interface Pipeline {
   project_id: string;
   name: string;
   stages: PipelineStage[];
-  selector: { framework: string; pattern: string; tags?: string[] };
-  trigger_config: { on_push: boolean; on_schedule?: string; branches?: string[] };
+  selector: PipelineSelector;
+  trigger_config: PipelineTriggerConfig;
+  collectors: PipelineCollector[];
   timeout_seconds: number;
-  retry_policy: { max_retries: number; backoff: "fixed" | "exponential" } | null;
+  retry_policy: PipelineRetryPolicy | null;
   enabled: boolean;
   created_at: string;
   updated_at: string;
 }
 
-export interface Environment {
+export interface PipelineCreatePayload {
+  name: string;
+  stages?: PipelineStage[];
+  selector?: PipelineSelector;
+  trigger_config?: PipelineTriggerConfig;
+  collectors?: PipelineCollector[];
+  timeout_seconds?: number;
+  retry_policy?: PipelineRetryPolicy | null;
+  enabled?: boolean;
+}
+
+export type PipelineUpdatePayload = Partial<PipelineCreatePayload>;
+
+export type NetworkPolicy = "allow" | "deny" | "restricted";
+
+export interface EnvironmentResponse {
   id: string;
   project_id: string;
   name: string;
+  base_image: string;
+  setup_script: string | null;
+  memory_mb: number;
+  cpu_cores: number;
+  disk_mb: number | null;
+  max_artifact_size_mb: number;
+  max_artifacts_count: number;
+  network_policy: NetworkPolicy;
+  env_vars: Record<string, string>;
+  cache_key: string | null;
+  created_at: string;
+}
+
+export interface Environment extends Omit<EnvironmentResponse, "env_vars"> {
   variables: Record<string, string>;
+  updated_at?: string;
+}
+
+export interface CreateEnvironmentPayload {
+  name: string;
+  base_image: string;
+  setup_script?: string | null;
+  memory_mb?: number;
+  cpu_cores?: number;
+  disk_mb?: number | null;
+  max_artifact_size_mb?: number;
+  max_artifacts_count?: number;
+  network_policy?: NetworkPolicy;
+  env_vars?: Record<string, string>;
+  cache_key?: string | null;
+}
+
+export type UpdateEnvironmentPayload = Partial<CreateEnvironmentPayload>;
+
+export type BackendRunStatus =
+  | "queued"
+  | "preparing"
+  | "running"
+  | "collecting"
+  | "done"
+  | "failed"
+  | "timeout"
+  | "cancelled";
+
+export type RunStatus =
+  | "queued"
+  | "preparing"
+  | "running"
+  | "collecting"
+  | "passed"
+  | "failed"
+  | "cancelled"
+  | "timed_out"
+  | "unknown";
+
+export interface RunSummary {
+  total?: number;
+  passed?: number;
+  failed?: number;
+  skipped?: number;
+  error?: number;
+  pass_rate?: number;
+  [key: string]: unknown;
+}
+
+export interface RunResponse {
+  id: string;
+  tenant_id: string;
+  project_id: string;
+  pipeline_id: string;
+  pipeline_name: string;
+  environment_id: string;
+  status: BackendRunStatus | string;
+  trigger_type: string;
+  priority: number;
+  triggered_by: string | null;
+  git_ref: string;
+  git_sha: string | null;
+  attempt: number;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  summary: RunSummary | null;
+  error_message: string | null;
   created_at: string;
   updated_at: string;
 }
-
-export type RunStatus = "queued" | "preparing" | "running" | "collecting" | "passed" | "failed" | "cancelled" | "timed_out";
 
 export interface Run {
   id: string;
   project_id: string;
   pipeline_id: string;
   pipeline_name: string;
+  environment_id: string;
   status: RunStatus;
   branch: string;
   git_sha: string | null;
-  triggered_by: string;
-  trigger_type: "manual" | "schedule" | "webhook";
-  env_overrides: Record<string, string>;
-  params: Record<string, unknown>;
+  triggered_by: string | null;
+  trigger_type: string;
   started_at: string | null;
   finished_at: string | null;
   duration_seconds: number | null;
@@ -78,11 +239,17 @@ export interface Run {
   failed_tests: number;
   skipped_tests: number;
   error_message: string | null;
-  worker_id: string | null;
-  cancel_requested_at: string | null;
   priority: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface TriggerRunPayload {
+  pipeline_id: string;
+  branch?: string;
+  git_sha?: string;
+  environment_id?: string;
+  priority?: number;
 }
 
 export interface TestResult {
@@ -90,7 +257,7 @@ export interface TestResult {
   run_id: string;
   suite: string;
   name: string;
-  status: "passed" | "failed" | "skipped" | "error";
+  status: "passed" | "failed" | "skipped" | "error" | "xfail";
   duration_ms: number;
   error_message: string | null;
   stack_trace: string | null;
@@ -110,14 +277,21 @@ export interface Artifact {
   created_at: string;
 }
 
+export interface RunLogEntry {
+  stream: string;
+  line: string;
+}
+
 export interface NotificationCondition {
   field: "status" | "pass_rate" | "failed";
   operator: "eq" | "ne" | "lt" | "gt" | "lte" | "gte";
   value: string | number;
 }
 
+export type NotificationChannelType = "email" | "webhook" | "dingtalk" | "wecom" | "slack";
+
 export interface NotificationChannel {
-  type: "email" | "webhook";
+  type: NotificationChannelType;
   config: Record<string, string>;
 }
 
@@ -131,6 +305,13 @@ export interface NotificationRule {
   template: string | null;
   created_at: string;
 }
+
+export type NotificationRuleCreatePayload = Pick<
+  NotificationRule,
+  "name" | "enabled" | "conditions" | "channels" | "template"
+>;
+
+export type NotificationRuleUpdatePayload = Partial<NotificationRuleCreatePayload>;
 
 export interface PaginatedResponse<T> {
   data: T[];

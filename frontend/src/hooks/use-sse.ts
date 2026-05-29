@@ -10,11 +10,11 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<Event | null>(null);
   const [lastEventId, setLastEventId] = useState<string | null>(null);
-  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'polling'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const eventSourceRef = useRef<EventSource | null>(null);
+  const lastEventIdRef = useRef<string | null>(null);
   const retryCount = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const maxRetries = 5;
 
   const cleanup = useCallback(() => {
@@ -22,32 +22,15 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
     }
-    if (pollTimerRef.current) {
-      clearInterval(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
     }
   }, []);
 
-  const startPolling = useCallback(() => {
-    if (pollTimerRef.current) {
-      clearInterval(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
-    setStatus('polling');
-    const poll = async () => {
-      try {
-        const { data: polled } = await api.get<T>(url);
-        setData(polled);
-      } catch {
-        // Polling failure is non-fatal; next interval will retry.
-      }
-    };
-    poll();
-    pollTimerRef.current = setInterval(poll, 5000);
+  useEffect(() => {
+    lastEventIdRef.current = null;
+    queueMicrotask(() => setLastEventId(null));
   }, [url]);
 
   useEffect(() => {
@@ -62,7 +45,6 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
         return;
       }
 
-      retryCount.current = 0;
       setStatus('connecting');
 
       let ticket: string;
@@ -74,13 +56,15 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
           retryCount.current += 1;
           const timeout = Math.min(1000 * Math.pow(2, retryCount.current), 30000);
           retryTimerRef.current = setTimeout(connect, timeout);
-        } else {
-          startPolling();
         }
         return;
       }
 
-      const sseUrl = `${url}${url.includes('?') ? '&' : '?'}ticket=${encodeURIComponent(ticket)}`;
+      const query = new URLSearchParams({ ticket });
+      if (lastEventIdRef.current) {
+        query.set('last_event_id', lastEventIdRef.current);
+      }
+      const sseUrl = `${url}${url.includes('?') ? '&' : '?'}${query.toString()}`;
       const es = new EventSource(sseUrl);
       eventSourceRef.current = es;
 
@@ -91,7 +75,9 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
       };
 
       const handleMessage = (event: MessageEvent) => {
-        setLastEventId(event.lastEventId || null);
+        const nextLastEventId = event.lastEventId || null;
+        lastEventIdRef.current = nextLastEventId;
+        setLastEventId(nextLastEventId);
         try {
           const parsed = JSON.parse(event.data) as T;
           setData(parsed);
@@ -115,8 +101,6 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
           retryCount.current += 1;
           const timeout = Math.min(1000 * Math.pow(2, retryCount.current), 30000);
           retryTimerRef.current = setTimeout(connect, timeout);
-        } else {
-          startPolling();
         }
       };
     };
@@ -124,7 +108,7 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
     connect();
 
     return cleanup;
-  }, [url, enabled, cleanup, startPolling]);
+  }, [url, enabled, cleanup]);
 
   return { data, status, error, lastEventId };
 }

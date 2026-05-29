@@ -35,6 +35,19 @@ def _session_returning_role(raw_role_value):
     return session
 
 
+def _session_returning_project_then_role(project_id, raw_role_value):
+    """Return a session for require_project_permission's project + role queries."""
+    session = AsyncMock()
+
+    project_result = MagicMock()
+    project_result.scalar_one_or_none = MagicMock(return_value=project_id)
+    role_result = MagicMock()
+    role_result.scalar_one_or_none = MagicMock(return_value=raw_role_value)
+
+    session.execute = AsyncMock(side_effect=[project_result, role_result])
+    return session
+
+
 class TestEnforceProjectAction:
     """The intersection should:
     - allow tenant Owner/Admin without consulting ProjectMember (bypass)
@@ -189,3 +202,62 @@ class TestRequireProjectPermission:
 
         with pytest.raises(ValueError, match="non-project-scoped"):
             require_project_permission(Action.PROJECT_CREATE)
+
+    @pytest.mark.asyncio
+    async def test_missing_or_cross_tenant_project_raises_404_before_rbac(self):
+        from qaplatform.api.deps import require_project_permission
+
+        dep = require_project_permission(Action.PIPELINE_READ)
+        inner = dep.dependency
+        project_id = uuid.uuid4()
+
+        request = MagicMock()
+        request.path_params = {"project_id": str(project_id)}
+        user = _user(role="member")
+
+        project_result = MagicMock()
+        project_result.scalar_one_or_none = MagicMock(return_value=None)
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=project_result)
+
+        with pytest.raises(HTTPException) as exc:
+            await inner(request, user, session)
+        assert exc.value.status_code == 404
+        assert exc.value.detail == "Project not found"
+        assert session.execute.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_visible_project_member_without_membership_is_403(self):
+        from qaplatform.api.deps import require_project_permission
+
+        dep = require_project_permission(Action.PIPELINE_READ)
+        inner = dep.dependency
+        project_id = uuid.uuid4()
+
+        request = MagicMock()
+        request.path_params = {"project_id": str(project_id)}
+        user = _user(role="member")
+        session = _session_returning_project_then_role(project_id, None)
+
+        with pytest.raises(HTTPException) as exc:
+            await inner(request, user, session)
+        assert exc.value.status_code == 403
+        assert session.execute.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_tenant_owner_bypasses_project_visibility_lookup(self):
+        from qaplatform.api.deps import require_project_permission
+
+        dep = require_project_permission(Action.PIPELINE_EDIT)
+        inner = dep.dependency
+        project_id = uuid.uuid4()
+
+        request = MagicMock()
+        request.path_params = {"project_id": str(project_id)}
+        user = _user(role="owner")
+
+        session = AsyncMock()
+        session.execute = AsyncMock(side_effect=AssertionError("should not query"))
+
+        await inner(request, user, session)
+        session.execute.assert_not_called()

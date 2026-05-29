@@ -70,7 +70,6 @@ async def _authenticate_jwt(token: str, container: DependencyContainer) -> Curre
     # Blacklist check — only when jti is present (old tokens without jti pass through)
     jti = payload.get("jti")
     if jti is not None:
-        from qaplatform.api.auth.jwt_service import JWTService
         import logging
 
         jwt_svc = JWTService(settings, redis=container.redis_client)
@@ -178,7 +177,7 @@ async def _authenticate_api_token(
         role=user_role,
         tenant_id=user_tenant_id,
         is_platform_admin=user_is_platform_admin,
-        scopes=list(token.scopes) if token.scopes else None,
+        scopes=list(token.scopes) if token.scopes is not None else None,
     )
 
 

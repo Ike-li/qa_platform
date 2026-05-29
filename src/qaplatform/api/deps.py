@@ -86,6 +86,19 @@ class UserIdentity:
     role: str
     tenant_id: UUID
     is_platform_admin: bool = False
+    scopes: list[str] | None = None
+
+
+def _identity_scopes(identity: Any) -> list[str] | None:
+    """Return explicit API-token scopes while ignoring loose test doubles."""
+    scopes = getattr(identity, "scopes", None)
+    if scopes is None:
+        return None
+    if isinstance(scopes, list):
+        return scopes
+    if isinstance(scopes, (tuple, set, frozenset)):
+        return list(scopes)
+    return None
 
 
 def get_container(request: Request):
@@ -105,6 +118,7 @@ async def get_current_user(
         role=mw_user.role,
         tenant_id=UUID(str(mw_user.tenant_id)),
         is_platform_admin=getattr(mw_user, "is_platform_admin", False),
+        scopes=_identity_scopes(mw_user),
     )
 
 
@@ -120,6 +134,7 @@ async def get_current_user_bearer_only(
         role=mw_user.role,
         tenant_id=UUID(str(mw_user.tenant_id)),
         is_platform_admin=getattr(mw_user, "is_platform_admin", False),
+        scopes=_identity_scopes(mw_user),
     )
 
 
@@ -142,7 +157,7 @@ def require_permission(action: "Action"):
     keeps backward-compatible behaviour for endpoints without a project
     context (e.g. ``project.create``, account-scoped tokens).
     """
-    from qaplatform.api.auth.permissions import Action, PermissionContext, check_permission
+    from qaplatform.api.auth.permissions import PermissionContext, check_permission
 
     def _check(user: CurrentUser):
         ctx = PermissionContext(
@@ -150,7 +165,7 @@ def require_permission(action: "Action"):
             role=user.role,
             tenant_id=str(user.tenant_id),
             is_platform_admin=getattr(user, "is_platform_admin", False),
-            scopes=getattr(user, "scopes", None),
+            scopes=_identity_scopes(user),
         )
         if not check_permission(ctx, action):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -189,6 +204,23 @@ async def _resolve_project_role(
         return None
 
 
+async def _ensure_project_visible(
+    session: AsyncSession,
+    user: "UserIdentity",
+    project_id: UUID,
+) -> None:
+    """Hide missing, cross-tenant, and soft-deleted projects behind one 404."""
+    from qaplatform.infra.database.models import Project
+
+    stmt = select(Project.id).where(
+        Project.id == project_id,
+        Project.tenant_id == user.tenant_id,
+        Project.deleted_at.is_(None),
+    )
+    if (await session.execute(stmt)).scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+
 def require_project_permission(action: Action, *, project_id_param: str = "project_id"):
     """FastAPI dependency factory that enforces tenant ∩ project RBAC.
 
@@ -221,6 +253,7 @@ def require_project_permission(action: Action, *, project_id_param: str = "proje
         tenant_role = normalize_tenant_role(user.role)
         project_role: ProjectRole | None = None
         if not getattr(user, "is_platform_admin", False) and tenant_role not in (Role.OWNER, Role.ADMIN):
+            await _ensure_project_visible(session, user, project_id)
             project_role = await _resolve_project_role(session, user, project_id)
 
         ctx = PermissionContext(
@@ -230,6 +263,7 @@ def require_project_permission(action: Action, *, project_id_param: str = "proje
             project_id=str(project_id),
             project_role=project_role,
             is_platform_admin=getattr(user, "is_platform_admin", False),
+            scopes=_identity_scopes(user),
         )
         if not check_permission(ctx, action):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -270,6 +304,7 @@ async def enforce_project_action(
         project_role=project_role,
         is_own_resource=is_own_resource,
         is_platform_admin=getattr(user, "is_platform_admin", False),
+        scopes=_identity_scopes(user),
     )
     if not check_permission(ctx, action):
         raise HTTPException(status_code=403, detail="Insufficient permissions")

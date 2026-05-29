@@ -4,12 +4,13 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID
 
 from opentelemetry import trace
 from sqlalchemy import select as _select
 
 from qaplatform.domain.models.run import RunStatus
-from qaplatform.infra.database.models import Project
+from qaplatform.infra.database.models import Credential, Project
 
 log = logging.getLogger(__name__)
 
@@ -56,13 +57,88 @@ def _should_retry(exc: Exception, retry_policy: dict | None, current_attempt: in
         return False
     if not retry_policy.get("enabled", True):
         return False
-    max_retries = retry_policy.get("max_retries", 0)
+    retry_on = retry_policy.get("retry_on") or []
+    if retry_on and "infra" not in retry_on:
+        return False
+    max_retries = _max_retries_from_policy(retry_policy)
     if max_retries <= 0:
         return False
     if current_attempt >= max_retries + 1:
         return False
     if not isinstance(exc, _INFRA_EXCEPTIONS):
         return False
+    return True
+
+
+def _max_retries_from_policy(retry_policy: dict) -> int:
+    """Return retry count from legacy max_retries or API-facing max_attempts."""
+    if "max_retries" in retry_policy:
+        return int(retry_policy.get("max_retries") or 0)
+    if "max_attempts" in retry_policy:
+        return max(0, int(retry_policy.get("max_attempts") or 1) - 1)
+    return 0
+
+
+async def _schedule_retry_for_run(
+    original: Any,
+    exc: Exception,
+    *,
+    run_repo: Any,
+    arq: Any,
+    settings: Any,
+) -> bool:
+    """Create a retry run and put it in the scheduler lane.
+
+    ``False`` means no retry run was created. A retry run that is waiting due to
+    capacity still counts as scheduled because the dequeue cron can pick it up.
+    """
+    from qaplatform.worker.scheduler import FairScheduler
+
+    retry_policy = getattr(original.pipeline, "retry_policy", None)
+    if not _should_retry(exc, retry_policy, original.attempt):
+        return False
+
+    backoff = retry_policy.get("backoff_seconds", 30)
+    delay = backoff * (2 ** (original.attempt - 1))
+    retry_group_id = original.retry_group_id or original.id
+
+    retry_run = await run_repo.create(
+        tenant_id=original.tenant_id,
+        project_id=original.project_id,
+        pipeline_id=original.pipeline_id,
+        environment_id=original.environment_id,
+        git_ref=original.git_ref,
+        git_sha=original.git_sha,
+        priority=original.priority,
+        triggered_by=original.triggered_by,
+        trigger_type=original.trigger_type,
+        metadata_=dict(original.metadata_ or {}),
+        retry_group_id=retry_group_id,
+        attempt=original.attempt + 1,
+        source_run_id=original.id,
+        chain_depth=(original.chain_depth or 0) + 1,
+    )
+
+    scheduler = FairScheduler(arq, run_repo, settings)
+    enqueued = await scheduler.enqueue(retry_run, _defer_by=delay)
+    if enqueued:
+        log.info(
+            "retry_scheduled",
+            extra={
+                "original_run_id": str(original.id),
+                "retry_run_id": str(retry_run.id),
+                "attempt": retry_run.attempt,
+                "delay_seconds": delay,
+            },
+        )
+    else:
+        log.info(
+            "retry_waiting",
+            extra={
+                "original_run_id": str(original.id),
+                "retry_run_id": str(retry_run.id),
+            },
+        )
     return True
 
 
@@ -74,7 +150,6 @@ async def _attempt_retry(
 ) -> bool:
     """Create a retry run and enqueue it. Returns True if a retry was scheduled."""
     from qaplatform.infra.database.repositories.run_repo import RunRepository
-    from qaplatform.worker.scheduler import FairScheduler
 
     async with session_factory() as session:
         run_repo = RunRepository(session)
@@ -87,51 +162,15 @@ async def _attempt_retry(
         if not _should_retry(exc, retry_policy, original.attempt):
             return False
 
-        # Compute backoff delay (exponential: delay * 2^(attempt-1))
-        backoff = retry_policy.get("backoff_seconds", 30)
-        delay = backoff * (2 ** (original.attempt - 1))
-
-        # Create retry run
-        retry_run = await run_repo.create(
-            tenant_id=original.tenant_id,
-            project_id=original.project_id,
-            pipeline_id=original.pipeline_id,
-            environment_id=original.environment_id,
-            git_ref=original.git_ref,
-            triggered_by=original.triggered_by,
-            trigger_type=original.trigger_type,
-            metadata_=dict(original.metadata_ or {}),
-            retry_group_id=original.retry_group_id,
-            attempt=original.attempt + 1,
-            source_run_id=original.id,
+        scheduled = await _schedule_retry_for_run(
+            original,
+            exc,
+            run_repo=run_repo,
+            arq=ctx["arq_pool"],
+            settings=ctx["settings"],
         )
         await session.commit()
-
-        # Enqueue while session is still open — scheduler uses run_repo
-        arq = ctx["arq_pool"]
-        settings = ctx["settings"]
-
-        scheduler = FairScheduler(arq, run_repo, settings)
-        enqueued = await scheduler.enqueue(retry_run, _defer_by=delay)
-        if enqueued:
-            log.info(
-                "retry_scheduled",
-                extra={
-                    "original_run_id": str(run_id),
-                    "retry_run_id": str(retry_run.id),
-                    "attempt": retry_run.attempt,
-                    "delay_seconds": delay,
-                },
-            )
-        else:
-            log.warning(
-                "retry_enqueue_failed",
-                extra={
-                    "original_run_id": str(run_id),
-                    "retry_run_id": str(retry_run.id),
-                },
-        )
-    return enqueued
+        return scheduled
 
 
 async def execute_run(ctx: dict, run_id: str) -> None:
@@ -152,6 +191,7 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
     from qaplatform.infra.database.repositories.run_repo import (
         ArtifactRepository,
         RunRepository,
+        TestResultRepository,
     )
     from qaplatform.engine.events import publish_status_event
     from qaplatform.engine.executor import RunExecutor
@@ -175,8 +215,10 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
     async with session_factory() as session:
         run_repo = RunRepository(session)
         artifact_repo = ArtifactRepository(session)
+        test_result_repo = TestResultRepository(session)
         executor.run_repo = run_repo
         executor.artifact_repo = artifact_repo
+        executor.test_result_repo = test_result_repo
 
         # 1. Claim the run
         run = await run_repo.claim_for_worker(run_id, worker_id=worker_id)
@@ -223,14 +265,22 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
         try:
             # 2. Execute the pipeline
             crypto = getattr(ctx.get("container"), "crypto_service", None)
-            config = _build_pipeline_config(run, run.pipeline, run.environment, crypto)
+            source_auth = await _build_source_auth(run, project, session, crypto)
+            config = _build_pipeline_config(
+                run,
+                run.pipeline,
+                run.environment,
+                crypto,
+                source_auth=source_auth,
+            )
             status = await executor.execute(run, config)
             # Terminal state (finish_if_current / fail_if_current) is written
             # inside executor.execute() with summary; no redundant write here.
 
-            # Retry is handled in the except branch below — when the executor
-            # returns FAILED the real infra exception is already swallowed
-            # inside executor.execute() and cannot be recovered here.
+            # Retry is handled in the except branch below. Real infra
+            # exceptions bubble out of the executor after it writes the
+            # terminal failed state; ordinary test/setup failures return
+            # FAILED and must not be retried.
 
         except Exception as exc:
             log.exception("execute_run failed for run %s", run_id)
@@ -241,6 +291,12 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
             )
             if updated:
                 log.info("run %s marked as failed: %s", run_id, exc)
+
+            # Release the failed-row update before the retry scheduler opens a
+            # fresh session to inspect the original run and create the child
+            # retry. Without this commit, PostgreSQL can make the retry path
+            # wait on the worker's own uncommitted row lock.
+            await session.commit()
 
             # Auto-retry on infrastructure exception
             await _attempt_retry(run_id, exc, ctx, session_factory)
@@ -284,8 +340,60 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
 
             await session.commit()
 
-def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
-    from qaplatform.engine.executor import PipelineConfig, StageDefinition
+async def _build_source_auth(run, project, session, crypto) -> dict[str, str] | None:
+    metadata = getattr(run, "metadata_", None) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    method = metadata.get("git_auth_method") or project.git_auth_method
+    credential_id = metadata.get("credential_id") or project.credential_id
+    if method == "none" or not credential_id:
+        return None
+    if method not in {"token", "ssh_key"}:
+        raise RuntimeError(f"Unsupported project Git auth method: {method}")
+    if crypto is None:
+        raise RuntimeError("Crypto service not initialised")
+
+    try:
+        credential_uuid = UUID(str(credential_id))
+    except ValueError as exc:
+        raise RuntimeError("Invalid project Git credential id") from exc
+
+    result = await session.execute(
+        _select(Credential).where(
+            Credential.id == credential_uuid,
+            Credential.project_id == project.id,
+            Credential.tenant_id == project.tenant_id,
+            Credential.deleted_at.is_(None),
+        )
+    )
+    credential = result.scalar_one_or_none()
+    if credential is None:
+        raise RuntimeError("Project Git credential not found")
+
+    expected_type = "token" if method == "token" else "ssh_key"
+    if credential.type != expected_type:
+        raise RuntimeError("Project Git credential type mismatch")
+
+    secret = crypto.decrypt(
+        credential.encrypted_value,
+        context_id=f"credential:{project.id}:{credential.name}",
+    )
+    return {"method": method, "secret": secret}
+
+
+def _build_pipeline_config(
+    run,
+    pipeline_orm,
+    environment_orm,
+    crypto=None,
+    source_auth: dict[str, str] | None = None,
+):
+    from qaplatform.engine.executor import (
+        CollectorDefinition,
+        PipelineConfig,
+        StageDefinition,
+    )
     from qaplatform.engine.docker_backend import ResourceLimits
     from qaplatform.domain.services.env_vars_crypto import (
         decrypt_env_vars,
@@ -314,6 +422,24 @@ def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
     else:
         env_vars = dict(raw_env_vars)
 
+    raw_resource_limits = environment_orm.resource_limits or {}
+    max_artifact_size_mb = raw_resource_limits.get("max_artifact_size_mb", 100)
+    max_artifacts_count = raw_resource_limits.get("max_artifacts_count", 50)
+    disk_mb = raw_resource_limits.get("disk_mb")
+    disk_bytes = disk_mb * 1024 * 1024 if disk_mb else None
+    raw_collectors = getattr(pipeline_orm, "collectors", None)
+    if not isinstance(raw_collectors, list) or not raw_collectors:
+        raw_collectors = [{"plugin": "junit", "config": {}, "enabled": True}]
+    collectors = [
+        CollectorDefinition(
+            plugin=collector.get("plugin", "junit"),
+            config=collector.get("config") or {},
+            enabled=collector.get("enabled", True),
+        )
+        for collector in raw_collectors
+        if isinstance(collector, dict)
+    ] or [CollectorDefinition()]
+
     return PipelineConfig(
         image=environment_orm.base_image,
         stages=stages,
@@ -321,8 +447,13 @@ def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
         resource_limits=ResourceLimits(
             memory_bytes=environment_orm.memory_mb * 1024 * 1024,
             cpu_cores=environment_orm.cpu_cores,
+            disk_bytes=disk_bytes,
+            max_artifact_size_bytes=max_artifact_size_mb * 1024 * 1024,
+            max_artifacts_count=max_artifacts_count,
         ),
         network_policy=environment_orm.network_policy,
         timeout_seconds=pipeline_orm.timeout_seconds or 1800,
         setup_script=environment_orm.setup_script,
+        collectors=collectors,
+        source_auth=source_auth,
     )

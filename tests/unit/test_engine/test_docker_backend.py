@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from qaplatform.engine.docker_backend import (
     DockerBackend,
     ExecutionSpec,
-    LogLine,
     Mount,
     ResourceLimits,
     SandboxSecurity,
@@ -84,6 +82,11 @@ class TestDockerBackend:
         assert stream == "stdout"
         assert content == "plain output"
 
+    def test_decode_log_frame_aiodocker_text(self):
+        stream, content = DockerBackend._decode_log_frame("plain output\n")
+        assert stream == "stdout"
+        assert content == "plain output"
+
     # -- create_execution ----------------------------------------------------
 
     @pytest.mark.asyncio
@@ -110,12 +113,37 @@ class TestDockerBackend:
         config = call_kwargs.kwargs["config"]
         assert config["Image"] == "python:3.12"
         assert config["User"] == "1000:1000"
+        assert config["AttachStdout"] is True
+        assert config["AttachStderr"] is True
         assert config["HostConfig"]["ReadonlyRootfs"] is True
         assert config["HostConfig"]["PidsLimit"] == 256
         assert config["HostConfig"]["NetworkMode"] == "none"  # deny -> none
         assert "managed-by" in config["Labels"]
         assert config["Labels"]["run_id"] == "run-123"
         assert config["HostConfig"]["Tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=256m"}
+        assert "StorageOpt" not in config["HostConfig"]
+
+    @pytest.mark.asyncio
+    async def test_create_execution_sets_storage_opt_when_disk_limit_present(self):
+        mock_container = MagicMock()
+        mock_container.id = "disk-test"
+
+        mock_containers = MagicMock()
+        mock_containers.create_or_replace = AsyncMock(return_value=mock_container)
+        self.docker_client.containers = mock_containers
+
+        spec = ExecutionSpec(
+            image="busybox",
+            command=["true"],
+            env_vars={},
+            resource_limits=ResourceLimits(disk_bytes=64 * 1024 * 1024),
+            labels={"run_id": "r"},
+        )
+
+        await self.backend.create_execution(spec)
+
+        config = mock_containers.create_or_replace.call_args.kwargs["config"]
+        assert config["HostConfig"]["StorageOpt"] == {"size": "64M"}
 
     @pytest.mark.asyncio
     async def test_create_execution_disables_swap_to_enforce_memory_cap(self):
@@ -201,6 +229,24 @@ class TestDockerBackend:
         mock_container.show.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_wait_retries_oom_inspect_after_sigkill_exit(self):
+        mock_container = MagicMock()
+        mock_container.wait = AsyncMock(return_value={"StatusCode": 137})
+        mock_container.show = AsyncMock(
+            side_effect=[
+                {"State": {"OOMKilled": False, "ExitCode": 137}},
+                {"State": {"OOMKilled": True, "ExitCode": 137}},
+            ]
+        )
+        self.docker_client.containers.container = MagicMock(return_value=mock_container)
+
+        result = await self.backend.wait("container-id", timeout=10)
+
+        assert result.oom_killed is True
+        assert result.exit_code == 137
+        assert mock_container.show.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_wait_oom_killed_false_on_normal_exit(self):
         mock_container = MagicMock()
         mock_container.wait = AsyncMock(return_value={"StatusCode": 0})
@@ -226,6 +272,33 @@ class TestDockerBackend:
 
         assert result.oom_killed is False
         assert result.exit_code == 0
+
+    def test_parse_resource_usage_reads_peak_memory_cpu_and_pids(self):
+        stats = {
+            "memory_stats": {
+                "usage": 64 * 1024 * 1024,
+                "max_usage": 96 * 1024 * 1024,
+                "limit": 128 * 1024 * 1024,
+            },
+            "cpu_stats": {
+                "cpu_usage": {"total_usage": 300, "percpu_usage": [150, 150]},
+                "system_cpu_usage": 400,
+                "online_cpus": 2,
+            },
+            "precpu_stats": {
+                "cpu_usage": {"total_usage": 100},
+                "system_cpu_usage": 200,
+            },
+            "pids_stats": {"current": 5},
+        }
+
+        sample = DockerBackend._parse_resource_usage(stats)
+
+        assert sample.memory_usage_bytes == 64 * 1024 * 1024
+        assert sample.memory_max_usage_bytes == 96 * 1024 * 1024
+        assert sample.memory_limit_bytes == 128 * 1024 * 1024
+        assert sample.cpu_percent == pytest.approx(200.0)
+        assert sample.pids_current == 5
 
     # -- cancel ---------------------------------------------------------------
 
@@ -266,6 +339,7 @@ class TestDockerBackend:
         rl = ResourceLimits()
         assert rl.cpu_cores == 1.0
         assert rl.memory_bytes == 512 * 1024 * 1024
+        assert rl.disk_bytes is None
 
     def test_execution_spec_default_security(self):
         spec = ExecutionSpec(image="test", command=["test"], env_vars={})

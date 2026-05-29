@@ -156,11 +156,11 @@ Worker 抢占 (queued → preparing)
 触发通知 (按规则)
 ```
 
-当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；但 `disk_bytes` 未进入 Docker HostConfig，OOM/timeout 的资源用量记录也未形成验收闭环。`engine/executor.py` 只扫描工作目录 `results/` 下的直接文件并写入 S3/Artifact；目录型 Allure HTML report、递归资源目录上传，以及环境级 `max_artifact_size_mb` / `max_artifacts_count` 传递到 worker 并在上传侧强制校验仍需补齐。
+当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；环境 API 暴露 `disk_mb`，worker 可把 `Environment.resource_limits["disk_mb"]` 转成 `ResourceLimits.disk_bytes`，Docker backend 会在该值存在时写入 `HostConfig.StorageOpt.size`。OOM/timeout 会写 `summary.resource_termination` 与日志终止原因；Docker stats 峰值 CPU/内存采样已写 `summary.resource_termination.resource_usage`；稳定 Linux real-Docker 黑盒证据尚未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；上传侧会递归扫描工作目录 `results/` 下文件，保留相对路径写入 S3/Artifact 行，并把 `allure-report/`、`allure-results/` 目录下文件标记为 `allure-report` 类型。前端 Allure/HTML 报告预览主路径已有 E2E 覆盖，多资源报告加载体验仍需后续设计。
 
-当前 collector 边界：Pipeline 的 stage `plugin` 可以选择测试运行器，但结果收集器还不是 pipeline 级配置项；`RunExecutor.execute()` 当前固定调用 JUnit collector。PRD F-PL-01 中“配置结果收集器”的验收需后续补实现，或由 maintainer 决定把 JUnit-only 写成正式产品限制。
+当前 collector 边界：Pipeline 的 stage `plugin` 可以选择测试运行器，`collectors[]` 可以配置结果收集器；默认保持 JUnit。`RunExecutor.execute()` 会按 Pipeline 配置调用对应 collector，内置 JUnit collector 支持 `config.path` / `config.junit_xml` 相对路径。
 
-当前队列边界：`worker/scheduler.py` 会按 Run `priority` 把任务写入 `queue:high` / `queue:medium` / `queue:low`，并在入队前执行全局并发与单项目并发配额；`RunRepository.find_waiting()` 对等待队列按 `priority, created_at` 排序。部署侧当前默认 `WorkerSettings.queue_name=queue:medium`，`docker-compose.yml` 只启动一个未设置 `QAP_WORKER_QUEUE` 的 worker，因此 high/low 队列消费、高优先级插队与同优先级 FIFO 仍需补配置和端到端测试后才能视为 F-EX-08 完整闭环。
+当前队列边界：`worker/scheduler.py` 会按 Run `priority` 把任务写入 `queue:high` / `queue:medium` / `queue:low`，并在入队前执行全局并发与单项目并发配额；`RunRepository.find_waiting()` 对等待队列按 `priority, created_at` 排序。部署侧 `docker-compose.yml` 明确启动 high / medium / low 三个 worker 队列，单测覆盖 manual priority 到三类队列，真实 API/DB 测试覆盖 manual priority 写入 queue metadata，真实 DB 测试覆盖 priority + FIFO 排序。worker_lost 后自动重试仍归 F-EX-07。
 
 ### 6.2 状态机
 
@@ -182,15 +182,15 @@ queued → preparing → running → collecting → done
 
 ### 6.4 重试机制
 
-当前 `main` 的自动重试仍是部分实现：
+当前 `main` 的自动重试核心闭环已覆盖 API policy、retry Run 创建和 worker_lost 回收路径：
 
 - `worker/tasks.py::_should_retry()` 只允许 `ConnectionError` / `TimeoutError` / `OSError` 这类基础设施异常按 pipeline `retry_policy` 重试；测试断言失败不重试。
-- 当前 API schema 写入的 `RetryPolicyInput` 字段是 `max_attempts` / `retry_on` / `backoff_seconds` / `scope`，但 `_should_retry()` 读取的是 `max_retries`；按 API 创建的策略不会满足 worker 当前读取口径。
+- 当前 API schema 写入的 `RetryPolicyInput` 字段是 `max_attempts` / `retry_on` / `backoff_seconds` / `scope`；worker 读取 `max_attempts` 并兼容 legacy `max_retries`。
 - `worker/tasks.py::_attempt_retry()` 会创建共享 `retry_group_id`、`attempt + 1`、`source_run_id` 的新 Run，并用指数退避 `_defer_by` 重新入队。
-- `execute_run()` 只有在 `RunExecutor.execute()` 向外抛异常时才会调用 `_attempt_retry()`；但当前 `RunExecutor.execute()` 会捕获多数 clone / setup / Docker 执行异常，写 `FAILED` 后返回 `RunStatus.FAILED`，导致真实执行期基础设施失败不会进入重试路径。
-- `engine/reclaim.py` 的 worker_lost 逻辑当前只把失联 worker 的 Run 标记为 `failed` 并清理 orphan container，不会自动创建 retry Run。
+- `execute_run()` 在 `RunExecutor.execute()` 向外抛基础设施异常时会先提交 failed 状态释放行锁，再调用 `_attempt_retry()`；真实 DB 集成测试覆盖该 worker 入口路径。API/worker compose 黑盒场景已在 nightly/manual lane 覆盖 worker_lost retry。
+- `engine/reclaim.py` 的 worker_lost 逻辑会把失联 worker 的 Run 标记为 `failed`、清理 orphan container，并通过 worker callback 对命中 retry policy 的 run 创建 retry Run。
 
-因此 F-EX-07 的 retry predicate、retry Run 创建和单元测试已存在，但端到端自动重试闭环仍需补齐。
+因此 F-EX-07 的 retry predicate、retry Run 创建、execute_run 基础设施异常、worker_lost callback、真实 DB retry Run 和 worker_lost 外部栈黑盒已有测试证据；剩余增强是明确 clone/setup/Docker daemon 失败是否也应进入自动 retry，并补对应黑盒场景。
 
 ### 6.5 Webhook 触发流程
 
@@ -203,14 +203,16 @@ POST /api/v1/webhooks/{project_id}/trigger
     ├── 按 tenant + project_id 读取项目；跨租户返回 404
     ├── 如配置 webhook_secret，则验证 X-Webhook-Signature（HMAC-SHA256）
     ├── 校验当前用户对项目有 RUN_TRIGGER 权限
+    ├── 按 Project.settings.allowed_branches 做分支过滤
     ├── 选择项目首个 pipeline 与默认/首个 environment
     ├── 使用请求体 git_ref / git_sha / metadata 创建 webhook Run
+    ├── 使用 provider + git_url + git_sha + branch_name 写 dedup_key，避免同 commit 重复触发
     │
     ▼
 按当前 FairScheduler 入队执行（见 §6.1 队列边界）
 ```
 
-当前 `main` 尚未实现 Git 平台事件类型解析、按 repo URL 匹配项目、分支过滤和同 commit 去重；这些由 T06 Webhook 分支过滤 + 去重任务补齐。
+当前 `main` 的项目级 webhook 已实现 HMAC 验签、分支过滤和同 commit 去重；尚未实现 Git 平台事件类型解析与按 repo URL 匹配项目的 provider 级入口。
 
 ### 6.6 Worker 故障恢复
 
@@ -227,7 +229,7 @@ Scheduler 定期扫描（每 60s）
     ├── 发现 status=running 但 heartbeat 已过期的 Run
     ├── 标记为 failed（reason: worker_lost）
     ├── 清理孤儿容器（通过 Docker label 匹配 run_id）
-    ├── 当前不创建自动重试 Run
+    ├── 若 retry_policy 命中 infra retry，则创建新的 retry Run
     │
     ▼
 恢复完成
@@ -256,12 +258,12 @@ class RunnerProtocol(Protocol):
 @runtime_checkable
 class CollectorProtocol(Protocol):
     name: str
-    async def collect(self, run_id: UUID, working_dir: Path) -> list[TestResultData]: ...
+    async def collect(self, run_id: UUID, working_dir: Path, config: dict | None = None) -> list[TestResultData]: ...
 
 @runtime_checkable
 class SourceProtocol(Protocol):
     name: str
-    async def clone(self, url: str, ref: str, dest: Path) -> SourceRevision: ...
+    async def clone(self, url: str, ref: str, dest: Path, auth: dict | None = None) -> SourceRevision: ...
 ```
 
 `SourceRevision` 包含 `path: Path`、`sha: str`、`ref: str`，用于填充 Run 的 `git_sha` 字段。
@@ -270,7 +272,7 @@ class SourceProtocol(Protocol):
 
 | 插件 | 类型 | 说明 |
 |------|------|------|
-| git_source | Source | Git clone（支持 `https://` 与 SSH URL 形态校验，默认 `--depth 1` shallow clone）；私有 HTTPS token / SSH key 注入执行链路仍待补 |
+| git_source | Source | Git clone（支持 `https://` 与 SSH URL 形态校验，默认 `--depth 1` shallow clone）；HTTPS token 通过临时 `GIT_ASKPASS` 注入，SSH key 通过 0600 临时 key + `GIT_SSH_COMMAND` 注入，错误消息会脱敏 token/userinfo |
 | pytest_runner | Runner | 执行 pytest |
 | jest_runner | Runner | 执行 Jest |
 | playwright_runner | Runner | 执行 Playwright |
@@ -318,9 +320,9 @@ Run 1──N NotificationLog
 | Tenant | name, settings(JSONB) | 租户级配置（默认资源限制等） |
 | AppUser | username, email, role, is_platform_admin, is_active, last_login_at | 登录用户与租户级角色 |
 | ApiToken | token_id, secret_hash, scopes, expires_at, is_revoked | 机器访问 token，明文 token 不落库 |
-| Project | slug, git_url, git_auth_method, credential_id, default_branch, settings(JSONB), status | 项目聚合根，settings 当前承载 `webhook_secret` 等嵌入配置；`allowed_branches` / `silent_windows` 为 T06 / T05 计划写入同一 JSONB 的字段；`credential_id` 已可绑定但执行侧 clone 使用待补 |
-| Environment | base_image, setup_script, memory_mb, cpu_cores, resource_limits(JSONB), network_policy, env_vars(JSONB), cache_key | 执行环境；`memory_mb` / `cpu_cores` 是 ORM 离散列；API 暴露的 `max_artifact_size_mb` / `max_artifacts_count` 当前存放在 `resource_limits` JSONB 中，不是独立列；`env_vars` 当前仍为明文 JSONB，待 F-PL-02 加密 |
-| Pipeline | stages(JSONB), selector(JSONB), trigger_config(JSONB), retry_policy(JSONB), timeout_seconds, enabled | 管道定义，使用 JSONB 支持多阶段执行与不同 runner；当前没有 collector 选择字段，执行器固定 JUnit collector |
+| Project | slug, git_url, git_auth_method, credential_id, default_branch, settings(JSONB), status | 项目聚合根，settings 当前承载 `webhook_secret`、`allowed_branches` 等嵌入配置；`silent_windows` 为 T05 计划写入同一 JSONB 的字段；`credential_id` 可绑定项目内 Git 凭证，执行侧按 Run metadata 解密并注入 clone |
+| Environment | base_image, setup_script, memory_mb, cpu_cores, resource_limits(JSONB), network_policy, env_vars(JSONB), cache_key | 执行环境；`memory_mb` / `cpu_cores` 是 ORM 离散列；API 暴露的 `disk_mb` / `max_artifact_size_mb` / `max_artifacts_count` 当前存放在 `resource_limits` JSONB 中，不是独立列；`disk_mb` 可传到 Docker `StorageOpt.size`；`env_vars` 当前在 JSONB 中保存 AES-256-GCM envelope，API 读写和 worker 执行侧会按 environment_id AAD 解密 |
+| Pipeline | stages(JSONB), selector(JSONB), trigger_config(JSONB), collectors(JSONB), retry_policy(JSONB), timeout_seconds, enabled | 管道定义，使用 JSONB 支持多阶段执行、不同 runner 和 collector；默认 JUnit collector |
 | Schedule | cron_expr, timezone, quiet_windows(JSONB), next_run_at, last_run_at, last_error | 定时触发配置，当前已有 schedule 级 quiet window |
 | Run | status, trigger_type, priority, git_ref, git_sha, retry_group_id, attempt, dedup_key, duration_ms, summary | 执行记录，status 为状态机核心 |
 | TestResult | suite, name, status, duration_ms, error_message, stack_trace | 单条用例结果 |
@@ -340,7 +342,7 @@ Run 1──N NotificationLog
 
 ### 8.4 数据保留策略
 
-- 执行记录保留配置默认 90 天；worker 已注册 `cleanup_old_runs` cron，但当前 `main` 的函数缺 `datetime/timezone` 导入会导致触发失败，且仓储方法只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run、`cancelled/timeout`、artifact 对象清理和覆盖测试仍未闭环
+- 执行记录保留配置默认 90 天；worker 已注册 `cleanup_old_runs` cron，当前会硬删超期终态 Run（`done/failed/cancelled/timeout`）并通过 FK 级联清理 result/artifact/event，真实 Postgres 集成测试已覆盖该路径
 - 审计日志默认保留配置为 1095 天（`QAP_RETENTION_AUDIT_DAYS`）；当前 `main` 只有配置项，尚未发现独立审计清理任务
 - Run 日志归档到 S3；数据库执行记录当前目标是按保留期清理，DB 行冷归档未实现
 - MVP 阶段使用普通表 + 覆盖索引；数据量达到阈值后迁移到按时间分区
@@ -360,7 +362,7 @@ Run 1──N NotificationLog
 ### 9.1 认证
 
 - JWT access token（短期，1 小时）+ refresh token（长期，7 天）
-- API Token 用于机器对机器调用；当前创建、过期、吊销与认证已实现，scope enforcement 在 `check_permission` 层有能力，但项目级路由传递仍需补齐
+- API Token 用于机器对机器调用；当前创建、过期、吊销、认证与 scope enforcement 已实现，tenant/project 权限依赖会传递 token scopes；真实 API 测试覆盖只读、`run.trigger`、artifact download 与 archived logs 的 `run.read`、audit-events 的 `audit.read`、错误/空 scope
 - 密码使用 Argon2id 哈希
 
 ### 9.2 授权
@@ -391,14 +393,14 @@ Run 1──N NotificationLog
 - 每次执行在独立容器中运行
 - 容器网络策略按环境配置：默认 `deny` 对应 Docker `NetworkMode=none`；`allow` 显式使用 bridge；`restricted` 映射到 `qap-restricted`，该网络需部署侧预先创建
 - 容器默认以 `1000:1000` 运行，rootfs 只读，drop all capabilities，并启用 `no-new-privileges`
-- 资源限制：CPU / 内存已在 Docker HostConfig 中设置；磁盘限制、产物大小/数量上传侧校验、OOM/timeout 资源用量记录仍待补齐
+- 资源限制：CPU / 内存已在 Docker HostConfig 中设置；API `disk_mb` 可传到 Docker `StorageOpt.size`，产物大小/数量上传侧会校验；OOM/timeout 终止原因已写 summary/日志；稳定 Linux real-Docker 峰值 CPU/内存黑盒证据仍待补齐
 - 执行结束后容器和临时文件销毁
 - 当前 Compose worker 直接挂载 `/var/run/docker.sock` 以创建测试容器；生产部署必须按风险表加固为 Socket Proxy / rootless Docker / gVisor，或迁移到 K8s Job 后端
 
 ### 9.4 敏感数据
 
-- Git 凭证使用 AES-256-GCM 加密存储；执行侧解密并安全注入 Git clone 仍待 F-PM-01 / F-PM-02 补齐
-- 环境变量 `env_vars` 当前仍为明文 JSONB，待 T01 / F-PL-02 补齐加密存储
+- Git 凭证使用 AES-256-GCM 加密存储；Run metadata 只保存 `git_auth_method` / `credential_id` 引用，worker 执行时按项目/租户校验后解密并安全注入 Git clone
+- 环境变量 `env_vars` 使用 AES-256-GCM envelope 加密存入 JSONB，AAD 绑定 environment_id；API 响应和 worker 执行侧按需解密，审计状态只记录 redacted/count
 - 加密密钥通过环境变量注入，不落盘
 - API 响应中不返回凭证明文
 
@@ -412,7 +414,7 @@ Run 1──N NotificationLog
 
 ### 9.6 审计
 
-- 关键写操作记录审计事件（who/what/when/from_where）；当前主路径已覆盖，批量取消/批量重试等覆盖率仍需补齐
+- 关键写操作记录审计事件（who/what/when/from_where）；当前主路径已覆盖，批量取消/批量重试已补 audit 写入与真实 DB 验证
 - 审计事件类型：用户登录/登出、项目变更、凭证操作、执行触发/取消、权限变更
 - 审计日志默认保留配置为 3 年（1095 天），由 `QAP_RETENTION_AUDIT_DAYS` 控制
 - 目标提供审计日志查询 API（仅 Admin+ 可访问）；当前 `main` 写入端已就位，查询路由待 T02 补齐
@@ -429,7 +431,7 @@ Run 1──N NotificationLog
 
 - 使用 Redis Stream 作为日志缓冲（MAXLEN 10000 条/Run）
 - 客户端断线重连时通过 `Last-Event-ID` 续传
-- 执行结束后日志归档到 S3；归档成功后 Redis Stream 设置短 TTL，归档失败时保留 24h TTL 便于排查；当前仅实现归档写入，Redis TTL 过期后的归档日志读回 API / UI 仍缺失；`retry_failed_archives` 当前仍为空占位，未实现自动重试
+- 执行结束后日志归档到 S3；归档成功后 Redis Stream 设置短 TTL，归档失败时保留 24h TTL 并登记到 `run:logs:archive_failed`；worker `retry_failed_archives` cron 会补偿重试并在成功后清理登记。Redis TTL 过期后的归档日志可通过 `GET /api/v1/runs/{run_id}/logs/archive` 读回，前端终态 Run 日志面板会优先使用该归档 API
 - 单条日志消息最大 4KB，超出截断
 - 执行并发由 `QAP_MAX_CONCURRENT_RUNS` / `QAP_MAX_CONCURRENT_PER_PROJECT` 控制；当前未实现 Redis 内存阈值拒绝新执行入队
 

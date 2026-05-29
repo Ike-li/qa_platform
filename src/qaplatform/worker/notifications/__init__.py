@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 from uuid import UUID
 
 from qaplatform.infra.database.models import NotificationStatusEnum
 
 log = logging.getLogger(__name__)
+
+_TEMPLATE_VAR_RE = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
 
 
 def _evaluate_conditions(conditions: list[dict], run_summary: dict | None, status: str) -> bool:
@@ -93,6 +96,37 @@ async def _send_channel(channel_type: str, channel_config: dict, message: str) -
         raise RuntimeError(result.error or "channel send failed")
 
 
+def _render_message(
+    template: str | None,
+    *,
+    run_id: UUID,
+    status: str,
+    summary: dict | None,
+) -> str:
+    values = {
+        "run_id": str(run_id),
+        "status": status,
+        "passed": str((summary or {}).get("passed", 0)),
+        "failed": str((summary or {}).get("failed", 0)),
+        "total": str((summary or {}).get("total", 0)),
+        "pass_rate": str((summary or {}).get("pass_rate", 0)),
+    }
+
+    if template:
+        def replace(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name not in values:
+                raise ValueError(f"unknown template variable: {name}")
+            return values[name]
+
+        return _TEMPLATE_VAR_RE.sub(replace, template)
+
+    message = f"Run {run_id} completed with status: {status}"
+    if summary:
+        message += f" (passed: {summary.get('passed', 0)}, failed: {summary.get('failed', 0)})"
+    return message
+
+
 async def evaluate_and_notify(
     *,
     run_id: UUID,
@@ -124,19 +158,17 @@ async def evaluate_and_notify(
             if not _evaluate_conditions(rule.conditions, summary, status):
                 continue
 
-            if rule.template:
-                message = rule.template
-                message = message.replace("{{run_id}}", str(run_id))
-                message = message.replace("{{status}}", status)
-                if summary:
-                    message = message.replace("{{passed}}", str(summary.get("passed", 0)))
-                    message = message.replace("{{failed}}", str(summary.get("failed", 0)))
-                    message = message.replace("{{total}}", str(summary.get("total", 0)))
-                    message = message.replace("{{pass_rate}}", str(summary.get("pass_rate", 0)))
-            else:
-                message = f"Run {run_id} completed with status: {status}"
-                if summary:
-                    message += f" (passed: {summary.get('passed', 0)}, failed: {summary.get('failed', 0)})"
+            template_error: Exception | None = None
+            try:
+                message = _render_message(
+                    rule.template,
+                    run_id=run_id,
+                    status=status,
+                    summary=summary,
+                )
+            except Exception as exc:
+                message = ""
+                template_error = exc
 
             for channel in rule.channels:
                 channel_type = channel.get("type", "unknown")
@@ -144,7 +176,21 @@ async def evaluate_and_notify(
                 log_status = NotificationStatusEnum.SENT
                 error_message = None
 
+                existing = await log_repo.get_by_delivery(
+                    run_id=run_id,
+                    rule_id=rule.id,
+                    channel_type=channel_type,
+                )
+                if existing is not None:
+                    log.info(
+                        "notification_log_already_exists",
+                        extra={"run_id": str(run_id), "rule_id": str(rule.id)},
+                    )
+                    continue
+
                 try:
+                    if template_error is not None:
+                        raise RuntimeError(str(template_error))
                     await _send_channel(channel_type, channel_config, message)
                 except Exception as exc:
                     log_status = NotificationStatusEnum.FAILED

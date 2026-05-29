@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 
 async def _create_audit_event(
@@ -32,6 +32,22 @@ async def _create_audit_event(
     await session.commit()
     await session.refresh(event)
     return event
+
+
+async def _count_audit_list_events(session, *, tenant_id, user_id) -> int:
+    from qaplatform.infra.database.models import AuditEvent
+
+    result = await session.execute(
+        select(func.count())
+        .select_from(AuditEvent)
+        .where(
+            AuditEvent.tenant_id == tenant_id,
+            AuditEvent.user_id == user_id,
+            AuditEvent.action == "audit_events.list",
+            AuditEvent.resource_type == "audit_event",
+        )
+    )
+    return result.scalar_one()
 
 
 @pytest.mark.asyncio
@@ -66,6 +82,58 @@ async def test_audit_events_owner_admin_can_list_member_viewer_forbidden(
     async with integration_client_as(user.id, tenant.id, role="viewer") as client:
         viewer_resp = await client.get("/api/v1/audit-events")
     assert viewer_resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_audit_events_refused_queries_do_not_write_self_audit(
+    seed_run,
+    seed_second_tenant,
+    integration_client_as,
+    integration_db_session,
+):
+    tenant_a = seed_run["tenant"]
+    user_a = seed_run["user"]
+    tenant_b = seed_second_tenant["tenant"]
+    user_b = seed_second_tenant["user"]
+    project_b = seed_second_tenant["project"]
+
+    await _create_audit_event(
+        integration_db_session,
+        tenant_id=tenant_b.id,
+        user_id=user_b.id,
+        action="project.update",
+        resource_type="project",
+        resource_id=project_b.id,
+    )
+    before_count = await _count_audit_list_events(
+        integration_db_session,
+        tenant_id=tenant_a.id,
+        user_id=user_a.id,
+    )
+
+    async with integration_client_as(user_a.id, tenant_a.id, role="member") as client:
+        member_resp = await client.get("/api/v1/audit-events")
+
+    async with integration_client_as(user_a.id, tenant_a.id, role="viewer") as client:
+        viewer_resp = await client.get("/api/v1/audit-events")
+
+    async with integration_client_as(user_a.id, tenant_a.id, role="owner") as client:
+        cross_tenant_resp = await client.get(
+            "/api/v1/audit-events",
+            params={"resource_type": "project", "resource_id": str(project_b.id)},
+        )
+
+    assert member_resp.status_code == 403, member_resp.text
+    assert viewer_resp.status_code == 403, viewer_resp.text
+    assert cross_tenant_resp.status_code == 404, cross_tenant_resp.text
+    assert (
+        await _count_audit_list_events(
+            integration_db_session,
+            tenant_id=tenant_a.id,
+            user_id=user_a.id,
+        )
+        == before_count
+    )
 
 
 @pytest.mark.asyncio

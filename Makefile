@@ -5,7 +5,7 @@ up:
 	docker compose up -d
 
 infra-up:
-	docker compose up -d postgres redis minio
+	docker compose up -d postgres redis minio minio-init
 
 down:
 	docker compose down

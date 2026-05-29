@@ -1,194 +1,297 @@
-import { execFileSync } from "node:child_process";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import {
+  authHeaders,
+  createProject,
+  ensureEnvironment,
+  ensurePipeline,
+  loginViaApi,
+  loginViaUi,
+  uniqueSuffix,
+  type Paginated,
+} from "./helpers";
 
-type Project = {
+type BackendRun = {
   id: string;
+  status: string;
+  summary: {
+    total?: number;
+    passed?: number;
+    failed?: number;
+    skipped?: number;
+    error?: number;
+  } | null;
+  error_message: string | null;
+};
+
+type ArchivedLog = {
+  line: string;
+  stream: string;
+};
+
+type Artifact = {
   name: string;
-  slug: string;
+  type: string;
 };
 
-type Pipeline = {
-  id: string;
+type TestResult = {
   name: string;
+  status: string;
 };
 
-type Paginated<T> = {
-  data: T[];
-  total: number;
-};
+const EXTERNAL_STACK_GIT_URL =
+  process.env.QAP_EXTERNAL_STACK_GIT_URL ?? "https://github.com/octocat/Hello-World.git";
+const EXTERNAL_STACK_GIT_REF = process.env.QAP_EXTERNAL_STACK_GIT_REF ?? "master";
+const TERMINAL_BACKEND_STATUSES = new Set(["done", "failed", "cancelled", "timeout"]);
 
-async function loginViaUi(page: Page) {
-  const adminPassword = process.env.E2E_ADMIN_PASSWORD || "admin123";
-  await page.goto("/login");
-  await page.getByLabel("Username").fill("admin");
-  await page.getByLabel("Password").fill(adminPassword);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).toHaveURL(/\/projects$/);
+test.skip(
+  process.env.QAP_E2E_WORKER !== "1",
+  "set QAP_E2E_WORKER=1 to run the worker-backed E2E",
+);
+
+test.describe.configure({ mode: "serial" });
+test.setTimeout(360_000);
+
+function workerSetupScript(testCaseName: string): string {
+  const pytestSource = [
+    "from pathlib import Path",
+    "import sys",
+    `test_case_name = ${JSON.stringify(testCaseName)}`,
+    "junit = 'results/junit.xml'",
+    "for arg in sys.argv[1:]:",
+    "    if arg.startswith('--junitxml='):",
+    "        junit = arg.split('=', 1)[1]",
+    "path = Path(junit)",
+    "path.parent.mkdir(parents=True, exist_ok=True)",
+    "path.write_text(" +
+      JSON.stringify(
+        '<testsuite name="playwright-real-worker" tests="1" failures="0" errors="0" skipped="0">' +
+          `<testcase classname="playwright_real_worker" name="${testCaseName}" time="0.01" />` +
+          "</testsuite>",
+      ) +
+      ", encoding='utf-8')",
+    "print('===== 1 passed in 0.01s =====', flush=True)",
+  ].join("\n");
+
+  return [
+    "python - <<'PY'",
+    "from pathlib import Path",
+    "workspace = Path('/workspace')",
+    "(workspace / 'tests').mkdir(exist_ok=True)",
+    "(workspace / 'tests' / 'test_playwright_real_worker.py').write_text(" +
+      JSON.stringify("def test_playwright_real_worker():\n    assert True\n") +
+      ", encoding='utf-8')",
+    `(workspace / 'pytest.py').write_text(${JSON.stringify(pytestSource)}, encoding='utf-8')`,
+    "PY",
+  ].join("\n");
 }
 
-async function apiToken(request: APIRequestContext): Promise<string> {
-  const adminPassword = process.env.E2E_ADMIN_PASSWORD || "admin123";
-  const response = await request.post("/api/v1/auth/login", {
-    data: { username: "admin", password: adminPassword },
-  });
-  expect(response.ok()).toBeTruthy();
-  const body = await response.json();
-  return body.access_token;
+function runIdFromPage(page: Page): string {
+  const runId = new URL(page.url()).pathname.split("/").filter(Boolean).at(-1);
+  if (!runId) {
+    throw new Error(`Could not extract run id from ${page.url()}`);
+  }
+  return runId;
 }
 
-function authHeaders(token: string) {
-  return {
-    Authorization: `Bearer ${token}`,
-  };
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function createProjectThroughUi(page: Page): Promise<string> {
-  const name = `E2E Project ${Date.now()}`;
-  await page.getByRole("button", { name: "New Project" }).first().click();
-  await page.getByLabel("Name").fill(name);
-  await page.getByLabel("Git Repository URL").fill("https://github.com/example/e2e-project.git");
-  await page.getByRole("button", { name: "Create Project" }).click();
-  await expect(page.getByRole("link", { name: new RegExp(name) })).toBeVisible();
-  return name;
+async function assertOk(response: { ok(): boolean; status(): number; text(): Promise<string> }, context: string) {
+  if (!response.ok()) {
+    throw new Error(`${context} failed with ${response.status()}: ${await response.text()}`);
+  }
 }
 
-async function ensureProject(page: Page, request: APIRequestContext, token: string): Promise<Project> {
-  const listResponse = await request.get("/api/v1/projects", { headers: authHeaders(token) });
-  expect(listResponse.ok()).toBeTruthy();
-  let projects = ((await listResponse.json()) as Paginated<Project>).data;
+async function waitForRunTerminal(
+  request: APIRequestContext,
+  token: string,
+  runId: string,
+  timeoutMs = 240_000,
+): Promise<BackendRun> {
+  const deadline = Date.now() + timeoutMs;
+  let lastRun: BackendRun | null = null;
 
-  if (projects.length === 0) {
-    const name = await createProjectThroughUi(page);
-    const createdResponse = await request.get("/api/v1/projects", { headers: authHeaders(token) });
-    expect(createdResponse.ok()).toBeTruthy();
-    projects = ((await createdResponse.json()) as Paginated<Project>).data;
-    const created = projects.find((project) => project.name === name);
-    expect(created).toBeTruthy();
-    return created!;
+  while (Date.now() < deadline) {
+    const response = await request.get(`/api/v1/runs/${runId}`, {
+      headers: authHeaders(token),
+    });
+    await assertOk(response, `GET /runs/${runId}`);
+    lastRun = (await response.json()) as BackendRun;
+    if (TERMINAL_BACKEND_STATUSES.has(lastRun.status)) {
+      return lastRun;
+    }
+    await sleep(3000);
   }
 
-  return projects[0];
+  throw new Error(`Run ${runId} did not reach a terminal status: ${JSON.stringify(lastRun)}`);
 }
 
-async function ensureEnvironment(request: APIRequestContext, token: string, projectId: string) {
-  const listResponse = await request.get(`/api/v1/projects/${projectId}/environments`, {
-    headers: authHeaders(token),
-  });
-  expect(listResponse.ok()).toBeTruthy();
-  const environments = ((await listResponse.json()) as Paginated<{ id: string }>).data;
-  if (environments.length > 0) {
-    return environments[0];
+async function waitForRunResults(
+  request: APIRequestContext,
+  token: string,
+  runId: string,
+  timeoutMs = 60_000,
+): Promise<TestResult[]> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const response = await request.get(`/api/v1/runs/${runId}/results`, {
+      headers: authHeaders(token),
+    });
+    await assertOk(response, `GET /runs/${runId}/results`);
+    const body = (await response.json()) as Paginated<TestResult>;
+    if (body.data.length > 0) {
+      return body.data;
+    }
+    await sleep(2000);
   }
 
-  const createResponse = await request.post(`/api/v1/projects/${projectId}/environments`, {
-    headers: authHeaders(token),
-    data: {
-      name: "E2E Environment",
-      base_image: "python:3.12-alpine",
-      network_policy: "allow",
-      env_vars: {},
-    },
-  });
-  expect(createResponse.ok()).toBeTruthy();
-  return createResponse.json();
+  throw new Error(`Run ${runId} did not expose collected test results`);
 }
 
-async function ensurePipeline(request: APIRequestContext, token: string, projectId: string): Promise<Pipeline> {
-  const listResponse = await request.get(`/api/v1/projects/${projectId}/pipelines`, {
-    headers: authHeaders(token),
-  });
-  expect(listResponse.ok()).toBeTruthy();
-  const pipelines = ((await listResponse.json()) as Paginated<Pipeline>).data;
-  if (pipelines.length > 0) {
-    return pipelines[0];
+async function waitForArtifacts(
+  request: APIRequestContext,
+  token: string,
+  runId: string,
+  timeoutMs = 60_000,
+): Promise<Artifact[]> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const response = await request.get(`/api/v1/runs/${runId}/artifacts`, {
+      headers: authHeaders(token),
+    });
+    await assertOk(response, `GET /runs/${runId}/artifacts`);
+    const body = (await response.json()) as Paginated<Artifact>;
+    if (body.data.some((artifact) => artifact.name === "junit.xml")) {
+      return body.data;
+    }
+    await sleep(2000);
   }
 
-  const createResponse = await request.post(`/api/v1/projects/${projectId}/pipelines`, {
-    headers: authHeaders(token),
-    data: {
-      name: "E2E Pipeline",
-      stages: [
-        {
-          name: "Smoke",
-          plugin: "pytest",
-          phase: "execute",
-          config: { command: "pytest" },
-        },
-      ],
-      selector: {
-        include_paths: ["tests"],
-        on_empty: "warn",
-      },
-      trigger_config: {
-        type: "manual",
-      },
-      timeout_seconds: 300,
-      enabled: true,
-    },
-  });
-  expect(createResponse.ok()).toBeTruthy();
-  return createResponse.json();
+  throw new Error(`Run ${runId} did not expose junit.xml artifact metadata`);
 }
 
-async function advanceRunToRunning(runId: string) {
-  execFileSync(".venv/bin/python", [
-    "-c",
-    `
-import asyncio
-from datetime import datetime, timezone
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
-import redis.asyncio as redis
-from qaplatform.config import Settings
+async function waitForArchivedLogsContaining(
+  request: APIRequestContext,
+  token: string,
+  runId: string,
+  expectedMessages: string[],
+  timeoutMs = 90_000,
+): Promise<string[]> {
+  const deadline = Date.now() + timeoutMs;
+  let lastLines: string[] = [];
 
-async def main():
-    settings = Settings()
-    now = datetime.now(timezone.utc).isoformat()
-    engine = create_async_engine(settings.database_url)
-    async with engine.begin() as conn:
-        await conn.execute(
-            text("UPDATE run SET status = 'running', started_at = COALESCE(started_at, now()), status_updated_at = now(), updated_at = now() WHERE id = :run_id"),
-            {"run_id": "${runId}"},
-        )
-    await engine.dispose()
-    client = redis.from_url(settings.redis_url, decode_responses=True)
-    await client.hset("run:${runId}:status", mapping={"status": "running"})
-    await client.xadd("run:${runId}:logs", {"timestamp": now, "level": "info", "message": "E2E run triggered against the real backend"})
-    await client.xadd("run:${runId}:logs", {"timestamp": now, "level": "info", "message": "Pipeline execution entered running state"})
-    await client.aclose()
+  while (Date.now() < deadline) {
+    const response = await request.get(`/api/v1/runs/${runId}/logs/archive?per_page=1000`, {
+      headers: authHeaders(token),
+    });
+    if (response.status() === 404) {
+      await sleep(2000);
+      continue;
+    }
+    await assertOk(response, `GET /runs/${runId}/logs/archive`);
+    const body = (await response.json()) as Paginated<ArchivedLog>;
+    lastLines = body.data.map((entry) => entry.line);
+    if (expectedMessages.every((message) => lastLines.some((line) => line.includes(message)))) {
+      return lastLines;
+    }
+    await sleep(2000);
+  }
 
-asyncio.run(main())
-`,
-  ], {
-    cwd: process.cwd(),
-    stdio: "inherit",
-  });
+  throw new Error(
+    `Archived logs for ${runId} did not contain ${JSON.stringify(expectedMessages)}; last=${JSON.stringify(
+      lastLines,
+    )}`,
+  );
 }
 
-test("trigger a run against the real backend and display live logs", async ({ page, request }) => {
+test("trigger a run through the UI and verify the real worker evidence", async ({ page, request }) => {
+  const suffix = uniqueSuffix();
+  const testCaseName = `playwright_real_worker_${suffix.replace(/-/g, "_")}`;
+  const login = await loginViaApi(request);
+  const project = await createProject(request, login.token, {
+    name: `E2E Worker ${suffix}`,
+    slug: `e2e-worker-${suffix}`,
+    git_url: EXTERNAL_STACK_GIT_URL,
+    default_branch: EXTERNAL_STACK_GIT_REF,
+  });
+  const environment = await ensureEnvironment(request, login.token, project.id, {
+    name: `Worker Env ${suffix}`,
+    base_image: "python:3.12-alpine",
+    network_policy: "allow",
+    env_vars: {},
+    setup_script: workerSetupScript(testCaseName),
+    memory_mb: 512,
+    cpu_cores: 1,
+    max_artifact_size_mb: 10,
+    max_artifacts_count: 5,
+  });
+  const pipeline = await ensurePipeline(request, login.token, project.id, {
+    name: `Worker Pipeline ${suffix}`,
+    stageName: "pytest",
+    test_path: "tests/",
+    args: ["-s"],
+    timeout_seconds: 300,
+  });
+
   await loginViaUi(page);
-
-  const token = await apiToken(request);
-  const project = await ensureProject(page, request, token);
-  await ensureEnvironment(request, token, project.id);
-  const pipeline = await ensurePipeline(request, token, project.id);
-
   await page.goto(`/projects/${project.id}`);
-  // Wait for project detail to load (project name appears in h1)
-  await expect(page.getByRole("heading", { level: 1, name: project.name })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("heading", { level: 1, name: project.name })).toBeVisible({
+    timeout: 10_000,
+  });
   await page.getByRole("button", { name: "Trigger Run" }).click();
-  await page.getByRole("combobox").click();
+  await expect(page.getByRole("heading", { name: "Trigger Run" })).toBeVisible();
+
+  const comboboxes = page.getByRole("combobox");
+  await comboboxes.nth(0).click();
   await page.getByRole("option", { name: pipeline.name }).click();
+  await comboboxes.nth(1).click();
+  await page.getByRole("option", { name: environment.name }).click();
   await page.getByRole("button", { name: "Run Pipeline" }).click();
 
   await expect(page).toHaveURL(/\/runs\/[^/]+$/);
-  const runId = page.url().split("/runs/")[1];
-  await expect(page.getByText(/queued|preparing|running|passed|failed/i).first()).toBeVisible();
-
-  await advanceRunToRunning(runId);
-  await expect(page.getByText("running").first()).toBeVisible({ timeout: 10_000 });
-
+  const runId = runIdFromPage(page);
+  await expect(page.getByRole("heading", { level: 1, name: pipeline.name })).toBeVisible();
   await page.getByRole("tab", { name: /Logs/ }).click();
-  // Log viewer uses virtual scrolling; just verify the tab content is present
-  await expect(page.locator('[role="tabpanel"]').first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Execution Logs")).toBeVisible();
+
+  const terminalRun = await waitForRunTerminal(request, login.token, runId);
+  expect(terminalRun.status).toBe("done");
+  expect(terminalRun.summary).toMatchObject({
+    total: 1,
+    passed: 1,
+    failed: 0,
+    error: 0,
+  });
+
+  const results = await waitForRunResults(request, login.token, runId);
+  expect(results).toEqual(
+    expect.arrayContaining([expect.objectContaining({ name: testCaseName, status: "passed" })]),
+  );
+  const artifacts = await waitForArtifacts(request, login.token, runId);
+  expect(artifacts).toEqual(
+    expect.arrayContaining([expect.objectContaining({ name: "junit.xml" })]),
+  );
+  await waitForArchivedLogsContaining(request, login.token, runId, [
+    "Repository cloned successfully",
+    "Starting stage: pytest",
+    "Uploaded artifact: junit.xml",
+    "Run completed: done",
+  ]);
+
+  await loginViaUi(page);
+  await page.goto(`/runs/${runId}`);
+  await expect(page.getByRole("heading", { level: 1, name: pipeline.name })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText("Passed").first()).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("tab", { name: /Logs/ }).click();
+  await expect(page.getByText("Run completed: done")).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("tab", { name: /Test Results/ }).click();
+  await expect(page.getByText(testCaseName)).toBeVisible();
+  await expect(page.getByText("Passed").first()).toBeVisible();
+  await page.getByRole("tab", { name: /Artifacts/ }).click();
+  await expect(page.getByText("junit.xml")).toBeVisible();
 });
