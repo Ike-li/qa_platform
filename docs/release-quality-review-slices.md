@@ -4,8 +4,8 @@ This branch is intentionally broad because it turns the release candidate gate i
 
 ## Remote Evidence
 
-- Release candidate run: https://github.com/Ike-li/qa_platform/actions/runs/26616290290
-- PR default CI run: https://github.com/Ike-li/qa_platform/actions/runs/26616577287
+- Release candidate run: https://github.com/Ike-li/qa_platform/actions/runs/26617165564
+- PR default CI run: https://github.com/Ike-li/qa_platform/actions/runs/26617161930
 - Gate profile: `release_candidate`
 - Result: all jobs passed, including `Release Candidate Gate`
 - Release evidence markers:
