@@ -113,6 +113,28 @@ class TestRunSetupContainerised:
         finally:
             working_dir.rmdir()
 
+    def test_workspace_dir_tolerates_bind_root_chmod_denied(self, tmp_path, monkeypatch):
+        run_id = str(uuid4())
+        shared_root = tmp_path / "qap-workspaces"
+        monkeypatch.setenv("QAP_RUN_WORKSPACE_DIR", str(shared_root))
+        original_chmod = Path.chmod
+
+        def chmod_with_bind_root_denied(path: Path, mode: int, *args, **kwargs):
+            if path == shared_root:
+                raise PermissionError("bind root is not owned by container user")
+            return original_chmod(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "chmod", chmod_with_bind_root_denied)
+
+        working_dir = RunExecutor._create_workspace_dir(run_id)
+
+        try:
+            assert working_dir.parent == shared_root
+            assert working_dir.name.startswith(f"qap-{run_id[:8]}-")
+            assert stat.S_IMODE(working_dir.stat().st_mode) == 0o777
+        finally:
+            working_dir.rmdir()
+
     @pytest.fixture
     def setup_pipeline(self):
         from qaplatform.engine.executor import PipelineConfig

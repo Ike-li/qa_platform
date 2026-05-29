@@ -314,7 +314,8 @@ class RunExecutor:
         if workspace_root:
             root = Path(workspace_root)
             root.mkdir(parents=True, exist_ok=True)
-            root.chmod(0o777)
+            with suppress(PermissionError):
+                root.chmod(0o777)
             working_dir = Path(tempfile.mkdtemp(prefix=f"qap-{run_id[:8]}-", dir=root))
         else:
             working_dir = Path(tempfile.mkdtemp(prefix=f"qap-{run_id[:8]}-"))
