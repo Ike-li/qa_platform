@@ -82,6 +82,11 @@ class TestDockerBackend:
         assert stream == "stdout"
         assert content == "plain output"
 
+    def test_decode_log_frame_aiodocker_text(self):
+        stream, content = DockerBackend._decode_log_frame("plain output\n")
+        assert stream == "stdout"
+        assert content == "plain output"
+
     # -- create_execution ----------------------------------------------------
 
     @pytest.mark.asyncio

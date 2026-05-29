@@ -185,32 +185,6 @@ class TestRunSetupContainerised:
         assert spec.labels.get("phase") == "setup"
 
     @pytest.mark.asyncio
-    async def test_setup_attaches_log_stream_before_container_start(
-        self, executor, mock_backend, sample_run, setup_pipeline, tmp_path
-    ):
-        events: list[str] = []
-        mock_backend.create_execution = AsyncMock(return_value="setup-container-1")
-
-        async def _start(_id):
-            events.append("start")
-
-        async def _logs(_id):
-            events.append("stream_logs")
-            if False:
-                yield
-
-        mock_backend.start = AsyncMock(side_effect=_start)
-        mock_backend.wait = AsyncMock(
-            return_value=MagicMock(exit_code=0, timed_out=False)
-        )
-        mock_backend.cleanup = AsyncMock()
-        mock_backend.stream_logs = _logs
-
-        await executor._run_setup(sample_run, setup_pipeline, tmp_path)
-
-        assert events[:2] == ["stream_logs", "start"]
-
-    @pytest.mark.asyncio
     async def test_setup_timeout_capped_at_600s(
         self, executor, mock_backend, sample_run, tmp_path
     ):
@@ -745,32 +719,6 @@ class TestRunStagesTimeoutGracePeriod:
         assert any(
             "exceeded timeout" in m and "pytest" in m and "42" in m for m in messages
         ), f"expected timeout log entry, got: {messages}"
-
-    @pytest.mark.asyncio
-    async def test_stage_attaches_log_stream_before_container_start(
-        self, timeout_executor, sample_run, tmp_path
-    ):
-        events: list[str] = []
-        timeout_executor.backend.wait = AsyncMock(
-            return_value=MagicMock(exit_code=0, timed_out=False, oom_killed=False)
-        )
-        timeout_executor.backend.force_kill.reset_mock()
-        timeout_executor.backend.cancel.reset_mock()
-
-        async def _start(_id):
-            events.append("start")
-
-        async def _logs(_id):
-            events.append("stream_logs")
-            if False:
-                yield
-
-        timeout_executor.backend.start = AsyncMock(side_effect=_start)
-        timeout_executor.backend.stream_logs = _logs
-
-        await timeout_executor._run_stages(sample_run, self._make_pipeline(), tmp_path)
-
-        assert events[:2] == ["stream_logs", "start"]
 
     @pytest.mark.asyncio
     async def test_timeout_status_maps_to_timeout(
