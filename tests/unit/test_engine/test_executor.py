@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import stat
 from pathlib import Path
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -86,6 +87,16 @@ class TestRunSetupContainerised:
     from `asyncio.create_subprocess_shell` (worker host) into the same
     sandbox backend as stages.
     """
+
+    def test_workspace_dir_is_writable_by_fixed_container_uid(self):
+        run_id = str(uuid4())
+        working_dir = RunExecutor._create_workspace_dir(run_id)
+
+        try:
+            assert working_dir.name.startswith(f"qap-{run_id[:8]}-")
+            assert stat.S_IMODE(working_dir.stat().st_mode) == 0o777
+        finally:
+            working_dir.rmdir()
 
     @pytest.fixture
     def setup_pipeline(self):

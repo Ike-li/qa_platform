@@ -307,11 +307,20 @@ class RunExecutor:
             return await collector.collect(run_id, working_dir, config)
         return await collector.collect(run_id, working_dir)
 
+    @staticmethod
+    def _create_workspace_dir(run_id: str) -> Path:
+        working_dir = Path(tempfile.mkdtemp(prefix=f"qap-{run_id[:8]}-"))
+        # Docker stage/setup containers run as a fixed non-root uid. GitHub
+        # Linux runners create mkdtemp directories as 0700 for the host runner
+        # user, so make this per-run sandbox writable by the mounted container.
+        working_dir.chmod(0o777)
+        return working_dir
+
     async def execute(self, run: Run, pipeline: PipelineConfig) -> RunStatus:
         """Execute a full pipeline run. Returns the terminal RunStatus."""
         run_id = str(run.id)
         tracer = trace.get_tracer(__name__)
-        working_dir = Path(tempfile.mkdtemp(prefix=f"qap-{run_id[:8]}-"))
+        working_dir = self._create_workspace_dir(run_id)
 
         self._active_execution_id = None
         # Reset across runs so a previous cancel doesn't bleed in. The
