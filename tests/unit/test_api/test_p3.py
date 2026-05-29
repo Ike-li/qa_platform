@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import IntegrityError
 from types import SimpleNamespace
@@ -148,6 +149,7 @@ async def _make_client(app):
     ("settings", "git_ref", "expected"),
     [
         ({}, "refs/heads/feature/foo", True),
+        ({"allowed_branches": "main"}, "main", True),
         ({"allowed_branches": ["main"]}, "refs/heads/main", True),
         ({"allowed_branches": ["release/*"]}, "refs/heads/release/2026.05", True),
         ({"allowed_branches": ["main"]}, "refs/heads/feature/foo", False),
@@ -165,7 +167,240 @@ def test_webhook_allowed_branches(settings, git_ref, expected):
     assert _branch_allowed(branch_name, _allowed_branch_patterns(settings)) is expected
 
 
+def test_webhook_dedup_key_and_audit_state_defaults():
+    from qaplatform.api.schemas import WebhookTriggerRequest
+    from qaplatform.api.v1.webhooks import _dedup_key, _webhook_decision_audit_state
+
+    project_id = uuid.uuid4()
+    body = WebhookTriggerRequest(
+        git_ref="main",
+        git_sha="abc123",
+        metadata={"delivery_id": "delivery-123"},
+    )
+
+    assert _dedup_key({}, "https://github.com/acme/widget.git", None, "main") is None
+    assert (
+        _dedup_key({}, "https://github.com/acme/widget.git", "abc123", "main")
+        == "webhook:https://github.com/acme/widget.git:abc123:main"
+    )
+    assert _webhook_decision_audit_state(
+        body,
+        project_id=project_id,
+        branch_name="main",
+        status="duplicate",
+        reason="dedup_key_conflict",
+    ) == {
+        "project_id": str(project_id),
+        "status": "duplicate",
+        "reason": "dedup_key_conflict",
+        "git_ref": "main",
+        "git_sha": "abc123",
+        "branch_name": "main",
+        "provider": "webhook",
+        "delivery_id": "delivery-123",
+    }
+
+
+def test_signature_header_prefers_platform_header_then_github_alias():
+    from qaplatform.api.v1.webhooks import _signature_header
+
+    assert _signature_header(SimpleNamespace(headers={})) == ""
+    assert _signature_header(
+        SimpleNamespace(headers={"X-Hub-Signature-256": "sha256=github"})
+    ) == "sha256=github"
+    assert _signature_header(
+        SimpleNamespace(
+            headers={
+                "X-Webhook-Signature": "sha256=platform",
+                "X-Hub-Signature-256": "sha256=github",
+            }
+        )
+    ) == "sha256=platform"
+
+
+def test_github_repo_url_candidates_expand_common_clone_forms():
+    from qaplatform.api.v1.webhooks import _github_repo_url_candidates
+
+    candidates = _github_repo_url_candidates(
+        {
+            "clone_url": "https://github.com/acme/widget.git",
+            "ssh_url": "git@github.com:acme/widget.git",
+            "git_url": "git://github.com/acme/widget.git",
+            "html_url": "https://github.com/acme/widget",
+            "full_name": "acme/widget",
+        }
+    )
+
+    assert {
+        "https://github.com/acme/widget",
+        "https://github.com/acme/widget.git",
+        "git@github.com:acme/widget.git",
+        "git://github.com/acme/widget.git",
+    }.issubset(candidates)
+
+
+def test_github_push_payload_maps_to_webhook_trigger_request():
+    from qaplatform.api.v1.webhooks import _github_payload_to_trigger_request
+
+    body, repo_urls = _github_payload_to_trigger_request(
+        {
+            "ref": "refs/heads/main",
+            "after": "a" * 40,
+            "repository": {
+                "full_name": "acme/widget",
+                "html_url": "https://github.com/acme/widget",
+            },
+        },
+        event="push",
+        delivery_id="delivery-123",
+    )
+
+    assert body.git_ref == "refs/heads/main"
+    assert body.git_sha == "a" * 40
+    assert body.metadata == {
+        "provider": "github",
+        "event": "push",
+        "delivery_id": "delivery-123",
+        "repository": "acme/widget",
+    }
+    assert "https://github.com/acme/widget.git" in repo_urls
+
+
+def test_github_pull_request_payload_uses_head_sha_and_base_repo_urls():
+    from qaplatform.api.v1.webhooks import _github_payload_to_trigger_request
+
+    body, repo_urls = _github_payload_to_trigger_request(
+        {
+            "pull_request": {
+                "number": 42,
+                "base": {
+                    "repo": {
+                        "full_name": "acme/widget",
+                        "html_url": "https://github.com/acme/widget",
+                    }
+                },
+                "head": {
+                    "sha": "b" * 40,
+                    "repo": {"full_name": "acme/widget"},
+                },
+            }
+        },
+        event="pull_request",
+        delivery_id=None,
+    )
+
+    assert body.git_ref == "refs/pull/42/head"
+    assert body.git_sha == "b" * 40
+    assert body.metadata == {
+        "provider": "github",
+        "event": "pull_request",
+        "repository": "acme/widget",
+    }
+    assert "https://github.com/acme/widget" in repo_urls
+
+
+@pytest.mark.parametrize(
+    ("payload", "event", "status_code", "detail"),
+    [
+        ({}, "push", 400, "Missing GitHub repository payload"),
+        ({"repository": {}, "after": "a" * 40}, "push", 400, "Missing GitHub ref"),
+        ({"repository": {}, "ref": "refs/heads/main"}, "push", 400, "Missing GitHub commit SHA"),
+        ({}, "pull_request", 400, "Missing GitHub pull_request payload"),
+        (
+            {"pull_request": {"base": {}, "head": None}},
+            "pull_request",
+            400,
+            "Missing GitHub pull_request refs",
+        ),
+        (
+            {"pull_request": {"base": {"repo": {}}, "head": {"repo": None}}},
+            "pull_request",
+            400,
+            "Missing GitHub pull_request repo",
+        ),
+        (
+            {
+                "pull_request": {
+                    "number": "42",
+                    "base": {"repo": {"full_name": "acme/widget"}},
+                    "head": {"repo": {"full_name": "acme/widget"}, "sha": ""},
+                }
+            },
+            "pull_request",
+            400,
+            "Missing GitHub pull_request number or SHA",
+        ),
+        (
+            {
+                "pull_request": {
+                    "number": 1,
+                    "base": {"repo": {"full_name": "acme/widget"}},
+                    "head": {"repo": {"full_name": "fork/widget"}, "sha": "b" * 40},
+                }
+            },
+            "pull_request",
+            202,
+            "Fork pull requests are ignored",
+        ),
+        ({}, "issues", 202, "Unsupported GitHub event: issues"),
+    ],
+)
+def test_github_payload_validation_errors_are_explicit(payload, event, status_code, detail):
+    from qaplatform.api.v1.webhooks import _github_payload_to_trigger_request
+
+    with pytest.raises(HTTPException) as excinfo:
+        _github_payload_to_trigger_request(payload, event=event, delivery_id=None)
+
+    assert excinfo.value.status_code == status_code
+    assert excinfo.value.detail == detail
+
+
+def test_integrity_error_detection_follows_wrapped_driver_exceptions():
+    from qaplatform.api.v1.webhooks import _is_integrity_error
+
+    class UniqueViolationError(Exception):
+        pass
+
+    wrapped = RuntimeError("repository failed")
+    wrapped.__cause__ = UniqueViolationError("duplicate key value violates unique constraint")
+
+    assert _is_integrity_error(wrapped) is True
+    assert _is_integrity_error(RuntimeError("connection reset")) is False
+
+
 class TestWebhookTrigger:
+    @pytest.mark.asyncio
+    async def test_webhook_trigger_missing_project_returns_404(self, app, mock_repos, project_id):
+        mock_repos.project.get_for_tenant = AsyncMock(return_value=None)
+
+        async with await _make_client(app) as client:
+            resp = await client.post(
+                f"/api/v1/webhooks/{project_id}/trigger",
+                json={"git_ref": "refs/heads/main", "git_sha": "abc123"},
+            )
+
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_webhook_trigger_signed_project_requires_signature(
+        self,
+        app,
+        mock_project,
+        mock_repos,
+        project_id,
+    ):
+        mock_project.settings = {"webhook_secret": "signed-webhook-secret"}
+
+        async with await _make_client(app) as client:
+            resp = await client.post(
+                f"/api/v1/webhooks/{project_id}/trigger",
+                json={"git_ref": "refs/heads/main", "git_sha": "abc123"},
+            )
+
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Missing X-Webhook-Signature header"
+        mock_repos.run.create.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_webhook_trigger_creates_run(self, app, mock_repos, project_id, mock_pipeline):
         run = MagicMock()
