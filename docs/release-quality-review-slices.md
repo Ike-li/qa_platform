@@ -4,8 +4,10 @@ This branch is intentionally broad because it turns the release candidate gate i
 
 ## Remote Evidence
 
-- Release candidate run: https://github.com/Ike-li/qa_platform/actions/runs/26617165564
-- PR default CI run: https://github.com/Ike-li/qa_platform/actions/runs/26617161930
+Record the latest PR default CI run and `workflow_dispatch.gate=release_candidate`
+run in the PR description or release note. Keep this document focused on the
+evidence markers and review slices so a documentation-only update does not make
+the checked-in run URL stale.
 - Gate profile: `release_candidate`
 - Result: all jobs passed, including `Release Candidate Gate`
 - Release evidence markers:
