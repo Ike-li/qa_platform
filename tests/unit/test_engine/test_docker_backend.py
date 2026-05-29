@@ -248,6 +248,33 @@ class TestDockerBackend:
         assert result.oom_killed is False
         assert result.exit_code == 0
 
+    def test_parse_resource_usage_reads_peak_memory_cpu_and_pids(self):
+        stats = {
+            "memory_stats": {
+                "usage": 64 * 1024 * 1024,
+                "max_usage": 96 * 1024 * 1024,
+                "limit": 128 * 1024 * 1024,
+            },
+            "cpu_stats": {
+                "cpu_usage": {"total_usage": 300, "percpu_usage": [150, 150]},
+                "system_cpu_usage": 400,
+                "online_cpus": 2,
+            },
+            "precpu_stats": {
+                "cpu_usage": {"total_usage": 100},
+                "system_cpu_usage": 200,
+            },
+            "pids_stats": {"current": 5},
+        }
+
+        sample = DockerBackend._parse_resource_usage(stats)
+
+        assert sample.memory_usage_bytes == 64 * 1024 * 1024
+        assert sample.memory_max_usage_bytes == 96 * 1024 * 1024
+        assert sample.memory_limit_bytes == 128 * 1024 * 1024
+        assert sample.cpu_percent == pytest.approx(200.0)
+        assert sample.pids_current == 5
+
     # -- cancel ---------------------------------------------------------------
 
     @pytest.mark.asyncio

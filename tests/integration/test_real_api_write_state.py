@@ -585,6 +585,152 @@ async def test_credentials_api_persists_encrypted_value_rotates_and_soft_deletes
 
 
 @pytest.mark.asyncio
+async def test_project_git_token_binding_reaches_trigger_metadata_without_secret(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import AuditEvent, Run
+
+    project = seed_run["project"]
+    project_id = project.id
+    token = f"git-token-{uuid4().hex}"
+    cred_name = f"git-token-{uuid4().hex[:8]}"
+
+    create_cred = await integration_client.post(
+        f"/api/v1/projects/{project_id}/credentials",
+        json={"name": cred_name, "type": "token", "value": token},
+    )
+    assert create_cred.status_code == 201, create_cred.text
+    credential_id = create_cred.json()["id"]
+
+    update_project = await integration_client.put(
+        f"/api/v1/projects/{project_id}",
+        json={
+            "git_url": "https://github.com/example/private.git",
+            "git_auth_method": "token",
+            "credential_id": credential_id,
+        },
+    )
+    assert update_project.status_code == 200, update_project.text
+
+    trigger = await integration_client.post(
+        "/api/v1/runs",
+        json={"pipeline_id": str(seed_run["pipeline"].id)},
+    )
+    assert trigger.status_code == 201, trigger.text
+    run_id = trigger.json()["id"]
+
+    run = await integration_db_session.get(Run, run_id)
+    assert run is not None
+    assert run.metadata_["git_url"] == "https://github.com/example/private.git"
+    assert run.metadata_["git_auth_method"] == "token"
+    assert run.metadata_["credential_id"] == credential_id
+    assert token not in repr(run.metadata_)
+
+    audit_rows = (
+        (
+            await integration_db_session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.resource_id.in_([project_id, run.id])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    serialized_audit = repr(
+        [row.before_state for row in audit_rows]
+        + [row.after_state for row in audit_rows]
+    )
+    assert token not in serialized_audit
+
+
+@pytest.mark.asyncio
+async def test_project_member_and_credential_lists_are_paginated(
+    integration_client,
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import AppUser
+
+    tenant_id = seed_run["tenant"].id
+    project_id = seed_run["project"].id
+    suffix = uuid4().hex[:8]
+
+    credential_names = [f"page-token-{suffix}-{idx}" for idx in range(3)]
+    for name in credential_names:
+        create_resp = await integration_client.post(
+            f"/api/v1/projects/{project_id}/credentials",
+            json={"name": name, "type": "token", "value": f"secret-{name}"},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+
+    credentials_page = await integration_client.get(
+        f"/api/v1/projects/{project_id}/credentials",
+        params={"page": 2, "per_page": 2},
+    )
+    assert credentials_page.status_code == 200, credentials_page.text
+    credentials_body = credentials_page.json()
+    assert credentials_body["page"] == 2
+    assert credentials_body["per_page"] == 2
+    assert credentials_body["total"] == 3
+    assert len(credentials_body["data"]) == 1
+    assert "value" not in credentials_body["data"][0]
+    assert "encrypted_value" not in credentials_body["data"][0]
+
+    credentials_empty_page = await integration_client.get(
+        f"/api/v1/projects/{project_id}/credentials",
+        params={"page": 99, "per_page": 2},
+    )
+    assert credentials_empty_page.status_code == 200, credentials_empty_page.text
+    assert credentials_empty_page.json()["data"] == []
+    assert credentials_empty_page.json()["total"] == 3
+
+    member_users = []
+    for idx in range(3):
+        member_user = AppUser(
+            tenant_id=tenant_id,
+            username=f"page-member-{suffix}-{idx}",
+            email=f"page-member-{suffix}-{idx}@test.local",
+            password_hash="argon2:placeholder",
+            role="member",
+            is_platform_admin=False,
+            is_active=True,
+        )
+        integration_db_session.add(member_user)
+        member_users.append(member_user)
+    await integration_db_session.commit()
+    for member_user in member_users:
+        await integration_db_session.refresh(member_user)
+        add_resp = await integration_client.post(
+            f"/api/v1/projects/{project_id}/members",
+            json={"user_id": str(member_user.id), "role": "developer"},
+        )
+        assert add_resp.status_code == 201, add_resp.text
+
+    members_page = await integration_client.get(
+        f"/api/v1/projects/{project_id}/members",
+        params={"page": 2, "per_page": 2},
+    )
+    assert members_page.status_code == 200, members_page.text
+    members_body = members_page.json()
+    assert members_body["page"] == 2
+    assert members_body["per_page"] == 2
+    assert members_body["total"] == 3
+    assert len(members_body["data"]) == 1
+    assert members_body["data"][0]["role"] == "developer"
+
+    members_empty_page = await integration_client.get(
+        f"/api/v1/projects/{project_id}/members",
+        params={"page": 99, "per_page": 2},
+    )
+    assert members_empty_page.status_code == 200, members_empty_page.text
+    assert members_empty_page.json()["data"] == []
+    assert members_empty_page.json()["total"] == 3
+
+
+@pytest.mark.asyncio
 async def test_environment_api_persists_encrypted_env_vars_limits_and_soft_delete(
     integration_client,
     integration_db_session,
@@ -605,6 +751,7 @@ async def test_environment_api_persists_encrypted_env_vars_limits_and_soft_delet
             "base_image": "python:3.12-alpine",
             "memory_mb": 384,
             "cpu_cores": 0.75,
+            "disk_mb": 2048,
             "max_artifact_size_mb": 42,
             "max_artifacts_count": 9,
             "network_policy": "restricted",
@@ -616,11 +763,13 @@ async def test_environment_api_persists_encrypted_env_vars_limits_and_soft_delet
     body = create_resp.json()
     env_id = body["id"]
     assert body["env_vars"] == {"API_TOKEN": "secret-token"}
+    assert body["disk_mb"] == 2048
 
     env = await integration_db_session.get(Environment, env_id)
     assert env is not None
     assert env.project_id == project_id
     assert env.resource_limits == {
+        "disk_mb": 2048,
         "max_artifact_size_mb": 42,
         "max_artifacts_count": 9,
     }
@@ -631,6 +780,7 @@ async def test_environment_api_persists_encrypted_env_vars_limits_and_soft_delet
         f"/api/v1/projects/{project_id}/environments/{env_id}",
         json={
             "memory_mb": 512,
+            "disk_mb": 4096,
             "max_artifact_size_mb": 64,
             "env_vars": {"API_TOKEN": "rotated-token"},
         },
@@ -640,6 +790,7 @@ async def test_environment_api_persists_encrypted_env_vars_limits_and_soft_delet
 
     await integration_db_session.refresh(env)
     assert env.memory_mb == 512
+    assert env.resource_limits["disk_mb"] == 4096
     assert env.resource_limits["max_artifact_size_mb"] == 64
     assert "rotated-token" not in str(env.env_vars)
 
@@ -711,10 +862,11 @@ async def test_environment_api_reads_resource_limits_without_audit_secret_leak(
     name = f"env-resource-read-{uuid4().hex[:8]}"
     secret = f"resource-secret-{uuid4().hex}"
 
-    def assert_resource_fields(body: dict, *, max_count: int) -> None:
+    def assert_resource_fields(body: dict, *, max_count: int, disk_mb: int) -> None:
         assert body["name"] == name
         assert body["memory_mb"] == 768
         assert body["cpu_cores"] == 1.25
+        assert body["disk_mb"] == disk_mb
         assert body["max_artifact_size_mb"] == 77
         assert body["max_artifacts_count"] == max_count
         assert body["network_policy"] == "restricted"
@@ -729,6 +881,7 @@ async def test_environment_api_reads_resource_limits_without_audit_secret_leak(
             "setup_script": "python -V",
             "memory_mb": 768,
             "cpu_cores": 1.25,
+            "disk_mb": 2048,
             "max_artifact_size_mb": 77,
             "max_artifacts_count": 11,
             "network_policy": "restricted",
@@ -738,14 +891,14 @@ async def test_environment_api_reads_resource_limits_without_audit_secret_leak(
     )
     assert create_resp.status_code == 201, create_resp.text
     create_body = create_resp.json()
-    assert_resource_fields(create_body, max_count=11)
+    assert_resource_fields(create_body, max_count=11, disk_mb=2048)
     env_id = UUID(create_body["id"])
 
     get_resp = await integration_client.get(
         f"/api/v1/projects/{project_id}/environments/{env_id}"
     )
     assert get_resp.status_code == 200, get_resp.text
-    assert_resource_fields(get_resp.json(), max_count=11)
+    assert_resource_fields(get_resp.json(), max_count=11, disk_mb=2048)
 
     list_resp = await integration_client.get(
         f"/api/v1/projects/{project_id}/environments",
@@ -756,21 +909,22 @@ async def test_environment_api_reads_resource_limits_without_audit_secret_leak(
     listed = next(
         item for item in list_body["data"] if item["id"] == str(env_id)
     )
-    assert_resource_fields(listed, max_count=11)
+    assert_resource_fields(listed, max_count=11, disk_mb=2048)
 
     update_resp = await integration_client.put(
         f"/api/v1/projects/{project_id}/environments/{env_id}",
-        json={"max_artifacts_count": 13},
+        json={"disk_mb": 4096, "max_artifacts_count": 13},
     )
     assert update_resp.status_code == 200, update_resp.text
     update_body = update_resp.json()
-    assert_resource_fields(update_body, max_count=13)
+    assert_resource_fields(update_body, max_count=13, disk_mb=4096)
 
     env = await integration_db_session.get(Environment, env_id)
     assert env is not None
     assert env.memory_mb == 768
     assert env.cpu_cores == 1.25
     assert env.resource_limits == {
+        "disk_mb": 4096,
         "max_artifact_size_mb": 77,
         "max_artifacts_count": 13,
     }
@@ -801,8 +955,11 @@ async def test_environment_api_reads_resource_limits_without_audit_secret_leak(
     assert create_audit.after_state["env_vars"] == {"redacted": True, "count": 1}
     assert create_audit.after_state["memory_mb"] == 768
     assert create_audit.after_state["cpu_cores"] == 1.25
+    assert create_audit.after_state["disk_mb"] == 2048
     assert create_audit.after_state["max_artifact_size_mb"] == 77
     assert create_audit.after_state["max_artifacts_count"] == 11
+    assert update_audit.before_state["disk_mb"] == 2048
+    assert update_audit.after_state["disk_mb"] == 4096
     assert update_audit.before_state["max_artifact_size_mb"] == 77
     assert update_audit.before_state["max_artifacts_count"] == 11
     assert update_audit.after_state["max_artifact_size_mb"] == 77

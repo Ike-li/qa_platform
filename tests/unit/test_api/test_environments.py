@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 
+from qaplatform.api.schemas import EnvironmentCreate, EnvironmentUpdate
 from qaplatform.dependencies import CryptoService
 from qaplatform.domain.services.env_vars_crypto import decrypt_env_vars, encrypt_env_vars
 
@@ -28,6 +30,7 @@ def _make_orm_environment(project_id, *, env_id=None, env_vars=None):
     obj.memory_mb = 512
     obj.cpu_cores = 1.0
     obj.resource_limits = {
+        "disk_mb": 1024,
         "max_artifact_size_mb": 100,
         "max_artifacts_count": 50,
     }
@@ -99,6 +102,23 @@ async def _make_client(app):
     return AsyncClient(transport=transport, base_url="http://test")
 
 
+@pytest.mark.parametrize("base_image", ["python", "python:latest", "python:stable", "python:edge"])
+def test_environment_schema_rejects_unpinned_or_moving_base_images(base_image):
+    with pytest.raises(ValidationError):
+        EnvironmentCreate(name="default", base_image=base_image)
+
+    with pytest.raises(ValidationError):
+        EnvironmentUpdate(base_image=base_image)
+
+
+def test_environment_schema_accepts_pinned_base_image():
+    created = EnvironmentCreate(name="default", base_image="python:3.12.1")
+    updated = EnvironmentUpdate(base_image="python:3.12-alpine")
+
+    assert created.base_image == "python:3.12.1"
+    assert updated.base_image == "python:3.12-alpine"
+
+
 @pytest.mark.asyncio
 async def test_create_environment_encrypts_env_vars_and_redacts_audit(
     app, project, crypto, mock_repos
@@ -142,6 +162,69 @@ async def test_create_environment_encrypts_env_vars_and_redacts_audit(
     serialized_audit = repr(audit_kwargs["after_state"])
     assert "secret-value" not in serialized_audit
     assert audit_kwargs["after_state"]["env_vars"] == {"redacted": True, "count": 1}
+
+
+@pytest.mark.asyncio
+async def test_create_environment_stores_disk_limit(app, project, mock_repos):
+    async def _create(**kwargs):
+        env = _make_orm_environment(kwargs["project_id"], env_id=kwargs["id"])
+        env.resource_limits = kwargs["resource_limits"]
+        return env
+
+    mock_repos.environment.create.side_effect = _create
+
+    async with await _make_client(app) as ac:
+        resp = await ac.post(
+            f"/api/v1/projects/{project.id}/environments",
+            json={
+                "name": "default",
+                "base_image": "python:3.12.1",
+                "disk_mb": 2048,
+            },
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["disk_mb"] == 2048
+    assert mock_repos.environment.create.call_args.kwargs["resource_limits"] == {
+        "max_artifact_size_mb": 100,
+        "max_artifacts_count": 50,
+        "disk_mb": 2048,
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_environment_updates_and_clears_disk_limit(app, project, mock_repos):
+    env = _make_orm_environment(project.id)
+    mock_repos.environment.get_by_id.return_value = env
+
+    async def _update(instance, **kwargs):
+        for key, value in kwargs.items():
+            setattr(instance, key, value)
+        return instance
+
+    mock_repos.environment.update.side_effect = _update
+
+    async with await _make_client(app) as ac:
+        update_resp = await ac.put(
+            f"/api/v1/projects/{project.id}/environments/{env.id}",
+            json={"disk_mb": 2048},
+            headers={"Authorization": "Bearer fake"},
+        )
+        clear_resp = await ac.put(
+            f"/api/v1/projects/{project.id}/environments/{env.id}",
+            json={"disk_mb": None},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert update_resp.status_code == 200, update_resp.text
+    assert update_resp.json()["disk_mb"] == 2048
+    assert clear_resp.status_code == 200, clear_resp.text
+    assert clear_resp.json()["disk_mb"] is None
+    first_update = mock_repos.environment.update.call_args_list[0].kwargs
+    second_update = mock_repos.environment.update.call_args_list[1].kwargs
+    assert first_update["resource_limits"]["disk_mb"] == 2048
+    assert "disk_mb" not in second_update["resource_limits"]
 
 
 @pytest.mark.asyncio

@@ -87,6 +87,7 @@ class CollectorProtocol(Protocol):
         self,
         run_id: UUID,
         working_dir: Path,
+        config: dict[str, Any] | None = None,
     ) -> list[TestResultData]:
         """Parse test results from working_dir."""
         ...
@@ -98,6 +99,12 @@ class SourceProtocol(Protocol):
 
     name: str
 
-    async def clone(self, url: str, ref: str, dest: Path) -> SourceRevision:
+    async def clone(
+        self,
+        url: str,
+        ref: str,
+        dest: Path,
+        auth: dict[str, Any] | None = None,
+    ) -> SourceRevision:
         """Clone/fetch source code into dest. Returns SourceRevision with path, sha, ref."""
         ...

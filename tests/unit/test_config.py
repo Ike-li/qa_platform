@@ -115,6 +115,15 @@ def test_defaults_retention(monkeypatch: pytest.MonkeyPatch):
     assert s.retention_audit_days == 1095
 
 
+def test_worker_max_jobs_from_env(monkeypatch: pytest.MonkeyPatch):
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_WORKER_MAX_JOBS", "12")
+
+    s = Settings()
+
+    assert s.worker_max_jobs == 12
+
+
 def test_defaults_otel_disabled(monkeypatch: pytest.MonkeyPatch):
     _set_required(monkeypatch)
     s = Settings(_env_file=None)

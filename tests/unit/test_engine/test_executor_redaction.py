@@ -65,6 +65,7 @@ def sample_run():
     run = MagicMock(spec=Run)
     run.id = uuid4()
     run.git_ref = "main"
+    run.git_sha = None
     run.metadata = {"git_url": _GIT_URL_WITH_TOKEN}
     return run
 

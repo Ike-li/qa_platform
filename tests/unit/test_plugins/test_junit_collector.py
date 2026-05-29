@@ -197,6 +197,30 @@ class TestCollect:
         assert results[0].name == "ok"
 
     @pytest.mark.asyncio
+    async def test_collect_uses_configured_relative_path(self, tmp_path):
+        xml = """\
+<?xml version="1.0" ?>
+<testsuites>
+  <testsuite name="custom" tests="1">
+    <testcase name="from-custom-path" classname="custom" time="0.1"/>
+  </testsuite>
+</testsuites>"""
+        custom_dir = tmp_path / "custom"
+        custom_dir.mkdir()
+        (custom_dir / "junit.xml").write_text(xml)
+
+        collector = JUnitCollector()
+        run_id = uuid4()
+        results = await collector.collect(
+            run_id,
+            tmp_path,
+            {"path": "custom/junit.xml"},
+        )
+
+        assert len(results) == 1
+        assert results[0].name == "from-custom-path"
+
+    @pytest.mark.asyncio
     async def test_collect_no_report_returns_empty(self, tmp_path):
         """When results/junit.xml does not exist, returns empty list."""
         collector = JUnitCollector()

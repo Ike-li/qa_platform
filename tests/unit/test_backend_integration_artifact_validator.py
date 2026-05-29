@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_validator_module():
+    script_path = ROOT / "scripts" / "validate_backend_integration_artifacts.py"
+    spec = importlib.util.spec_from_file_location(
+        "validate_backend_integration_artifacts",
+        script_path,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_collect(path: Path, nodeids: list[str]) -> None:
+    body = "\n".join(nodeids)
+    path.write_text(f"{body}\n{len(nodeids)} tests collected in 0.01s\n", encoding="utf-8")
+
+
+def _write_junit(path: Path, nodeids: list[str]) -> None:
+    cases = "\n".join(
+        f"""
+        <testcase classname="tests.integration.sample" name="test_{index}">
+          <properties>
+            <property name="nodeid" value="{nodeid}" />
+          </properties>
+        </testcase>
+        """
+        for index, nodeid in enumerate(nodeids, 1)
+    )
+    path.write_text(f"<testsuite>{cases}</testsuite>\n", encoding="utf-8")
+
+
+def test_validate_backend_integration_artifacts_matches_collect_and_junit_nodeids(
+    tmp_path: Path,
+):
+    validator = _load_validator_module()
+    collect = tmp_path / "required-integration-collect.txt"
+    junit = tmp_path / "required-integration.xml"
+    nodeids = [
+        "tests/integration/test_sample.py::test_one",
+        "tests/integration/test_sample.py::test_two[param]",
+    ]
+    _write_collect(collect, nodeids)
+    _write_junit(junit, nodeids)
+
+    assert validator.validate_pairs([collect]) == []
+
+
+def test_validate_backend_integration_artifacts_rejects_missing_junit_nodeid(
+    tmp_path: Path,
+):
+    validator = _load_validator_module()
+    collect = tmp_path / "required-integration-collect.txt"
+    junit = tmp_path / "required-integration.xml"
+    _write_collect(collect, ["tests/integration/test_sample.py::test_one"])
+    junit.write_text(
+        '<testsuite><testcase classname="tests.integration.sample" name="test_one" /></testsuite>',
+        encoding="utf-8",
+    )
+
+    errors = validator.validate_pairs([collect])
+
+    assert len(errors) == 1
+    assert errors[0].startswith(f"junit_missing_nodeid_properties={junit}")
+
+
+def test_validate_backend_integration_artifacts_rejects_nodeid_mismatch(
+    tmp_path: Path,
+):
+    validator = _load_validator_module()
+    collect = tmp_path / "required-integration-collect.txt"
+    junit = tmp_path / "required-integration.xml"
+    _write_collect(collect, ["tests/integration/test_sample.py::test_one"])
+    _write_junit(junit, ["tests/integration/test_sample.py::test_other"])
+
+    errors = validator.validate_pairs([collect])
+
+    assert any(error.startswith(f"junit_missing_collected_nodeids={junit}") for error in errors)
+    assert any(error.startswith(f"junit_unexpected_nodeids={junit}") for error in errors)
+
+
+def test_integration_conftest_writes_nodeids_to_real_pytest_junit(tmp_path: Path):
+    (tmp_path / "conftest.py").write_text(
+        "from tests.integration.conftest import pytest_collection_modifyitems\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_sample.py").write_text(
+        "def test_one():\n    assert True\n",
+        encoding="utf-8",
+    )
+    junit = tmp_path / "junit.xml"
+    env = {
+        **os.environ,
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "PYTHONPATH": f"{ROOT}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--junitxml",
+            str(junit),
+            str(tmp_path / "test_sample.py"),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    values = [
+        prop.attrib.get("value")
+        for prop in ET.parse(junit).getroot().findall(".//property[@name='nodeid']")
+    ]
+    assert values == ["test_sample.py::test_one"]

@@ -41,6 +41,10 @@ def _threshold(name: str, default_ms: float) -> float:
     return float(os.environ.get(name, str(default_ms)))
 
 
+def _performance_gate_profile() -> str:
+    return os.environ.get("QAP_PERFORMANCE_GATE_PROFILE", "local")
+
+
 def _percentile(values: list[float], percentile: float) -> float:
     ordered = sorted(values)
     index = min(len(ordered) - 1, max(0, math.ceil(len(ordered) * percentile) - 1))
@@ -66,6 +70,7 @@ def _assert_p99_under(name: str, samples: list[float], threshold_ms: float) -> N
                         "threshold_ms": threshold_ms,
                         "samples": len(samples),
                         "passed": p99 <= threshold_ms,
+                        "gate_profile": _performance_gate_profile(),
                         "recorded_at": datetime.now(timezone.utc).isoformat(),
                     },
                     sort_keys=True,
@@ -3181,7 +3186,7 @@ async def test_execution_summary_generation_slo_smoke(
     user_id = seed_run["user"].id
     samples: list[float] = []
 
-    for _ in range(5):
+    for _ in range(10):
         run = Run(
             tenant_id=tenant_id,
             project_id=project_id,

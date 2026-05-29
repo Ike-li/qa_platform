@@ -199,7 +199,7 @@ async def update_notification_rule(
         rule.conditions = body.conditions
     if body.channels is not None:
         rule.channels = body.channels
-    if body.template is not None:
+    if "template" in body.model_fields_set:
         rule.template = body.template
 
     response = _to_rule_response(rule)

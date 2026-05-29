@@ -47,12 +47,12 @@ Use backend schemas and OpenAPI as the source of truth. In particular:
 - Refresh token is stored in an HttpOnly cookie by the backend, not in localStorage.
 - SSE logs/events use `/api/v1/runs/{run_id}/logs?ticket=...` and `/api/v1/runs/{run_id}/events?ticket=...`.
 - Artifact download returns JSON with `download_url` and `expires_in`; it is not an HTTP redirect.
-- `src/types/api.ts` currently mixes backend-shaped DTOs with UI-normalized view models in a few places. Notable gaps include Run view fields, Environment `variables` vs backend `env_vars` / resource-limit fields, and older nested Pipeline selector / retry shapes; the current environment editor and pipeline modal payloads follow those older shapes too. Some hooks also need API realignment: project search currently sends `search` while the backend expects `q`, pipeline hooks still use non-existent `/pipelines/{id}` routes, notification rule list currently expects a bare array while the backend returns `PaginatedResponse`, and the SSE fallback should not poll the SSE URL as JSON. Run triggering also still carries ignored legacy `env_overrides` / `params`, and run normalization checks `summary.errors` even though backend summaries use singular `error`. Do not treat that file or nearby hooks as the raw backend contract until `T-FRONTEND-API` splits or realigns them.
+- `src/types/api.ts` keeps backend DTOs separate from UI view models for Environment and Run. Pipeline payloads follow the current backend schema (`stages[].plugin/config`, `selector.include_paths`, `trigger_config.type`, `collectors[].plugin/config`, `retry_policy.max_attempts`), project search maps UI `search` to backend `q`, notification rules unwrap `PaginatedResponse`, run trigger payloads use the current `pipeline_id` / `git_ref` / `git_sha` / `environment_id` / `priority` contract, and SSE reconnect sends the last event cursor with the new ticket. Keep backend schemas / OpenAPI as the source of truth when adding new API types.
 - Backend Run statuses are `queued/preparing/running/collecting/done/failed/cancelled/timeout`; the current UI maps `done` to `passed` or `failed` from summary counts, and maps `timeout` to `timed_out`.
-- Backend TestResult statuses are `passed/failed/error/skipped/xfail`; `src/types/api.ts` currently omits `xfail`, which is part of the `T-FRONTEND-API` realignment debt.
+- Backend TestResult statuses are `passed/failed/error/skipped/xfail`; `src/types/api.ts` includes the full set.
 
 `FRONTEND_PROMPT.md` is a historical implementation prompt and is not the current API contract.
 
-## Known TypeScript Debt
+## TypeScript Gate
 
-The current `main` branch may contain historical TypeScript errors outside new feature work. For task acceptance, follow the repository task guidance: changed frontend files must be TS-clean and must not introduce new TS errors. Clean the historical debt in a dedicated frontend TS task.
+`npm run build` runs the TypeScript project build and Vite production build. Frontend changes are expected to keep both `npm run build` and `npm run lint -- --quiet` clean.

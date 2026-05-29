@@ -250,6 +250,15 @@ class Pipeline(Base):
     stages: Mapped[list] = mapped_column(JSONB, nullable=False)
     selector: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'"))
     trigger_config: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'"))
+    collectors: Mapped[list] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text(
+            "jsonb_build_array("
+            "jsonb_build_object('plugin', 'junit', 'config', '{}'::jsonb, 'enabled', true)"
+            ")"
+        ),
+    )
     timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1800"))
     retry_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))

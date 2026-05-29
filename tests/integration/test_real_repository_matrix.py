@@ -184,6 +184,61 @@ async def test_audit_repository_filters_paginates_and_detects_cross_tenant_match
 
 
 @pytest.mark.asyncio
+async def test_audit_retention_hard_deletes_only_events_older_than_cutoff(
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import AuditEvent
+    from qaplatform.infra.database.repositories.audit_repo import AuditEventRepository
+
+    repo = AuditEventRepository(integration_db_session)
+    tenant_id = seed_run["tenant"].id
+    user_id = seed_run["user"].id
+    project_id = seed_run["project"].id
+
+    old_event = await repo.create(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="retention.old",
+        resource_type="project",
+        resource_id=project_id,
+        after_state={"age": "old"},
+    )
+    old_event.created_at = datetime.now(timezone.utc) - timedelta(days=400)
+    old_system_event = await repo.create(
+        tenant_id=None,
+        user_id=None,
+        action="retention.old_system",
+        resource_type="system",
+        after_state={"age": "old"},
+    )
+    old_system_event.created_at = datetime.now(timezone.utc) - timedelta(days=400)
+    recent_event = await repo.create(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="retention.recent",
+        resource_type="project",
+        resource_id=project_id,
+        after_state={"age": "recent"},
+    )
+    recent_event.created_at = datetime.now(timezone.utc) - timedelta(days=1)
+    await integration_db_session.commit()
+
+    deleted = await repo.delete_older_than(
+        cutoff=datetime.now(timezone.utc) - timedelta(days=365)
+    )
+    await integration_db_session.commit()
+
+    assert deleted >= 2
+    assert await _count_rows(integration_db_session, AuditEvent, AuditEvent.id == old_event.id) == 0
+    assert (
+        await _count_rows(integration_db_session, AuditEvent, AuditEvent.id == old_system_event.id)
+        == 0
+    )
+    assert await _count_rows(integration_db_session, AuditEvent, AuditEvent.id == recent_event.id) == 1
+
+
+@pytest.mark.asyncio
 async def test_user_repository_scopes_soft_delete_and_recovers_from_unique_violation(
     integration_db_session,
     seed_run,

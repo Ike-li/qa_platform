@@ -153,6 +153,13 @@ export async function ensureEnvironment(
   overrides: {
     name?: string;
     env_vars?: Record<string, string>;
+    base_image?: string;
+    network_policy?: "allow" | "block";
+    setup_script?: string;
+    memory_mb?: number;
+    cpu_cores?: number;
+    max_artifact_size_mb?: number;
+    max_artifacts_count?: number;
   } = {},
 ): Promise<Environment> {
   const name = overrides.name ?? "E2E Environment";
@@ -160,9 +167,18 @@ export async function ensureEnvironment(
     headers: authHeaders(token),
     data: {
       name,
-      base_image: "python:3.12-alpine",
-      network_policy: "allow",
+      base_image: overrides.base_image ?? "python:3.12-alpine",
+      network_policy: overrides.network_policy ?? "allow",
       env_vars: overrides.env_vars ?? {},
+      ...(overrides.setup_script ? { setup_script: overrides.setup_script } : {}),
+      ...(overrides.memory_mb ? { memory_mb: overrides.memory_mb } : {}),
+      ...(overrides.cpu_cores ? { cpu_cores: overrides.cpu_cores } : {}),
+      ...(overrides.max_artifact_size_mb
+        ? { max_artifact_size_mb: overrides.max_artifact_size_mb }
+        : {}),
+      ...(overrides.max_artifacts_count
+        ? { max_artifacts_count: overrides.max_artifacts_count }
+        : {}),
     },
   });
   expect(createResponse.ok()).toBeTruthy();
@@ -173,19 +189,44 @@ export async function ensurePipeline(
   request: APIRequestContext,
   token: string,
   projectId: string,
-  overrides: { name?: string; command?: string } = {},
+  overrides: {
+    name?: string;
+    stageName?: string;
+    plugin?: string;
+    command?: string;
+    config?: Record<string, unknown>;
+    test_path?: string;
+    args?: string[];
+    collectors?: Array<{
+      plugin: string;
+      config?: Record<string, unknown>;
+      enabled?: boolean;
+    }>;
+    timeout_seconds?: number;
+  } = {},
 ): Promise<Pipeline> {
+  const config =
+    overrides.config ??
+    (overrides.command
+      ? { command: overrides.command }
+      : {
+          test_path: overrides.test_path ?? "tests/",
+          args: overrides.args ?? [],
+        });
   const createResponse = await request.post(`/api/v1/projects/${projectId}/pipelines`, {
     headers: authHeaders(token),
     data: {
       name: overrides.name ?? "E2E Pipeline",
       stages: [
         {
-          name: "Smoke",
-          plugin: "pytest",
+          name: overrides.stageName ?? "Smoke",
+          plugin: overrides.plugin ?? "pytest",
           phase: "execute",
-          config: { command: overrides.command ?? "pytest" },
+          config,
         },
+      ],
+      collectors: overrides.collectors ?? [
+        { plugin: "junit", config: { path: "results/junit.xml" }, enabled: true },
       ],
       selector: {
         include_paths: ["tests"],
@@ -194,7 +235,7 @@ export async function ensurePipeline(
       trigger_config: {
         type: "manual",
       },
-      timeout_seconds: 300,
+      timeout_seconds: overrides.timeout_seconds ?? 300,
       enabled: true,
     },
   });

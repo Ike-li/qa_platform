@@ -26,6 +26,13 @@ def _decode(val: bytes | str) -> str:
     return val.decode() if isinstance(val, bytes) else val
 
 
+def _resolve_last_event_id(
+    header_value: str | None,
+    query_value: str | None,
+) -> str:
+    return header_value or query_value or "0"
+
+
 async def _authenticate_sse_ticket(
     request: Request,
     ticket: str = Query(...),
@@ -87,6 +94,7 @@ async def stream_logs(
     repos: RepositoryBundle = Depends(_get_repos),
     session: AsyncSession = Depends(_get_db_session),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    last_event_id_query: str | None = Query(None, alias="last_event_id"),
 ):
     run = await repos.run.get_for_tenant(run_id, user.tenant_id)
     if run is None:
@@ -97,7 +105,7 @@ async def stream_logs(
     status_key = f"run:{run_id}:status"
 
     async def event_generator():
-        cursor = last_event_id or "0"
+        cursor = _resolve_last_event_id(last_event_id, last_event_id_query)
         terminal_seen = False
 
         while True:
@@ -153,6 +161,7 @@ async def stream_events(
     repos: RepositoryBundle = Depends(_get_repos),
     session: AsyncSession = Depends(_get_db_session),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    last_event_id_query: str | None = Query(None, alias="last_event_id"),
 ):
     run = await repos.run.get_for_tenant(run_id, user.tenant_id)
     if run is None:
@@ -163,7 +172,7 @@ async def stream_events(
     status_key = f"run:{run_id}:status"
 
     async def event_generator():
-        cursor = last_event_id or "0"
+        cursor = _resolve_last_event_id(last_event_id, last_event_id_query)
         terminal_seen = False
 
         while True:

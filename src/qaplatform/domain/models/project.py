@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -107,6 +107,14 @@ class TriggerConfig(BaseModel):
     target: dict = Field(default_factory=dict)
 
 
+class CollectorDefinition(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    plugin: str = "junit"
+    config: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+
 class Pipeline(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -116,6 +124,9 @@ class Pipeline(BaseModel):
     stages: list[StageDefinition] = Field(default_factory=list)
     selector: TestSelector = Field(default_factory=TestSelector)
     trigger_config: TriggerConfig = Field(default_factory=TriggerConfig)
+    collectors: list[CollectorDefinition] = Field(
+        default_factory=lambda: [CollectorDefinition()]
+    )
     timeout_seconds: int = 1800
     retry_policy: RetryPolicy | None = None
     enabled: bool = True

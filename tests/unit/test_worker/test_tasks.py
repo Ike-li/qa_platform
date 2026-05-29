@@ -24,6 +24,7 @@ def fake_run():
     run.cancel_requested_at = None
     run.pipeline = MagicMock()
     run.pipeline.stages = []
+    run.pipeline.collectors = [{"plugin": "junit", "config": {}, "enabled": True}]
     run.pipeline.timeout_seconds = 60
     run.pipeline.retry_policy = None
     run.environment = MagicMock()
@@ -89,6 +90,128 @@ def test_build_pipeline_config_maps_environment_artifact_limits(fake_run):
     assert config.resource_limits.max_artifacts_count == 9
 
 
+def test_build_pipeline_config_maps_pipeline_collectors(fake_run):
+    from qaplatform.worker.tasks import _build_pipeline_config
+
+    fake_run.pipeline.collectors = [
+        {
+            "plugin": "junit",
+            "config": {"path": "custom/results.xml"},
+            "enabled": True,
+        }
+    ]
+
+    config = _build_pipeline_config(fake_run, fake_run.pipeline, fake_run.environment)
+
+    assert config.collectors[0].plugin == "junit"
+    assert config.collectors[0].config == {"path": "custom/results.xml"}
+    assert config.collectors[0].enabled is True
+
+
+def test_build_pipeline_config_defaults_to_junit_collector(fake_run):
+    from qaplatform.worker.tasks import _build_pipeline_config
+
+    fake_run.pipeline.collectors = None
+
+    config = _build_pipeline_config(fake_run, fake_run.pipeline, fake_run.environment)
+
+    assert config.collectors[0].plugin == "junit"
+    assert config.collectors[0].config == {}
+    assert config.collectors[0].enabled is True
+
+
+@pytest.mark.asyncio
+async def test_build_source_auth_decrypts_project_git_credential(fake_run):
+    from qaplatform.worker.tasks import _build_source_auth
+
+    crypto = CryptoService({0: b"\x00" * 32})
+    project = MagicMock()
+    project.id = fake_run.project_id = uuid4()
+    project.tenant_id = uuid4()
+    project.git_auth_method = "token"
+    project.credential_id = uuid4()
+    credential = MagicMock()
+    credential.id = project.credential_id
+    credential.name = "git-token"
+    credential.type = "token"
+    credential.encrypted_value = crypto.encrypt(
+        "secret-token",
+        context_id=f"credential:{project.id}:git-token",
+    )
+    fake_run.metadata_ = {
+        "git_auth_method": "token",
+        "credential_id": str(project.credential_id),
+    }
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = credential
+    session = AsyncMock()
+    session.execute.return_value = result
+
+    auth = await _build_source_auth(fake_run, project, session, crypto)
+
+    assert auth == {"method": "token", "secret": "secret-token"}
+
+
+@pytest.mark.asyncio
+async def test_build_source_auth_uses_rotated_git_credential_secret(fake_run):
+    from qaplatform.worker.tasks import _build_source_auth
+
+    crypto = CryptoService({0: b"\x00" * 32})
+    project = MagicMock()
+    project.id = fake_run.project_id = uuid4()
+    project.tenant_id = uuid4()
+    project.git_auth_method = "token"
+    project.credential_id = uuid4()
+    credential = MagicMock()
+    credential.id = project.credential_id
+    credential.name = "git-token"
+    credential.type = "token"
+    credential.encrypted_value = crypto.encrypt(
+        "rotated-secret-token",
+        context_id=f"credential:{project.id}:git-token",
+    )
+    fake_run.metadata_ = {
+        "git_auth_method": "token",
+        "credential_id": str(project.credential_id),
+    }
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = credential
+    session = AsyncMock()
+    session.execute.return_value = result
+
+    auth = await _build_source_auth(fake_run, project, session, crypto)
+
+    assert auth == {"method": "token", "secret": "rotated-secret-token"}
+
+
+@pytest.mark.asyncio
+async def test_build_source_auth_rejects_type_mismatch(fake_run):
+    from qaplatform.worker.tasks import _build_source_auth
+
+    project = MagicMock()
+    project.id = fake_run.project_id = uuid4()
+    project.tenant_id = uuid4()
+    project.git_auth_method = "token"
+    project.credential_id = uuid4()
+    credential = MagicMock()
+    credential.type = "ssh_key"
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = credential
+    session = AsyncMock()
+    session.execute.return_value = result
+
+    with pytest.raises(RuntimeError, match="type mismatch"):
+        await _build_source_auth(
+            fake_run,
+            project,
+            session,
+            CryptoService({0: b"\x00" * 32}),
+        )
+
+
 @pytest.fixture
 def mock_session():
     session = AsyncMock()
@@ -97,6 +220,8 @@ def mock_session():
     # Default: session.execute returns an active project (for archive check)
     active_project = MagicMock()
     active_project.status = "active"
+    active_project.git_auth_method = "none"
+    active_project.credential_id = None
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = active_project
     session.execute = AsyncMock(return_value=mock_result)
@@ -385,6 +510,8 @@ class TestArchiveBlocking:
         # Mock session.execute to return active project
         active_project = MagicMock()
         active_project.status = "active"
+        active_project.git_auth_method = "none"
+        active_project.credential_id = None
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = active_project

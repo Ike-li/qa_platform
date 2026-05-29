@@ -1,4 +1,4 @@
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import i18n from "../../i18n";
 import { useCreatePipeline } from "../../hooks/use-projects";
 import { useUpdatePipeline, useDeletePipeline } from "../../hooks/use-pipelines";
-import type { Pipeline } from "../../types/api";
+import type { Pipeline, PipelineCreatePayload } from "../../types/api";
 import {
   Dialog,
   DialogContent,
@@ -43,18 +43,51 @@ import { Trash2 } from "lucide-react";
 function createPipelineSchema() {
   return z.object({
     name: z.string().min(1, i18n.t('validation.nameRequired')),
-    framework: z.string().min(1, i18n.t('validation.frameworkRequired')),
-    pattern: z.string().min(1, i18n.t('validation.patternRequired')),
+    runner: z.string().min(1, i18n.t('validation.frameworkRequired')),
+    include_paths: z.string().refine(
+      (value) => parsePaths(value).length > 0,
+      i18n.t('validation.patternRequired')
+    ),
     timeout_seconds: z.number().min(1, i18n.t('validation.timeoutRequired')),
-    on_push: z.boolean(),
-    schedule: z.string().optional().nullable(),
-    max_retries: z.number().min(0),
-    backoff: z.enum(["fixed", "exponential"]),
+    collector_plugin: z.string().min(1),
+    collector_path: z.string().min(1),
+    trigger_type: z.enum(["manual", "webhook", "schedule"]),
+    max_attempts: z.number().min(1).max(5),
+    backoff_seconds: z.number().min(0),
     enabled: z.boolean(),
   });
 }
 
 type PipelineFormValues = z.infer<ReturnType<typeof createPipelineSchema>>;
+
+const DEFAULT_TEST_PATHS = "tests";
+const DEFAULT_COLLECTOR_PATH = "results/junit.xml";
+
+function parsePaths(value: string): string[] {
+  return value
+    .split(/[\n,]+/)
+    .map((path) => path.trim())
+    .filter(Boolean);
+}
+
+function pathsToText(value: unknown): string {
+  if (Array.isArray(value)) return value.map(String).join("\n");
+  if (typeof value === "string") return value;
+  return "";
+}
+
+function pipelinePaths(pipeline: Pipeline): string {
+  if (pipeline.selector.include_paths.length > 0) {
+    return pipeline.selector.include_paths.join("\n");
+  }
+  return pathsToText(pipeline.stages[0]?.config.test_paths) || DEFAULT_TEST_PATHS;
+}
+
+function pipelineCollectorPath(pipeline: Pipeline): string {
+  const config = pipeline.collectors?.[0]?.config ?? {};
+  const path = config.path ?? config.junit_xml;
+  return typeof path === "string" && path.trim() ? path : DEFAULT_COLLECTOR_PATH;
+}
 
 export function PipelineModal({
   projectId,
@@ -77,19 +110,21 @@ export function PipelineModal({
   const {
     register,
     handleSubmit,
+    control,
     setValue,
-    watch,
     reset,
     formState: { errors },
   } = useForm<PipelineFormValues>({
     resolver: zodResolver(pipelineSchema),
     defaultValues: {
-      framework: "pytest",
-      pattern: "tests/**/*.py",
+      runner: "pytest",
+      include_paths: DEFAULT_TEST_PATHS,
       timeout_seconds: 600,
-      on_push: true,
-      max_retries: 0,
-      backoff: "fixed",
+      collector_plugin: "junit",
+      collector_path: DEFAULT_COLLECTOR_PATH,
+      trigger_type: "manual",
+      max_attempts: 1,
+      backoff_seconds: 0,
       enabled: true,
     },
   });
@@ -98,56 +133,83 @@ export function PipelineModal({
     if (pipeline) {
       reset({
         name: pipeline.name,
-        framework: pipeline.selector.framework,
-        pattern: pipeline.selector.pattern,
+        runner: pipeline.stages[0]?.plugin ?? "pytest",
+        include_paths: pipelinePaths(pipeline),
         timeout_seconds: pipeline.timeout_seconds,
-        on_push: pipeline.trigger_config.on_push,
-        schedule: pipeline.trigger_config.on_schedule || "",
-        max_retries: pipeline.retry_policy?.max_retries || 0,
-        backoff: pipeline.retry_policy?.backoff || "fixed",
+        collector_plugin: pipeline.collectors?.[0]?.plugin ?? "junit",
+        collector_path: pipelineCollectorPath(pipeline),
+        trigger_type: (pipeline.trigger_config.type || "manual") as PipelineFormValues["trigger_type"],
+        max_attempts: pipeline.retry_policy?.max_attempts ?? 1,
+        backoff_seconds: pipeline.retry_policy?.backoff_seconds ?? 0,
         enabled: pipeline.enabled,
       });
     } else {
       reset({
-        framework: "pytest",
-        pattern: "tests/**/*.py",
+        runner: "pytest",
+        include_paths: DEFAULT_TEST_PATHS,
         timeout_seconds: 600,
-        on_push: true,
-        max_retries: 0,
-        backoff: "fixed",
+        collector_plugin: "junit",
+        collector_path: DEFAULT_COLLECTOR_PATH,
+        trigger_type: "manual",
+        max_attempts: 1,
+        backoff_seconds: 0,
         enabled: true,
       });
     }
   }, [pipeline, reset]);
 
-  const onPush = watch("on_push");
-  const enabled = watch("enabled");
+  const runner = useWatch({ control, name: "runner" });
+  const triggerType = useWatch({ control, name: "trigger_type" });
+  const collectorPlugin = useWatch({ control, name: "collector_plugin" });
+  const enabled = useWatch({ control, name: "enabled" });
 
   const onSubmit = async (data: PipelineFormValues) => {
     try {
-      const payload = {
+      const includePaths = parsePaths(data.include_paths);
+      const payload: PipelineCreatePayload = {
         name: data.name,
+        stages: [{
+          name: "run-tests",
+          plugin: data.runner,
+          config: { test_paths: includePaths },
+          continue_on_error: false,
+          phase: "execute" as const,
+        }],
         selector: {
-          framework: data.framework,
-          pattern: data.pattern,
+          include_paths: includePaths,
+          exclude_paths: [],
+          tags: [],
+          expression: null,
+          regex: null,
+          on_empty: "fail" as const,
         },
         timeout_seconds: data.timeout_seconds,
+        collectors: [{
+          plugin: data.collector_plugin,
+          config: { path: data.collector_path },
+          enabled: true,
+        }],
         trigger_config: {
-          on_push: data.on_push,
-          on_schedule: data.schedule || null,
+          type: data.trigger_type,
+          dedup_window_seconds: null,
+          source: {},
+          conditions: {},
+          target: {},
         },
-        retry_policy: data.max_retries > 0 ? {
-          max_retries: data.max_retries,
-          backoff: data.backoff,
+        retry_policy: data.max_attempts > 1 ? {
+          max_attempts: data.max_attempts,
+          retry_on: ["infra"],
+          backoff_seconds: data.backoff_seconds,
+          scope: "pipeline" as const,
         } : null,
         enabled: data.enabled,
       };
 
       if (isEditing) {
-        await updatePipeline(payload as Partial<Pipeline>);
+        await updatePipeline(payload);
         toast.success(t('pipelines.toast.updated'));
       } else {
-        await createPipeline(payload as Partial<Pipeline>);
+        await createPipeline(payload);
         toast.success(t('pipelines.toast.created'));
       }
       onOpenChange(false);
@@ -220,10 +282,10 @@ export function PipelineModal({
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="framework">{t('pipelines.framework')}</Label>
+              <Label htmlFor="runner">{t('pipelines.framework')}</Label>
               <Select
-                value={watch("framework")}
-                onValueChange={(value) => setValue("framework", value)}
+                value={runner}
+                onValueChange={(value) => setValue("runner", value)}
               >
                 <SelectTrigger>
                   <SelectValue placeholder={t('pipelines.selectFramework')} />
@@ -232,7 +294,7 @@ export function PipelineModal({
                   <SelectItem value="pytest">Pytest</SelectItem>
                   <SelectItem value="jest">Jest</SelectItem>
                   <SelectItem value="playwright">Playwright</SelectItem>
-                  <SelectItem value="cypress">Cypress</SelectItem>
+                  <SelectItem value="go_test">Go Test</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -247,49 +309,71 @@ export function PipelineModal({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="pattern">{t('pipelines.testFilePattern')}</Label>
-            <Input id="pattern" {...register("pattern")} placeholder="tests/**/*.py" />
+            <Label htmlFor="include_paths">{t('pipelines.testFilePattern')}</Label>
+            <Input id="include_paths" {...register("include_paths")} placeholder="tests, tests/e2e" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="collector_plugin">{t('pipelines.collector')}</Label>
+              <Select
+                value={collectorPlugin}
+                onValueChange={(value) => setValue("collector_plugin", value)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={t('pipelines.collector')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="junit">JUnit XML</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="collector_path">{t('pipelines.collectorPath')}</Label>
+              <Input
+                id="collector_path"
+                {...register("collector_path")}
+                placeholder={DEFAULT_COLLECTOR_PATH}
+              />
+            </div>
           </div>
 
           <div className="space-y-4 rounded-lg border border-hairline p-4">
             <h4 className="text-sm font-medium">{t('pipelines.triggers')}</h4>
-            <div className="flex items-center space-x-2">
-              <Checkbox
-                id="on_push"
-                checked={onPush}
-                onCheckedChange={(checked) => setValue("on_push", checked === true)}
-              />
-              <label htmlFor="on_push" className="text-sm text-ink-muted">{t('pipelines.onPush')}</label>
-            </div>
             <div className="space-y-2">
-              <Label htmlFor="schedule">{t('pipelines.cronSchedule')}</Label>
-              <Input id="schedule" {...register("schedule")} placeholder="0 0 * * *" />
+              <Label htmlFor="trigger_type">{t('pipelines.triggerType')}</Label>
+              <Select
+                value={triggerType}
+                onValueChange={(value) => setValue("trigger_type", value as PipelineFormValues["trigger_type"])}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={t('pipelines.triggerType')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="manual">{t('pipelines.triggerManual')}</SelectItem>
+                  <SelectItem value="webhook">{t('pipelines.triggerWebhook')}</SelectItem>
+                  <SelectItem value="schedule">{t('pipelines.triggerSchedule')}</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="max_retries">{t('pipelines.maxRetries')}</Label>
+              <Label htmlFor="max_attempts">{t('pipelines.maxRetries')}</Label>
               <Input
-                id="max_retries"
+                id="max_attempts"
                 type="number"
-                {...register("max_retries", { valueAsNumber: true })}
+                {...register("max_attempts", { valueAsNumber: true })}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="backoff">{t('pipelines.backoffStrategy')}</Label>
-              <Select
-                value={watch("backoff")}
-                onValueChange={(value) => setValue("backoff", value as "fixed" | "exponential")}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={t('pipelines.selectStrategy')} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="fixed">{t('pipelines.backoffFixed')}</SelectItem>
-                  <SelectItem value="exponential">{t('pipelines.backoffExponential')}</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label htmlFor="backoff_seconds">{t('pipelines.backoffStrategy')}</Label>
+              <Input
+                id="backoff_seconds"
+                type="number"
+                {...register("backoff_seconds", { valueAsNumber: true })}
+              />
             </div>
           </div>
 

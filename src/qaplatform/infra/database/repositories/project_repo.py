@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -45,6 +46,21 @@ class ProjectRepository(BaseRepository[Project]):
             limit=limit,
             filters=[Project.tenant_id == tenant_id],
         )
+
+    async def list_by_git_urls(self, git_urls: Collection[str]) -> list[Project]:
+        candidates = {url for url in git_urls if url}
+        if not candidates:
+            return []
+        stmt = (
+            select(Project)
+            .where(
+                Project.git_url.in_(candidates),
+                Project.deleted_at.is_(None),
+            )
+            .order_by(Project.created_at)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
 
 class EnvironmentRepository(BaseRepository[Environment]):
@@ -122,15 +138,21 @@ class CredentialRepository(BaseRepository[Credential]):
         return result.scalar_one_or_none()
 
     async def list_by_project_tenant(
-        self, project_id: UUID, tenant_id: UUID
-    ) -> list[Credential]:
-        stmt = select(Credential).where(
-            Credential.project_id == project_id,
-            Credential.tenant_id == tenant_id,
-            Credential.deleted_at.is_(None),
+        self,
+        project_id: UUID,
+        tenant_id: UUID,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[Credential], int]:
+        return await self.list(
+            offset=offset,
+            limit=limit,
+            filters=[
+                Credential.project_id == project_id,
+                Credential.tenant_id == tenant_id,
+            ],
         )
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
 
     async def get_by_project_tenant(
         self, credential_id: UUID, project_id: UUID, tenant_id: UUID
@@ -163,8 +185,13 @@ class ProjectMemberRepository(BaseRepository[ProjectMember]):
         super().__init__(session)
 
     async def list_by_project_tenant(
-        self, project_id: UUID, tenant_id: UUID
-    ) -> list[ProjectMember]:
+        self,
+        project_id: UUID,
+        tenant_id: UUID,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[ProjectMember], int]:
         stmt = (
             select(ProjectMember)
             .where(
@@ -173,9 +200,18 @@ class ProjectMemberRepository(BaseRepository[ProjectMember]):
                 ProjectMember.deleted_at.is_(None),
             )
             .options(selectinload(ProjectMember.user))
+            .order_by(ProjectMember.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        count_stmt = select(func.count()).select_from(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.tenant_id == tenant_id,
+            ProjectMember.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        count_result = await self.session.execute(count_stmt)
+        return list(result.scalars().all()), count_result.scalar_one()
 
     async def get_by_project_user(
         self, project_id: UUID, user_id: UUID, tenant_id: UUID

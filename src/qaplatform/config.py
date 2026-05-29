@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     # Execution engine
     max_concurrent_runs: int = 5
     max_concurrent_per_project: int = 3
+    worker_max_jobs: int = Field(default=10, ge=1)
     default_timeout_seconds: int = 1800
     preparing_timeout_seconds: int = 300
     collecting_timeout_seconds: int = 180

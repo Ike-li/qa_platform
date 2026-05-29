@@ -77,7 +77,7 @@ async function mockApi(page: Page) {
     }
 
     if (method === "GET" && path === `/api/v1/projects/${project.id}/pipelines`) {
-      await fulfillJson(route, []);
+      await fulfillJson(route, { data: [], page: 1, per_page: 20, total: 0 });
       return;
     }
 

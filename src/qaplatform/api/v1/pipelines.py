@@ -9,6 +9,7 @@ from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
 from qaplatform.api.deps import CurrentUser, Repos, require_project_permission
 from qaplatform.api.schemas import (
+    CollectorDefinitionInput,
     ErrorResponse,
     PaginatedResponse,
     PipelineCreate,
@@ -40,10 +41,20 @@ _SENSITIVE_AUDIT_KEY_PARTS = (
 _REDACTED = {"redacted": True}
 
 
+def _collector_inputs(raw_collectors: Any) -> list[CollectorDefinitionInput]:
+    if not isinstance(raw_collectors, list) or not raw_collectors:
+        raw_collectors = [{"plugin": "junit", "config": {}, "enabled": True}]
+    return [
+        item if isinstance(item, CollectorDefinitionInput) else CollectorDefinitionInput(**item)
+        for item in raw_collectors
+    ]
+
+
 def _to_response(orm) -> PipelineResponse:
     stages = [StageDefinitionInput(**s) for s in (orm.stages or [])]
     selector = TestSelectorInput(**(orm.selector or {}))
     trigger = TriggerConfigInput(**(orm.trigger_config or {}))
+    collectors = _collector_inputs(getattr(orm, "collectors", None))
     retry = RetryPolicyInput(**orm.retry_policy) if orm.retry_policy else None
     return PipelineResponse(
         id=orm.id,
@@ -52,6 +63,7 @@ def _to_response(orm) -> PipelineResponse:
         stages=stages,
         selector=selector,
         trigger_config=trigger,
+        collectors=collectors,
         timeout_seconds=orm.timeout_seconds,
         retry_policy=retry,
         enabled=orm.enabled,
@@ -137,6 +149,7 @@ async def create_pipeline(
         stages=[s.model_dump() for s in body.stages],
         selector=body.selector.model_dump(),
         trigger_config=body.trigger_config.model_dump(),
+        collectors=[c.model_dump() for c in body.collectors],
         timeout_seconds=body.timeout_seconds,
         retry_policy=body.retry_policy.model_dump() if body.retry_policy else None,
         enabled=body.enabled,
@@ -201,6 +214,11 @@ async def update_pipeline(
         update_data["selector"] = body.selector.model_dump()
     if "trigger_config" in update_data and update_data["trigger_config"] is not None:
         update_data["trigger_config"] = body.trigger_config.model_dump()
+    if "collectors" in update_data:
+        if body.collectors is None:
+            update_data.pop("collectors")
+        else:
+            update_data["collectors"] = [c.model_dump() for c in body.collectors]
     if "retry_policy" in update_data and update_data["retry_policy"] is not None:
         update_data["retry_policy"] = body.retry_policy.model_dump()
 

@@ -4,12 +4,13 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID
 
 from opentelemetry import trace
 from sqlalchemy import select as _select
 
 from qaplatform.domain.models.run import RunStatus
-from qaplatform.infra.database.models import Project
+from qaplatform.infra.database.models import Credential, Project
 
 log = logging.getLogger(__name__)
 
@@ -190,6 +191,7 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
     from qaplatform.infra.database.repositories.run_repo import (
         ArtifactRepository,
         RunRepository,
+        TestResultRepository,
     )
     from qaplatform.engine.events import publish_status_event
     from qaplatform.engine.executor import RunExecutor
@@ -213,8 +215,10 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
     async with session_factory() as session:
         run_repo = RunRepository(session)
         artifact_repo = ArtifactRepository(session)
+        test_result_repo = TestResultRepository(session)
         executor.run_repo = run_repo
         executor.artifact_repo = artifact_repo
+        executor.test_result_repo = test_result_repo
 
         # 1. Claim the run
         run = await run_repo.claim_for_worker(run_id, worker_id=worker_id)
@@ -261,7 +265,14 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
         try:
             # 2. Execute the pipeline
             crypto = getattr(ctx.get("container"), "crypto_service", None)
-            config = _build_pipeline_config(run, run.pipeline, run.environment, crypto)
+            source_auth = await _build_source_auth(run, project, session, crypto)
+            config = _build_pipeline_config(
+                run,
+                run.pipeline,
+                run.environment,
+                crypto,
+                source_auth=source_auth,
+            )
             status = await executor.execute(run, config)
             # Terminal state (finish_if_current / fail_if_current) is written
             # inside executor.execute() with summary; no redundant write here.
@@ -329,8 +340,60 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
 
             await session.commit()
 
-def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
-    from qaplatform.engine.executor import PipelineConfig, StageDefinition
+async def _build_source_auth(run, project, session, crypto) -> dict[str, str] | None:
+    metadata = getattr(run, "metadata_", None) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    method = metadata.get("git_auth_method") or project.git_auth_method
+    credential_id = metadata.get("credential_id") or project.credential_id
+    if method == "none" or not credential_id:
+        return None
+    if method not in {"token", "ssh_key"}:
+        raise RuntimeError(f"Unsupported project Git auth method: {method}")
+    if crypto is None:
+        raise RuntimeError("Crypto service not initialised")
+
+    try:
+        credential_uuid = UUID(str(credential_id))
+    except ValueError as exc:
+        raise RuntimeError("Invalid project Git credential id") from exc
+
+    result = await session.execute(
+        _select(Credential).where(
+            Credential.id == credential_uuid,
+            Credential.project_id == project.id,
+            Credential.tenant_id == project.tenant_id,
+            Credential.deleted_at.is_(None),
+        )
+    )
+    credential = result.scalar_one_or_none()
+    if credential is None:
+        raise RuntimeError("Project Git credential not found")
+
+    expected_type = "token" if method == "token" else "ssh_key"
+    if credential.type != expected_type:
+        raise RuntimeError("Project Git credential type mismatch")
+
+    secret = crypto.decrypt(
+        credential.encrypted_value,
+        context_id=f"credential:{project.id}:{credential.name}",
+    )
+    return {"method": method, "secret": secret}
+
+
+def _build_pipeline_config(
+    run,
+    pipeline_orm,
+    environment_orm,
+    crypto=None,
+    source_auth: dict[str, str] | None = None,
+):
+    from qaplatform.engine.executor import (
+        CollectorDefinition,
+        PipelineConfig,
+        StageDefinition,
+    )
     from qaplatform.engine.docker_backend import ResourceLimits
     from qaplatform.domain.services.env_vars_crypto import (
         decrypt_env_vars,
@@ -364,6 +427,18 @@ def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
     max_artifacts_count = raw_resource_limits.get("max_artifacts_count", 50)
     disk_mb = raw_resource_limits.get("disk_mb")
     disk_bytes = disk_mb * 1024 * 1024 if disk_mb else None
+    raw_collectors = getattr(pipeline_orm, "collectors", None)
+    if not isinstance(raw_collectors, list) or not raw_collectors:
+        raw_collectors = [{"plugin": "junit", "config": {}, "enabled": True}]
+    collectors = [
+        CollectorDefinition(
+            plugin=collector.get("plugin", "junit"),
+            config=collector.get("config") or {},
+            enabled=collector.get("enabled", True),
+        )
+        for collector in raw_collectors
+        if isinstance(collector, dict)
+    ] or [CollectorDefinition()]
 
     return PipelineConfig(
         image=environment_orm.base_image,
@@ -379,4 +454,6 @@ def _build_pipeline_config(run, pipeline_orm, environment_orm, crypto=None):
         network_policy=environment_orm.network_policy,
         timeout_seconds=pipeline_orm.timeout_seconds or 1800,
         setup_script=environment_orm.setup_script,
+        collectors=collectors,
+        source_auth=source_auth,
     )

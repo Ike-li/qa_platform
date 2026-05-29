@@ -116,6 +116,33 @@ async def _create_and_start(
     return container
 
 
+class _OomRunner:
+    def build_command(self, _config):
+        return "python -c \"x = ' ' * (10 ** 8)\""
+
+
+class _EmptyCollector:
+    async def collect(self, _run_id, _working_dir):
+        return []
+
+
+class _OomPluginRegistry:
+    def get_runner(self, _name):
+        return _OomRunner()
+
+    def get_collector(self, _name):
+        return _EmptyCollector()
+
+
+def _decode_redis_mapping(mapping: dict) -> dict[str, str]:
+    return {
+        key.decode() if isinstance(key, bytes) else key: (
+            value.decode() if isinstance(value, bytes) else value
+        )
+        for key, value in mapping.items()
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Tests
 # --------------------------------------------------------------------------- #
@@ -178,3 +205,91 @@ async def test_normal_exit_oom_killed_false(
             await container.delete(force=True)
         except Exception:
             pass
+
+
+@pytest.mark.asyncio
+async def test_executor_maps_real_oom_to_timeout_summary_and_redis(
+    docker_available,
+    python_image_pulled,
+    aiodocker_client,
+    integration_app,
+    integration_db_session,
+    seed_run,
+):
+    """Real Docker OOM must become the platform timeout/resource summary contract."""
+    from qaplatform.domain.models.run import Run as RunDomain
+    from qaplatform.domain.models.run import RunStatus
+    from qaplatform.engine.docker_backend import ResourceLimits
+    from qaplatform.engine.events import EVENT_STREAM_KEY, STATUS_HASH_KEY
+    from qaplatform.engine.executor import PipelineConfig, RunExecutor, StageDefinition
+    from qaplatform.engine.log_stream import LogStream
+    from qaplatform.infra.database.models import Run, RunStatusEnum
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+
+    run_id = seed_run["run"].id
+    run_repo = RunRepository(integration_db_session)
+    claimed = await run_repo.claim_for_worker(run_id, worker_id="test-oom-e2e")
+    assert claimed is not None, "could not claim seeded run"
+    await integration_db_session.commit()
+
+    redis = integration_app.state.container.redis_client
+    executor = RunExecutor(
+        backend=DockerBackend(aiodocker_client),
+        log_stream=LogStream(redis),
+        run_repo=run_repo,
+        plugin_registry=_OomPluginRegistry(),
+        redis=redis,
+    )
+    run_domain = RunDomain(
+        id=run_id,
+        tenant_id=seed_run["tenant"].id,
+        project_id=seed_run["project"].id,
+        pipeline_id=seed_run["pipeline"].id,
+        environment_id=seed_run["environment"].id,
+        git_ref="main",
+        triggered_by=seed_run["user"].id,
+        metadata={},
+    )
+    pipeline = PipelineConfig(
+        image=python_image_pulled,
+        stages=[StageDefinition(name="oom", plugin="python")],
+        resource_limits=ResourceLimits(
+            memory_bytes=8 * 1024 * 1024,
+            cpu_cores=0.5,
+        ),
+        network_policy="deny",
+        timeout_seconds=30,
+    )
+
+    status = await executor.execute(run_domain, pipeline)
+    assert status == RunStatus.TIMEOUT
+
+    integration_db_session.expire_all()
+    persisted = await integration_db_session.get(Run, run_id)
+    assert persisted is not None
+    assert persisted.status == RunStatusEnum.TIMEOUT
+    assert persisted.summary is not None
+    resource_termination = persisted.summary["resource_termination"]
+    assert resource_termination["reason"] == "oom"
+    assert resource_termination["oom_killed"] is True
+    assert resource_termination["timed_out"] is False
+    assert resource_termination["exit_code"] != 0
+    assert resource_termination["duration_ms"] >= 0
+    assert resource_termination["started_at"]
+    assert resource_termination["finished_at"]
+
+    status_hash = await redis.hgetall(STATUS_HASH_KEY.format(run_id=str(run_id)))
+    assert _decode_redis_mapping(status_hash)["status"] == "timeout"
+
+    events = await redis.xrange(EVENT_STREAM_KEY.format(run_id=str(run_id)))
+    assert events, "OOM run did not publish Redis status events"
+    _event_id, latest_event = events[-1]
+    decoded_event = _decode_redis_mapping(latest_event)
+    assert decoded_event["status"] == "timeout"
+    assert decoded_event["previous"] == "collecting"
+
+    logs = await executor.log_stream.read_logs(run_id, count=100)
+    lines = [entry["line"] for entry in logs]
+    assert any("Starting stage: oom" in line for line in lines)
+    assert any("Resource termination: reason=oom" in line for line in lines)
+    assert any("Run completed: timeout" in line for line in lines)

@@ -108,19 +108,27 @@ async def test_list_credentials_returns_response_without_plaintext(
 ):
     c1 = _make_orm_credential(project.id, tenant_id, name="t1", type_="token")
     c2 = _make_orm_credential(project.id, tenant_id, name="t2", type_="ssh_key")
-    mock_repos.credential.list_by_project_tenant.return_value = [c1, c2]
+    mock_repos.credential.list_by_project_tenant.return_value = ([c1, c2], 2)
 
     async with await _make_client(app) as ac:
         resp = await ac.get(
-            f"/api/v1/projects/{project.id}/credentials",
+            f"/api/v1/projects/{project.id}/credentials?page=2&per_page=1",
             headers={"Authorization": "Bearer fake"},
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert len(body) == 2
-    for entry in body:
+    assert body["page"] == 2
+    assert body["per_page"] == 1
+    assert body["total"] == 2
+    assert len(body["data"]) == 2
+    for entry in body["data"]:
         assert "value" not in entry
         assert "encrypted_value" not in entry
+    mock_repos.credential.list_by_project_tenant.assert_awaited_once()
+    assert mock_repos.credential.list_by_project_tenant.await_args.kwargs == {
+        "offset": 1,
+        "limit": 1,
+    }
 
 
 @pytest.mark.asyncio

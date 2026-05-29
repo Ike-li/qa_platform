@@ -40,6 +40,12 @@ class RunRepository(BaseRepository[Run]):
         RunStatusEnum.RUNNING,
         RunStatusEnum.COLLECTING,
     })
+    _DEDUP_ACTIVE_STATUSES = frozenset({
+        RunStatusEnum.QUEUED,
+        RunStatusEnum.PREPARING,
+        RunStatusEnum.RUNNING,
+        RunStatusEnum.COLLECTING,
+    })
 
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
@@ -84,6 +90,28 @@ class RunRepository(BaseRepository[Run]):
         stmt = select(Run).where(
             Run.arq_job_id == arq_job_id,
             Run.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_active_by_dedup(
+        self,
+        *,
+        project_id: UUID,
+        pipeline_id: UUID,
+        dedup_key: str,
+    ) -> Run | None:
+        stmt = (
+            select(Run)
+            .where(
+                Run.project_id == project_id,
+                Run.pipeline_id == pipeline_id,
+                Run.dedup_key == dedup_key,
+                Run.status.in_(self._DEDUP_ACTIVE_STATUSES),
+                Run.deleted_at.is_(None),
+            )
+            .order_by(Run.created_at)
+            .limit(1)
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
