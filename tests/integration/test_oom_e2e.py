@@ -118,7 +118,7 @@ async def _create_and_start(
 
 class _OomRunner:
     def build_command(self, _config):
-        return "python -c \"x = ' ' * (10 ** 8)\""
+        return "python -c \"chunks = []; [chunks.append(bytearray(1024 * 1024)) for _ in range(512)]\""
 
 
 class _EmptyCollector:
@@ -254,7 +254,7 @@ async def test_executor_maps_real_oom_to_timeout_summary_and_redis(
         image=python_image_pulled,
         stages=[StageDefinition(name="oom", plugin="python")],
         resource_limits=ResourceLimits(
-            memory_bytes=8 * 1024 * 1024,
+            memory_bytes=32 * 1024 * 1024,
             cpu_cores=0.5,
         ),
         network_policy="deny",
