@@ -59,6 +59,28 @@ def test_release_candidate_gate_profiles_are_explicit():
     assert "evidence=frontend-api-contract,required-integration,heavy-docker,external-stack,performance-slo,full-playwright" in text
 
 
+def test_ci_uses_node24_ready_official_actions():
+    text = _workflow_text()
+
+    assert 'FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"' in text
+    for action_ref in (
+        "actions/checkout@v6",
+        "actions/setup-node@v6",
+        "actions/setup-python@v6",
+        "actions/upload-artifact@v7",
+        "actions/download-artifact@v8",
+    ):
+        assert action_ref in text
+    for stale_ref in (
+        "actions/checkout@v4",
+        "actions/setup-node@v4",
+        "actions/setup-python@v5",
+        "actions/upload-artifact@v4",
+        "actions/download-artifact@v4",
+    ):
+        assert stale_ref not in text
+
+
 def test_frontend_api_contract_is_a_release_gate_job():
     text = _workflow_text()
     contract_block = _job_block(text, "frontend-api-contract")
@@ -80,7 +102,7 @@ def test_ci_playwright_config_emits_actual_run_json_report():
 def test_release_gate_validates_downloaded_evidence_markers():
     release_block = _job_block(_workflow_text(), "release-gate")
 
-    assert "actions/download-artifact@v4" in release_block
+    assert "actions/download-artifact@v8" in release_block
     assert "backend-test-artifacts/evidence-manifest.txt" in release_block
     assert "frontend-api-contract-artifacts/openapi.json" in release_block
     assert "backend-integration-artifacts/evidence-manifest.txt" in release_block

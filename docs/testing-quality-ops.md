@@ -154,12 +154,59 @@
 - `.github/performance-slo-manifest.json` 新增或删除 SLO 时必须说明用户路径、阈值来源、`min_samples` 和归属 lane。
 - `.github/performance-slo-baseline.json` 只能随证据更新：放宽 baseline 需要关联退化原因或容量变化；收紧 baseline 需要引用最近稳定 run；不得为了让单次 run 通过而临时改 baseline。
 
+### Nightly skip inventory review cadence
+
+测试负责人每天工作日检查最近一次 schedule 或 `workflow_dispatch.gate=nightly` 的 `backend-integration-artifacts`，以 `integration-skip-inventory.json` 为准，不用日志肉眼估算。复核步骤：
+
+1. 下载 `backend-integration-artifacts`，确认 `evidence-manifest.txt` 包含 `integration_skip_inventory=written skipped=<n>`。
+2. 对每条 skip 归类为 `environment_gate`、`infrastructure_gate` 或 `unknown`；分类依据必须能从 marker、pytest skip reason 或 issue 链接追溯。
+3. `unknown` skip 必须当天补 owner、原因和恢复条件；如果当天无法解释，按 release blocker 候选登记，不得进入下一次发版候选签字。
+4. 如果 skip 覆盖的是 release-critical 语义，要么移入 `release_candidate` 必跑路径，要么删除 skip 条件；不能只留在 nightly 里长期观察。
+5. 每周复盘 nightly skip 趋势：重复出现的 infra/environment skip 超过 2 次，需要有独立 issue 和恢复日期。
+
+| Skip 分类 | 允许出现场景 | 必填字段 | 升级条件 |
+| --- | --- | --- | --- |
+| `environment_gate` | 本地或 nightly 缺少外部服务、Docker 能力、registry 镜像或平台特性 | owner、环境前置条件、恢复命令/恢复信号 | 同一环境门控连续 2 次影响 nightly，转 infra issue |
+| `infrastructure_gate` | GitHub runner、Docker registry、外部栈启动、网络/对象存储类故障 | owner、外部依赖、run URL、恢复条件 | 影响 release_candidate 时直接 P0 release blocker |
+| `unknown` | 无法从 marker/reason 判断是否业务断言被跳过 | owner、初步怀疑、当天处理截止时间 | 不得过夜；不得作为 release sign-off 证据 |
+
+### Performance SLO baseline governance
+
+性能 baseline 是发版证据的一部分，不是让 CI 变绿的调参文件。涉及 `.github/performance-slo-manifest.json` 或 `.github/performance-slo-baseline.json` 的 PR 必须满足：
+
+1. PR 描述包含触发方式、run URL、commit SHA、`backend-integration-artifacts/performance-trend.json` 和 `release-gate-evidence/release-evidence.md`。
+2. 放宽 baseline 必须链接退化 issue，说明用户路径、容量/环境变化、owner、恢复或复核日期；没有退化 issue 的放宽视为拒签条件。
+3. 收紧 baseline 需要最近至少 3 次同 profile 运行稳定优于旧 baseline，并记录样本 run URL；单次改善不能直接收紧。
+4. 新增 SLO 必须同步 manifest、summary 输出、baseline、验证脚本期望和 release review slice；删除 SLO 必须说明产品路径已移除或被更强 SLO 覆盖。
+5. `release_candidate` 失败时禁止先改 baseline 再补 issue；必须先确认是否产品退化、环境故障或测试夹具问题。
+
 ## 非阻塞风险台账
 
 | ID | 风险 | 来源/信号 | Owner | 状态 | 下次复核 |
 | --- | --- | --- | --- | --- | --- |
-| RISK-CI-001 | GitHub Actions Node.js 20 deprecation 预警可能影响未来 hosted runner action 执行 | 2026-05-29 远端 CI run 日志中出现 action runtime deprecation 类 warning；当前 release_candidate 仍通过 | CI 维护者 | open / non-blocking | 下次修改 `.github/workflows/ci.yml` 或 GitHub 宣布 Node 20 removal 前，确认 `actions/checkout`、`setup-python`、`setup-node`、`upload/download-artifact` 等 action 已支持当前推荐 runtime |
-| RISK-DEP-001 | 默认分支仍有 Dependabot moderate vulnerabilities 提示 | 2026-05-29 `git push` 后 GitHub security summary 提示 9 个 moderate vulnerabilities | 依赖维护者 | open / non-blocking | 合并 release gate PR 后单独开依赖治理 PR，先分离 runtime dependency 与 dev/test dependency，再跑 unit/integration/frontend build 回归 |
+| RISK-CI-001 | GitHub Actions Node.js 20 deprecation 预警可能影响未来 hosted runner action 执行 | 2026-05-29 远端 CI run 日志中出现 action runtime deprecation 类 warning；GitHub changelog 已把 hosted runner 默认 Node 24 切换更新到 2026-06-16，并要求用户更新到 Node 24-ready action 版本 | CI 维护者 | mitigating / PR validation required | `.github/workflows/ci.yml` 必须保持 `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`；官方 actions 需使用 Node 24 major：`actions/checkout@v6`、`setup-node@v6`、`setup-python@v6`、`upload-artifact@v7`、`download-artifact@v8`；关闭风险前必须引用 PR CI run 与 `workflow_dispatch.gate=release_candidate` run |
+| RISK-DEP-001 | 默认分支仍有 Dependabot moderate vulnerabilities 提示 | 2026-05-29 GitHub Dependabot alerts #1-#9 均指向 `frontend/package-lock.json` 的 runtime dependency `dompurify`，最高修复版本要求 `>=3.4.0` | 依赖维护者 | mitigating / PR validation required | 本轮升级 `dompurify` 到 `^3.4.7` 并移除废弃 stub `@types/dompurify`；关闭风险前必须引用 `npm audit --prefix frontend --audit-level=moderate`、frontend typecheck/build、PR CI，以及 Dependabot alerts 在默认分支关闭的证据 |
+
+### GitHub Actions Node.js 24 readiness
+
+CI workflow 需要主动在 Node 24 action runtime 下验证，而不是等 hosted runner 默认切换后被动暴露问题。每次修改 `.github/workflows/ci.yml` 时，测试负责人按以下顺序签收：
+
+1. 确认 workflow 顶层保留 `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`。
+2. 确认官方 JavaScript actions 使用 Node 24-ready major：`actions/checkout@v6`、`actions/setup-node@v6`、`actions/setup-python@v6`、`actions/upload-artifact@v7`、`actions/download-artifact@v8`。
+3. PR CI 必须全绿；如果 action major 升级影响 artifact 上传/下载、checkout、缓存或 Python/Node 安装行为，不能只用本地测试替代远端 runner 证据。
+4. 因为该变更影响 CI gate 行为，合并前或合并后必须额外运行一次 `workflow_dispatch.gate=release_candidate`，并把 run URL、commit SHA 和 `release-gate-evidence` 记录到 issue 或 release 记录。
+
+### Dependabot alert triage
+
+本轮 Dependabot 清单是单一前端 runtime dependency 聚合风险，而不是 9 个互不相关的升级项：
+
+| Alert | Package | Ecosystem | Manifest | 修复决策 |
+| --- | --- | --- | --- | --- |
+| GHSA-v8jm-5vwx-cfxm / GHSA-v2wj-7wpq-c8vv / GHSA-h8r8-wccr-v5f2 | `dompurify` | npm | `frontend/package-lock.json` | 升级到 `^3.4.7`，覆盖 `>=3.2.7` / `>=3.3.2` patched 要求 |
+| GHSA-cj63-jhhr-wcxv / GHSA-cjmm-f4jc-qw8r | `dompurify` | npm | `frontend/package-lock.json` | 升级到 `^3.4.7`，覆盖 `>=3.3.2` patched 要求 |
+| GHSA-39q2-94rc-95cp / GHSA-v9jr-rg53-9pgp / GHSA-crv5-9vww-q3g8 / GHSA-h7mw-gpvr-xq4m | `dompurify` | npm | `frontend/package-lock.json` | 升级到 `^3.4.7`，覆盖 `>=3.4.0` patched 要求 |
+
+验证口径：这是前端 log viewer 的 XSS 防护依赖，属于 runtime security dependency；修复 PR 至少跑 `npm audit --prefix frontend --audit-level=moderate`、`npx tsc --noEmit`、`npm run build`。如果未来 Dependabot alerts 涉及后端 runtime dependency，再追加 backend unit/integration 证据。
 
 ## 缺陷回归流程
 
