@@ -222,6 +222,24 @@ class TestDockerBackend:
         mock_container.show.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_wait_retries_oom_inspect_after_sigkill_exit(self):
+        mock_container = MagicMock()
+        mock_container.wait = AsyncMock(return_value={"StatusCode": 137})
+        mock_container.show = AsyncMock(
+            side_effect=[
+                {"State": {"OOMKilled": False, "ExitCode": 137}},
+                {"State": {"OOMKilled": True, "ExitCode": 137}},
+            ]
+        )
+        self.docker_client.containers.container = MagicMock(return_value=mock_container)
+
+        result = await self.backend.wait("container-id", timeout=10)
+
+        assert result.oom_killed is True
+        assert result.exit_code == 137
+        assert mock_container.show.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_wait_oom_killed_false_on_normal_exit(self):
         mock_container = MagicMock()
         mock_container.wait = AsyncMock(return_value={"StatusCode": 0})

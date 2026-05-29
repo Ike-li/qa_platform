@@ -50,6 +50,8 @@ def gate_policy(category: str) -> str:
 def collect_skips(junit_paths: list[Path]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for junit_path in junit_paths:
+        if not junit_path.exists() or junit_path.stat().st_size == 0:
+            continue
         root = ET.parse(junit_path).getroot()
         for case in root.findall(".//testcase"):
             skipped = case.find("skipped")
