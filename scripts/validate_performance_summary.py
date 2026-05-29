@@ -71,12 +71,121 @@ def _load_summary(path: Path, errors: list[str]) -> dict[str, dict[str, Any]]:
     return rows_by_name
 
 
+def _load_baseline(path: Path) -> dict[str, dict[str, Any]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    slos = data.get("slos")
+    if not isinstance(slos, list) or not slos:
+        raise ValueError(f"baseline has no slos: {path}")
+
+    by_name: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(slos, 1):
+        if not isinstance(item, dict):
+            raise ValueError(f"baseline slo #{index} must be an object")
+        name = item.get("name")
+        metric = item.get("metric")
+        baseline_ms = item.get("baseline_ms")
+        max_regression_ratio = item.get("max_regression_ratio")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"baseline slo #{index} has invalid name")
+        if name in by_name:
+            raise ValueError(f"baseline duplicate slo name: {name}")
+        if not isinstance(metric, str) or not metric:
+            raise ValueError(f"baseline slo {name} has invalid metric")
+        if not _finite_nonnegative_number(baseline_ms) or float(baseline_ms) <= 0:
+            raise ValueError(f"baseline slo {name} has invalid baseline_ms")
+        if not isinstance(max_regression_ratio, (int, float)) or float(max_regression_ratio) < 1:
+            raise ValueError(f"baseline slo {name} has invalid max_regression_ratio")
+        by_name[name] = item
+    return by_name
+
+
+def _validate_trends(
+    *,
+    rows_by_name: dict[str, dict[str, Any]],
+    manifest: dict[str, dict[str, Any]],
+    baseline_path: Path,
+    trend_path: Path,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        baselines = _load_baseline(baseline_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return [f"invalid_performance_baseline={baseline_path} error={exc}"]
+
+    trends: list[dict[str, Any]] = []
+    for name, slo in manifest.items():
+        baseline = baselines.get(name)
+        row = rows_by_name.get(name)
+        if baseline is None:
+            errors.append(f"missing_performance_baseline={name}")
+            continue
+        if row is None:
+            continue
+
+        metric = baseline["metric"]
+        if metric not in _metric_fields_for_kind(slo["kind"]):
+            errors.append(f"performance_baseline_metric_mismatch={name} metric={metric}")
+            continue
+        current_ms = row.get(metric)
+        if not _finite_nonnegative_number(current_ms):
+            errors.append(
+                f"performance_trend_metric_invalid={name} metric={metric} value={current_ms}"
+            )
+            continue
+
+        baseline_ms = float(baseline["baseline_ms"])
+        max_regression_ratio = float(baseline["max_regression_ratio"])
+        regression_budget_ms = baseline_ms * max_regression_ratio
+        current_float = float(current_ms)
+        regression_ratio = current_float / baseline_ms
+        status = "passed" if current_float <= regression_budget_ms else "regressed"
+        trends.append(
+            {
+                "name": name,
+                "metric": metric,
+                "current_ms": current_float,
+                "baseline_ms": baseline_ms,
+                "max_regression_ratio": max_regression_ratio,
+                "regression_budget_ms": regression_budget_ms,
+                "regression_ratio": regression_ratio,
+                "status": status,
+            }
+        )
+        if status != "passed":
+            errors.append(
+                "performance_regression_exceeds_budget="
+                f"{name} metric={metric} baseline={baseline_ms} "
+                f"budget={regression_budget_ms} actual={current_float}"
+            )
+
+    unexpected = sorted(set(baselines) - set(manifest))
+    for name in unexpected:
+        errors.append(f"unexpected_performance_baseline={name}")
+
+    trend_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "baseline": str(baseline_path),
+                "trends": trends,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return errors
+
+
 def validate(
     *,
     summary_path: Path,
     manifest_path: Path,
     thresholds_path: Path,
     expected_gate_profile: str,
+    baseline_path: Path | None = None,
+    trend_path: Path | None = None,
 ) -> list[str]:
     errors: list[str] = []
     try:
@@ -171,14 +280,24 @@ def validate(
     for name in manifest:
         if name not in rows_by_name:
             errors.append(f"missing_performance_slo={name}")
+    if baseline_path is not None and trend_path is not None:
+        errors.extend(
+            _validate_trends(
+                rows_by_name=rows_by_name,
+                manifest=manifest,
+                baseline_path=baseline_path,
+                trend_path=trend_path,
+            )
+        )
     return errors
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 5:
+    if len(argv) not in {5, 7}:
         print(
             "usage: validate_performance_summary.py "
-            "<summary.jsonl> <manifest.json> <thresholds.json> <expected_gate_profile>",
+            "<summary.jsonl> <manifest.json> <thresholds.json> <expected_gate_profile> "
+            "[<baseline.json> <trend.json>]",
             file=sys.stderr,
         )
         return 2
@@ -187,11 +306,15 @@ def main(argv: list[str]) -> int:
     manifest_path = Path(argv[2])
     thresholds_path = Path(argv[3])
     expected_gate_profile = argv[4]
+    baseline_path = Path(argv[5]) if len(argv) == 7 else None
+    trend_path = Path(argv[6]) if len(argv) == 7 else None
     errors = validate(
         summary_path=summary_path,
         manifest_path=manifest_path,
         thresholds_path=thresholds_path,
         expected_gate_profile=expected_gate_profile,
+        baseline_path=baseline_path,
+        trend_path=trend_path,
     )
     if errors:
         print("\n".join(errors))
@@ -199,6 +322,9 @@ def main(argv: list[str]) -> int:
     print(f"performance_summary_gate_profile={expected_gate_profile}")
     print(f"performance_slo_manifest={manifest_path}")
     print(f"performance_thresholds_file={thresholds_path}")
+    if trend_path is not None:
+        print("performance_trend_validation=passed")
+        print(f"performance_trend_file={trend_path}")
     return 0
 
 

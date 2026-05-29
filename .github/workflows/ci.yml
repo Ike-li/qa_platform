@@ -462,6 +462,12 @@ jobs:
           docker compose up -d --build postgres redis minio minio-init api worker worker-high worker-low
           for attempt in {1..36}; do
             if curl -fsS http://localhost:8000/ready; then
+              docker compose exec -T api python -m alembic upgrade head
+              docker compose exec -T \
+                -e ADMIN_USERNAME=admin \
+                -e ADMIN_PASSWORD=admin123 \
+                -e ADMIN_EMAIL=admin@qaplatform.local \
+                api python scripts/seed_admin.py
               exit 0
             fi
             docker compose ps
@@ -792,6 +798,13 @@ jobs:
             missing=1
           fi
 
+          if ! python scripts/report_integration_skips.py \
+            artifacts/backend-integration/integration-skip-inventory.json \
+            artifacts/backend-integration/integration-skip-inventory.md \
+            "${junit_paths[@]}" | tee -a "$manifest"; then
+            missing=1
+          fi
+
           if ! python scripts/validate_backend_integration_artifacts.py \
             "$manifest" \
             "${collect_paths[@]}" | tee -a "$manifest"; then
@@ -802,6 +815,8 @@ jobs:
             summary=artifacts/backend-integration/performance-smoke-summary.jsonl
             slo_manifest=.github/performance-slo-manifest.json
             thresholds=artifacts/backend-integration/performance-thresholds.json
+            baseline=.github/performance-slo-baseline.json
+            trend=artifacts/backend-integration/performance-trend.json
 
             if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
               expected_gate_profile="${{ inputs.gate }}"
@@ -812,7 +827,9 @@ jobs:
               "$summary" \
               "$slo_manifest" \
               "$thresholds" \
-              "$expected_gate_profile" | tee -a "$manifest"; then
+              "$expected_gate_profile" \
+              "$baseline" \
+              "$trend" | tee -a "$manifest"; then
               missing=1
             fi
           fi
@@ -924,6 +941,25 @@ jobs:
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
+
+      - name: Pull E2E worker images (nightly/release candidate, with retry)
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.gate == 'nightly' || inputs.gate == 'release_candidate'))
+        run: |
+          for image in python:3.12-alpine; do
+            pulled=0
+            for attempt in 1 2 3; do
+              if docker pull "$image"; then
+                pulled=1
+                break
+              fi
+              echo "Pull attempt $attempt failed for $image, retrying..."
+              sleep 10
+            done
+            if [ "$pulled" -ne 1 ]; then
+              echo "Failed to pull $image after 3 attempts"
+              exit 1
+            fi
+          done
 
       - name: Create .env for docker-compose (api/worker services reference it)
         run: |
@@ -1379,8 +1415,10 @@ jobs:
           require_line "$backend_test_manifest" "backend_test_artifacts_validation=passed"
           require_line "$backend_manifest" "collect_validation=passed"
           require_line "$backend_manifest" "junit_validation=strict_skips=True"
+          require_line "$backend_manifest" "integration_skip_inventory=written skipped=0"
           require_line "$backend_manifest" "nodeid_validation=passed"
           require_line "$backend_manifest" "performance_summary_gate_profile=release_candidate"
+          require_line "$backend_manifest" "performance_trend_validation=passed"
           require_line "$backend_manifest" "release_candidate_oom_tests=passed"
           require_line "$e2e_manifest" "mode=release_candidate"
           require_line "$e2e_manifest" "failure_count=0"
@@ -1413,9 +1451,11 @@ jobs:
             echo "- frontend API contract: passed"
             echo "- backend integration artifacts: passed"
             echo "- performance SLO gate profile: release_candidate"
+            echo "- performance trend gate: passed"
             echo "- E2E mode: release_candidate"
             echo
             grep -F "performance_summary_gate_profile=" "$backend_manifest"
+            grep -F "performance_trend_validation=" "$backend_manifest"
             grep -F "release_candidate_oom_tests=" "$backend_manifest"
             grep -F "mode=" "$e2e_manifest"
             grep -F "testcase_count=" "$e2e_manifest"
