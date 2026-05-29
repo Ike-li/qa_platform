@@ -8,7 +8,7 @@ test("login against the real backend, open a project if present, then logout", a
   await page.getByRole("button", { name: "Sign in" }).click();
 
   await expect(page).toHaveURL(/\/projects$/);
-  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
 
   const firstProject = page.locator('a[href^="/projects/"]').first();
   if (await firstProject.isVisible().catch(() => false)) {
