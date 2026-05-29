@@ -143,8 +143,10 @@ services:
       QAP_DATABASE_URL: postgresql+asyncpg://${QAP_DB_USER:-qaplatform}:${QAP_DB_PASSWORD:-qaplatform}@postgres:5432/${QAP_DB_NAME:-qaplatform}
       QAP_REDIS_URL: redis://redis:6379/0
       QAP_S3_ENDPOINT: http://minio:9000
+      QAP_RUN_WORKSPACE_DIR: ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}:${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
     group_add:
       - "${QAP_DOCKER_SOCK_GROUP_ID:-0}"
     deploy:
@@ -177,8 +179,10 @@ services:
       QAP_DATABASE_URL: postgresql+asyncpg://${QAP_DB_USER:-qaplatform}:${QAP_DB_PASSWORD:-qaplatform}@postgres:5432/${QAP_DB_NAME:-qaplatform}
       QAP_REDIS_URL: redis://redis:6379/0
       QAP_S3_ENDPOINT: http://minio:9000
+      QAP_RUN_WORKSPACE_DIR: ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}:${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
     group_add:
       - "${QAP_DOCKER_SOCK_GROUP_ID:-0}"
     deploy:
@@ -211,8 +215,10 @@ services:
       QAP_DATABASE_URL: postgresql+asyncpg://${QAP_DB_USER:-qaplatform}:${QAP_DB_PASSWORD:-qaplatform}@postgres:5432/${QAP_DB_NAME:-qaplatform}
       QAP_REDIS_URL: redis://redis:6379/0
       QAP_S3_ENDPOINT: http://minio:9000
+      QAP_RUN_WORKSPACE_DIR: ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}:${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
     group_add:
       - "${QAP_DOCKER_SOCK_GROUP_ID:-0}"
     deploy:

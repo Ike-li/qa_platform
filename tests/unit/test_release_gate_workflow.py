@@ -144,6 +144,9 @@ def test_release_candidate_backend_gate_runs_real_stack_and_slo_validation():
     assert "QAP_DOCKER_SOCK_GROUP_ID=$(stat -c '%g' /var/run/docker.sock)" in text
     assert docker_compose.count("- /var/run/docker.sock:/var/run/docker.sock") >= 3
     assert docker_compose.count('${QAP_DOCKER_SOCK_GROUP_ID:-0}') >= 3
+    assert "QAP_RUN_WORKSPACE_DIR=$PWD/.qap-workspaces" in text
+    assert docker_compose.count("QAP_RUN_WORKSPACE_DIR") >= 6
+    assert docker_compose.count("/tmp/qap-workspaces") >= 6
     assert "python -m alembic upgrade head" in text
     assert "python scripts/seed_admin.py" in text
     assert "COPY alembic.ini ." in dockerfile

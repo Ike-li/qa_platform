@@ -456,6 +456,9 @@ jobs:
           sed -i 's/^QAP_MAX_CONCURRENT_PER_PROJECT=.*/QAP_MAX_CONCURRENT_PER_PROJECT=10/' .env
           sed -i 's/^QAP_WORKER_MAX_JOBS=.*/QAP_WORKER_MAX_JOBS=10/' .env
           echo "QAP_DOCKER_SOCK_GROUP_ID=$(stat -c '%g' /var/run/docker.sock)" >> .env
+          mkdir -p "$PWD/.qap-workspaces"
+          chmod 777 "$PWD/.qap-workspaces"
+          echo "QAP_RUN_WORKSPACE_DIR=$PWD/.qap-workspaces" >> .env
 
       - name: Start external API/worker stack (nightly/release candidate)
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.gate == 'nightly' || inputs.gate == 'release_candidate'))
@@ -973,6 +976,10 @@ jobs:
           QAP_JWT_SECRET=ci-test-jwt-secret-not-for-production-use
           QAP_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
           EOF
+          echo "QAP_DOCKER_SOCK_GROUP_ID=$(stat -c '%g' /var/run/docker.sock)" >> .env
+          mkdir -p "$PWD/.qap-workspaces"
+          chmod 777 "$PWD/.qap-workspaces"
+          echo "QAP_RUN_WORKSPACE_DIR=$PWD/.qap-workspaces" >> .env
           mkdir -p artifacts/e2e
 
       - name: Run E2E tests
