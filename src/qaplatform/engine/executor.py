@@ -748,6 +748,8 @@ class RunExecutor:
             await self.run_repo.commit()
             self._active_execution_id = execution_id
 
+            await self.backend.start(execution_id)
+
             log_task = asyncio.create_task(
                 self._stream_container_logs(
                     str(run.id),
@@ -755,9 +757,6 @@ class RunExecutor:
                     redact_env_vars=pipeline.env_vars,
                 )
             )
-            await asyncio.sleep(0)
-            await self.backend.start(execution_id)
-
             usage_tracker = _ResourceUsageTracker()
             usage_task = asyncio.create_task(
                 self._collect_resource_usage(execution_id, usage_tracker)
@@ -794,10 +793,10 @@ class RunExecutor:
                         timed_out=True,
                     )
             finally:
-                # The log follower is attached before start, so after wait()
-                # returns it should naturally drain container stdout/stderr.
-                # Bound the await before cleanup so removing the container does
-                # not cut off buffered Docker logs on fast CI runners.
+                # After wait() returns, the log follower should naturally drain
+                # container stdout/stderr. Bound the await before cleanup so
+                # removing the container does not cut off buffered Docker logs
+                # on fast CI runners.
                 await self._drain_log_task(log_task)
                 try:
                     await self.backend.cleanup(execution_id)
@@ -881,6 +880,7 @@ class RunExecutor:
         )
 
         execution_id = await self.backend.create_execution(spec)
+        await self.backend.start(execution_id)
         self._active_execution_id = execution_id
 
         log_task = asyncio.create_task(
@@ -890,8 +890,6 @@ class RunExecutor:
                 redact_env_vars=pipeline.env_vars,
             )
         )
-        await asyncio.sleep(0)
-        await self.backend.start(execution_id)
         # Setup gets a tighter cap than stage timeout to keep slow scripts
         # from eating into stage time. Cap at min(pipeline_timeout, 600s).
         setup_timeout = min(pipeline.timeout_seconds, 600)

@@ -365,7 +365,7 @@ class DockerBackend:
         return {"size": str(disk_bytes)}
 
     @staticmethod
-    def _decode_log_frame(raw: bytes) -> tuple[str, str]:
+    def _decode_log_frame(raw: bytes | str) -> tuple[str, str]:
         """Decode a Docker multiplexed log frame.
 
         Frame format: header(8 bytes) + payload
@@ -373,6 +373,8 @@ class DockerBackend:
         bytes 1-3: unused
         bytes 4-7: big-endian payload size
         """
+        if isinstance(raw, str):
+            return "stdout", raw.rstrip()
         if len(raw) >= 8 and raw[0] in (1, 2):
             stream = "stdout" if raw[0] == 1 else "stderr"
             return stream, raw[8:].decode(errors="replace").rstrip()
