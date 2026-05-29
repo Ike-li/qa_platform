@@ -1398,6 +1398,9 @@ jobs:
           frontend_contract=artifacts/release-gate/frontend-api-contract-artifacts/openapi.json
           backend_manifest=artifacts/release-gate/backend-integration-artifacts/evidence-manifest.txt
           e2e_manifest=artifacts/release-gate/e2e-artifacts/evidence-manifest.txt
+          if [ ! -s "$e2e_manifest" ]; then
+            e2e_manifest=artifacts/release-gate/e2e-artifacts/artifacts/e2e/evidence-manifest.txt
+          fi
 
           require_nonempty() {
             if [ ! -s "$1" ]; then
