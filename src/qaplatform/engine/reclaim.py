@@ -12,6 +12,7 @@ lifecycle.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from qaplatform.engine.events import publish_status_event
@@ -43,6 +44,7 @@ async def reclaim_worker_lost(
     run_repo: Any,
     redis: Any,
     backend: _BackendCleanup | None = None,
+    on_reclaimed: Callable[[Any, str], Awaitable[None]] | None = None,
 ) -> int:
     """Mark every non-terminal run whose worker heartbeat has expired as failed.
 
@@ -61,6 +63,7 @@ async def reclaim_worker_lost(
         message = redact_url_userinfo(
             f"worker_lost: heartbeat expired for {worker_id}"
         )
+        previous = run.status.value if hasattr(run.status, "value") else str(run.status)
         updated = await run_repo.mark_worker_lost(
             run.id, worker_id=worker_id, message=message
         )
@@ -68,7 +71,6 @@ async def reclaim_worker_lost(
             continue
 
         reclaimed += 1
-        previous = run.status.value if hasattr(run.status, "value") else str(run.status)
         log.warning(
             "reclaimed run %s (worker_lost, was %s, worker=%s)",
             run.id,
@@ -76,6 +78,16 @@ async def reclaim_worker_lost(
             worker_id,
         )
         await publish_status_event(redis, run.id, "failed", previous=previous)
+
+        if on_reclaimed is not None:
+            try:
+                await on_reclaimed(run, message)
+            except Exception:
+                log.warning(
+                    "worker_lost_retry_callback_failed",
+                    extra={"run_id": str(run.id)},
+                    exc_info=True,
+                )
 
         execution_id = run.execution_id
         if backend is not None and execution_id:

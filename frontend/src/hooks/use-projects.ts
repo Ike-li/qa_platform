@@ -1,10 +1,29 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../lib/api";
-import { unwrapPaginated } from "../lib/utils";
-import type { Project, PaginatedResponse, Pipeline, Environment } from "../types/api";
+import type {
+  Project,
+  PaginatedResponse,
+  Pipeline,
+  Environment,
+  EnvironmentResponse,
+  CreateEnvironmentPayload,
+  PipelineCreatePayload,
+  ProjectCreatePayload,
+  ProjectUpdatePayload,
+  UpdateEnvironmentPayload
+} from "../types/api";
+
+function normalizeEnvironment(env: EnvironmentResponse): Environment {
+  const { env_vars, ...rest } = env;
+  return {
+    ...rest,
+    variables: env_vars ?? {},
+  };
+}
 
 export function useProjects(params?: { page?: number; per_page?: number; search?: string; status?: string; enabled?: boolean }) {
-  const { enabled, ...apiParams } = params ?? {};
+  const { enabled, search, ...restParams } = params ?? {};
+  const apiParams = { ...restParams, ...(search ? { q: search } : {}) };
   return useQuery({
     queryKey: ["projects", apiParams],
     queryFn: async () => {
@@ -31,7 +50,7 @@ export function useProject(id: string) {
 export function useCreateProject() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (project: Partial<Project>) => {
+    mutationFn: async (project: ProjectCreatePayload) => {
       const { data } = await api.post<Project>("/projects", project);
       return data;
     },
@@ -44,7 +63,7 @@ export function useCreateProject() {
 export function useUpdateProject(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (project: Partial<Project>) => {
+    mutationFn: async (project: ProjectUpdatePayload) => {
       const { data } = await api.put<Project>(`/projects/${id}`, project);
       return data;
     },
@@ -71,8 +90,8 @@ export function useProjectPipelines(projectId: string) {
   return useQuery({
     queryKey: ["projects", projectId, "pipelines"],
     queryFn: async () => {
-      const { data } = await api.get<Pipeline[] | PaginatedResponse<Pipeline>>(`/projects/${projectId}/pipelines`);
-      return unwrapPaginated(data);
+      const { data } = await api.get<PaginatedResponse<Pipeline>>(`/projects/${projectId}/pipelines`);
+      return data.data;
     },
     enabled: !!projectId,
     staleTime: 60_000,
@@ -82,7 +101,7 @@ export function useProjectPipelines(projectId: string) {
 export function useCreatePipeline(projectId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (pipeline: Partial<Pipeline>) => {
+    mutationFn: async (pipeline: PipelineCreatePayload) => {
       const { data } = await api.post<Pipeline>(`/projects/${projectId}/pipelines`, pipeline);
       return data;
     },
@@ -96,8 +115,8 @@ export function useProjectEnvironments(projectId: string) {
   return useQuery({
     queryKey: ["projects", projectId, "environments"],
     queryFn: async () => {
-      const { data } = await api.get<Environment[] | PaginatedResponse<Environment>>(`/projects/${projectId}/environments`);
-      return unwrapPaginated(data);
+      const { data } = await api.get<PaginatedResponse<EnvironmentResponse>>(`/projects/${projectId}/environments`);
+      return data.data.map(normalizeEnvironment);
     },
     enabled: !!projectId,
     staleTime: 60_000,
@@ -107,9 +126,9 @@ export function useProjectEnvironments(projectId: string) {
 export function useCreateEnvironment(projectId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (env: Partial<Environment>) => {
-      const { data } = await api.post<Environment>(`/projects/${projectId}/environments`, env);
-      return data;
+    mutationFn: async (env: CreateEnvironmentPayload) => {
+      const { data } = await api.post<EnvironmentResponse>(`/projects/${projectId}/environments`, env);
+      return normalizeEnvironment(data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["projects", projectId, "environments"] });
@@ -120,9 +139,9 @@ export function useCreateEnvironment(projectId: string) {
 export function useUpdateEnvironment(projectId: string, envId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (env: Partial<Environment>) => {
-      const { data } = await api.put<Environment>(`/projects/${projectId}/environments/${envId}`, env);
-      return data;
+    mutationFn: async (env: UpdateEnvironmentPayload) => {
+      const { data } = await api.put<EnvironmentResponse>(`/projects/${projectId}/environments/${envId}`, env);
+      return normalizeEnvironment(data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["projects", projectId, "environments"] });

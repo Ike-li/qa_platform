@@ -1,14 +1,22 @@
-import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback, type ComponentType } from 'react';
 import { Terminal, Search, Pause, Play, ChevronDown } from 'lucide-react';
-import AnsiToReact from 'ansi-to-react';
+import AnsiToReactImport from 'ansi-to-react';
 import DOMPurify from 'dompurify';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useTranslation } from 'react-i18next';
 import { useSSE } from '../../hooks/use-sse';
+import { useArchivedRunLogs } from '../../hooks/use-runs';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { cn } from '../../lib/utils';
 import i18n from '../../i18n';
+
+type AnsiToReactComponent = ComponentType<{ children?: string }>;
+const AnsiToReact = (
+  typeof AnsiToReactImport === 'function'
+    ? AnsiToReactImport
+    : (AnsiToReactImport as unknown as { default: AnsiToReactComponent }).default
+) as AnsiToReactComponent;
 
 interface LogMessage {
   timestamp?: string;
@@ -23,7 +31,7 @@ function sanitizeLogMessage(message: string): string {
   });
 }
 
-export function LogViewer({ runId }: { runId: string }) {
+export function LogViewer({ runId, archivedEnabled = false }: { runId: string; archivedEnabled?: boolean }) {
   const { t } = useTranslation();
   const [logs, setLogs] = useState<LogMessage[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -33,8 +41,10 @@ export function LogViewer({ runId }: { runId: string }) {
   const seenEventIdsRef = useRef<Set<string>>(new Set());
 
   const { data, status, lastEventId } = useSSE<LogMessage | string | Record<string, unknown>>(
-    `/api/v1/runs/${runId}/logs`
+    `/api/v1/runs/${runId}/logs`,
+    !archivedEnabled,
   );
+  const archivedLogsQuery = useArchivedRunLogs(runId, archivedEnabled);
 
   useEffect(() => {
     setLogs([]);
@@ -64,11 +74,22 @@ export function LogViewer({ runId }: { runId: string }) {
     }
   }, [data, lastEventId]);
 
+  const archivedLogs = useMemo<LogMessage[]>(() => {
+    if (!archivedEnabled || !archivedLogsQuery.data?.data.length) return [];
+    return archivedLogsQuery.data.data.map((entry) => ({
+      level: entry.stream === 'stderr' ? 'error' : 'info',
+      message: entry.line,
+    }));
+  }, [archivedEnabled, archivedLogsQuery.data]);
+
+  const sourceLogs = archivedLogs.length > 0 ? archivedLogs : logs;
+  const usingArchivedLogs = archivedLogs.length > 0;
+
   const filteredLogs = useMemo(() => {
-    if (!search) return logs;
+    if (!search) return sourceLogs;
     const lowerSearch = search.toLowerCase();
-    return logs.filter(log => log.message.toLowerCase().includes(lowerSearch));
-  }, [logs, search]);
+    return sourceLogs.filter(log => log.message.toLowerCase().includes(lowerSearch));
+  }, [sourceLogs, search]);
 
   const virtualizer = useVirtualizer({
     count: filteredLogs.length,
@@ -90,6 +111,13 @@ export function LogViewer({ runId }: { runId: string }) {
     setAutoScroll(isAtBottom);
   }, []);
 
+  const emptyMessage = archivedEnabled && archivedLogsQuery.isLoading
+    ? t("common.loading")
+    : archivedEnabled && archivedLogsQuery.isError
+      ? t("logs.archiveUnavailable")
+      : t("logs.waitingForLogs");
+  const statusLabel = usingArchivedLogs ? t("logs.archived") : t(`logs.${status}`);
+
   return (
     <div className="relative flex flex-col h-[600px] rounded-lg border border-hairline bg-surface-1 overflow-hidden">
       {/* Log Header */}
@@ -101,11 +129,11 @@ export function LogViewer({ runId }: { runId: string }) {
             <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-3">
               <span className={cn(
                 "h-2 w-2 rounded-full",
-                status === 'connected' ? "bg-status-passed" :
-                status === 'connecting' || status === 'polling' ? "bg-status-running animate-pulse" :
+                usingArchivedLogs || status === 'connected' ? "bg-status-passed" :
+                status === 'connecting' ? "bg-status-running animate-pulse" :
                 "bg-status-failed"
               )} />
-              <span className="text-xs text-ink-muted capitalize">{status}</span>
+              <span className="text-xs text-ink-muted">{statusLabel}</span>
             </div>
           </div>
         </div>
@@ -142,7 +170,7 @@ export function LogViewer({ runId }: { runId: string }) {
         {filteredLogs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-ink-tertiary space-y-2">
             <Terminal className="h-8 w-8 opacity-20" />
-            <p>{t("logs.waitingForLogs")}</p>
+            <p>{emptyMessage}</p>
           </div>
         ) : (
           <div

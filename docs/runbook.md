@@ -22,8 +22,8 @@
    redis-cli -u $QAP_REDIS_URL ping
    ```
 3. 查看 worker 日志中 `worker_heartbeat_set_failed` 条目，确认是 Redis 抖动还是进程崩溃。
-4. 若 Redis 抖动：心跳循环会自动恢复（fail-open 设计，见下节）；Run 已失败需手动重新触发。
-5. 若进程崩溃：重启 worker，检查 OOM / SIGKILL 原因。
+4. 若 Redis 抖动：心跳循环会自动恢复（fail-open 设计，见下节）；已被标记 failed 的 Run 若配置了 infra retry，会由 reclaimer callback 创建 retry Run，否则需手动重新触发。
+5. 若进程崩溃：重启 worker，检查 OOM / SIGKILL 原因；nightly/manual external-stack 覆盖了 worker_lost 后创建 retry Run、重启 worker 后产出 artifact 与归档日志的链路。
 
 **预防**：确保 Redis 有足够内存，避免 `maxmemory-policy allkeys-lru` 驱逐心跳 key。
 
@@ -135,7 +135,7 @@ Run 日志归档到 S3 bucket（`QAP_S3_BUCKET`），路径格式：`logs/{run_i
 
 **建议 Lifecycle 规则**：
 
-- `logs/` 与 `QAP_RETENTION_RUNS_DAYS` 对齐（默认 90 天），避免数据库 Run 记录仍存在时 S3 归档对象已先过期；当前 `main` 仍缺归档日志读回 API / UI，因此不能把 lifecycle 对齐单独视为“日志已可回看”闭环。
+- `logs/` 与 `QAP_RETENTION_RUNS_DAYS` 对齐（默认 90 天），避免数据库 Run 记录仍存在时 S3 归档对象已先过期；后端已提供归档日志读回 API，前端终态 Run 会优先读取归档日志。S3 lifecycle 仍需与 DB retention 一起配置，不能只看 UI 回看入口是否存在。
 - `reports/` 与 `QAP_RETENTION_REPORTS_DAYS` 对齐（默认 30 天），用于 JUnit/Allure 等报告产物。
 
 ```json
@@ -165,9 +165,9 @@ mc ilm rule add --expire-days 30 myminio/qa-platform --prefix "reports/"
 
 **注意**：
 
-- `QAP_RETENTION_RUNS_DAYS`（默认 90）控制数据库 Run 行清理目标；S3 lifecycle 独立配置，两者应保持一致或 S3 日志保留期 ≥ DB Run 保留期，避免 DB 有记录但 S3 日志已删除。
-- 当前 `main` 的 `cleanup_old_runs` cron 已注册，但函数缺 `datetime/timezone` 导入会导致触发失败；即使修复导入，当前仓储也只硬删已 soft-delete 的 `done/failed` Run，普通超期终态 Run 与 `cancelled/timeout` 策略仍未闭环。
-- 当前 `main` 的 `retry_failed_archives` 仍是空占位；单次归档失败只会把 Redis Stream TTL 延长到 24h，不能当作自动补偿重试能力。
+- `QAP_RETENTION_RUNS_DAYS`（默认 90）控制数据库 Run 行清理目标；`cleanup_old_runs` 每小时硬删超期终态 Run（`done/failed/cancelled/timeout`）并依赖数据库 FK 级联清理 result/artifact/event。S3 lifecycle 独立配置，两者应保持一致或 S3 日志保留期 ≥ DB Run 保留期，避免 DB 有记录但 S3 日志已删除。
+- 归档失败时 `LogStream.archive_logs` 会把 Redis Stream TTL 延长到 24h，并把 Run ID 登记到 `run:logs:archive_failed`；worker 的 `retry_failed_archives` cron 会重试这些失败项，成功后清理登记。
+- 当前后端已支持归档日志读回 API，前端终态 Run 日志面板也会优先读归档对象；lifecycle、retry、API 与 E2E 测试共同证明“写入、补偿、后端回放与用户 UI 回看”主路径。仍需注意 S3 lifecycle 短于 DB retention 时会破坏历史回看。
 
 ---
 

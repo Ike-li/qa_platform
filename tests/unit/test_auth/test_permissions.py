@@ -168,6 +168,42 @@ class TestCheckPermission:
         assert check_permission(ctx, Action.RUN_TRIGGER) is True
         assert check_permission(ctx, Action.PIPELINE_EDIT) is True
 
+    def test_api_token_scope_must_include_action_even_for_owner(self):
+        ctx = PermissionContext(
+            user_id="u1",
+            role="owner",
+            tenant_id="t1",
+            scopes=["project.read"],
+        )
+        assert check_permission(ctx, Action.PROJECT_READ) is True
+        assert check_permission(ctx, Action.RUN_TRIGGER) is False
+
+    def test_api_token_wildcard_scope_keeps_role_permissions(self):
+        ctx = PermissionContext(
+            user_id="u1",
+            role="member",
+            tenant_id="t1",
+            project_id="p1",
+            project_role=ProjectRole.DEVELOPER,
+            scopes=["*"],
+        )
+        assert check_permission(ctx, Action.RUN_TRIGGER) is True
+
+    def test_empty_api_token_scope_denies_action(self):
+        ctx = PermissionContext(user_id="u1", role="owner", tenant_id="t1", scopes=[])
+        assert check_permission(ctx, Action.PROJECT_READ) is False
+
+    def test_platform_admin_is_still_limited_by_api_token_scope(self):
+        ctx = PermissionContext(
+            user_id="u1",
+            role="owner",
+            tenant_id="t1",
+            is_platform_admin=True,
+            scopes=["project.read"],
+        )
+        assert check_permission(ctx, Action.PROJECT_READ) is True
+        assert check_permission(ctx, Action.TOKEN_MANAGE) is False
+
     def test_admin_bypasses_missing_project_role(self):
         ctx = PermissionContext(user_id="u1", role="admin", tenant_id="t1")
         assert check_permission(ctx, Action.RUN_TRIGGER) is True

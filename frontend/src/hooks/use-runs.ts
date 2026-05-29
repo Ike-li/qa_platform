@@ -1,57 +1,70 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../lib/api";
-import { unwrapPaginated } from "../lib/utils";
-import type { Run, PaginatedResponse, TestResult, Artifact } from "../types/api";
+import type {
+  Run,
+  RunStatus,
+  RunResponse,
+  PaginatedResponse,
+  TestResult,
+  Artifact,
+  RunLogEntry,
+  TriggerRunPayload
+} from "../types/api";
 
-type BackendRun = Omit<Run, "pipeline_name" | "branch" | "duration_seconds" | "total_tests" | "passed_tests" | "failed_tests" | "skipped_tests" | "env_overrides" | "params"> & {
-  tenant_id?: string;
-  environment_id?: string;
-  pipeline_name?: string;
-  git_ref?: string;
-  duration_ms?: number | null;
-  summary?: {
-    total?: number;
-    passed?: number;
-    failed?: number;
-    skipped?: number;
-  } | null;
-};
+const RUN_STATUSES: readonly RunStatus[] = [
+  "queued",
+  "preparing",
+  "running",
+  "collecting",
+  "passed",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "unknown",
+];
+const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ["passed", "failed", "cancelled", "timed_out"];
 
-const VALID_RUN_STATUSES = new Set(["queued", "preparing", "running", "collecting", "passed", "failed", "cancelled", "timed_out"]);
+function isRunStatus(value: string): value is RunStatus {
+  return (RUN_STATUSES as readonly string[]).includes(value);
+}
 
-function normalizeRun(run: Run | BackendRun): Run {
-  const backendRun = run as BackendRun;
-  const summary = backendRun.summary ?? {};
-  const backendStatus = String(backendRun.status);
+function normalizeRun(run: RunResponse): Run {
+  const summary = run.summary ?? {};
+  const backendStatus = String(run.status);
   let rawStatus: string;
   if (backendStatus === "done") {
     const failed = summary.failed ?? 0;
-    const errors = (summary as Record<string, number>).errors ?? 0;
-    rawStatus = failed > 0 || errors > 0 ? "failed" : "passed";
+    const error = summary.error ?? 0;
+    rawStatus = failed > 0 || error > 0 ? "failed" : "passed";
   } else if (backendStatus === "timeout") {
     rawStatus = "timed_out";
   } else {
     rawStatus = backendStatus;
   }
-  const status = VALID_RUN_STATUSES.has(rawStatus) ? rawStatus : "failed";
+  const status = isRunStatus(rawStatus) ? rawStatus : "unknown";
 
   return {
-    ...run,
-    status: status as Run["status"],
-    pipeline_name: (run as Run).pipeline_name ?? backendRun.pipeline_name ?? `Pipeline ${run.pipeline_id.slice(0, 8)}`,
-    branch: (run as Run).branch ?? backendRun.git_ref ?? "-",
-    env_overrides: (run as Run).env_overrides ?? {},
-    params: (run as Run).params ?? {},
-    duration_seconds: (run as Run).duration_seconds ?? (
-      backendRun.duration_ms == null ? null : backendRun.duration_ms / 1000
-    ),
-    total_tests: (run as Run).total_tests ?? summary.total ?? 0,
-    passed_tests: (run as Run).passed_tests ?? summary.passed ?? 0,
-    failed_tests: (run as Run).failed_tests ?? summary.failed ?? 0,
-    skipped_tests: (run as Run).skipped_tests ?? summary.skipped ?? 0,
-    worker_id: (run as Run).worker_id ?? null,
-    cancel_requested_at: (run as Run).cancel_requested_at ?? null,
-    priority: (run as Run).priority ?? (backendRun as { priority?: number }).priority ?? 1,
+    id: run.id,
+    project_id: run.project_id,
+    pipeline_id: run.pipeline_id,
+    pipeline_name: run.pipeline_name || `Pipeline ${run.pipeline_id.slice(0, 8)}`,
+    environment_id: run.environment_id,
+    status,
+    branch: run.git_ref || "-",
+    git_sha: run.git_sha,
+    triggered_by: run.triggered_by,
+    trigger_type: run.trigger_type,
+    started_at: run.started_at,
+    finished_at: run.finished_at,
+    duration_seconds: run.duration_ms == null ? null : run.duration_ms / 1000,
+    total_tests: summary.total ?? 0,
+    passed_tests: summary.passed ?? 0,
+    failed_tests: summary.failed ?? 0,
+    skipped_tests: summary.skipped ?? 0,
+    error_message: run.error_message,
+    priority: run.priority ?? 1,
+    created_at: run.created_at,
+    updated_at: run.updated_at,
   };
 }
 
@@ -60,7 +73,7 @@ export function useRuns(params?: { page?: number; per_page?: number; status?: st
   return useQuery({
     queryKey: ["runs", apiParams],
     queryFn: async () => {
-      const { data } = await api.get<PaginatedResponse<Run | BackendRun>>("/runs", { params: apiParams });
+      const { data } = await api.get<PaginatedResponse<RunResponse>>("/runs", { params: apiParams });
       return { ...data, data: data.data.map(normalizeRun) };
     },
     enabled,
@@ -71,13 +84,13 @@ export function useRun(id: string) {
   return useQuery({
     queryKey: ["runs", id],
     queryFn: async () => {
-      const { data } = await api.get<Run | BackendRun>(`/runs/${id}`);
+      const { data } = await api.get<RunResponse>(`/runs/${id}`);
       return normalizeRun(data);
     },
     enabled: !!id,
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      return status === "passed" || status === "failed" || status === "cancelled" || status === "timed_out" ? false : 5000;
+      return status && TERMINAL_RUN_STATUSES.includes(status) ? false : 5000;
     },
   });
 }
@@ -85,13 +98,13 @@ export function useRun(id: string) {
 export function useTriggerRun() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (runData: { pipeline_id: string; branch?: string; priority?: number; env_overrides?: Record<string, string>; params?: Record<string, unknown> }) => {
-      const { data } = await api.post<Run | BackendRun>("/runs", {
+    mutationFn: async (runData: TriggerRunPayload) => {
+      const { data } = await api.post<RunResponse>("/runs", {
         pipeline_id: runData.pipeline_id,
         git_ref: runData.branch,
+        git_sha: runData.git_sha,
+        environment_id: runData.environment_id,
         priority: runData.priority ?? 1,
-        env_overrides: runData.env_overrides,
-        params: runData.params,
       });
       return normalizeRun(data);
     },
@@ -106,7 +119,7 @@ export function useCancelRun(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (reason?: string) => {
-      const { data } = await api.post<Run | BackendRun>(`/runs/${id}/cancel`, { reason });
+      const { data } = await api.post<RunResponse>(`/runs/${id}/cancel`, { reason });
       return normalizeRun(data);
     },
     onSuccess: () => {
@@ -131,9 +144,25 @@ export function useRunArtifacts(id: string) {
   return useQuery({
     queryKey: ["runs", id, "artifacts"],
     queryFn: async () => {
-      const { data } = await api.get<Artifact[] | PaginatedResponse<Artifact>>(`/runs/${id}/artifacts`);
-      return unwrapPaginated(data);
+      const { data } = await api.get<PaginatedResponse<Artifact>>(`/runs/${id}/artifacts`);
+      return data.data;
     },
     enabled: !!id,
+  });
+}
+
+export function useArchivedRunLogs(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["runs", id, "logs", "archive"],
+    queryFn: async () => {
+      const { data } = await api.get<PaginatedResponse<RunLogEntry>>(
+        `/runs/${id}/logs/archive`,
+        { params: { per_page: 1000 } },
+      );
+      return data;
+    },
+    enabled: !!id && enabled,
+    retry: false,
+    staleTime: 30_000,
   });
 }

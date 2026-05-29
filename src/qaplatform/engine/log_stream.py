@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from inspect import isawaitable
 from typing import Any
 from uuid import UUID
 
@@ -15,11 +16,17 @@ _MAXLEN = 10_000
 _STREAM_TTL = 3600  # 1 hour
 # TTL for stream on archive failure (seconds)
 _ARCHIVE_FAILURE_TTL = 86400  # 24 hours
+# Redis set of run IDs whose log archive failed and should be retried.
+_ARCHIVE_RETRY_SET = "run:logs:archive_failed"
 # Per-line byte cap (PRD §observability: 4KB max per log line) — guards
 # against pathological producers (e.g. base64 blobs) blowing up Redis or
 # stalling SSE consumers.
 _MAX_LINE_BYTES = 4096
 _TRUNCATION_MARKER = "...[truncated]"
+
+
+class ArchivedLogsNotFound(Exception):
+    """Raised when an archived log object does not exist in object storage."""
 
 
 def _truncate_line(line: str) -> str:
@@ -50,6 +57,12 @@ class LogStream:
     @staticmethod
     def _stream_key(run_id: UUID | str) -> str:
         return f"run:{run_id}:logs"
+
+    @staticmethod
+    def _run_id_value(value: Any) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return str(value)
 
     async def write_log(
         self,
@@ -155,6 +168,10 @@ class LogStream:
 
             # Set short TTL — keep stream alive for in-flight SSE readers
             await self._redis.expire(key, _STREAM_TTL)
+            try:
+                await self._redis.srem(_ARCHIVE_RETRY_SET, str(run_id))
+            except Exception:
+                log.warning("failed to clear log archive retry marker for run %s", run_id, exc_info=True)
             log.info("archived %d log entries for run %s", len(all_entries), run_id)
             return True
 
@@ -164,9 +181,99 @@ class LogStream:
                 await self._redis.expire(key, _ARCHIVE_FAILURE_TTL)
             except Exception:
                 pass
+            try:
+                await self._redis.sadd(_ARCHIVE_RETRY_SET, str(run_id))
+            except Exception:
+                log.warning("failed to record log archive retry marker for run %s", run_id, exc_info=True)
             return False
+
+    async def read_archived_logs(
+        self,
+        run_id: UUID | str,
+        s3_client: Any,
+        bucket: str,
+    ) -> list[dict[str, Any]]:
+        """Read archived run logs from S3 JSONL storage.
+
+        Archive rows are intentionally normalized to the same public shape as
+        live log rows: ``{"stream": "...", "line": "..."}``. Object-storage
+        dependencies differ in how they expose ``Body`` during tests vs.
+        aiobotocore, so the body reader accepts bytes, strings, sync reads, and
+        async reads.
+        """
+        s3_key = f"logs/{run_id}.jsonl"
+
+        try:
+            response = await s3_client.get_object(Bucket=bucket, Key=s3_key)
+        except Exception as exc:
+            if _is_missing_object_error(exc):
+                raise ArchivedLogsNotFound(str(run_id)) from exc
+            raise
+
+        raw_body = await _read_s3_body(response.get("Body", b""))
+        if not raw_body:
+            return []
+
+        entries: list[dict[str, Any]] = []
+        for raw_line in raw_body.decode("utf-8").splitlines():
+            if not raw_line.strip():
+                continue
+            entry = json.loads(raw_line)
+            entries.append(
+                {
+                    **entry,
+                    "stream": entry.get("stream", "stdout"),
+                    "line": entry.get("line", ""),
+                }
+            )
+        return entries
+
+    async def retry_failed_archives(
+        self,
+        s3_client: Any,
+        bucket: str,
+        *,
+        limit: int = 100,
+    ) -> int:
+        """Retry log archives remembered after prior failures.
+
+        Returns the number of run streams successfully archived during this
+        pass. Failed retries keep their retry marker and 24h stream TTL.
+        """
+        raw_run_ids = await self._redis.smembers(_ARCHIVE_RETRY_SET)
+        retried = 0
+        for raw_run_id in list(raw_run_ids)[:limit]:
+            run_id = self._run_id_value(raw_run_id)
+            if await self.archive_logs(run_id, s3_client, bucket):
+                retried += 1
+        return retried
 
     async def delete_stream(self, run_id: UUID | str) -> None:
         """Delete the Redis Stream key for a run."""
         key = self._stream_key(run_id)
         await self._redis.delete(key)
+
+
+async def _read_s3_body(body: Any) -> bytes:
+    if isinstance(body, bytes):
+        return body
+    if isinstance(body, str):
+        return body.encode("utf-8")
+    if hasattr(body, "read"):
+        value = body.read()
+        if isawaitable(value):
+            value = await value
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, str):
+            return value.encode("utf-8")
+    return bytes(body)
+
+
+def _is_missing_object_error(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        code = response.get("Error", {}).get("Code")
+        if code in {"NoSuchKey", "404", "NotFound"}:
+            return True
+    return exc.__class__.__name__ in {"NoSuchKey", "NoSuchKeyError"}

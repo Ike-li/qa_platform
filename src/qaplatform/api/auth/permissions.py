@@ -225,13 +225,13 @@ def check_permission(
     to their resolved ``tenant_id`` — cross-tenant access is enforced at the
     request boundary, not here).
     """
-    if ctx.is_platform_admin:
-        return True
-
     # API token scope enforcement: if scopes are set, check action is allowed
     if ctx.scopes is not None and "*" not in ctx.scopes:
         if action.value not in ctx.scopes:
             return False
+
+    if ctx.is_platform_admin:
+        return True
 
     role = normalize_tenant_role(ctx.role)
     if role is None:

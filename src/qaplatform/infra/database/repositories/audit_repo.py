@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.infra.database.models import AuditEvent
@@ -138,6 +138,13 @@ class AuditEventRepository:
             stmt = stmt.where(f)
         result = await self.session.execute(stmt)
         return result.scalar_one() > 0
+
+    async def delete_older_than(self, *, cutoff: datetime) -> int:
+        """Hard-delete audit events older than the configured retention cutoff."""
+        stmt = sa_delete(AuditEvent).where(AuditEvent.created_at < cutoff)
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return int(result.rowcount or 0)
 
     async def _list(
         self,

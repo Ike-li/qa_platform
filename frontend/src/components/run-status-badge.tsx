@@ -11,6 +11,7 @@ const statusStyles: Record<RunStatus, string> = {
   failed: "bg-status-failed/10 text-status-failed border-status-failed/20",
   cancelled: "bg-status-cancelled/10 text-status-cancelled border-status-cancelled/20",
   timed_out: "bg-status-failed/10 text-status-failed border-status-failed/20",
+  unknown: "bg-surface-2 text-ink-muted border-hairline",
 };
 
 export function RunStatusBadge({ status, className }: { status: RunStatus; className?: string }) {

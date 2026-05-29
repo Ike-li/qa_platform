@@ -351,18 +351,24 @@ function RuleForm({
     );
   };
   const removeChannel = (index: number) =>
-    setChannels((prev) => prev.filter((_, i) => i !== index));
+    setChannels((prev) => (
+      prev.length <= 1 ? prev : prev.filter((_, i) => i !== index)
+    ));
 
   /* ---- submit ---- */
   const handleSave = async () => {
     if (!name.trim()) return;
+    if (channels.length === 0) {
+      toast.error(t("notifications.channelsRequired"));
+      return;
+    }
     try {
       const payload = {
         name: name.trim(),
         enabled,
         conditions,
         channels,
-        template: template || undefined,
+        template: template.trim() || null,
       };
       if (isEditing) {
         await updateRule(payload);
@@ -565,7 +571,7 @@ function RuleForm({
         <Button variant="outline" size="sm" onClick={onCancel}>
           {t("common.cancel")}
         </Button>
-        <Button size="sm" onClick={handleSave} disabled={isPending || !name.trim()}>
+        <Button size="sm" onClick={handleSave} disabled={isPending || !name.trim() || channels.length === 0}>
           <Save className="mr-2 h-4 w-4" />
           {isPending ? t("common.loading") : t("common.save")}
         </Button>

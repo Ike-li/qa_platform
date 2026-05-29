@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.audit import write_audit
@@ -28,8 +30,44 @@ router = APIRouter(
 )
 
 
+class _NotificationRuleAuditState(BaseModel):
+    id: UUID
+    project_id: UUID
+    name: str
+    enabled: bool
+    conditions: list[dict]
+    channels: dict[str, object] = Field(default_factory=dict)
+    template: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime
+
+
 def _to_rule_response(orm) -> NotificationRuleResponse:
     return NotificationRuleResponse.model_validate(orm)
+
+
+def _to_rule_audit_state(response: NotificationRuleResponse) -> _NotificationRuleAuditState:
+    channel_types = [
+        str(channel.get("type", "unknown")) if isinstance(channel, dict) else "unknown"
+        for channel in response.channels
+    ]
+    return _NotificationRuleAuditState(
+        id=response.id,
+        project_id=response.project_id,
+        name=response.name,
+        enabled=response.enabled,
+        conditions=response.conditions,
+        channels={
+            "redacted": True,
+            "count": len(response.channels),
+            "types": channel_types,
+        },
+        template={
+            "redacted": True,
+            "present": response.template is not None,
+            "length": len(response.template or ""),
+        },
+        created_at=response.created_at,
+    )
 
 
 def _to_log_response(orm) -> NotificationLogResponse:
@@ -99,7 +137,7 @@ async def create_notification_rule(
         action="notification_rule.create",
         resource_type="notification_rule",
         resource_id=rule.id,
-        after=response,
+        after=_to_rule_audit_state(response),
     )
     return response
 
@@ -161,7 +199,7 @@ async def update_notification_rule(
         rule.conditions = body.conditions
     if body.channels is not None:
         rule.channels = body.channels
-    if body.template is not None:
+    if "template" in body.model_fields_set:
         rule.template = body.template
 
     response = _to_rule_response(rule)
@@ -170,8 +208,8 @@ async def update_notification_rule(
         action="notification_rule.update",
         resource_type="notification_rule",
         resource_id=rule.id,
-        before=before,
-        after=response,
+        before=_to_rule_audit_state(before),
+        after=_to_rule_audit_state(response),
     )
     return response
 
@@ -198,10 +236,12 @@ async def delete_notification_rule(
     if rule is None or rule.project_id != project.id:
         raise HTTPException(status_code=404, detail="Notification rule not found")
 
+    before = _to_rule_response(rule)
     await repos.notification_rule.delete(rule)
     await write_audit(
         repos, user,
         action="notification_rule.delete",
         resource_type="notification_rule",
         resource_id=rule_id,
+        before=_to_rule_audit_state(before),
     )

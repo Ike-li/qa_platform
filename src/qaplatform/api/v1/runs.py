@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -24,10 +25,12 @@ from qaplatform.api.schemas import (
     NotificationLogResponse,
     PaginatedResponse,
     RunCancel,
+    RunLogEntryResponse,
     RunResponse,
     RunTrigger,
     TestResultResponse,
 )
+from qaplatform.engine.log_stream import ArchivedLogsNotFound, LogStream
 from qaplatform.infra.database.models import (
     Artifact as ArtifactORM,
     NotificationLog as NotificationLogORM,
@@ -120,16 +123,21 @@ async def trigger_run(
 
     git_ref = body.git_ref or project.default_branch
 
-    environment_id = project.default_env_id
+    environment_id = body.environment_id or project.default_env_id
     if environment_id is None:
         envs, _ = await repos.environment.list_by_project(project.id, limit=1)
         if envs:
             environment_id = envs[0].id
         else:
             raise HTTPException(status_code=409, detail="No environment configured for project")
-            
+    elif body.environment_id is not None:
+        environment = await repos.environment.get_by_id(body.environment_id)
+        if environment is None or environment.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Environment not found")
+
     metadata = {'git_url': project.git_url}
     if project.git_auth_method != 'none' and project.credential_id:
+        metadata['git_auth_method'] = project.git_auth_method
         metadata['credential_id'] = str(project.credential_id)
     if project.shallow_clone:
         metadata['shallow_clone'] = True
@@ -142,6 +150,7 @@ async def trigger_run(
         pipeline_id=pipeline.id,
         environment_id=environment_id,
         git_ref=git_ref,
+        git_sha=body.git_sha,
         triggered_by=user.user_id,
         trigger_type="manual",
         priority=body.priority,
@@ -184,6 +193,10 @@ async def list_runs(
     ),
     sort: str = Query("-created_at", description="排序字段"),
     project_id: UUID | None = Query(None, description="按项目筛选"),
+    pipeline_id: UUID | None = Query(None, description="按管道筛选"),
+    git_ref: str | None = Query(None, description="按分支或 Git ref 筛选"),
+    created_from: datetime | None = Query(None, description="按创建时间下限筛选"),
+    created_to: datetime | None = Query(None, description="按创建时间上限筛选"),
     session: AsyncSession = Depends(_get_db_session),
 ):
     filters = [RunORM.tenant_id == user.tenant_id]
@@ -221,6 +234,15 @@ async def list_runs(
             if not member_projects:
                 return PaginatedResponse(data=[], page=page, per_page=per_page, total=0)
             filters.append(RunORM.project_id.in_(member_projects))
+
+    if pipeline_id is not None:
+        filters.append(RunORM.pipeline_id == pipeline_id)
+    if git_ref is not None:
+        filters.append(RunORM.git_ref == git_ref)
+    if created_from is not None:
+        filters.append(RunORM.created_at >= created_from)
+    if created_to is not None:
+        filters.append(RunORM.created_at <= created_to)
 
     order_by = desc(RunORM.created_at) if sort == "-created_at" else RunORM.created_at
 
@@ -270,6 +292,12 @@ async def batch_cancel_runs(
                 failed += 1
                 continue
 
+            before_response = _to_run_response(run)
+            previous = (
+                run.status.value
+                if isinstance(run.status, RunStatusEnum)
+                else str(run.status)
+            )
             cancelled = await repos.run.cancel_if_current(run_id, expected_in=_CANCELABLE)
             if not cancelled:
                 errors.append(f"{run_id}: status changed concurrently")
@@ -281,9 +309,18 @@ async def batch_cancel_runs(
                 from qaplatform.engine.events import publish_status_event
 
                 await publish_cancel(redis, run_id)
-                previous = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
                 await publish_status_event(redis, run_id, "cancelled", previous=previous)
 
+            run_after = await repos.run.get_for_tenant(run_id, user.tenant_id)
+            after_response = _to_run_response(run_after) if run_after is not None else {"status": "cancelled"}
+            await write_audit(
+                repos, user,
+                action="run.batch_cancel",
+                resource_type="run",
+                resource_id=run_id,
+                before=before_response,
+                after=after_response,
+            )
             processed += 1
         except (SQLAlchemyError, ValueError) as exc:
             errors.append(f"{run_id}: {exc}")
@@ -325,6 +362,7 @@ async def batch_retry_runs(
                 failed += 1
                 continue
 
+            before_response = _to_run_response(original)
             await session.refresh(original, ['pipeline', 'environment'])
 
             new_run = await repos.run.create(
@@ -348,6 +386,19 @@ async def batch_retry_runs(
 
                 await enqueue_run(arq_pool, repos.run, new_run, "manual", container.settings)
 
+            await write_audit(
+                repos, user,
+                action="run.batch_retry",
+                resource_type="run",
+                resource_id=original.id,
+                before=before_response,
+                after={
+                    "retry_run_id": str(new_run.id),
+                    "source_run_id": str(original.id),
+                    "status": "queued",
+                    "attempt": getattr(new_run, "attempt", None),
+                },
+            )
             processed += 1
         except (SQLAlchemyError, ValueError) as exc:
             errors.append(f"{run_id}: {exc}")
@@ -401,12 +452,11 @@ async def cancel_run(
     if run.status not in _CANCELABLE:
         raise HTTPException(status_code=409, detail=f"Run already in terminal status: {run.status}")
 
+    previous_status = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
+    before_response = _to_run_response(run)
     cancelled = await repos.run.cancel_if_current(run_id, expected_in=_CANCELABLE)
     if not cancelled:
         raise HTTPException(status_code=409, detail="Run status changed concurrently")
-
-    previous_status = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
-    before_response = _to_run_response(run)
 
     # Notify worker to stop the container
     container = request.app.state.container
@@ -507,6 +557,56 @@ async def get_run_artifacts(
         page=page,
         per_page=per_page,
         total=total,
+    )
+
+
+@router.get(
+    "/{run_id}/logs/archive",
+    response_model=PaginatedResponse[RunLogEntryResponse],
+    responses={
+        404: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+    summary="归档日志回看",
+)
+async def get_archived_run_logs(
+    run_id: UUID,
+    request: Request,
+    repos: Repos,
+    user: CurrentUser,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(100, ge=1, le=1000),
+    session: AsyncSession = Depends(_get_db_session),
+):
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
+
+    container = request.app.state.container
+    if container.s3_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Archived logs are not available",
+        )
+
+    log_stream = LogStream(container.redis_client)
+    try:
+        entries = await log_stream.read_archived_logs(
+            run_id,
+            container.s3_client,
+            container.settings.s3_bucket,
+        )
+    except ArchivedLogsNotFound:
+        raise HTTPException(status_code=404, detail="Archived logs not found") from None
+
+    offset = (page - 1) * per_page
+    window = entries[offset : offset + per_page]
+    return PaginatedResponse(
+        data=[RunLogEntryResponse.model_validate(entry) for entry in window],
+        page=page,
+        per_page=per_page,
+        total=len(entries),
     )
 
 

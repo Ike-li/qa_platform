@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,9 +20,11 @@ from qaplatform.api.schemas import (
     ProjectUpdate,
 )
 from qaplatform.domain.models.project import SilentWindow
+from qaplatform.engine.redact import redact_url_userinfo
 from qaplatform.infra.database.models import Project as ProjectORM
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+_SSH_GIT_URL_RE = re.compile(r"^[^@]+@[^:]+:.+")
 
 
 def _to_response(orm: ProjectORM) -> ProjectResponse:
@@ -35,8 +39,75 @@ def _to_response(orm: ProjectORM) -> ProjectResponse:
     )
 
 
+def _to_audit_state(response: ProjectResponse) -> dict:
+    data = response.model_dump(mode="json")
+    data["git_url"] = redact_url_userinfo(data["git_url"])
+    return data
+
+
 def _serialize_silent_windows(windows: list[SilentWindow]) -> list[dict]:
     return [window.model_dump(mode="json") for window in windows]
+
+
+def _is_https_git_url(value: str) -> bool:
+    return urlparse(value).scheme == "https"
+
+
+def _is_ssh_git_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme == "ssh" or _SSH_GIT_URL_RE.match(value) is not None
+
+
+async def _validate_git_credential_binding(
+    *,
+    repos: Repos,
+    tenant_id: UUID,
+    project_id: UUID | None,
+    git_url: str,
+    git_auth_method: str,
+    credential_id: UUID | None,
+) -> None:
+    if git_auth_method == "none":
+        if credential_id is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="credential_id requires git_auth_method token or ssh_key",
+            )
+        return
+
+    if git_auth_method == "token" and not _is_https_git_url(git_url):
+        raise HTTPException(
+            status_code=422,
+            detail="Token Git credentials require an https:// git_url",
+        )
+    if git_auth_method == "ssh_key" and not _is_ssh_git_url(git_url):
+        raise HTTPException(
+            status_code=422,
+            detail="SSH key Git credentials require an SSH git_url",
+        )
+
+    if credential_id is None:
+        return
+    if project_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Create the project before binding a project credential",
+        )
+
+    credential = await repos.credential.get_by_project_tenant(
+        credential_id,
+        project_id,
+        tenant_id,
+    )
+    if credential is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    expected_type = "token" if git_auth_method == "token" else "ssh_key"
+    if credential.type != expected_type:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Credential type must be {expected_type} for git_auth_method={git_auth_method}",
+        )
 
 
 @router.get(
@@ -51,6 +122,7 @@ async def list_projects(
     per_page: int = Query(20, ge=1, le=100),
     q: str | None = Query(None, description="按名称/描述搜索"),
     status: str | None = Query(None, description="active / archived"),
+    _perm=require_permission(Action.PROJECT_READ),
 ):
     filters = [ProjectORM.tenant_id == user.tenant_id]
     if status:
@@ -95,6 +167,15 @@ async def create_project(
     if existing is not None:
         raise HTTPException(status_code=409, detail="Slug already exists")
 
+    await _validate_git_credential_binding(
+        repos=repos,
+        tenant_id=user.tenant_id,
+        project_id=None,
+        git_url=body.git_url,
+        git_auth_method=body.git_auth_method,
+        credential_id=body.credential_id,
+    )
+
     orm = await repos.project.create(
         tenant_id=user.tenant_id,
         created_by=user.user_id,
@@ -122,7 +203,7 @@ async def create_project(
         action="project.create",
         resource_type="project",
         resource_id=orm.id,
-        after=response,
+        after=_to_audit_state(response),
     )
     return response
 
@@ -137,6 +218,7 @@ async def get_project(
     project_id: UUID,
     repos: Repos,
     user: CurrentUser,
+    _perm=require_permission(Action.PROJECT_READ),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
@@ -168,6 +250,21 @@ async def update_project(
         settings = dict(update_data.pop("settings", None) or project.settings or {})
         settings["silent_windows"] = _serialize_silent_windows(body.silent_windows)
         update_data["settings"] = settings
+    effective_git_url = update_data.get("git_url", project.git_url)
+    effective_auth_method = update_data.get("git_auth_method", project.git_auth_method)
+    effective_credential_id = (
+        update_data["credential_id"]
+        if "credential_id" in update_data
+        else project.credential_id
+    )
+    await _validate_git_credential_binding(
+        repos=repos,
+        tenant_id=user.tenant_id,
+        project_id=project.id,
+        git_url=effective_git_url,
+        git_auth_method=effective_auth_method,
+        credential_id=effective_credential_id,
+    )
     updated = await repos.project.update(project, **update_data)
     after = _to_response(updated)
     await write_audit(
@@ -175,8 +272,8 @@ async def update_project(
         action="project.update",
         resource_type="project",
         resource_id=updated.id,
-        before=before,
-        after=after,
+        before=_to_audit_state(before),
+        after=_to_audit_state(after),
     )
     return after
 
@@ -204,5 +301,5 @@ async def delete_project(
         action="project.delete",
         resource_type="project",
         resource_id=project_id,
-        before=before,
+        before=_to_audit_state(before),
     )

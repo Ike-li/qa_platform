@@ -1,9 +1,13 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import fs from "node:fs";
 import net from "node:net";
 import type { FullConfig } from "@playwright/test";
 
 const COMPOSE_SERVICES = ["postgres", "redis", "minio"] as const;
 const PYTHON = ".venv/bin/python";
+const ARTIFACT_DIR = "artifacts/e2e";
+const WORKER_PID_FILE = `${ARTIFACT_DIR}/worker.pid`;
+const WORKER_LOG_FILE = `${ARTIFACT_DIR}/worker.log`;
 
 async function canConnect(port: number, host = "127.0.0.1", timeoutMs = 1000): Promise<boolean> {
   return new Promise((resolve) => {
@@ -77,6 +81,56 @@ async function ensureInfrastructure() {
   }
 
   await waitForHealthy();
+  compose(["run", "--rm", "minio-init"]);
+}
+
+function qapWorkerEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    PYTHONPATH: ["src", process.env.PYTHONPATH].filter(Boolean).join(":"),
+    QAP_WORKER_QUEUE: "queue:medium",
+    QAP_WORKER_MAX_JOBS: process.env.QAP_WORKER_MAX_JOBS || "1",
+    QAP_DATABASE_URL:
+      process.env.QAP_DATABASE_URL ||
+      "postgresql+asyncpg://qaplatform:qaplatform@localhost:5432/qaplatform",
+    QAP_REDIS_URL: process.env.QAP_REDIS_URL || "redis://localhost:6379/0",
+    QAP_S3_ENDPOINT: process.env.QAP_S3_ENDPOINT || "http://localhost:9000",
+    QAP_S3_ACCESS_KEY: process.env.QAP_S3_ACCESS_KEY || "minioadmin",
+    QAP_S3_SECRET_KEY: process.env.QAP_S3_SECRET_KEY || "minioadmin",
+    QAP_S3_BUCKET: process.env.QAP_S3_BUCKET || "qa-platform",
+    QAP_JWT_SECRET: process.env.QAP_JWT_SECRET || "ci-test-jwt-secret-not-for-production-use",
+    QAP_ENCRYPTION_KEY:
+      process.env.QAP_ENCRYPTION_KEY ||
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  };
+}
+
+async function startWorkerIfRequested() {
+  if (process.env.QAP_E2E_WORKER !== "1") {
+    return;
+  }
+
+  fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
+  const logFd = fs.openSync(WORKER_LOG_FILE, "a");
+  const worker = spawn(".venv/bin/arq", ["qaplatform.worker.settings.WorkerSettings"], {
+    cwd: process.cwd(),
+    detached: true,
+    env: qapWorkerEnv(),
+    stdio: ["ignore", logFd, logFd],
+  });
+  fs.closeSync(logFd);
+
+  await new Promise<void>((resolve, reject) => {
+    worker.once("error", reject);
+    setTimeout(resolve, 3000);
+  });
+
+  if (!worker.pid || worker.exitCode !== null) {
+    throw new Error(`E2E worker failed to start; see ${WORKER_LOG_FILE}`);
+  }
+
+  fs.writeFileSync(WORKER_PID_FILE, `${worker.pid}\n`, "utf8");
+  worker.unref();
 }
 
 export default async function globalSetup(_config: FullConfig) {
@@ -89,4 +143,5 @@ export default async function globalSetup(_config: FullConfig) {
     ADMIN_PASSWORD: process.env.E2E_ADMIN_PASSWORD || "admin123",
     ADMIN_EMAIL: "admin@qaplatform.local",
   });
+  await startWorkerIfRequested();
 }

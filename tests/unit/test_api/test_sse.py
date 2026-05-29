@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,11 +10,31 @@ from httpx import ASGITransport, AsyncClient
 from qaplatform.domain.models.run import RunStatus
 
 
+class _RateLimitPipeline:
+    def zremrangebyscore(self, *args, **kwargs):
+        return self
+
+    def zadd(self, *args, **kwargs):
+        return self
+
+    def zcard(self, *args, **kwargs):
+        return self
+
+    def expire(self, *args, **kwargs):
+        return self
+
+    async def execute(self):
+        return [0, 1, 1, True]
+
+
 @pytest.fixture
 def mock_redis():
-    redis = AsyncMock()
+    redis = MagicMock()
     redis.get = AsyncMock(return_value=None)
     redis.delete = AsyncMock()
+    redis.getdel = AsyncMock(return_value=None)
+    redis.time = AsyncMock(return_value=(1_700_000_000, 0))
+    redis.pipeline = MagicMock(return_value=_RateLimitPipeline())
     return redis
 
 
@@ -372,6 +393,63 @@ async def test_stream_logs_same_project_returns_200_event_stream(
 
 
 @pytest.mark.asyncio
+async def test_stream_logs_accepts_last_event_id_query_param(
+    client, mock_redis, mock_run_repo, tenant_id
+):
+    run_id = uuid.uuid4()
+    mock_run_repo.get_for_tenant.return_value = _make_run(
+        run_id=run_id, tenant_id=tenant_id
+    )
+
+    stream_key = f"run:{run_id}:logs"
+    mock_redis.xread = AsyncMock(
+        side_effect=[
+            [(stream_key.encode(), [(b"1235-0", {"message": "resumed"})])],
+            [],
+        ]
+    )
+    mock_redis.hget = AsyncMock(return_value=RunStatus.DONE.value)
+
+    resp = await client.get(
+        f"/api/v1/runs/{run_id}/logs?ticket=test-ticket&last_event_id=1234-0"
+    )
+
+    assert resp.status_code == 200
+    assert mock_redis.xread.await_args_list[0].args[0] == {stream_key: "1234-0"}
+
+
+@pytest.mark.asyncio
+async def test_stream_events_accepts_last_event_id_query_param(
+    client, mock_redis, mock_run_repo, tenant_id
+):
+    run_id = uuid.uuid4()
+    mock_run_repo.get_for_tenant.return_value = _make_run(
+        run_id=run_id, tenant_id=tenant_id
+    )
+
+    stream_key = f"run:{run_id}:events"
+    mock_redis.xread = AsyncMock(
+        side_effect=[
+            [
+                (
+                    stream_key.encode(),
+                    [(b"5679-0", {"type": "status_change", "status": "done"})],
+                )
+            ],
+            [],
+        ]
+    )
+    mock_redis.hget = AsyncMock(return_value=RunStatus.DONE.value)
+
+    resp = await client.get(
+        f"/api/v1/runs/{run_id}/events?ticket=test-ticket&last_event_id=5678-0"
+    )
+
+    assert resp.status_code == 200
+    assert mock_redis.xread.await_args_list[0].args[0] == {stream_key: "5678-0"}
+
+
+@pytest.mark.asyncio
 async def test_authenticate_sse_ticket_consumes_atomically():
     """Two concurrent calls with the same ticket must yield exactly one success
     and one failure — the getdel operation must be atomic.
@@ -388,7 +466,14 @@ async def test_authenticate_sse_ticket_consumes_atomically():
     user_id = uuid.uuid4()
     role = "platform_admin"
     tenant_id = uuid.uuid4()
-    payload = f"{user_id}:{role}:{tenant_id}"
+    payload = json.dumps(
+        {
+            "user_id": str(user_id),
+            "role": role,
+            "tenant_id": str(tenant_id),
+            "scopes": None,
+        }
+    )
     
     # Mock redis with getdel that returns payload on first call, None on second
     call_count = 0
@@ -400,8 +485,10 @@ async def test_authenticate_sse_ticket_consumes_atomically():
             return payload
         return None
     
-    mock_redis = AsyncMock()
+    mock_redis = MagicMock()
     mock_redis.getdel = mock_getdel
+    mock_redis.get = MagicMock()
+    mock_redis.delete = MagicMock()
     
     # Mock request with redis client
     mock_request = MagicMock()
@@ -426,6 +513,7 @@ async def test_authenticate_sse_ticket_consumes_atomically():
     assert success.user_id == user_id
     assert success.role == role
     assert success.tenant_id == tenant_id
+    assert success.scopes is None
     
     # Verify the failure is 401
     failure = failures[0]
@@ -435,3 +523,57 @@ async def test_authenticate_sse_ticket_consumes_atomically():
     assert call_count == 2
     mock_redis.get.assert_not_called()
     mock_redis.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_authenticate_sse_ticket_rejects_legacy_payload_without_scopes():
+    from fastapi import HTTPException
+
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
+
+    mock_redis = MagicMock()
+    mock_redis.getdel = AsyncMock(
+        return_value=f"{uuid.uuid4()}:owner:{uuid.uuid4()}"
+    )
+
+    mock_request = MagicMock()
+    mock_request.app.state.container.redis_client = mock_redis
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _authenticate_sse_ticket(mock_request, "legacy-ticket")
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_authenticate_sse_ticket_preserves_api_token_scopes():
+    from fastapi import HTTPException
+
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
+
+    user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    payload = json.dumps(
+        {
+            "user_id": str(user_id),
+            "role": "owner",
+            "tenant_id": str(tenant_id),
+            "scopes": ["run.read"],
+        }
+    )
+    mock_redis = MagicMock()
+    mock_redis.getdel = AsyncMock(return_value=payload)
+
+    mock_request = MagicMock()
+    mock_request.app.state.container.redis_client = mock_redis
+
+    identity = await _authenticate_sse_ticket(mock_request, "scoped-ticket")
+
+    assert identity.user_id == user_id
+    assert identity.role == "owner"
+    assert identity.tenant_id == tenant_id
+    assert identity.scopes == ["run.read"]
+
+    mock_redis.getdel.return_value = None
+    with pytest.raises(HTTPException):
+        await _authenticate_sse_ticket(mock_request, "scoped-ticket")

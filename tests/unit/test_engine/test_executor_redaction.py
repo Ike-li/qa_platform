@@ -8,14 +8,16 @@ Three test groups:
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 
-from qaplatform.domain.models.run import Run, RunStatus
+from qaplatform.domain.models.run import Run
+from qaplatform.engine.docker_backend import LogLine
 from qaplatform.engine.executor import RunExecutor
-from qaplatform.engine.redact import redact_url_userinfo
+from qaplatform.engine.redact import redact_sensitive_text, redact_url_userinfo
 from qaplatform.plugins.registry import PluginRegistry
 
 
@@ -63,6 +65,7 @@ def sample_run():
     run = MagicMock(spec=Run)
     run.id = uuid4()
     run.git_ref = "main"
+    run.git_sha = None
     run.metadata = {"git_url": _GIT_URL_WITH_TOKEN}
     return run
 
@@ -183,3 +186,85 @@ class TestRedactUrlUserinfoHandlesNoUrl:
         """A URL that has no userinfo segment must be returned unchanged."""
         url = "https://github.com/org/repo.git"
         assert redact_url_userinfo(url) == url
+
+
+class TestRedactSensitiveText:
+    def test_redacts_environment_secret_values(self):
+        secret = "worker-secret-active-print-123"
+
+        result = redact_sensitive_text(
+            f"stdout leaked {secret} and url https://u:p@example.com/repo.git",
+            {"QAP_REAL_WORKER_SECRET": secret},
+        )
+
+        assert secret not in result
+        assert "[REDACTED]" in result
+        assert "https://***@example.com/repo.git" in result
+
+    def test_ignores_short_non_sensitive_values(self):
+        assert (
+            redact_sensitive_text(
+                "stage 1 running on main",
+                {"COUNT": "1", "BRANCH": "main"},
+            )
+            == "stage 1 running on main"
+        )
+
+    def test_redacts_credentialed_url_env_value_before_url_fallback(self):
+        secret_url = "https://user:pass@example.com/repo.git?access_token=querysecret"
+
+        result = redact_sensitive_text(
+            f"stdout leaked {secret_url}",
+            {"SECRET_URL": secret_url},
+        )
+
+        assert result == "stdout leaked [REDACTED]"
+        assert secret_url not in result
+        assert "querysecret" not in result
+        assert "user:pass" not in result
+
+
+class TestExecutorLogRedaction:
+    @pytest.mark.asyncio
+    async def test_stream_container_logs_redacts_environment_secret_values(self):
+        secret = "worker-secret-active-print-456"
+        backend = AsyncMock()
+
+        async def _logs(_execution_id):
+            yield LogLine(
+                timestamp=datetime.now(timezone.utc),
+                stream="stdout",
+                content=f"stdout printed {secret}",
+            )
+            yield LogLine(
+                timestamp=datetime.now(timezone.utc),
+                stream="stderr",
+                content=f"stderr printed {secret}",
+            )
+
+        backend.stream_logs = _logs
+        log_stream = AsyncMock()
+
+        executor = RunExecutor(
+            backend=backend,
+            log_stream=log_stream,
+            run_repo=AsyncMock(),
+            plugin_registry=MagicMock(spec=PluginRegistry),
+        )
+
+        await executor._stream_container_logs(
+            "run-1",
+            "container-1",
+            redact_env_vars={"QAP_REAL_WORKER_SECRET": secret},
+        )
+
+        assert log_stream.write_log.await_count == 2
+        written = [
+            call.args[1] for call in log_stream.write_log.await_args_list
+        ]
+        assert all(secret not in line for line in written)
+        assert all("[REDACTED]" in line for line in written)
+        streams = [
+            call.kwargs["stream"] for call in log_stream.write_log.await_args_list
+        ]
+        assert streams == ["stdout", "stderr"]

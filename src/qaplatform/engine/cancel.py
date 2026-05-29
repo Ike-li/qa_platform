@@ -71,6 +71,9 @@ async def watch_for_cancel(
         if pubsub is not None:
             try:
                 await pubsub.unsubscribe(channel)
-                await pubsub.close()
+                close = getattr(pubsub, "aclose", None)
+                if close is None:
+                    close = pubsub.close
+                await close()
             except Exception:
                 pass

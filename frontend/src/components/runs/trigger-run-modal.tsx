@@ -1,11 +1,14 @@
-import { useForm } from "react-hook-form";
+import { useForm, type SubmitHandler } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useTriggerRun } from "../../hooks/use-runs";
-import { useProjectPipelines } from "../../hooks/use-projects";
+import {
+  useProjectEnvironments,
+  useProjectPipelines,
+} from "../../hooks/use-projects";
 import { 
   Dialog, 
   DialogContent, 
@@ -25,13 +28,25 @@ import {
   SelectValue 
 } from "../../components/ui/select";
 
+const DEFAULT_ENVIRONMENT = "__project_default__";
+
 const triggerSchema = z.object({
   pipeline_id: z.string().min(1),
   branch: z.string().optional(),
+  git_sha: z
+    .string()
+    .trim()
+    .refine(
+      (value) => !value || /^[0-9a-fA-F]{40}$/.test(value),
+      "validation.gitShaInvalid",
+    )
+    .optional(),
+  environment_id: z.string().optional(),
   priority: z.coerce.number().min(0).max(2).default(1),
 });
 
-type TriggerFormValues = z.infer<typeof triggerSchema>;
+type TriggerFormInput = z.input<typeof triggerSchema>;
+type TriggerFormValues = z.output<typeof triggerSchema>;
 
 export function TriggerRunModal({ 
   projectId, 
@@ -47,6 +62,7 @@ export function TriggerRunModal({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { data: pipelines } = useProjectPipelines(projectId);
+  const { data: environments } = useProjectEnvironments(projectId);
   const { mutateAsync: triggerRun, isPending } = useTriggerRun();
   
   const {
@@ -56,21 +72,23 @@ export function TriggerRunModal({
     watch,
     reset,
     formState: { errors },
-  } = useForm<TriggerFormValues>({
+  } = useForm<TriggerFormInput, unknown, TriggerFormValues>({
     resolver: zodResolver(triggerSchema),
     defaultValues: {
-      pipeline_id: defaultPipelineId,
+      pipeline_id: defaultPipelineId ?? "",
       priority: 1,
     },
   });
 
   const watchPipelineId = watch("pipeline_id");
 
-  const onSubmit = async (data: TriggerFormValues) => {
+  const onSubmit: SubmitHandler<TriggerFormValues> = async (data) => {
     try {
       const run = await triggerRun({
         pipeline_id: data.pipeline_id,
         branch: data.branch || undefined,
+        git_sha: data.git_sha || undefined,
+        environment_id: data.environment_id || undefined,
         priority: data.priority,
       });
       toast.success(t("trigger.toast.success"));
@@ -114,6 +132,47 @@ export function TriggerRunModal({
             <Label htmlFor="branch">{t("trigger.branchOverride")}</Label>
             <Input id="branch" {...register("branch")} placeholder="e.g. develop" />
             <p className="text-[10px] text-ink-tertiary">{t("trigger.branchHint")}</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>{t("trigger.selectEnvironment")}</Label>
+            <Select
+              value={watch("environment_id") || DEFAULT_ENVIRONMENT}
+              onValueChange={(value) =>
+                setValue(
+                  "environment_id",
+                  value === DEFAULT_ENVIRONMENT ? undefined : value,
+                )
+              }
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={t("trigger.selectEnvironmentPlaceholder")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={DEFAULT_ENVIRONMENT}>
+                  {t("trigger.projectDefaultEnvironment")}
+                </SelectItem>
+                {environments?.map((environment) => (
+                  <SelectItem key={environment.id} value={environment.id}>
+                    {environment.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="git_sha">{t("trigger.commitSha")}</Label>
+            <Input
+              id="git_sha"
+              {...register("git_sha")}
+              placeholder="0123456789abcdef0123456789abcdef01234567"
+            />
+            {errors.git_sha && (
+              <p className="text-xs text-status-failed">
+                {t("validation.gitShaInvalid")}
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">

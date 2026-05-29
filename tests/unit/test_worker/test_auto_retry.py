@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
-from qaplatform.worker.tasks import _should_retry, _attempt_retry
+from qaplatform.worker.tasks import _attempt_retry, _should_retry
 
 
 # --------------------------------------------------------------------------- #
@@ -77,6 +75,19 @@ class TestShouldRetry:
         policy = {"max_retries": 1}
         assert _should_retry(ConnectionError("fail"), policy, 1) is True
 
+    def test_api_max_attempts_translates_to_retry_count(self):
+        policy = {"max_attempts": 2, "retry_on": ["infra"]}
+        assert _should_retry(ConnectionError("fail"), policy, 1) is True
+        assert _should_retry(ConnectionError("fail"), policy, 2) is False
+
+    def test_retry_on_without_infra_is_not_retryable(self):
+        policy = {"max_attempts": 2, "retry_on": ["assertion"]}
+        assert _should_retry(ConnectionError("fail"), policy, 1) is False
+
+    def test_one_max_attempt_means_no_retry(self):
+        policy = {"max_attempts": 1, "retry_on": ["infra"]}
+        assert _should_retry(ConnectionError("fail"), policy, 1) is False
+
 
 # --------------------------------------------------------------------------- #
 # _attempt_retry integration tests
@@ -99,10 +110,13 @@ def mock_run_factory():
         run.pipeline_id = uuid4()
         run.environment_id = uuid4()
         run.git_ref = "main"
+        run.git_sha = "abc123"
+        run.priority = 1
         run.triggered_by = uuid4()
         run.trigger_type = "manual"
         run.metadata_ = {"git_url": "https://github.com/org/repo.git"}
         run.retry_group_id = run.id
+        run.chain_depth = 0
         run.pipeline = pipeline
         return run
 
@@ -161,6 +175,9 @@ class TestAttemptRetry:
         assert create_kwargs["attempt"] == 2
         assert create_kwargs["retry_group_id"] == original.retry_group_id
         assert create_kwargs["source_run_id"] == original.id
+        assert create_kwargs["git_sha"] == original.git_sha
+        assert create_kwargs["priority"] == original.priority
+        assert create_kwargs["chain_depth"] == 1
 
     @pytest.mark.asyncio
     async def test_returns_false_when_should_retry_false(
@@ -297,3 +314,36 @@ class TestAttemptRetry:
         scheduler.enqueue.assert_awaited_once()
         call_kwargs = scheduler.enqueue.call_args
         assert call_kwargs.kwargs.get("_defer_by") == 60 or call_kwargs[1].get("_defer_by") == 60
+
+    @pytest.mark.asyncio
+    async def test_waiting_retry_run_counts_as_scheduled(self, mock_run_factory):
+        policy = {"enabled": True, "max_retries": 3, "backoff_seconds": 0}
+        original = mock_run_factory(attempt=1, retry_policy=policy)
+
+        run_repo = AsyncMock()
+        run_repo.get_by_id = AsyncMock(return_value=original)
+        retry_run = MagicMock()
+        retry_run.id = uuid4()
+        retry_run.attempt = 2
+        retry_run.project_id = original.project_id
+        retry_run.trigger_type = "manual"
+        run_repo.create = AsyncMock(return_value=retry_run)
+
+        scheduler = AsyncMock()
+        scheduler.enqueue = AsyncMock(return_value=False)
+
+        ctx = {"arq_pool": MagicMock(), "settings": MagicMock()}
+
+        with (
+            patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo),
+            patch("qaplatform.worker.scheduler.FairScheduler", return_value=scheduler),
+        ):
+            session = AsyncMock()
+            session.__aenter__.return_value = session
+            sf = MagicMock(return_value=session)
+            result = await _attempt_retry(str(original.id), ConnectionError("fail"), ctx, sf)
+
+        assert result is True
+        run_repo.create.assert_awaited_once()
+        scheduler.enqueue.assert_awaited_once()
+        session.commit.assert_awaited_once()

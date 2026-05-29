@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from qaplatform.domain.models.run import RunStatus, TERMINAL_STATUSES
+from qaplatform.domain.models.run import Run, RunStatus, TERMINAL_STATUSES
 from qaplatform.domain.ports import RunRepositoryProtocol
 
 
@@ -150,8 +150,6 @@ class ExecutionService:
         dedup_key: str | None = None,
     ) -> Run:
         """Create a new Run in queued state."""
-        from qaplatform.domain.models.run import Run
-
         now = datetime.now(timezone.utc)
         return Run(
             id=UUID(int=0),  # caller must assign a real id

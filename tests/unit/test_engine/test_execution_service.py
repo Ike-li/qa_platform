@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 
-from qaplatform.domain.models.run import RunStatus, TERMINAL_STATUSES
+from qaplatform.domain.models.run import RunStatus
 from qaplatform.domain.services.execution import (
     ExecutionService,
     cancel_if_current,

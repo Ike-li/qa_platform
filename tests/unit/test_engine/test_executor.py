@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import stat
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -76,6 +77,7 @@ def sample_run():
     run.id = uuid4()
     run.project_id = uuid4()
     run.git_ref = "main"
+    run.git_sha = None
     run.metadata = {"git_url": "https://github.com/org/repo.git"}
     return run
 
@@ -85,6 +87,53 @@ class TestRunSetupContainerised:
     from `asyncio.create_subprocess_shell` (worker host) into the same
     sandbox backend as stages.
     """
+
+    def test_workspace_dir_is_writable_by_fixed_container_uid(self):
+        run_id = str(uuid4())
+        working_dir = RunExecutor._create_workspace_dir(run_id)
+
+        try:
+            assert working_dir.name.startswith(f"qap-{run_id[:8]}-")
+            assert stat.S_IMODE(working_dir.stat().st_mode) == 0o777
+        finally:
+            working_dir.rmdir()
+
+    def test_workspace_dir_can_use_shared_docker_socket_root(self, tmp_path, monkeypatch):
+        run_id = str(uuid4())
+        shared_root = tmp_path / "qap-workspaces"
+        monkeypatch.setenv("QAP_RUN_WORKSPACE_DIR", str(shared_root))
+
+        working_dir = RunExecutor._create_workspace_dir(run_id)
+
+        try:
+            assert working_dir.parent == shared_root
+            assert working_dir.name.startswith(f"qap-{run_id[:8]}-")
+            assert stat.S_IMODE(shared_root.stat().st_mode) == 0o777
+            assert stat.S_IMODE(working_dir.stat().st_mode) == 0o777
+        finally:
+            working_dir.rmdir()
+
+    def test_workspace_dir_tolerates_bind_root_chmod_denied(self, tmp_path, monkeypatch):
+        run_id = str(uuid4())
+        shared_root = tmp_path / "qap-workspaces"
+        monkeypatch.setenv("QAP_RUN_WORKSPACE_DIR", str(shared_root))
+        original_chmod = Path.chmod
+
+        def chmod_with_bind_root_denied(path: Path, mode: int, *args, **kwargs):
+            if path == shared_root:
+                raise PermissionError("bind root is not owned by container user")
+            return original_chmod(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "chmod", chmod_with_bind_root_denied)
+
+        working_dir = RunExecutor._create_workspace_dir(run_id)
+
+        try:
+            assert working_dir.parent == shared_root
+            assert working_dir.name.startswith(f"qap-{run_id[:8]}-")
+            assert stat.S_IMODE(working_dir.stat().st_mode) == 0o777
+        finally:
+            working_dir.rmdir()
 
     @pytest.fixture
     def setup_pipeline(self):
@@ -323,6 +372,39 @@ class TestExecutorUsesSourcePlugin:
         )
 
     @pytest.mark.asyncio
+    async def test_clone_repo_prefers_full_commit_sha(
+        self, executor, sample_run, mock_plugin_registry
+    ):
+        dest = Path("/tmp/test")
+        sample_run.git_sha = "0123456789abcdef0123456789abcdef01234567"
+
+        await executor._clone_repo(sample_run, dest)
+
+        source = mock_plugin_registry.get_source.return_value
+        source.clone.assert_called_once_with(
+            "https://github.com/org/repo.git",
+            "0123456789abcdef0123456789abcdef01234567",
+            dest,
+        )
+
+    @pytest.mark.asyncio
+    async def test_clone_repo_passes_source_auth(
+        self, executor, sample_run, mock_plugin_registry
+    ):
+        dest = Path("/tmp/test")
+        auth = {"method": "token", "secret": "secret-token"}
+
+        await executor._clone_repo(sample_run, dest, auth)
+
+        source = mock_plugin_registry.get_source.return_value
+        source.clone.assert_called_once_with(
+            "https://github.com/org/repo.git",
+            "main",
+            dest,
+            auth,
+        )
+
+    @pytest.mark.asyncio
     async def test_clone_repo_updates_git_sha(self, executor, sample_run, mock_run_repo, mock_plugin_registry):
         dest = Path("/tmp/test")
         await executor._clone_repo(sample_run, dest)
@@ -336,6 +418,7 @@ class TestExecutorUsesSourcePlugin:
         run = MagicMock(spec=Run)
         run.id = uuid4()
         run.git_ref = "main"
+        run.git_sha = None
         run.metadata = {}
 
         dest = Path("/tmp/test")
@@ -399,6 +482,43 @@ class TestUploadArtifacts:
         assert recorded["extra.bin"]["mime_type"] == "application/octet-stream"
 
     @pytest.mark.asyncio
+    async def test_upload_recurses_allure_report_directories(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
+    ):
+        s3 = AsyncMock()
+        artifact_repo = AsyncMock()
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+            s3_client=s3,
+            s3_bucket="test-bucket",
+            artifact_repo=artifact_repo,
+        )
+        results_dir = tmp_path / "results"
+        (results_dir / "allure-report" / "assets").mkdir(parents=True)
+        (results_dir / "allure-report" / "index.html").write_text("<html/>")
+        (results_dir / "allure-report" / "assets" / "app.js").write_text("ok")
+
+        run_id = "11111111-1111-1111-1111-111111111111"
+        await executor._upload_artifacts(run_id, tmp_path)
+
+        uploaded_keys = {call.kwargs["Key"] for call in s3.put_object.await_args_list}
+        assert uploaded_keys == {
+            f"reports/{run_id}/allure-report/assets/app.js",
+            f"reports/{run_id}/allure-report/index.html",
+        }
+        recorded = {call.kwargs["name"]: call.kwargs for call in artifact_repo.create.call_args_list}
+        assert set(recorded) == {
+            "allure-report/assets/app.js",
+            "allure-report/index.html",
+        }
+        assert recorded["allure-report/index.html"]["type"] == "allure-report"
+        assert recorded["allure-report/index.html"]["mime_type"] == "text/html"
+        assert recorded["allure-report/assets/app.js"]["type"] == "allure-report"
+
+    @pytest.mark.asyncio
     async def test_upload_skips_artifact_row_when_repo_missing(
         self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
     ):
@@ -440,6 +560,76 @@ class TestUploadArtifacts:
         await executor._upload_artifacts("rid", tmp_path)
         # S3 failed → DB row must NOT be written to avoid dangling reference
         artifact_repo.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upload_skips_artifacts_over_size_limit(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
+    ):
+        from qaplatform.engine.docker_backend import ResourceLimits
+
+        s3 = AsyncMock()
+        artifact_repo = AsyncMock()
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+            s3_client=s3,
+            artifact_repo=artifact_repo,
+        )
+        (tmp_path / "results").mkdir()
+        (tmp_path / "results" / "big.txt").write_bytes(b"too-large")
+        (tmp_path / "results" / "small.txt").write_bytes(b"ok")
+
+        await executor._upload_artifacts(
+            "11111111-1111-1111-1111-111111111111",
+            tmp_path,
+            ResourceLimits(max_artifact_size_bytes=2, max_artifacts_count=10),
+        )
+
+        s3.put_object.assert_awaited_once()
+        assert s3.put_object.call_args.kwargs["Key"].endswith("/small.txt")
+        artifact_repo.create.assert_awaited_once()
+        assert artifact_repo.create.call_args.kwargs["name"] == "small.txt"
+        assert any(
+            "exceeds limit" in call.args[1]
+            for call in mock_log_stream.write_log.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_upload_skips_artifacts_over_count_limit(
+        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, tmp_path
+    ):
+        from qaplatform.engine.docker_backend import ResourceLimits
+
+        s3 = AsyncMock()
+        artifact_repo = AsyncMock()
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+            s3_client=s3,
+            artifact_repo=artifact_repo,
+        )
+        (tmp_path / "results").mkdir()
+        (tmp_path / "results" / "a.txt").write_bytes(b"a")
+        (tmp_path / "results" / "b.txt").write_bytes(b"b")
+
+        await executor._upload_artifacts(
+            "11111111-1111-1111-1111-111111111111",
+            tmp_path,
+            ResourceLimits(max_artifact_size_bytes=100, max_artifacts_count=1),
+        )
+
+        s3.put_object.assert_awaited_once()
+        assert s3.put_object.call_args.kwargs["Key"].endswith("/a.txt")
+        artifact_repo.create.assert_awaited_once()
+        assert artifact_repo.create.call_args.kwargs["name"] == "a.txt"
+        assert any(
+            "count limit exceeded" in call.args[1]
+            for call in mock_log_stream.write_log.await_args_list
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -678,6 +868,87 @@ class TestExecutorCommitsAfterStateTransitions:
             "upload_artifacts",
         ]
         assert spans[0][1]["run.id"] == str(sample_run.id)
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_configured_collector_plugin_and_config(
+        self, happy_executor, sample_run
+    ):
+        from qaplatform.engine.executor import CollectorDefinition, PipelineConfig, StageDefinition
+
+        sample_run.metadata = {}
+        pipeline = PipelineConfig(
+            image="python:3.12-alpine",
+            stages=[StageDefinition(name="pytest", plugin="pytest")],
+            collectors=[
+                CollectorDefinition(
+                    plugin="custom-junit",
+                    config={"path": "reports/custom.xml"},
+                )
+            ],
+        )
+
+        await happy_executor.execute(sample_run, pipeline)
+
+        happy_executor.plugin_registry.get_collector.assert_called_with("custom-junit")
+        collector = happy_executor.plugin_registry.get_collector.return_value
+        collector.collect.assert_awaited_once_with(
+            sample_run.id,
+            ANY,
+            {"path": "reports/custom.xml"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_persists_collected_test_results(
+        self, happy_executor, sample_run
+    ):
+        from qaplatform.plugins.protocols import TestResultData
+
+        sample_run.metadata = {}
+        test_result = TestResultData(
+            suite="worker-suite",
+            name="test_worker_smoke",
+            status="passed",
+            duration_ms=12,
+            tags=["e2e"],
+            metadata={"source": "junit"},
+        )
+        collector = AsyncMock()
+        collector.collect = AsyncMock(return_value=[test_result])
+        happy_executor.plugin_registry.get_collector = MagicMock(return_value=collector)
+        happy_executor.test_result_repo = AsyncMock()
+
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        happy_executor.test_result_repo.bulk_create.assert_awaited_once_with(
+            [
+                {
+                    "run_id": sample_run.id,
+                    "suite": "worker-suite",
+                    "name": "test_worker_smoke",
+                    "status": "passed",
+                    "duration_ms": 12,
+                    "error_message": None,
+                    "stack_trace": None,
+                    "tags": ["e2e"],
+                    "metadata_": {"source": "junit"},
+                }
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_old_collector_signature_still_works(self, happy_executor, sample_run, tmp_path):
+        class OldCollector:
+            async def collect(self, run_id, working_dir):
+                return []
+
+        results = await happy_executor._collect_from_plugin(
+            OldCollector(),
+            sample_run.id,
+            tmp_path,
+            {"path": "reports/custom.xml"},
+        )
+
+        assert results == []
 
     @pytest.mark.asyncio
     async def test_commit_ordering_running_then_collecting(

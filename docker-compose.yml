@@ -67,6 +67,22 @@ services:
       timeout: 3s
       retries: 5
 
+  minio-init:
+    image: minio/mc
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      QAP_S3_BUCKET: ${QAP_S3_BUCKET:-qa-platform}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
+        mc mb --ignore-existing "local/$${QAP_S3_BUCKET}"
+    depends_on:
+      minio:
+        condition: service_healthy
+
   api:
     build: .
     restart: unless-stopped
@@ -100,6 +116,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
   frontend:
     build: ./frontend
@@ -121,11 +139,16 @@ services:
     command: ["arq", "qaplatform.worker.settings.WorkerSettings"]
     env_file: .env
     environment:
+      QAP_WORKER_QUEUE: queue:medium
       QAP_DATABASE_URL: postgresql+asyncpg://${QAP_DB_USER:-qaplatform}:${QAP_DB_PASSWORD:-qaplatform}@postgres:5432/${QAP_DB_NAME:-qaplatform}
       QAP_REDIS_URL: redis://redis:6379/0
       QAP_S3_ENDPOINT: http://minio:9000
+      QAP_RUN_WORKSPACE_DIR: ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}:${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
+    group_add:
+      - "${QAP_DOCKER_SOCK_GROUP_ID:-0}"
     deploy:
       resources:
         limits:
@@ -143,6 +166,80 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  worker-high:
+    build: .
+    restart: unless-stopped
+    command: ["arq", "qaplatform.worker.settings.WorkerSettings"]
+    env_file: .env
+    environment:
+      QAP_WORKER_QUEUE: queue:high
+      QAP_DATABASE_URL: postgresql+asyncpg://${QAP_DB_USER:-qaplatform}:${QAP_DB_PASSWORD:-qaplatform}@postgres:5432/${QAP_DB_NAME:-qaplatform}
+      QAP_REDIS_URL: redis://redis:6379/0
+      QAP_S3_ENDPOINT: http://minio:9000
+      QAP_RUN_WORKSPACE_DIR: ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}:${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
+    group_add:
+      - "${QAP_DOCKER_SOCK_GROUP_ID:-0}"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  worker-low:
+    build: .
+    restart: unless-stopped
+    command: ["arq", "qaplatform.worker.settings.WorkerSettings"]
+    env_file: .env
+    environment:
+      QAP_WORKER_QUEUE: queue:low
+      QAP_DATABASE_URL: postgresql+asyncpg://${QAP_DB_USER:-qaplatform}:${QAP_DB_PASSWORD:-qaplatform}@postgres:5432/${QAP_DB_NAME:-qaplatform}
+      QAP_REDIS_URL: redis://redis:6379/0
+      QAP_S3_ENDPOINT: http://minio:9000
+      QAP_RUN_WORKSPACE_DIR: ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}:${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}
+    group_add:
+      - "${QAP_DOCKER_SOCK_GROUP_ID:-0}"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
 volumes:
   pgdata:

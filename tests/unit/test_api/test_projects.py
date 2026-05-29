@@ -35,6 +35,16 @@ def _make_orm_project(**overrides):
     return obj
 
 
+def _make_orm_credential(project_id, tenant_id, type_="token"):
+    obj = MagicMock()
+    obj.id = uuid.uuid4()
+    obj.project_id = project_id
+    obj.tenant_id = tenant_id
+    obj.name = "git-credential"
+    obj.type = type_
+    return obj
+
+
 @pytest.fixture
 def mock_project_repo():
     return AsyncMock()
@@ -44,6 +54,7 @@ def mock_project_repo():
 def mock_repos(mock_project_repo):
     repos = MagicMock()
     repos.project = mock_project_repo
+    repos.credential = AsyncMock()
     return repos
 
 
@@ -63,7 +74,7 @@ def mock_user(tenant_id):
 
 @pytest.fixture
 async def app(mock_repos, mock_user):
-    from qaplatform.api.deps import _get_repos, get_current_user
+    from qaplatform.api.deps import _get_db_session, _get_repos, get_current_user
     from qaplatform.main import create_app
 
     app = create_app(container=MagicMock())
@@ -74,8 +85,14 @@ async def app(mock_repos, mock_user):
     async def _override_user():
         return mock_user
 
+    async def _override_session():
+        session = AsyncMock()
+        session.add = MagicMock()
+        yield session
+
     app.dependency_overrides[_get_repos] = _override_repos
     app.dependency_overrides[get_current_user] = _override_user
+    app.dependency_overrides[_get_db_session] = _override_session
     return app
 
 
@@ -135,6 +152,26 @@ async def test_create_project_duplicate_slug(client, mock_project_repo):
         headers={"Authorization": "Bearer fake"},
     )
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_credential_before_project_exists(client, mock_project_repo):
+    mock_project_repo.get_by_slug.return_value = None
+
+    resp = await client.post(
+        "/api/v1/projects",
+        json={
+            "name": "private",
+            "slug": "private",
+            "git_url": "https://github.com/example/repo.git",
+            "git_auth_method": "token",
+            "credential_id": str(uuid.uuid4()),
+        },
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 422
+    mock_project_repo.create.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -246,6 +283,72 @@ async def test_update_project(client, mock_project_repo, tenant_id):
     )
     assert resp.status_code == 200
     assert resp.json()["name"] == "updated-name"
+
+
+@pytest.mark.asyncio
+async def test_update_project_validates_git_credential_binding(client, mock_repos, mock_project_repo, tenant_id):
+    project = _make_orm_project(tenant_id=tenant_id)
+    credential = _make_orm_credential(project.id, tenant_id, type_="token")
+    updated = _make_orm_project(
+        id=project.id,
+        tenant_id=tenant_id,
+        git_auth_method="token",
+        credential_id=credential.id,
+    )
+    mock_project_repo.get_for_tenant.return_value = project
+    mock_repos.credential.get_by_project_tenant.return_value = credential
+    mock_project_repo.update.return_value = updated
+
+    resp = await client.put(
+        f"/api/v1/projects/{project.id}",
+        json={"git_auth_method": "token", "credential_id": str(credential.id)},
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    mock_repos.credential.get_by_project_tenant.assert_awaited_once_with(
+        credential.id,
+        project.id,
+        tenant_id,
+    )
+    assert mock_project_repo.update.await_args.kwargs["credential_id"] == credential.id
+
+
+@pytest.mark.asyncio
+async def test_update_project_rejects_git_credential_type_mismatch(
+    client, mock_repos, mock_project_repo, tenant_id
+):
+    project = _make_orm_project(tenant_id=tenant_id)
+    credential = _make_orm_credential(project.id, tenant_id, type_="ssh_key")
+    mock_project_repo.get_for_tenant.return_value = project
+    mock_repos.credential.get_by_project_tenant.return_value = credential
+
+    resp = await client.put(
+        f"/api/v1/projects/{project.id}",
+        json={"git_auth_method": "token", "credential_id": str(credential.id)},
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 422
+    mock_project_repo.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_project_rejects_token_auth_for_ssh_url(client, mock_project_repo, tenant_id):
+    project = _make_orm_project(
+        tenant_id=tenant_id,
+        git_url="git@github.com:example/repo.git",
+    )
+    mock_project_repo.get_for_tenant.return_value = project
+
+    resp = await client.put(
+        f"/api/v1/projects/{project.id}",
+        json={"git_auth_method": "token"},
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 422
+    mock_project_repo.update.assert_not_called()
 
 
 @pytest.mark.asyncio

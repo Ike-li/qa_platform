@@ -71,12 +71,16 @@ function TrendChart({ data }: { data: TrendDataPoint[] }) {
             borderRadius: 8,
             fontSize: 12,
           }}
-          labelFormatter={(label: string) => label}
-          formatter={(value: number, name: string) => {
-            if (name === "pass_rate_pct") return [`${value}%`, t("analytics.passRate")];
-            if (name === "passed_runs") return [value, t("analytics.passed")];
-            if (name === "failed_runs") return [value, t("analytics.failed")];
-            return [value, name];
+          labelFormatter={(label) => String(label ?? "")}
+          formatter={(value, name) => {
+            const metricName = String(name);
+            const metricValue = typeof value === "number" || typeof value === "string" ? String(value) : "-";
+            if (metricName === "pass_rate_pct") {
+              return [metricValue === "-" ? metricValue : `${metricValue}%`, t("analytics.passRate")];
+            }
+            if (metricName === "passed_runs") return [metricValue, t("analytics.passed")];
+            if (metricName === "failed_runs") return [metricValue, t("analytics.failed")];
+            return [metricValue, metricName];
           }}
         />
         <Legend

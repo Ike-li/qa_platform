@@ -40,6 +40,12 @@ class RunRepository(BaseRepository[Run]):
         RunStatusEnum.RUNNING,
         RunStatusEnum.COLLECTING,
     })
+    _DEDUP_ACTIVE_STATUSES = frozenset({
+        RunStatusEnum.QUEUED,
+        RunStatusEnum.PREPARING,
+        RunStatusEnum.RUNNING,
+        RunStatusEnum.COLLECTING,
+    })
 
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
@@ -84,6 +90,28 @@ class RunRepository(BaseRepository[Run]):
         stmt = select(Run).where(
             Run.arq_job_id == arq_job_id,
             Run.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_active_by_dedup(
+        self,
+        *,
+        project_id: UUID,
+        pipeline_id: UUID,
+        dedup_key: str,
+    ) -> Run | None:
+        stmt = (
+            select(Run)
+            .where(
+                Run.project_id == project_id,
+                Run.pipeline_id == pipeline_id,
+                Run.dedup_key == dedup_key,
+                Run.status.in_(self._DEDUP_ACTIVE_STATUSES),
+                Run.deleted_at.is_(None),
+            )
+            .order_by(Run.created_at)
+            .limit(1)
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
@@ -496,11 +524,11 @@ class RunRepository(BaseRepository[Run]):
         await self.session.flush()
 
     async def delete_terminal_older_than(self, *, cutoff: datetime) -> int:
-        """Hard-delete already soft-deleted done/failed runs (and cascade) older than cutoff.
+        """Hard-delete terminal runs (and cascade) older than cutoff.
 
-        Only records where ``deleted_at IS NOT NULL`` (already soft-deleted) AND
-        status is DONE or FAILED AND finished_at < cutoff are eligible.
-        Returns deleted count.  The caller is responsible for committing the
+        Any run in a terminal state with ``finished_at < cutoff`` is eligible,
+        whether or not it was previously soft-deleted. Active or recently
+        finished runs are kept. The caller is responsible for committing the
         session.
         """
         from sqlalchemy import delete as sa_delete
@@ -508,8 +536,12 @@ class RunRepository(BaseRepository[Run]):
         stmt = (
             sa_delete(Run)
             .where(
-                Run.deleted_at.isnot(None),
-                Run.status.in_([RunStatusEnum.DONE, RunStatusEnum.FAILED]),
+                Run.status.in_([
+                    RunStatusEnum.DONE,
+                    RunStatusEnum.FAILED,
+                    RunStatusEnum.CANCELLED,
+                    RunStatusEnum.TIMEOUT,
+                ]),
                 Run.finished_at < cutoff,
             )
         )

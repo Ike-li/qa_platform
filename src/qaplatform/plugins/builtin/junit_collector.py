@@ -31,8 +31,11 @@ class JUnitCollector:
         self,
         run_id: UUID,
         working_dir: Path,
+        config: dict[str, Any] | None = None,
     ) -> list[TestResultData]:
-        xml_path = working_dir / "results" / "junit.xml"
+        xml_path = self._resolve_xml_path(working_dir, config or {})
+        if xml_path is None:
+            return []
         if not xml_path.exists():
             log.warning("JUnit XML not found at %s", xml_path)
             return []
@@ -71,6 +74,26 @@ class JUnitCollector:
     # --------------------------------------------------------------------- #
     # private helpers
     # --------------------------------------------------------------------- #
+
+    def _resolve_xml_path(
+        self,
+        working_dir: Path,
+        config: dict[str, Any],
+    ) -> Path | None:
+        raw_path = config.get("path") or config.get("junit_xml") or "results/junit.xml"
+        path = Path(str(raw_path))
+        if path.is_absolute():
+            log.warning("Ignoring absolute JUnit XML path: %s", path)
+            return None
+
+        root = working_dir.resolve()
+        candidate = (working_dir / path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            log.warning("Ignoring JUnit XML path outside working dir: %s", path)
+            return None
+        return candidate
 
     def _parse_junit_xml(self, xml_path: Path) -> list[TestResultData]:
         """Parse a JUnit XML file into a list of TestResultData."""
