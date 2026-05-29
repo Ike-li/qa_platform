@@ -98,6 +98,21 @@ class TestRunSetupContainerised:
         finally:
             working_dir.rmdir()
 
+    def test_workspace_dir_can_use_shared_docker_socket_root(self, tmp_path, monkeypatch):
+        run_id = str(uuid4())
+        shared_root = tmp_path / "qap-workspaces"
+        monkeypatch.setenv("QAP_RUN_WORKSPACE_DIR", str(shared_root))
+
+        working_dir = RunExecutor._create_workspace_dir(run_id)
+
+        try:
+            assert working_dir.parent == shared_root
+            assert working_dir.name.startswith(f"qap-{run_id[:8]}-")
+            assert stat.S_IMODE(shared_root.stat().st_mode) == 0o777
+            assert stat.S_IMODE(working_dir.stat().st_mode) == 0o777
+        finally:
+            working_dir.rmdir()
+
     @pytest.fixture
     def setup_pipeline(self):
         from qaplatform.engine.executor import PipelineConfig
