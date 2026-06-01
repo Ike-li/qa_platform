@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # 冒烟测试运行器 — 依次执行所有 smoke 脚本
 # 用法: ./scripts/smoke/run-all.sh
-# 环境变量: BASE_URL, BROWSER_SESSION, RESULTS_DIR
+# 环境变量: BASE_URL, BROWSER_SESSION, RESULTS_DIR, SMOKE_ALLOW_SKIPS,
+#           SMOKE_ADMIN_USERNAME, SMOKE_ADMIN_PASSWORD, E2E_ADMIN_PASSWORD
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/smoke/lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
 init_results_dir
@@ -35,7 +37,8 @@ for script in "${SCRIPTS[@]}"; do
 
   echo ""
   echo ">>> 执行 ${script}"
-  if bash "${script_path}"; then
+  script_results_dir="${RESULTS_DIR}/${script%.sh}"
+  if RESULTS_DIR="${script_results_dir}" bash "${script_path}"; then
     log_step "${script}" "pass"
   else
     log_step "${script}" "fail" "退出码: $?"
@@ -45,11 +48,16 @@ done
 
 # ── 生成报告 ──────────────────────────────────────────────
 
-generate_report
-report_exit=$?
+if generate_report; then
+  report_exit=0
+else
+  report_exit=$?
+fi
 
 echo ""
 echo "冒烟测试完成。产物目录:"
 echo "  ${RESULTS_DIR}"
+echo "子脚本产物目录:"
+echo "  ${RESULTS_DIR}/<script-name>/"
 
 exit ${report_exit}

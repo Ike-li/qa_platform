@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,7 @@ _ph = PasswordHasher(
     hash_len=32,
     type=argon2.low_level.Type.ID,
 )
+_API_TOKEN_PATTERN = re.compile(r"^qap_([0-9a-f]{32})_([0-9a-f]{64})$")
 
 
 class TokenService:
@@ -52,12 +54,10 @@ class TokenService:
     @staticmethod
     def parse_bearer_token(raw: str) -> tuple[str, str] | None:
         """Parse a qap_ bearer token. Return (token_id, secret) or None."""
-        if not raw.startswith("qap_"):
+        match = _API_TOKEN_PATTERN.fullmatch(raw)
+        if match is None:
             return None
-        parts = raw.split("_", maxsplit=2)
-        if len(parts) != 3:
-            return None
-        return parts[1], parts[2]
+        return match.group(1), match.group(2)
 
     async def create_api_token(
         self,

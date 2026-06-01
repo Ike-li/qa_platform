@@ -91,6 +91,7 @@ export function LogViewer({ runId, archivedEnabled = false }: { runId: string; a
     return sourceLogs.filter(log => log.message.toLowerCase().includes(lowerSearch));
   }, [sourceLogs, search]);
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual exposes imperative methods used directly below.
   const virtualizer = useVirtualizer({
     count: filteredLogs.length,
     getScrollElement: () => scrollRef.current,

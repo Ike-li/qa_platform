@@ -330,10 +330,21 @@ async def test_cancel_at_stage_boundary_skips_next_stage(
         assert elapsed < 10.0, f"stage-boundary cancel took {elapsed:.2f}s"
         # Stage 2 must NOT have been launched — that is the whole point
         # of the boundary check.
-        assert create_execution_spy.await_count == 1, (
-            f"stage-2 started despite cancel "
-            f"(create_execution called {create_execution_spy.await_count} times)"
-        )
+        execution_specs = [
+            call.args[0] for call in create_execution_spy.await_args_list
+        ]
+        assert [
+            {"labels": spec.labels, "command": spec.command}
+            for spec in execution_specs
+        ] == [
+            {
+                "labels": {
+                    "run_id": str(run_id),
+                    "stage": "stage-1",
+                },
+                "command": ["sh", "-c", "sleep 1"],
+            }
+        ]
 
         async with factory() as observer:
             row = await observer.get(RunORM, run_id)
@@ -422,10 +433,7 @@ async def test_cancel_recovered_when_published_before_subscribe(
         elapsed = time.monotonic() - started
         assert elapsed < 10.0, f"pre-subscribe cancel recovery took {elapsed:.2f}s"
         # Boundary check must fire BEFORE the first container launch.
-        assert create_execution_spy.await_count == 0, (
-            f"stage container launched despite pre-subscribe cancel "
-            f"({create_execution_spy.await_count} calls)"
-        )
+        create_execution_spy.assert_not_awaited()
 
         async with factory() as observer:
             row = await observer.get(RunORM, run_id)
@@ -511,11 +519,12 @@ async def test_repeated_http_cancel_is_idempotent(
             first_cancel_requested_at = row.cancel_requested_at
             assert first_cancel_requested_at is not None
 
-        # Second cancel: tolerated outcomes are 200 (idempotent OK) or
-        # 409 (already cancelled). 4xx > 409 / any 5xx is a regression.
+        # Second cancel: once the first request writes the terminal
+        # CANCELLED state, the API contract is an explicit conflict.
+        # Returning 200 here would hide duplicate event/audit side effects.
         second = await integration_client.post(f"/api/v1/runs/{run_id}/cancel")
-        assert second.status_code in {200, 409}, second.text
-        assert second.status_code < 500, second.text
+        assert second.status_code == 409, second.text
+        assert second.json() == {"detail": "Run already in terminal status: cancelled"}
 
         async with factory() as observer:
             row = await observer.get(RunORM, run_id)

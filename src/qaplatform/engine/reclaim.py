@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from qaplatform.engine.events import publish_status_event
-from qaplatform.worker._redact import redact_url_userinfo
+from qaplatform.engine.redact import redact_url_userinfo
 
 log = logging.getLogger(__name__)
 

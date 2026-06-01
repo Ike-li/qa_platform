@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import type { FullConfig } from "@playwright/test";
+import { applyQapE2eEnv, qapWorkerEnv } from "./qap-env";
 
 const COMPOSE_SERVICES = ["postgres", "redis", "minio"] as const;
 const PYTHON = ".venv/bin/python";
@@ -84,27 +85,6 @@ async function ensureInfrastructure() {
   compose(["run", "--rm", "minio-init"]);
 }
 
-function qapWorkerEnv(): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    PYTHONPATH: ["src", process.env.PYTHONPATH].filter(Boolean).join(":"),
-    QAP_WORKER_QUEUE: "queue:medium",
-    QAP_WORKER_MAX_JOBS: process.env.QAP_WORKER_MAX_JOBS || "1",
-    QAP_DATABASE_URL:
-      process.env.QAP_DATABASE_URL ||
-      "postgresql+asyncpg://qaplatform:qaplatform@localhost:5432/qaplatform",
-    QAP_REDIS_URL: process.env.QAP_REDIS_URL || "redis://localhost:6379/0",
-    QAP_S3_ENDPOINT: process.env.QAP_S3_ENDPOINT || "http://localhost:9000",
-    QAP_S3_ACCESS_KEY: process.env.QAP_S3_ACCESS_KEY || "minioadmin",
-    QAP_S3_SECRET_KEY: process.env.QAP_S3_SECRET_KEY || "minioadmin",
-    QAP_S3_BUCKET: process.env.QAP_S3_BUCKET || "qa-platform",
-    QAP_JWT_SECRET: process.env.QAP_JWT_SECRET || "ci-test-jwt-secret-not-for-production-use",
-    QAP_ENCRYPTION_KEY:
-      process.env.QAP_ENCRYPTION_KEY ||
-      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  };
-}
-
 async function startWorkerIfRequested() {
   if (process.env.QAP_E2E_WORKER !== "1") {
     return;
@@ -134,11 +114,12 @@ async function startWorkerIfRequested() {
 }
 
 export default async function globalSetup(_config: FullConfig) {
+  const env = applyQapE2eEnv();
   await ensureInfrastructure();
 
-  run(PYTHON, ["-m", "alembic", "upgrade", "head"]);
+  run(PYTHON, ["-m", "alembic", "upgrade", "head"], env);
   run(PYTHON, ["scripts/seed_admin.py"], {
-    ...process.env,
+    ...env,
     ADMIN_USERNAME: "admin",
     ADMIN_PASSWORD: process.env.E2E_ADMIN_PASSWORD || "admin123",
     ADMIN_EMAIL: "admin@qaplatform.local",

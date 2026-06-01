@@ -3,6 +3,7 @@ import api from "../lib/api";
 import type {
   Run,
   RunStatus,
+  BackendRunStatus,
   RunResponse,
   PaginatedResponse,
   TestResult,
@@ -22,7 +23,12 @@ const RUN_STATUSES: readonly RunStatus[] = [
   "timed_out",
   "unknown",
 ];
-const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ["passed", "failed", "cancelled", "timed_out"];
+const BACKEND_TERMINAL_RUN_STATUSES: readonly BackendRunStatus[] = [
+  "done",
+  "failed",
+  "cancelled",
+  "timeout",
+];
 
 function isRunStatus(value: string): value is RunStatus {
   return (RUN_STATUSES as readonly string[]).includes(value);
@@ -30,12 +36,21 @@ function isRunStatus(value: string): value is RunStatus {
 
 function normalizeRun(run: RunResponse): Run {
   const summary = run.summary ?? {};
+  const passed = summary.passed ?? 0;
+  const failed = summary.failed ?? 0;
+  const skipped = summary.skipped ?? 0;
+  const error = summary.error ?? 0;
+  const total = summary.total ?? passed + failed + skipped + error;
   const backendStatus = String(run.status);
   let rawStatus: string;
   if (backendStatus === "done") {
-    const failed = summary.failed ?? 0;
-    const error = summary.error ?? 0;
-    rawStatus = failed > 0 || error > 0 ? "failed" : "passed";
+    if (failed > 0 || error > 0) {
+      rawStatus = "failed";
+    } else if (total > 0) {
+      rawStatus = "passed";
+    } else {
+      rawStatus = "unknown";
+    }
   } else if (backendStatus === "timeout") {
     rawStatus = "timed_out";
   } else {
@@ -50,6 +65,7 @@ function normalizeRun(run: RunResponse): Run {
     pipeline_name: run.pipeline_name || `Pipeline ${run.pipeline_id.slice(0, 8)}`,
     environment_id: run.environment_id,
     status,
+    is_terminal: BACKEND_TERMINAL_RUN_STATUSES.includes(run.status),
     branch: run.git_ref || "-",
     git_sha: run.git_sha,
     triggered_by: run.triggered_by,
@@ -57,10 +73,10 @@ function normalizeRun(run: RunResponse): Run {
     started_at: run.started_at,
     finished_at: run.finished_at,
     duration_seconds: run.duration_ms == null ? null : run.duration_ms / 1000,
-    total_tests: summary.total ?? 0,
-    passed_tests: summary.passed ?? 0,
-    failed_tests: summary.failed ?? 0,
-    skipped_tests: summary.skipped ?? 0,
+    total_tests: total,
+    passed_tests: passed,
+    failed_tests: failed,
+    skipped_tests: skipped,
     error_message: run.error_message,
     priority: run.priority ?? 1,
     created_at: run.created_at,
@@ -89,8 +105,7 @@ export function useRun(id: string) {
     },
     enabled: !!id,
     refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      return status && TERMINAL_RUN_STATUSES.includes(status) ? false : 5000;
+      return query.state.data?.is_terminal ? false : 5000;
     },
   });
 }

@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+
+
+def _validate_non_blank_text(field_name: str, value: str | None) -> str | None:
+    if value is not None and value.strip() == "":
+        raise ValueError(f"{field_name} must not be blank")
+    return value
+
+
+def _validate_non_blank_text_list(field_name: str, values: list[str]) -> list[str]:
+    for index, value in enumerate(values):
+        if value.strip() == "":
+            raise ValueError(f"{field_name}[{index}] must not be blank")
+    return values
 
 
 class SilentWindow(BaseModel):
@@ -75,36 +88,61 @@ class StageDefinition(BaseModel):
     continue_on_error: bool = False
     phase: Literal["prepare", "execute", "collect", "notify"] | None = None
 
+    @field_validator("name", "plugin")
+    @classmethod
+    def _validate_text(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_non_blank_text(f"stage {info.field_name}", value)
+
+
+SelectorPathValue = Annotated[str, Field(min_length=1, max_length=1000)]
+SelectorTagValue = Annotated[str, Field(min_length=1, max_length=100)]
+RetryReasonValue = Annotated[str, Field(min_length=1, max_length=100)]
+
 
 class TestSelector(BaseModel):
     model_config = ConfigDict(frozen=True)
     __test__ = False
 
-    include_paths: list[str] = Field(default_factory=list)
-    exclude_paths: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
+    include_paths: list[SelectorPathValue] = Field(default_factory=list, max_length=100)
+    exclude_paths: list[SelectorPathValue] = Field(default_factory=list, max_length=100)
+    tags: list[SelectorTagValue] = Field(default_factory=list, max_length=100)
     expression: str | None = None
     regex: str | None = None
     on_empty: Literal["fail", "skip", "warn"] = "fail"
+
+    @field_validator("include_paths", "exclude_paths", "tags")
+    @classmethod
+    def _validate_text_list(cls, values: list[str], info: ValidationInfo) -> list[str]:
+        return _validate_non_blank_text_list(info.field_name, values)
 
 
 class RetryPolicy(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     max_attempts: int = 1
-    retry_on: list[str] = Field(default_factory=list)
+    retry_on: list[RetryReasonValue] = Field(default_factory=list, max_length=20)
     backoff_seconds: int = 0
     scope: Literal["pipeline", "stage"] = "pipeline"
+
+    @field_validator("retry_on")
+    @classmethod
+    def _validate_retry_on(cls, values: list[str]) -> list[str]:
+        return _validate_non_blank_text_list("retry_on", values)
 
 
 class TriggerConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    type: str = "manual"
-    dedup_window_seconds: int | None = None
+    type: str = Field("manual", min_length=1, max_length=50)
+    dedup_window_seconds: int | None = Field(None, ge=0)
     source: dict = Field(default_factory=dict)
     conditions: dict = Field(default_factory=dict)
     target: dict = Field(default_factory=dict)
+
+    @field_validator("type")
+    @classmethod
+    def _validate_type(cls, value: str) -> str:
+        return _validate_non_blank_text("trigger_config type", value)
 
 
 class CollectorDefinition(BaseModel):
@@ -113,6 +151,11 @@ class CollectorDefinition(BaseModel):
     plugin: str = "junit"
     config: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
+
+    @field_validator("plugin")
+    @classmethod
+    def _validate_plugin(cls, value: str) -> str:
+        return _validate_non_blank_text("collector plugin", value)
 
 
 class Pipeline(BaseModel):
@@ -132,6 +175,11 @@ class Pipeline(BaseModel):
     enabled: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        return _validate_non_blank_text("pipeline name", value)
 
 
 # Re-export for convenience (avoids circular imports downstream)

@@ -2,6 +2,7 @@ import { useForm, type SubmitHandler } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
+import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useTriggerRun } from "../../hooks/use-runs";
@@ -80,7 +81,17 @@ export function TriggerRunModal({
     },
   });
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- React Hook Form watch drives local conditional UI state.
   const watchPipelineId = watch("pipeline_id");
+  const selectedPipelineId = watchPipelineId ?? defaultPipelineId ?? "";
+  const selectedEnvironmentId = watch("environment_id") ?? DEFAULT_ENVIRONMENT;
+  const selectedPriority = String(watch("priority") ?? 1);
+
+  useEffect(() => {
+    if (defaultPipelineId) {
+      setValue("pipeline_id", defaultPipelineId, { shouldValidate: true });
+    }
+  }, [defaultPipelineId, setValue]);
 
   const onSubmit: SubmitHandler<TriggerFormValues> = async (data) => {
     try {
@@ -92,7 +103,7 @@ export function TriggerRunModal({
         priority: data.priority,
       });
       toast.success(t("trigger.toast.success"));
-      reset();
+      reset({ pipeline_id: defaultPipelineId ?? "", priority: 1 });
       onOpenChange(false);
       navigate(`/runs/${run.id}`);
     } catch (error: unknown) {
@@ -113,8 +124,13 @@ export function TriggerRunModal({
           <div className="space-y-2">
             <Label htmlFor="pipeline">{t("trigger.selectPipeline")}</Label>
             <Select 
-              value={watchPipelineId || defaultPipelineId}
-              onValueChange={(value) => setValue("pipeline_id", value)}
+              value={selectedPipelineId}
+              onValueChange={(value) =>
+                setValue("pipeline_id", value, {
+                  shouldDirty: true,
+                  shouldValidate: true,
+                })
+              }
             >
               <SelectTrigger>
                 <SelectValue placeholder={t("trigger.selectPipelinePlaceholder")} />
@@ -137,11 +153,12 @@ export function TriggerRunModal({
           <div className="space-y-2">
             <Label>{t("trigger.selectEnvironment")}</Label>
             <Select
-              value={watch("environment_id") || DEFAULT_ENVIRONMENT}
+              value={selectedEnvironmentId}
               onValueChange={(value) =>
                 setValue(
                   "environment_id",
                   value === DEFAULT_ENVIRONMENT ? undefined : value,
+                  { shouldDirty: true },
                 )
               }
             >
@@ -178,8 +195,10 @@ export function TriggerRunModal({
           <div className="space-y-2">
             <Label>{t("trigger.priority")}</Label>
             <Select
-              value={String(watch("priority") ?? 1)}
-              onValueChange={(value) => setValue("priority", Number(value))}
+              value={selectedPriority}
+              onValueChange={(value) =>
+                setValue("priority", Number(value), { shouldDirty: true })
+              }
             >
               <SelectTrigger>
                 <SelectValue placeholder={t("trigger.priorityPlaceholder")} />

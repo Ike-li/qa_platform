@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -19,6 +21,19 @@ def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
+def _workflow_yaml() -> dict:
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+    assert isinstance(workflow, dict)
+    return workflow
+
+
+def _workflow_on(workflow: dict) -> dict:
+    # PyYAML follows YAML 1.1 and parses the GitHub Actions "on" key as True.
+    value = workflow.get("on", workflow.get(True))
+    assert isinstance(value, dict)
+    return value
+
+
 def _job_block(text: str, job_name: str) -> str:
     match = re.search(
         rf"^  {re.escape(job_name)}:\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)",
@@ -29,32 +44,79 @@ def _job_block(text: str, job_name: str) -> str:
     return match.group(0)
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            line = key_node.start_mark.line + 1
+            raise AssertionError(f"duplicate workflow key at line {line}: {key!r}")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def test_ci_workflow_yaml_has_no_duplicate_mapping_keys():
+    workflow = _workflow_yaml()
+
+    assert isinstance(workflow.get("jobs"), dict)
+    assert set(workflow["jobs"]) == {
+        "lint-and-type-check",
+        "backend-test",
+        "backend-integration-test",
+        "frontend-api-contract",
+        "frontend-build",
+        "e2e-test",
+        "release-gate",
+    }
+
+
 def test_release_candidate_gate_profiles_are_explicit():
+    workflow = _workflow_yaml()
+    workflow_on = _workflow_on(workflow)
+    jobs = workflow["jobs"]
+    backend_integration = jobs["backend-integration-test"]
+    release_gate = jobs["release-gate"]
     text = _workflow_text()
 
-    assert "workflow_dispatch:" in text
-    assert "default: release_candidate" in text
-    for gate in ("pr_like", "nightly", "release_candidate"):
-        assert f"- {gate}" in text
-    assert "schedule:" in text
-
-    assert "backend-integration-test:" in text
-    assert "e2e-test:" in text
-    assert "release-gate:" in text
-    assert "name: Release Candidate Gate" in text
-    assert "if: github.event_name == 'workflow_dispatch' && inputs.gate == 'release_candidate'" in text
-    assert "QAP_PERFORMANCE_GATE_PROFILE" in text
-    assert "github.event_name == 'workflow_dispatch' && inputs.gate || 'nightly'" in text
-
-    for required_job in (
+    gate_input = workflow_on["workflow_dispatch"]["inputs"]["gate"]
+    assert gate_input == {
+        "description": "CI gate profile to run",
+        "required": True,
+        "default": "release_candidate",
+        "type": "choice",
+        "options": ["pr_like", "nightly", "release_candidate"],
+    }
+    assert workflow_on["schedule"] == [{"cron": "0 19 * * *"}]
+    assert release_gate["name"] == "Release Candidate Gate"
+    assert (
+        release_gate["if"]
+        == "github.event_name == 'workflow_dispatch' && inputs.gate == 'release_candidate'"
+    )
+    expected_release_needs = [
         "lint-and-type-check",
         "backend-test",
         "frontend-api-contract",
         "backend-integration-test",
         "frontend-build",
         "e2e-test",
-    ):
-        assert f"- {required_job}" in text
+    ]
+    assert release_gate["needs"] == expected_release_needs
+    assert backend_integration["env"]["QAP_PERFORMANCE_GATE_PROFILE"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.gate || 'nightly' }}"
+    )
+
+    for required_job in expected_release_needs:
+        assert required_job in jobs
     assert "release_candidate_gate=passed" in text
     assert "evidence=frontend-api-contract,required-integration,heavy-docker,external-stack,performance-slo,full-playwright" in text
 
@@ -90,6 +152,20 @@ def test_frontend_api_contract_is_a_release_gate_job():
     assert "pytest -q tests/unit/test_frontend_api_contract.py" in contract_block
     assert "frontend-api-contract-artifacts" in contract_block
     assert "- frontend-api-contract" in release_block
+
+
+def test_backend_integration_collect_minimums_match_current_gate_baselines():
+    integration_block = _job_block(_workflow_text(), "backend-integration-test")
+
+    expected_minimums = {
+        "required-integration-collect.txt": 161,
+        "heavy-docker-integration-collect.txt": 12,
+        "external-stack-integration-collect.txt": 6,
+        "external-stack-performance-collect.txt": 2,
+        "performance-smoke-collect.txt": 31,
+    }
+    for collect_name, minimum in expected_minimums.items():
+        assert f'"{collect_name}": {minimum}' in integration_block
 
 
 def test_ci_playwright_config_emits_actual_run_json_report():
@@ -145,6 +221,7 @@ def test_release_candidate_backend_gate_runs_real_stack_and_slo_validation():
     text = _workflow_text()
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
     docker_compose = DOCKER_COMPOSE.read_text(encoding="utf-8")
+    compose = yaml.safe_load(docker_compose)
 
     for step in (
         "Run heavy docker integration tests (nightly/release candidate)",
@@ -165,11 +242,40 @@ def test_release_candidate_backend_gate_runs_real_stack_and_slo_validation():
     assert "scripts/report_integration_skips.py" in text
     assert "scripts/validate_backend_integration_artifacts.py" in text
     assert "QAP_DOCKER_SOCK_GROUP_ID=$(stat -c '%g' /var/run/docker.sock)" in text
-    assert docker_compose.count("- /var/run/docker.sock:/var/run/docker.sock") >= 3
-    assert docker_compose.count('${QAP_DOCKER_SOCK_GROUP_ID:-0}') >= 3
     assert "QAP_RUN_WORKSPACE_DIR=$PWD/.qap-workspaces" in text
-    assert docker_compose.count("QAP_RUN_WORKSPACE_DIR") >= 6
-    assert docker_compose.count("/tmp/qap-workspaces") >= 6
+    assert isinstance(compose, dict)
+    services = compose["services"]
+    worker_queues = {
+        "worker": "queue:medium",
+        "worker-high": "queue:high",
+        "worker-low": "queue:low",
+    }
+    workspace_mount = (
+        "${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}:"
+        "${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}"
+    )
+    for service_name, queue_name in worker_queues.items():
+        service = services[service_name]
+        assert service["environment"]["QAP_WORKER_QUEUE"] == queue_name
+        assert service["environment"]["QAP_RUN_WORKSPACE_DIR"] == (
+            "${QAP_RUN_WORKSPACE_DIR:-/tmp/qap-workspaces}"
+        )
+        assert service["volumes"] == [
+            "/var/run/docker.sock:/var/run/docker.sock",
+            workspace_mount,
+        ]
+        assert service["group_add"] == ["${QAP_DOCKER_SOCK_GROUP_ID:-0}"]
+
+    for service_name, service in services.items():
+        if service_name in worker_queues:
+            continue
+        assert "/var/run/docker.sock:/var/run/docker.sock" not in service.get(
+            "volumes",
+            [],
+        )
+        assert workspace_mount not in service.get("volumes", [])
+        assert "QAP_RUN_WORKSPACE_DIR" not in service.get("environment", {})
+        assert service.get("group_add", []) != ["${QAP_DOCKER_SOCK_GROUP_ID:-0}"]
     assert "python -m alembic upgrade head" in text
     assert "python scripts/seed_admin.py" in text
     assert "COPY alembic.ini ." in dockerfile
@@ -193,7 +299,12 @@ def test_release_candidate_e2e_gate_runs_all_specs_with_evidence_validation():
     spec_files = sorted(path.name for path in E2E_DIR.glob("*.spec.ts"))
     real_run_spec = (E2E_DIR / "real-run-trigger.spec.ts").read_text(encoding="utf-8")
 
-    assert {"auth-flow.spec.ts", "real-login-flow.spec.ts", "real-run-trigger.spec.ts", "special-regressions.spec.ts"} <= set(spec_files)
+    assert spec_files == [
+        "auth-flow.spec.ts",
+        "real-login-flow.spec.ts",
+        "real-run-trigger.spec.ts",
+        "special-regressions.spec.ts",
+    ]
     assert "find tests/e2e -maxdepth 1 -name '*.spec.ts' -print | sort > artifacts/e2e/e2e-specs.txt" in text
     assert "export QAP_E2E_WORKER=1" in text
     assert "export QAP_WORKER_MAX_JOBS=1" in text
@@ -251,7 +362,15 @@ def test_performance_slo_manifest_matches_ci_threshold_env():
     threshold_envs = {item["threshold_env"] for item in slos}
     baseline_by_name = {item["name"]: item for item in baseline["slos"]}
 
-    required_slos = {
+    expected_slos = {
+        "external stack worker first live log",
+        "external stack worker terminal",
+        "external stack worker archived logs ready",
+        "external stack worker artifacts ready",
+        "external stack worker artifact download",
+        "external stack worker end-to-end",
+        "external stack worker 10 containers ready",
+        "external stack worker 10 containers terminal",
         "read run API",
         "write run API",
         "trigger enqueue SLO",
@@ -260,17 +379,31 @@ def test_performance_slo_manifest_matches_ci_threshold_env():
         "dequeue waiting runs SLO",
         "dequeue waiting priority preemption SLO",
         "cancel run API",
+        "log stream write",
+        "SSE ticket create API",
         "realtime log SSE delivery",
         "realtime status event SSE delivery",
+        "archived log replay API",
+        "archived log large-page replay API",
+        "archived log missing-object API",
+        "archived log storage-unavailable API",
+        "archived log denied no-S3-read API",
         "artifact list API",
+        "artifact large collection page API",
+        "artifact list denied no-metadata API",
         "artifact download URL API",
+        "artifact download storage-unavailable API",
+        "artifact download URL burst API",
+        "artifact download denied no-presign API",
         "audit events list API",
+        "audit events large filtered page API token",
+        "audit events denied no-self-audit API",
+        "audit events API token denied no-self-audit API",
+        "run.read empty-scope denied log/artifact no-S3 API",
+        "real API token log/artifact/audit concurrent read paths",
         "execution summary generation",
-        "external stack worker end-to-end",
-        "external stack worker 10 containers ready",
-        "external stack worker 10 containers terminal",
     }
-    assert required_slos <= names
+    assert names == expected_slos
 
     assert len(names) == len(slos), "SLO names must be unique"
     assert len(threshold_envs) == len(slos), "threshold env vars must be unique"
@@ -285,4 +418,4 @@ def test_performance_slo_manifest_matches_ci_threshold_env():
         assert baseline_item["max_regression_ratio"] >= 1
 
     workflow_envs = set(re.findall(r"^      (PERF_[A-Z0-9_]+):", text, re.MULTILINE))
-    assert threshold_envs <= workflow_envs
+    assert threshold_envs == workflow_envs

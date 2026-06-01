@@ -38,20 +38,49 @@ async def _hit(client, method: str, path: str, **kw) -> tuple[int, dict]:
     return resp.status_code, body
 
 
-def _detail(body: dict) -> str | None:
-    """Extract the error detail string from a response body."""
-    return body.get("detail") or body.get("error", {}).get("message")
+def _assert_same_404_result(
+    status_l: int,
+    body_l: dict,
+    status_r: int,
+    body_r: dict,
+    *,
+    expected_detail: str,
+    forbidden_values=(),
+) -> None:
+    expected_body = {
+        "error": {
+            "code": "NOT_FOUND",
+            "message": expected_detail,
+            "details": [],
+        }
+    }
+    assert status_l == status_r == 404
+    assert body_l == body_r == expected_body
+    serialized = repr(body_l) + repr(body_r)
+    for value in forbidden_values:
+        assert str(value) not in serialized
 
 
-async def _assert_same_404(client, method: str, left_path: str, right_path: str, **kw):
+async def _assert_same_404(
+    client,
+    method: str,
+    left_path: str,
+    right_path: str,
+    *,
+    expected_detail: str = "Project not found",
+    forbidden_values=(),
+    **kw,
+):
     status_l, body_l = await _hit(client, method, left_path, **kw)
     status_r, body_r = await _hit(client, method, right_path, **kw)
-
-    assert status_l == status_r == 404
-    detail_l = _detail(body_l)
-    detail_r = _detail(body_r)
-    assert detail_l == detail_r
-    assert detail_l is not None and detail_l != ""
+    _assert_same_404_result(
+        status_l,
+        body_l,
+        status_r,
+        body_r,
+        expected_detail=expected_detail,
+        forbidden_values=forbidden_values,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -73,11 +102,14 @@ async def test_project_get_cross_tenant_returns_same_404(
         status_b, body_b = await _hit(client, "GET", f"/api/v1/projects/{proj_b_id}")
         status_r, body_r = await _hit(client, "GET", f"/api/v1/projects/{random_id}")
 
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Project not found",
+        forbidden_values=[proj_b_id, random_id],
+    )
 
 
 @pytest.mark.asyncio
@@ -99,17 +131,14 @@ async def test_project_put_cross_tenant_returns_same_404(
             client, "PUT", f"/api/v1/projects/{random_id}", json=body_payload
         )
 
-    if status_b == 403:
-        pytest.xfail(
-            reason="P0-4 follow-up: RBAC runs before tenant check, leaks existence"
-            f" (got 403 for tenant_B project, 404 for random — detail_b={_detail(body_b)!r})"
-        )
-
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Project not found",
+        forbidden_values=[proj_b_id, random_id],
+    )
 
 
 @pytest.mark.asyncio
@@ -126,17 +155,14 @@ async def test_project_delete_cross_tenant_returns_same_404(
         status_b, body_b = await _hit(client, "DELETE", f"/api/v1/projects/{proj_b_id}")
         status_r, body_r = await _hit(client, "DELETE", f"/api/v1/projects/{random_id}")
 
-    if status_b == 403:
-        pytest.xfail(
-            reason="P0-4 follow-up: RBAC runs before tenant check, leaks existence"
-            f" (got 403 for tenant_B project, 404 for random — detail_b={_detail(body_b)!r})"
-        )
-
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Project not found",
+        forbidden_values=[proj_b_id, random_id],
+    )
 
 
 @pytest.mark.asyncio
@@ -159,11 +185,14 @@ async def test_project_environment_get_cross_tenant_returns_same_404(
             client, "GET", f"/api/v1/projects/{random_proj_id}/environments/{random_env_id}"
         )
 
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Project not found",
+        forbidden_values=[proj_b_id, env_b_id, random_proj_id, random_env_id],
+    )
 
 
 @pytest.mark.asyncio
@@ -184,17 +213,14 @@ async def test_project_credentials_list_cross_tenant_returns_same_404(
             client, "GET", f"/api/v1/projects/{random_id}/credentials"
         )
 
-    if status_b == 403:
-        pytest.xfail(
-            reason="P0-4 follow-up: RBAC runs before tenant check, leaks existence"
-            f" (got 403 for tenant_B project, 404 for random — detail_b={_detail(body_b)!r})"
-        )
-
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Project not found",
+        forbidden_values=[proj_b_id, random_id],
+    )
 
 
 @pytest.mark.asyncio
@@ -227,6 +253,7 @@ async def test_project_scoped_routes_member_viewer_cross_tenant_return_same_404(
         ),
     ]
 
+    checked = 0
     for role in ("member", "viewer"):
         async with integration_client_as(user_a.id, tenant_a.id, role=role) as client:
             for method, tenant_b_path, random_path, kwargs in route_matrix:
@@ -235,8 +262,12 @@ async def test_project_scoped_routes_member_viewer_cross_tenant_return_same_404(
                     method,
                     tenant_b_path,
                     random_path,
+                    forbidden_values=[proj_b_id],
                     **kwargs,
                 )
+                checked += 1
+
+    assert checked == len(route_matrix) * 2
 
 
 @pytest.mark.asyncio
@@ -250,6 +281,7 @@ async def test_project_scoped_routes_member_viewer_soft_deleted_return_same_404(
     project.deleted_at = datetime.now(timezone.utc)
     await integration_db_session.commit()
 
+    checked = 0
     for role in ("member", "viewer"):
         async with integration_client_as(user.id, tenant.id, role=role) as client:
             await _assert_same_404(
@@ -257,7 +289,11 @@ async def test_project_scoped_routes_member_viewer_soft_deleted_return_same_404(
                 "GET",
                 f"/api/v1/projects/{project.id}/credentials",
                 f"/api/v1/projects/{uuid.uuid4()}/credentials",
+                forbidden_values=[project.id],
             )
+            checked += 1
+
+    assert checked == 2
 
 
 @pytest.mark.asyncio
@@ -282,13 +318,14 @@ async def test_trigger_run_cross_tenant_pipeline_returns_same_404(
             client, "POST", "/api/v1/runs", json={"pipeline_id": str(random_id)}
         )
 
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r, (
-        f"Oracle leak: tenant_B pipeline → {detail_b!r}, random → {detail_r!r}"
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Pipeline not found",
+        forbidden_values=[pipeline_b_id, random_id],
     )
-    assert detail_b is not None and detail_b != ""
 
 
 @pytest.mark.asyncio
@@ -305,11 +342,14 @@ async def test_run_get_cross_tenant_returns_same_404(
         status_b, body_b = await _hit(client, "GET", f"/api/v1/runs/{run_b_id}")
         status_r, body_r = await _hit(client, "GET", f"/api/v1/runs/{random_id}")
 
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Run not found",
+        forbidden_values=[run_b_id, random_id],
+    )
 
 
 @pytest.mark.asyncio
@@ -326,11 +366,14 @@ async def test_run_cancel_cross_tenant_returns_same_404(
         status_b, body_b = await _hit(client, "POST", f"/api/v1/runs/{run_b_id}/cancel")
         status_r, body_r = await _hit(client, "POST", f"/api/v1/runs/{random_id}/cancel")
 
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Run not found",
+        forbidden_values=[run_b_id, random_id],
+    )
 
 
 @pytest.mark.asyncio
@@ -347,11 +390,14 @@ async def test_run_results_cross_tenant_returns_same_404(
         status_b, body_b = await _hit(client, "GET", f"/api/v1/runs/{run_b_id}/results")
         status_r, body_r = await _hit(client, "GET", f"/api/v1/runs/{random_id}/results")
 
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Run not found",
+        forbidden_values=[run_b_id, random_id],
+    )
 
 
 @pytest.mark.asyncio
@@ -368,11 +414,14 @@ async def test_run_artifacts_cross_tenant_returns_same_404(
         status_b, body_b = await _hit(client, "GET", f"/api/v1/runs/{run_b_id}/artifacts")
         status_r, body_r = await _hit(client, "GET", f"/api/v1/runs/{random_id}/artifacts")
 
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Run not found",
+        forbidden_values=[run_b_id, random_id],
+    )
 
 
 @pytest.mark.asyncio
@@ -397,11 +446,14 @@ async def test_archived_logs_cross_tenant_returns_same_404(
             f"/api/v1/runs/{random_id}/logs/archive",
         )
 
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Run not found",
+        forbidden_values=[run_b_id, random_id],
+    )
 
 
 @pytest.mark.asyncio
@@ -422,8 +474,11 @@ async def test_artifact_download_cross_tenant_returns_same_404(
             client, "GET", f"/api/v1/artifacts/{random_id}/download"
         )
 
-    assert status_b == status_r == 404
-    detail_b = _detail(body_b)
-    detail_r = _detail(body_r)
-    assert detail_b == detail_r
-    assert detail_b is not None and detail_b != ""
+    _assert_same_404_result(
+        status_b,
+        body_b,
+        status_r,
+        body_r,
+        expected_detail="Artifact not found",
+        forbidden_values=[artifact_b_id, random_id],
+    )

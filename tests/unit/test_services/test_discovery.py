@@ -1,11 +1,25 @@
 """Unit tests for DiscoveryService."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
 
 from qaplatform.domain.models.project import TestSelector
 from qaplatform.domain.services.discovery import DiscoveryService
+
+
+def _validation_error_projection(errors) -> list[dict]:
+    return [
+        {
+            "type": error["type"],
+            "loc": error["loc"],
+            "msg": error["msg"],
+            "input": error.get("input"),
+        }
+        for error in errors
+    ]
 
 
 @pytest.fixture
@@ -48,6 +62,87 @@ class TestIncludePaths:
         selector = TestSelector(include_paths=[])
         result = svc.discover_tests(selector, tmp_path)
         assert result == ["a.py", "b.py"]
+
+
+class TestSelectorValidation:
+    """Selector rules should reject ambiguous or unbounded discovery input."""
+
+    def test_rejects_blank_and_unbounded_selector_rules(self):
+        too_many_include_paths = [f"tests/{index}.py" for index in range(101)]
+        invalid_cases = [
+            (
+                {"include_paths": [""]},
+                {
+                    "type": "string_too_short",
+                    "loc": ("include_paths", 0),
+                    "msg": "String should have at least 1 character",
+                    "input": "",
+                },
+            ),
+            (
+                {"include_paths": ["   "]},
+                {
+                    "type": "value_error",
+                    "loc": ("include_paths",),
+                    "msg": "Value error, include_paths[0] must not be blank",
+                    "input": ["   "],
+                },
+            ),
+            (
+                {"exclude_paths": [""]},
+                {
+                    "type": "string_too_short",
+                    "loc": ("exclude_paths", 0),
+                    "msg": "String should have at least 1 character",
+                    "input": "",
+                },
+            ),
+            (
+                {"exclude_paths": ["   "]},
+                {
+                    "type": "value_error",
+                    "loc": ("exclude_paths",),
+                    "msg": "Value error, exclude_paths[0] must not be blank",
+                    "input": ["   "],
+                },
+            ),
+            (
+                {"tags": [""]},
+                {
+                    "type": "string_too_short",
+                    "loc": ("tags", 0),
+                    "msg": "String should have at least 1 character",
+                    "input": "",
+                },
+            ),
+            (
+                {"tags": ["   "]},
+                {
+                    "type": "value_error",
+                    "loc": ("tags",),
+                    "msg": "Value error, tags[0] must not be blank",
+                    "input": ["   "],
+                },
+            ),
+            (
+                {"include_paths": too_many_include_paths},
+                {
+                    "type": "too_long",
+                    "loc": ("include_paths",),
+                    "msg": (
+                        "List should have at most 100 items after validation, not 101"
+                    ),
+                    "input": too_many_include_paths,
+                },
+            ),
+        ]
+
+        for kwargs, expected_error in invalid_cases:
+            with pytest.raises(ValidationError) as exc_info:
+                TestSelector(**kwargs)
+            assert _validation_error_projection(exc_info.value.errors()) == [
+                expected_error
+            ]
 
 
 class TestExcludePaths:

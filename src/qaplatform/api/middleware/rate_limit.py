@@ -26,6 +26,23 @@ _STRICT_PATHS = (
 )
 
 
+def _is_strict_path(path: str) -> bool:
+    return any(strict_path in path for strict_path in _STRICT_PATHS)
+
+
+def _rate_limit_unavailable_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "Service temporarily unavailable",
+            }
+        },
+        headers={"Retry-After": "5"},
+    )
+
+
 def _parse_trusted_nets(cidr_list: list[str]) -> list[_IPNetwork]:
     """Convert a list of CIDR strings to network objects, skipping invalid entries."""
     nets: list[_IPNetwork] = []
@@ -120,8 +137,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        path = request.url.path
+
         # Skip rate limiting for health/docs paths
-        if request.url.path in ["/health", "/ready", "/docs", "/openapi.json"]:
+        if path in ["/health", "/ready", "/docs", "/openapi.json"]:
             return await call_next(request)
 
         # Lazy-load Redis from app state if not injected directly
@@ -132,18 +151,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 redis = getattr(container, "redis_client", None)
 
         if redis is None:
-            # Redis unavailable — allow the request but skip rate limiting
+            if _is_strict_path(path):
+                logger.error("rate_limit_unavailable", path=path)
+                return _rate_limit_unavailable_response()
             return await call_next(request)
 
         ip = _resolve_client_ip(request, self._trusted_nets)
         bucket = _resolve_bucket_key(request, ip)
-        path = request.url.path
 
         # Determine limits (fixed-window, product decision — do not change)
         limit = self.settings.rate_limit_per_minute
         window = self.settings.rate_limit_window_seconds
 
-        if any(p in path for p in _STRICT_PATHS):
+        if _is_strict_path(path):
             limit = self.settings.rate_limit_auth_failure
             window = self.settings.rate_limit_auth_failure_window
 
@@ -190,17 +210,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             logger.error("rate_limit_error", error=str(e))
             # Fail-closed for auth endpoints during Redis outage
-            if any(p in path for p in _STRICT_PATHS):
-                return JSONResponse(
-                    status_code=503,
-                    content={
-                        "error": {
-                            "code": "SERVICE_UNAVAILABLE",
-                            "message": "Service temporarily unavailable",
-                        }
-                    },
-                    headers={"Retry-After": "5"},
-                )
+            if _is_strict_path(path):
+                return _rate_limit_unavailable_response()
             return await call_next(request)
 
         return await call_next(request)

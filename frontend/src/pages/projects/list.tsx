@@ -17,7 +17,15 @@ export default function Projects() {
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const { data, isLoading, isError } = useProjects({ search: deferredSearch });
+  const { data, isLoading, isError, refetch } = useProjects({ search: deferredSearch });
+
+  const handleRetry = () => {
+    if (search.trim() || deferredSearch.trim()) {
+      setSearch("");
+      return;
+    }
+    void refetch();
+  };
 
   return (
     <div className="space-y-6">
@@ -47,7 +55,7 @@ export default function Projects() {
       {isError ? (
         <div className="rounded-xl border border-status-failed/20 bg-status-failed/5 p-6 text-center">
           <p className="text-sm text-status-failed">{t('projects.failedToLoad')}</p>
-          <Button variant="outline" size="sm" className="mt-3" onClick={() => setSearch("")}>{t('common.retry')}</Button>
+          <Button variant="outline" size="sm" className="mt-3" onClick={handleRetry}>{t('common.retry')}</Button>
         </div>
       ) : isLoading ? (
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">

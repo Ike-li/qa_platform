@@ -34,14 +34,14 @@ def test_compute_next_run_at_uses_schedule_timezone_for_naive_base():
     assert result == datetime(2026, 6, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
-def test_compute_next_run_at_keeps_aware_base_timezone():
+def test_compute_next_run_at_converts_aware_base_to_schedule_timezone():
     result = compute_next_run_at(
         "0 9 * * *",
         "Asia/Shanghai",
-        base_time=datetime(2026, 6, 1, 8, 30, tzinfo=timezone.utc),
+        base_time=datetime(2026, 6, 1, 0, 30, tzinfo=timezone.utc),
     )
 
-    assert result == datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc)
+    assert result == datetime(2026, 6, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def test_should_fire_rejects_disabled_missing_or_future_schedule():

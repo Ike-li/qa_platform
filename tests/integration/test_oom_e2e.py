@@ -45,6 +45,16 @@ pytestmark = [
 ]
 
 
+def _assert_log_line_once(lines: list[str], expected_line: str) -> None:
+    assert [line for line in lines if line == expected_line] == [expected_line]
+
+
+def _resource_termination_log_fields(line: str) -> dict[str, str]:
+    prefix = "Resource termination: "
+    assert line.startswith(prefix)
+    return dict(part.split("=", 1) for part in line.removeprefix(prefix).split())
+
+
 # --------------------------------------------------------------------------- #
 # Fixtures
 # --------------------------------------------------------------------------- #
@@ -290,6 +300,20 @@ async def test_executor_maps_real_oom_to_timeout_summary_and_redis(
 
     logs = await executor.log_stream.read_logs(run_id, count=100)
     lines = [entry["line"] for entry in logs]
-    assert any("Starting stage: oom" in line for line in lines)
-    assert any("Resource termination: reason=oom" in line for line in lines)
-    assert any("Run completed: timeout" in line for line in lines)
+    _assert_log_line_once(lines, "Starting stage: oom")
+    failure_line = f"Pipeline failed with code {resource_termination['exit_code']}"
+    _assert_log_line_once(lines, failure_line)
+    assert [
+        _resource_termination_log_fields(line)
+        for line in lines
+        if line.startswith("Resource termination: ")
+    ] == [
+        {
+            "reason": "oom",
+            "exit_code": str(resource_termination["exit_code"]),
+            "duration_ms": str(resource_termination["duration_ms"]),
+            "oom_killed": "True",
+            "timed_out": "False",
+        }
+    ]
+    _assert_log_line_once(lines, "Run completed: timeout")

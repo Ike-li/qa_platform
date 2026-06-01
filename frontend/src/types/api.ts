@@ -32,10 +32,10 @@ export interface ProjectCreatePayload {
   slug: string;
   description?: string | null;
   git_url: string;
-  git_auth_method: GitAuthMethod;
+  git_auth_method?: GitAuthMethod;
   credential_id?: string | null;
-  default_branch: string;
-  root_path: string;
+  default_branch?: string;
+  root_path?: string;
   shallow_clone?: boolean;
   default_env_id?: string | null;
   settings?: Record<string, unknown>;
@@ -204,7 +204,7 @@ export interface RunResponse {
   pipeline_id: string;
   pipeline_name: string;
   environment_id: string;
-  status: BackendRunStatus | string;
+  status: BackendRunStatus;
   trigger_type: string;
   priority: number;
   triggered_by: string | null;
@@ -227,6 +227,7 @@ export interface Run {
   pipeline_name: string;
   environment_id: string;
   status: RunStatus;
+  is_terminal: boolean;
   branch: string;
   git_sha: string | null;
   triggered_by: string | null;
@@ -257,13 +258,15 @@ export interface TestResult {
   run_id: string;
   suite: string;
   name: string;
-  status: "passed" | "failed" | "skipped" | "error" | "xfail";
+  status: TestResultStatus;
   duration_ms: number;
   error_message: string | null;
   stack_trace: string | null;
   tags: string[];
   metadata: Record<string, unknown>;
 }
+
+export type TestResultStatus = "passed" | "failed" | "skipped" | "error" | "xfail";
 
 export interface Artifact {
   id: string;
@@ -282,17 +285,51 @@ export interface RunLogEntry {
   line: string;
 }
 
+export type NotificationConditionField =
+  | "status"
+  | "pass_rate"
+  | "failed"
+  | "consecutive_failures";
+
 export interface NotificationCondition {
-  field: "status" | "pass_rate" | "failed";
+  field: NotificationConditionField;
   operator: "eq" | "ne" | "lt" | "gt" | "lte" | "gte";
-  value: string | number;
+  value: string | number | boolean;
 }
 
-export type NotificationChannelType = "email" | "webhook" | "dingtalk" | "wecom" | "slack";
+export interface NotificationConditionGroup {
+  all?: NotificationConditionExpression[];
+  any?: NotificationConditionExpression[];
+}
+
+export interface NotificationConditionInputGroup {
+  all?: NotificationConditionInputExpression[];
+  any?: NotificationConditionInputExpression[];
+}
+
+export interface NotificationInvalidCondition {
+  invalid: true;
+  reason: string;
+  raw_field?: string | null;
+  raw_operator?: string | null;
+}
+
+export type NotificationConditionExpression =
+  | NotificationCondition
+  | NotificationConditionGroup
+  | NotificationInvalidCondition;
+
+export type NotificationConditionInputExpression =
+  | NotificationCondition
+  | NotificationConditionInputGroup;
+
+export type NotificationChannelType = "email" | "webhook" | "dingtalk" | "wecom";
+export type NotificationChannelConfigValue = string | string[];
 
 export interface NotificationChannel {
   type: NotificationChannelType;
-  config: Record<string, string>;
+  config: Record<string, NotificationChannelConfigValue>;
+  template?: string | null;
 }
 
 export interface NotificationRule {
@@ -300,18 +337,46 @@ export interface NotificationRule {
   project_id: string;
   name: string;
   enabled: boolean;
-  conditions: NotificationCondition[];
+  conditions: NotificationConditionExpression[];
   channels: NotificationChannel[];
   template: string | null;
   created_at: string;
 }
 
-export type NotificationRuleCreatePayload = Pick<
-  NotificationRule,
-  "name" | "enabled" | "conditions" | "channels" | "template"
->;
+export interface NotificationRuleCreatePayload {
+  name: string;
+  enabled: boolean;
+  conditions: NotificationConditionInputExpression[];
+  channels: NotificationChannel[];
+  template: string | null;
+}
 
 export type NotificationRuleUpdatePayload = Partial<NotificationRuleCreatePayload>;
+
+export interface ApiTokenListItem {
+  token_id: string;
+  name: string;
+  scopes: string[];
+  expires_at: string;
+  last_used_at: string | null;
+  is_revoked: boolean;
+  created_at: string;
+}
+
+export interface ApiTokenResponse {
+  token_id: string;
+  token: string | null;
+  name: string;
+  scopes: string[];
+  expires_at: string;
+  created_at: string;
+}
+
+export interface CreateApiTokenPayload {
+  name: string;
+  scopes?: string[];
+  expires_days?: number;
+}
 
 export interface PaginatedResponse<T> {
   data: T[];
@@ -335,4 +400,14 @@ export interface FlakyTest {
   failed_count: number;
   passed_count: number;
   flaky_rate: number;
+}
+
+export interface TestHistoryPoint {
+  run_id: string;
+  run_created_at: string;
+  run_status: BackendRunStatus;
+  status: TestResultStatus;
+  duration_ms: number | null;
+  error_message: string | null;
+  git_ref: string | null;
 }

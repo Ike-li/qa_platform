@@ -18,7 +18,7 @@ def _settings(**overrides) -> Settings:
         "encryption_key": "0" * 64,
     }
     defaults.update(overrides)
-    return Settings(**defaults)
+    return Settings(**defaults, _env_file=None)
 
 
 def _reset_tracing_state(monkeypatch) -> None:
@@ -150,13 +150,23 @@ def test_instrument_fastapi_app_once(monkeypatch):
     tracing.instrument_fastapi(app, provider)
     tracing.instrument_fastapi(app, provider)
 
-    assert calls["fastapi_app"][0][0][0] is app
-    fastapi_kwargs = calls["fastapi_app"][0][1]
+    fastapi_args, fastapi_kwargs = calls["fastapi_app"][0]
+    assert [args for args, _ in calls["fastapi_app"]] == [(app,)]
+    assert fastapi_args == (app,)
     assert fastapi_kwargs["tracer_provider"] is provider
-    assert "metrics" in fastapi_kwargs["excluded_urls"]
-    assert fastapi_kwargs["http_capture_headers_server_request"] == []
-    assert "authorization" in fastapi_kwargs["http_capture_headers_sanitize_fields"]
-    assert len(calls["fastapi_app"]) == 1
+    fastapi_kwargs_without_provider = {
+        key: value for key, value in fastapi_kwargs.items() if key != "tracer_provider"
+    }
+    assert fastapi_kwargs_without_provider == {
+        "excluded_urls": tracing._EXCLUDED_URLS,
+        "server_request_hook": tracing._strip_sensitive_request_headers,
+        "http_capture_headers_server_request": [],
+        "http_capture_headers_sanitize_fields": [
+            "authorization",
+            "x-api-token",
+            "cookie",
+        ],
+    }
 
 
 def test_instrument_fastapi_records_route_status_and_excludes_ops_paths(monkeypatch):
@@ -209,14 +219,30 @@ def test_instrument_fastapi_records_route_status_and_excludes_ops_paths(monkeypa
         if span.kind is SpanKind.SERVER
     ]
 
-    assert len(server_spans) == 1
-    attributes = server_spans[0].attributes
-    assert attributes["http.method"] == "GET"
-    assert attributes["http.route"] == "/items/{item_id}"
-    assert attributes["http.status_code"] == 200
-    assert not any(
-        key.startswith("http.request.header.") for key in attributes
-    )
+    span_projection = []
+    for span in server_spans:
+        attributes = span.attributes
+        span_projection.append(
+            {
+                "method": attributes.get("http.method"),
+                "route": attributes.get("http.route"),
+                "status_code": attributes.get("http.status_code"),
+                "captured_request_headers": sorted(
+                    key
+                    for key in attributes
+                    if key.startswith("http.request.header.")
+                ),
+            }
+        )
+
+    assert span_projection == [
+        {
+            "method": "GET",
+            "route": "/items/{item_id}",
+            "status_code": 200,
+            "captured_request_headers": [],
+        }
+    ]
 
 
 def test_instrument_infra_uses_sync_engine_and_is_idempotent(monkeypatch):

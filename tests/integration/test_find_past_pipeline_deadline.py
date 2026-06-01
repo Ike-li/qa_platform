@@ -4,9 +4,10 @@
   GREATEST(pipeline.timeout_seconds, 1800) + buffer_seconds
 
 测试场景：
-- pipeline.timeout_seconds=60，buffer_seconds=0（测试专用，消除时间抖动）
-- run A：status_updated_at = now() - 100s  → 超过 (60+0)s，应被捞出
-- run B：status_updated_at = now() - 30s   → 未超过，不应被捞出
+- pipeline.timeout_seconds=300，低于 1800s floor
+- buffer_seconds=0 时 run_old: now() - 2000s → 超过 1800s，应被捞出
+- buffer_seconds=0 时 run_fresh: now() - 100s → 未超过，不应被捞出
+- buffer_seconds=300 时 run_old: now() - 2000s → 未超过 2100s，不应被捞出
 
 Skipped by default; set RUN_INTEGRATION_TESTS=1 to enable.
 """
@@ -40,7 +41,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest_asyncio.fixture
 async def deadline_seed(integration_db_engine, integration_db_schema):
-    """Seed a pipeline with timeout_seconds=60 and two runs at different ages."""
+    """Seed a pipeline below the 1800s floor and two runs at different ages."""
     factory = async_sessionmaker(integration_db_engine, expire_on_commit=False)
 
     async with factory() as session:
@@ -175,6 +176,8 @@ async def test_find_past_pipeline_deadline_returns_only_overdue_run(
         )
 
     overdue_ids = {r.id for r in overdue}
+    seeded_ids = {run_old.id, run_fresh.id}
+    assert overdue_ids & seeded_ids == {run_old.id}
     assert run_old.id in overdue_ids, (
         "run_old (status_updated_at = now-2000s, GREATEST(300,1800)+0=1800s threshold) should be overdue"
     )

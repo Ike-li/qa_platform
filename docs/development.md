@@ -79,8 +79,18 @@ npm ci --prefix frontend
 # 稳定冒烟用例
 npm run test:e2e -- tests/e2e/auth-flow.spec.ts
 
+# 交互式 smoke 默认把 skip 当失败；探索性排查才显式允许 skip
+# 可用 RESULTS_DIR=... 固定父级产物目录；子脚本证据会落在 <script-name>/ 下
+./scripts/smoke/run-all.sh
+SMOKE_ADMIN_PASSWORD="$E2E_ADMIN_PASSWORD" ./scripts/smoke/run-all.sh
+SMOKE_ALLOW_SKIPS=1 ./scripts/smoke/run-all.sh
+
 # 全量 E2E
 E2E_ADMIN_PASSWORD=admin123 npm run test:e2e
+
+# 本地真实 worker-backed E2E；脚本默认导出 QAP_E2E_WORKER=1，
+# 因此 real-run-trigger 不会被环境门控跳过
+E2E_ADMIN_PASSWORD=admin123 ./scripts/run-e2e.sh
 ```
 
 ### 运行集成测试

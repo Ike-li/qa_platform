@@ -37,13 +37,14 @@
 |------|------|
 | 心跳写入失败 | 记录 warning，循环继续；不终止 worker |
 | JWT 黑名单查询失败 | 放行请求（不拒绝合法用户） |
-| Rate limit 中间件尚未拿到 Redis client | 放行请求（避免启动期误杀流量） |
+| 非认证高风险端点 rate limit 中间件尚未拿到 Redis client | 放行请求（避免启动期误杀普通流量） |
+| 认证高风险端点 rate limit 中间件尚未拿到 Redis client | fail-closed，返回 503 + `Retry-After: 5` |
 | 非认证高风险端点 rate limit Redis 操作异常 | 放行请求（不误杀普通流量） |
 | 认证高风险端点 rate limit Redis 操作异常 | fail-closed，返回 503 + `Retry-After: 5` |
 
 **含义**：Redis 短暂宕机不会整体中断服务，但登录、注册、token、refresh、SSE ticket 等认证高风险端点在限流存储异常时会保守拒绝，避免绕过暴力破解防护。已撤销的 JWT 在 Redis 恢复前可能被短暂接受；Redis 恢复后黑名单立即生效。
 
-**监控**：关注 `worker_heartbeat_set_failed`、`jwt_blacklist_check_failed`、`rate_limit_error` 和 `rate_limit_exceeded` 日志条目频率。
+**监控**：关注 `worker_heartbeat_set_failed`、`jwt_blacklist_check_failed`、`rate_limit_unavailable`、`rate_limit_error` 和 `rate_limit_exceeded` 日志条目频率。
 
 ---
 

@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/smoke/lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 init_results_dir
 

@@ -136,6 +136,27 @@ def mock_session_factory():
     return _factory
 
 
+def _assert_retry_run_create(run_repo, original):
+    expected_metadata = dict(original.metadata_ or {})
+    run_repo.create.assert_awaited_once_with(
+        tenant_id=original.tenant_id,
+        project_id=original.project_id,
+        pipeline_id=original.pipeline_id,
+        environment_id=original.environment_id,
+        git_ref=original.git_ref,
+        git_sha=original.git_sha,
+        priority=original.priority,
+        triggered_by=original.triggered_by,
+        trigger_type=original.trigger_type,
+        metadata_=expected_metadata,
+        retry_group_id=original.retry_group_id or original.id,
+        attempt=original.attempt + 1,
+        source_run_id=original.id,
+        chain_depth=(original.chain_depth or 0) + 1,
+    )
+    assert run_repo.create.await_args.kwargs["metadata_"] is not original.metadata_
+
+
 class TestAttemptRetry:
     """Integration tests for _attempt_retry."""
 
@@ -170,14 +191,8 @@ class TestAttemptRetry:
             result = await _attempt_retry(str(original.id), ConnectionError("fail"), ctx, sf)
 
         assert result is True
-        run_repo.create.assert_awaited_once()
-        create_kwargs = run_repo.create.call_args.kwargs
-        assert create_kwargs["attempt"] == 2
-        assert create_kwargs["retry_group_id"] == original.retry_group_id
-        assert create_kwargs["source_run_id"] == original.id
-        assert create_kwargs["git_sha"] == original.git_sha
-        assert create_kwargs["priority"] == original.priority
-        assert create_kwargs["chain_depth"] == 1
+        _assert_retry_run_create(run_repo, original)
+        scheduler.enqueue.assert_awaited_once_with(retry_run, _defer_by=0)
 
     @pytest.mark.asyncio
     async def test_returns_false_when_should_retry_false(
@@ -189,16 +204,24 @@ class TestAttemptRetry:
 
         ctx = {"arq_pool": MagicMock(), "settings": MagicMock()}
 
+        error = ConnectionError("fail")
         with (
             patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo),
-            patch("qaplatform.worker.tasks._should_retry", return_value=False),
+            patch("qaplatform.worker.scheduler.FairScheduler") as scheduler_cls,
+            patch("qaplatform.worker.tasks._should_retry", return_value=False) as should_retry,
         ):
-            session = AsyncMock()
+            session = mock_session_factory()
             sf = MagicMock(return_value=session)
-            result = await _attempt_retry(str(original.id), ConnectionError("fail"), ctx, sf)
+            result = await _attempt_retry(str(original.id), error, ctx, sf)
 
         assert result is False
+        sf.assert_called_once_with()
+        run_repo.get_by_id.assert_awaited_once_with(str(original.id))
+        session.refresh.assert_awaited_once_with(original, ["pipeline"])
+        should_retry.assert_called_once_with(error, original.pipeline.retry_policy, original.attempt)
         run_repo.create.assert_not_awaited()
+        scheduler_cls.assert_not_called()
+        session.commit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_false_when_original_not_found(self, mock_session_factory):
@@ -207,12 +230,22 @@ class TestAttemptRetry:
 
         ctx = {"arq_pool": MagicMock(), "settings": MagicMock()}
 
-        with patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo):
-            session = AsyncMock()
+        missing_id = uuid4()
+        with (
+            patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo),
+            patch("qaplatform.worker.scheduler.FairScheduler") as scheduler_cls,
+        ):
+            session = mock_session_factory()
             sf = MagicMock(return_value=session)
-            result = await _attempt_retry(str(uuid4()), ConnectionError("fail"), ctx, sf)
+            result = await _attempt_retry(str(missing_id), ConnectionError("fail"), ctx, sf)
 
         assert result is False
+        sf.assert_called_once_with()
+        run_repo.get_by_id.assert_awaited_once_with(str(missing_id))
+        session.refresh.assert_not_awaited()
+        run_repo.create.assert_not_awaited()
+        scheduler_cls.assert_not_called()
+        session.commit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_sleep_when_backoff_zero(
@@ -248,11 +281,12 @@ class TestAttemptRetry:
         # delay=0 → sleep is skipped entirely
         mock_sleep.assert_not_awaited()
         assert result is True
-        scheduler.enqueue.assert_awaited_once()
+        _assert_retry_run_create(run_repo, original)
+        scheduler.enqueue.assert_awaited_once_with(retry_run, _defer_by=0)
 
     @pytest.mark.asyncio
     async def test_non_infra_exception_not_retried(
-        self, mock_run_factory
+        self, mock_run_factory, mock_session_factory
     ):
         """RuntimeError is not in _INFRA_EXCEPTIONS — retry should not be scheduled.
 
@@ -270,17 +304,24 @@ class TestAttemptRetry:
 
         ctx = {"arq_pool": MagicMock(), "settings": MagicMock()}
 
+        error = RuntimeError("pipeline execution failed")
         with (
             patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo),
-            patch("qaplatform.worker.scheduler.FairScheduler", return_value=scheduler),
+            patch("qaplatform.worker.scheduler.FairScheduler") as scheduler_cls,
         ):
-            session = AsyncMock()
+            scheduler_cls.return_value = scheduler
+            session = mock_session_factory()
             sf = MagicMock(return_value=session)
-            result = await _attempt_retry(str(original.id), RuntimeError("pipeline execution failed"), ctx, sf)
+            result = await _attempt_retry(str(original.id), error, ctx, sf)
 
         assert result is False
+        sf.assert_called_once_with()
+        run_repo.get_by_id.assert_awaited_once_with(str(original.id))
+        session.refresh.assert_awaited_once_with(original, ["pipeline"])
         run_repo.create.assert_not_awaited()
+        scheduler_cls.assert_not_called()
         scheduler.enqueue.assert_not_awaited()
+        session.commit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_enqueues_with_exponential_backoff(self, mock_run_factory):
@@ -311,9 +352,8 @@ class TestAttemptRetry:
             await _attempt_retry(str(original.id), ConnectionError("fail"), ctx, sf)
 
         # attempt=2: delay = 30 * 2^(2-1) = 60, passed as _defer_by to scheduler
-        scheduler.enqueue.assert_awaited_once()
-        call_kwargs = scheduler.enqueue.call_args
-        assert call_kwargs.kwargs.get("_defer_by") == 60 or call_kwargs[1].get("_defer_by") == 60
+        _assert_retry_run_create(run_repo, original)
+        scheduler.enqueue.assert_awaited_once_with(retry_run, _defer_by=60)
 
     @pytest.mark.asyncio
     async def test_waiting_retry_run_counts_as_scheduled(self, mock_run_factory):
@@ -327,10 +367,21 @@ class TestAttemptRetry:
         retry_run.attempt = 2
         retry_run.project_id = original.project_id
         retry_run.trigger_type = "manual"
-        run_repo.create = AsyncMock(return_value=retry_run)
+        operations = []
+
+        async def create_retry_run(**kwargs):
+            operations.append(("create", kwargs["attempt"], kwargs["source_run_id"]))
+            return retry_run
+
+        run_repo.create = AsyncMock(side_effect=create_retry_run)
 
         scheduler = AsyncMock()
-        scheduler.enqueue = AsyncMock(return_value=False)
+
+        async def enqueue_waiting(run, **kwargs):
+            operations.append(("enqueue", run.id, kwargs))
+            return False
+
+        scheduler.enqueue = AsyncMock(side_effect=enqueue_waiting)
 
         ctx = {"arq_pool": MagicMock(), "settings": MagicMock()}
 
@@ -340,10 +391,23 @@ class TestAttemptRetry:
         ):
             session = AsyncMock()
             session.__aenter__.return_value = session
+
+            async def commit_session():
+                operations.append(("commit", None, {}))
+
+            session.commit.side_effect = commit_session
             sf = MagicMock(return_value=session)
             result = await _attempt_retry(str(original.id), ConnectionError("fail"), ctx, sf)
 
         assert result is True
-        run_repo.create.assert_awaited_once()
-        scheduler.enqueue.assert_awaited_once()
-        session.commit.assert_awaited_once()
+        sf.assert_called_once_with()
+        run_repo.get_by_id.assert_awaited_once_with(str(original.id))
+        session.refresh.assert_awaited_once_with(original, ["pipeline"])
+        _assert_retry_run_create(run_repo, original)
+        scheduler.enqueue.assert_awaited_once_with(retry_run, _defer_by=0)
+        session.commit.assert_awaited_once_with()
+        assert operations == [
+            ("create", 2, original.id),
+            ("enqueue", retry_run.id, {"_defer_by": 0}),
+            ("commit", None, {}),
+        ]

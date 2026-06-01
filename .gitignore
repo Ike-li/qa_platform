@@ -37,6 +37,7 @@ frontend/dist/
 Thumbs.db
 
 # Playwright
+artifacts/
 test-results/
 playwright-report/
 smoke-results/

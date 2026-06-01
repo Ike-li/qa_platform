@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -36,6 +37,23 @@ def _decode_redis_mapping(mapping: dict) -> dict[str, str]:
     }
 
 
+def _assert_retry_enqueued_once(arq: _FakeArq, retry_run, *, queue_name: str = "queue:medium") -> None:
+    assert arq.calls == [
+        {
+            "args": ("execute_run", str(retry_run.id)),
+            "kwargs": {
+                "_queue_name": queue_name,
+                "_job_id": f"run:{retry_run.id}",
+                "_defer_by": 0,
+            },
+        }
+    ]
+
+
+def _assert_log_line_once(log_lines: list[str], expected_line: str) -> None:
+    assert [line for line in log_lines if line == expected_line] == [expected_line]
+
+
 @pytest.mark.asyncio
 async def test_attempt_retry_uses_api_max_attempts_and_persists_retry_run(
     integration_db_engine,
@@ -65,8 +83,6 @@ async def test_attempt_retry_uses_api_max_attempts_and_persists_retry_run(
     )
 
     assert scheduled is True
-    assert len(arq.calls) == 1
-    assert arq.calls[0]["kwargs"]["_job_id"].startswith("run:")
 
     result = await integration_db_session.execute(
         select(Run).where(Run.source_run_id == original.id)
@@ -78,6 +94,7 @@ async def test_attempt_retry_uses_api_max_attempts_and_persists_retry_run(
     assert retry_run.priority == original.priority
     assert retry_run.enqueued_at is not None
     assert retry_run.queue_name == "queue:medium"
+    _assert_retry_enqueued_once(arq, retry_run)
 
 
 @pytest.mark.asyncio
@@ -167,7 +184,7 @@ async def test_execute_run_infra_exception_marks_failed_and_schedules_retry_real
         )
     ).scalar_one()
     assert original_row.status == RunStatusEnum.FAILED
-    assert "docker daemon unavailable" in original_row.error_message
+    assert original_row.error_message == "docker daemon unavailable"
 
     retry_run = (
         await integration_db_session.execute(
@@ -178,7 +195,7 @@ async def test_execute_run_infra_exception_marks_failed_and_schedules_retry_real
     assert retry_run.retry_group_id == original_id
     assert retry_run.queue_name == "queue:medium"
     assert retry_run.enqueued_at is not None
-    assert len(arq.calls) == 1
+    _assert_retry_enqueued_once(arq, retry_run)
 
 
 @pytest.mark.asyncio
@@ -248,9 +265,7 @@ async def test_execute_run_setup_docker_infra_error_uses_real_executor_and_sched
     ).scalar_one()
     assert original_row.status == RunStatusEnum.FAILED
     assert original_row.worker_id is None
-    assert "docker daemon unavailable during setup" in (
-        original_row.error_message or ""
-    )
+    assert original_row.error_message == "docker daemon unavailable during setup"
 
     retry_run = (
         await integration_db_session.execute(
@@ -263,11 +278,24 @@ async def test_execute_run_setup_docker_infra_error_uses_real_executor_and_sched
     assert retry_run.queue_name == "queue:medium"
     assert retry_run.arq_job_id == f"run:{retry_run.id}"
     assert retry_run.enqueued_at is not None
-    assert len(arq.calls) == 1
-    assert arq.calls[0]["args"] == ("execute_run", str(retry_run.id))
-    assert arq.calls[0]["kwargs"]["_job_id"] == f"run:{retry_run.id}"
+    _assert_retry_enqueued_once(arq, retry_run)
 
     docker_backend.create_execution.assert_awaited_once()
+    setup_spec = docker_backend.create_execution.await_args.args[0]
+    assert setup_spec.image == "alpine:3.19"
+    assert setup_spec.command == ["sh", "-c", "cd /workspace && echo setup"]
+    assert setup_spec.env_vars == {}
+    assert setup_spec.network_policy == "allow"
+    assert setup_spec.user == "1000:1000"
+    assert setup_spec.labels == {"run_id": str(original_id), "phase": "setup"}
+    assert [
+        (
+            mount.target,
+            mount.read_only,
+            Path(mount.source).name.startswith(f"qap-{str(original_id)[:8]}-"),
+        )
+        for mount in setup_spec.mounts
+    ] == [("/workspace", False, True)]
     docker_backend.start.assert_not_awaited()
     status_hash = await redis.hgetall(
         STATUS_HASH_KEY.format(run_id=str(original_id))
@@ -276,8 +304,8 @@ async def test_execute_run_setup_docker_infra_error_uses_real_executor_and_sched
 
     log_entries = await LogStream(redis).read_logs(original_id, count=20)
     log_lines = [entry["line"] for entry in log_entries]
-    assert "Repository cloned successfully" in log_lines
-    assert "Running setup script..." in log_lines
+    _assert_log_line_once(log_lines, "Repository cloned successfully")
+    _assert_log_line_once(log_lines, "Running setup script...")
 
 
 @pytest.mark.asyncio
@@ -356,7 +384,7 @@ async def test_execute_run_setup_script_failure_is_not_retried_real_executor(
     ).scalar_one()
     assert original_row.status == RunStatusEnum.FAILED
     assert original_row.worker_id is None
-    assert "Setup script failed (exit 1)" in (original_row.error_message or "")
+    assert original_row.error_message == "Setup script failed (exit 1)"
 
     retry_run = (
         await integration_db_session.execute(
@@ -374,8 +402,8 @@ async def test_execute_run_setup_script_failure_is_not_retried_real_executor(
 
     log_entries = await LogStream(redis).read_logs(original_id, count=20)
     log_lines = [entry["line"] for entry in log_entries]
-    assert "Repository cloned successfully" in log_lines
-    assert "Running setup script..." in log_lines
+    _assert_log_line_once(log_lines, "Repository cloned successfully")
+    _assert_log_line_once(log_lines, "Running setup script...")
 
 
 @pytest.mark.asyncio
@@ -449,7 +477,10 @@ async def test_execute_run_clone_failure_is_not_retried_real_executor(
     ).scalar_one()
     assert original_row.status == RunStatusEnum.FAILED
     assert original_row.worker_id is None
-    assert "git clone failed" in (original_row.error_message or "")
+    assert (
+        original_row.error_message
+        == "git clone failed: https://***@example.invalid/org/repo.git"
+    )
     assert "secret" not in (original_row.error_message or "")
     assert "x-access-token" not in (original_row.error_message or "")
 
@@ -461,6 +492,12 @@ async def test_execute_run_clone_failure_is_not_retried_real_executor(
     assert retry_run is None
     assert arq.calls == []
     source.clone.assert_awaited_once()
+    clone_url, clone_ref, clone_path = source.clone.await_args.args
+    assert clone_url == "https://x-access-token:secret@example.invalid/org/repo.git"
+    assert clone_ref == "main"
+    assert isinstance(clone_path, Path)
+    assert clone_path.name.startswith(f"qap-{str(original_id)[:8]}-")
+    assert source.clone.await_args.kwargs == {}
 
     status_hash = await redis.hgetall(
         STATUS_HASH_KEY.format(run_id=str(original_id))
@@ -526,8 +563,9 @@ async def test_reclaim_resources_worker_lost_marks_failed_publishes_event_and_sc
     ).scalar_one()
     assert original_row.status == RunStatusEnum.FAILED
     assert original_row.worker_id is None
-    assert "worker_lost" in (original_row.error_message or "")
-    assert worker_id in (original_row.error_message or "")
+    assert original_row.error_message == (
+        f"worker_lost: heartbeat expired for {worker_id}"
+    )
 
     retry_run = (
         await integration_db_session.execute(
@@ -540,10 +578,7 @@ async def test_reclaim_resources_worker_lost_marks_failed_publishes_event_and_sc
     assert retry_run.queue_name == "queue:medium"
     assert retry_run.arq_job_id == f"run:{retry_run.id}"
     assert retry_run.enqueued_at is not None
-    assert len(arq.calls) == 1
-    assert arq.calls[0]["args"] == ("execute_run", str(retry_run.id))
-    assert arq.calls[0]["kwargs"]["_queue_name"] == "queue:medium"
-    assert arq.calls[0]["kwargs"]["_job_id"] == f"run:{retry_run.id}"
+    _assert_retry_enqueued_once(arq, retry_run)
 
     docker_backend.cleanup.assert_awaited_once_with(execution_id)
 
@@ -551,12 +586,19 @@ async def test_reclaim_resources_worker_lost_marks_failed_publishes_event_and_sc
         STATUS_HASH_KEY.format(run_id=str(original_id))
     )
     assert _decode_redis_mapping(status_hash)["status"] == "failed"
-    events = await redis.xrange(
-        EVENT_STREAM_KEY.format(run_id=str(original_id)),
-        count=1,
-    )
-    assert len(events) == 1
-    event = _decode_redis_mapping(events[0][1])
-    assert event["run_id"] == str(original_id)
-    assert event["status"] == "failed"
-    assert event["previous"] == "running"
+    events = await redis.xrange(EVENT_STREAM_KEY.format(run_id=str(original_id)))
+    event_payloads = [_decode_redis_mapping(event[1]) for event in events]
+    assert [
+        {key: value for key, value in event.items() if key != "timestamp"}
+        for event in event_payloads
+    ] == [
+        {
+            "run_id": str(original_id),
+            "status": "failed",
+            "previous": "running",
+        }
+    ]
+    assert [set(event) for event in event_payloads] == [
+        {"run_id", "status", "previous", "timestamp"}
+    ]
+    assert datetime.fromisoformat(event_payloads[0]["timestamp"]).tzinfo is not None

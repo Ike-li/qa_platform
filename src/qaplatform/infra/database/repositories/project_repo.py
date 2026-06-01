@@ -241,6 +241,17 @@ class ProjectMemberRepository(BaseRepository[ProjectMember]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_project_ids_by_user(
+        self, user_id: UUID, tenant_id: UUID
+    ) -> list[UUID]:
+        stmt = select(ProjectMember.project_id).where(
+            ProjectMember.user_id == user_id,
+            ProjectMember.tenant_id == tenant_id,
+            ProjectMember.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
 
 class ScheduleRepository(BaseRepository[Schedule]):
     model = Schedule
@@ -263,11 +274,12 @@ class ScheduleRepository(BaseRepository[Schedule]):
             select(Schedule)
             .where(
                 Schedule.enabled.is_(True),
+                Schedule.deleted_at.is_(None),
                 Schedule.next_run_at <= now,
             )
             .order_by(Schedule.next_run_at)
             .limit(limit)
-            .with_for_update(skip_locked=True)
+            .with_for_update(of=Schedule, skip_locked=True)
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

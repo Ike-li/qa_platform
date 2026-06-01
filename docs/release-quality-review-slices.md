@@ -6,19 +6,20 @@ This branch is intentionally broad because it turns the release candidate gate i
 
 Record the latest PR default CI run and `workflow_dispatch.gate=release_candidate`
 run in the PR description or release note. Keep this document focused on the
-evidence markers and review slices so a documentation-only update does not make
-the checked-in run URL stale.
+required evidence markers and review slices so a documentation-only update does
+not make the checked-in run URL stale or imply that a release candidate run has
+already passed.
 - Gate profile: `release_candidate`
-- Result: all jobs passed, including `Release Candidate Gate`
-- Release evidence markers:
+- Sign-off requirement: all jobs pass, including `Release Candidate Gate`
+- Required release evidence markers:
   - `performance_summary_gate_profile=release_candidate`
   - `performance_trend_validation=passed`
   - `release_candidate_oom_tests=passed`
   - `mode=release_candidate`
   - `testcase_count=10`
   - `actual_testcase_count=10`
-- Backend integration gate evidence:
-  - required integration: 147 tests, 0 skipped
+- Required backend integration gate evidence:
+  - required integration: 161 tests, 0 skipped
   - heavy Docker integration: 12 tests, 0 skipped
   - external stack integration: 6 tests, 0 skipped
   - external stack performance: 2 tests, 0 skipped
@@ -88,6 +89,7 @@ Review focus:
 - Worker execution persists logs, artifacts, summaries, and terminal state for release evidence.
 - Docker-backed execution captures aiodocker text logs and inspects OOM state robustly.
 - Compose workers can reach the Docker socket and shared run workspace on GitHub runners.
+- Real pytest package smoke must require `done` plus passed result/JUnit evidence; `failed` is not acceptable release evidence for that path.
 - Release candidate OOM tests are required and surfaced in the final evidence manifest.
 
 ## Slice 4: Integration Skip Inventory
@@ -102,7 +104,7 @@ Review focus:
 
 - JUnit skipped testcases are categorized into environment gates, infrastructure gates, or unknown.
 - Release candidate gate requires `integration_skip_inventory=written skipped=0`.
-- The latest release candidate evidence reported zero skipped tests across all integration lanes.
+- Linux CI release candidate evidence must record zero skipped tests across all integration lanes; local macOS OOM-gated runs do not satisfy that sign-off prerequisite.
 
 ## Slice 5: Performance SLO Trend Gate
 

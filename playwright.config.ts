@@ -1,4 +1,7 @@
 import { defineConfig, devices, type PlaywrightTestConfig } from "@playwright/test";
+import { applyQapE2eEnv } from "./tests/e2e/qap-env";
+
+applyQapE2eEnv();
 
 const useSystemChrome = process.env.PLAYWRIGHT_USE_SYSTEM_CHROME === "1";
 const reporter: PlaywrightTestConfig["reporter"] = process.env.CI

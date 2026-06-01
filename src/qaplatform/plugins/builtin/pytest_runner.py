@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
 import shlex
 import time
 from pathlib import Path
 from typing import Any
 
+from qaplatform.plugins.builtin._paths import safe_workspace_output_path, safe_workspace_paths
 from qaplatform.plugins.protocols import TestRunResult
 
 log = logging.getLogger(__name__)
@@ -23,10 +26,8 @@ class PytestRunner:
 
     def build_command(self, config: dict[str, Any]) -> str:
         """Return the shell command to execute this runner inside a container."""
-        test_path = config.get('test_path', 'tests/')
-        args = config.get('args', [])
-        extras = ' '.join(args) if args else ''
-        return f"cd /workspace && python -m pytest --junitxml=results/junit.xml {extras} {test_path}"
+        cmd = self._build_command(config)
+        return "cd /workspace && " + " ".join(shlex.quote(part) for part in cmd)
 
     async def run_tests(
         self,
@@ -37,7 +38,10 @@ class PytestRunner:
         cmd = self._build_command(config)
         log.info("running pytest: %s (cwd=%s)", " ".join(cmd), working_dir)
 
-        env_override = dict(env_vars) if env_vars else None
+        env_override = None
+        if env_vars:
+            env_override = os.environ.copy()
+            env_override.update(env_vars)
 
         started = time.monotonic()
         process = await asyncio.create_subprocess_exec(
@@ -70,7 +74,11 @@ class PytestRunner:
         cmd = [config.get("executable", "python"), "-m", "pytest"]
 
         # JUnit XML output for collector
-        report_path = config.get("junit_xml", "results/junit.xml")
+        report_path = safe_workspace_output_path(
+            config.get("junit_xml"),
+            "results/junit.xml",
+            field="junit_xml",
+        )
         cmd += [f"--junitxml={report_path}"]
 
         # Extra arguments (e.g. -k, --markers, -x)
@@ -80,9 +88,12 @@ class PytestRunner:
         cmd.extend(extra_args)
 
         # Test paths
-        test_paths = config.get("test_paths", ["tests"])
-        if isinstance(test_paths, str):
-            test_paths = [test_paths]
+        if "test_paths" in config:
+            test_paths = safe_workspace_paths(config.get("test_paths"), field="test_paths")
+        elif "test_path" in config:
+            test_paths = safe_workspace_paths(config.get("test_path"), field="test_path")
+        else:
+            test_paths = ["tests"]
         cmd.extend(test_paths)
 
         return cmd
@@ -100,24 +111,17 @@ class PytestRunner:
             if "====" not in line:
                 continue
             lower = line.lower()
-            for token in lower.split(","):
-                token = token.strip()
-                parts = token.split()
-                if len(parts) < 2:
-                    continue
-                try:
-                    count = int(parts[0])
-                except ValueError:
-                    continue
-                keyword = parts[1]
-                if "passed" in keyword:
-                    passed = count
-                elif "failed" in keyword:
-                    failed = count
-                elif "skipped" in keyword:
-                    skipped = count
-                elif "error" in keyword:
-                    error = count
+            for match in re.finditer(r"(\d+)\s+([a-z]+)", lower):
+                count = int(match.group(1))
+                keyword = match.group(2)
+                if keyword == "passed":
+                    passed += count
+                elif keyword in {"failed", "xpassed"}:
+                    failed += count
+                elif keyword in {"skipped", "xfailed"}:
+                    skipped += count
+                elif keyword in {"error", "errors"}:
+                    error += count
             break
 
         return {"passed": passed, "failed": failed, "skipped": skipped, "error": error}

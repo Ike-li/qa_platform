@@ -71,20 +71,32 @@ class TestDecodeToken:
         token = svc.create_access_token("u1", "viewer", "t1")
         # token is already expired (ttl=0), sleep a tick to ensure clock advances
         time.sleep(0.01)
-        with pytest.raises(jwt.ExpiredSignatureError):
+        with pytest.raises(jwt.ExpiredSignatureError) as exc_info:
             svc.decode_token(token)
+        assert exc_info.type is jwt.ExpiredSignatureError
+        assert exc_info.value.args == ("Signature has expired",)
+        assert "u1" not in str(exc_info.value)
+        assert token not in str(exc_info.value)
 
     def test_raises_on_wrong_secret(self):
         svc = JWTService(_make_settings())
         token = svc.create_access_token("u1", "viewer", "t1")
         other_svc = JWTService(_make_settings(jwt_secret="different-secret-key-32bytes!!!!"))
-        with pytest.raises(jwt.InvalidSignatureError):
+        with pytest.raises(jwt.InvalidSignatureError) as exc_info:
             other_svc.decode_token(token)
+        assert exc_info.type is jwt.InvalidSignatureError
+        assert exc_info.value.args == ("Signature verification failed",)
+        assert "u1" not in str(exc_info.value)
+        assert "viewer" not in str(exc_info.value)
+        assert "different-secret" not in str(exc_info.value)
 
     def test_raises_on_malformed_token(self):
         svc = JWTService(_make_settings())
-        with pytest.raises(jwt.DecodeError):
+        with pytest.raises(jwt.DecodeError) as exc_info:
             svc.decode_token("not-a-jwt")
+        assert exc_info.type is jwt.DecodeError
+        assert exc_info.value.args == ("Not enough segments",)
+        assert "not-a-jwt" not in str(exc_info.value)
 
     def test_raises_on_tampered_payload(self):
         svc = JWTService(_make_settings())
@@ -92,8 +104,14 @@ class TestDecodeToken:
         # Tamper with the token by flipping a character in the payload
         parts = token.split(".")
         tampered = parts[0] + "." + parts[1][::-1] + "." + parts[2]
-        with pytest.raises(jwt.DecodeError):
+        with pytest.raises(jwt.InvalidSignatureError) as exc_info:
             svc.decode_token(tampered)
+        assert exc_info.type is jwt.InvalidSignatureError
+        assert exc_info.value.args == ("Signature verification failed",)
+        assert token not in str(exc_info.value)
+        assert tampered not in str(exc_info.value)
+        assert "u1" not in str(exc_info.value)
+        assert "viewer" not in str(exc_info.value)
 
 
 class TestBlacklist:
@@ -144,4 +162,4 @@ class TestBlacklist:
 
         svc = JWTService(_make_settings(), redis=redis)
         await svc.revoke("jti-y", 0)
-        redis.set.assert_called_once_with("jwt:revoked:jti-y", "1", ex=1)
+        redis.set.assert_awaited_once_with("jwt:revoked:jti-y", "1", ex=1)

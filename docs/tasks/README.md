@@ -8,13 +8,13 @@
 | 文件 | 必要性 | 主要修改面 | Alembic / 数据迁移 |
 |---|---|---|---|
 | [T01_env_vars_encryption.md](T01_env_vars_encryption.md) | P0 / 已完成 | `api/v1/environments.py` + 迁移 + worker 解密注入 | 已完成：migration `007` 加密既有数据 |
-| [T02_audit_query_api.md](T02_audit_query_api.md) | P0 | 新增 `src/qaplatform/api/v1/audit_events.py` | 不需要 |
-| [T03_dingtalk_notify.md](T03_dingtalk_notify.md) | P1 | `worker/notifications/channels.py` | 不需要 |
-| [T04_wecom_notify.md](T04_wecom_notify.md) | P1 | `worker/notifications/channels.py` | 不需要 |
-| [T05_silent_windows.md](T05_silent_windows.md) | P1 | `worker/settings.py` cron tick + 前端项目设置 | 不需要：写入既有 `Project.settings` JSONB |
-| [T06_webhook_branch_dedup.md](T06_webhook_branch_dedup.md) | P1 | `api/v1/webhooks.py` | 不需要：写入既有 `Project.settings` JSONB |
-| [T07_test_results_filter.md](T07_test_results_filter.md) | P0 | `api/v1/runs.py` | 不需要 |
-| [T10_opentelemetry.md](T10_opentelemetry.md) | P2 | 新增 `observability/tracing.py` + `main.py` + `worker/settings.py` + `config.py` | 不需要 |
+| [T02_audit_query_api.md](T02_audit_query_api.md) | P0 / 已完成 | 审计日志查询 API 验收档案：`src/qaplatform/api/v1/audit_events.py` 已实现，正式 PRD 章节仍待补 | 不需要 |
+| [T03_dingtalk_notify.md](T03_dingtalk_notify.md) | P1 / 已完成 | `worker/notifications/channels.py` + 前端通知规则表单 | 不需要 |
+| [T04_wecom_notify.md](T04_wecom_notify.md) | P1 / 已完成 | `worker/notifications/channels.py` + 前端通知规则表单 | 不需要 |
+| [T05_silent_windows.md](T05_silent_windows.md) | P1 / 已完成 | `worker/settings.py` cron tick + 前端项目设置 | 不需要：写入既有 `Project.settings` JSONB |
+| [T06_webhook_branch_dedup.md](T06_webhook_branch_dedup.md) | P1 / 已完成 | Webhook 分支过滤 + 同 commit 去重验收档案；更完整 Git provider 矩阵仍见 catalog/TODO | 不需要：写入既有 `Project.settings` JSONB |
+| [T07_test_results_filter.md](T07_test_results_filter.md) | P0 / 已完成 | 测试结果 `status` / `suite` / `q` 组合过滤验收档案 | 不需要 |
+| [T10_opentelemetry.md](T10_opentelemetry.md) | P2 | 收口既有 OpenTelemetry 基础装配：OTLP HTTP exporter 依赖决策、接收端部署验证和 trace-log 关联后续优化 | 不需要 |
 
 ## 执行约定（所有任务通用）
 
@@ -34,8 +34,8 @@
 2. 后端任务至少运行 `pytest tests/unit -q`；涉及跨租户、worker、webhook、调度、审计等行为时补跑相关 integration 测试。
 3. 新加的代码有对应的单元测试 + 必要时集成测试。
 4. 修改 ORM schema 时跑 `alembic check` 验证 schema 与 migration 一致；仅写入既有 JSONB 字段不需要新增 migration。
-5. 涉及前端的更新，以“改动文件 TS 干净 + 不引入新 TS 错误”为准；若 `npm run build` 因 main 既有 TS 债务失败，必须确认错误不来自本任务改动文件并在 PR 描述中说明。
-6. 若当前 `main` 存在历史 TS 债务，不要在功能任务中顺手清理；单独任务处理。
+5. 涉及前端的更新必须保持 `npm run build`、`npm run lint -- --max-warnings=0` 和相关 E2E smoke 干净；不再允许用历史 TS 债务豁免解释失败。
+6. 若未来出现新的前端 TS 或 lint 债务，先登记 owner、恢复条件和验证命令，再单独任务处理；功能任务不得把新增失败留给后续清理。
 
 ## 不要做（scope creep）
 

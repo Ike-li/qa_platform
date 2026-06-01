@@ -50,6 +50,7 @@ def test_settings(pg_container, redis_container) -> Settings:
         encryption_key="0" * 64,
         debug=True,
         environment="test",
+        _env_file=None,
     )
 
 

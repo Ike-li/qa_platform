@@ -192,7 +192,11 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
   };
 
   return (
-    <div className="rounded-xl border border-hairline bg-surface-1 overflow-hidden transition-all hover:border-hairline-strong">
+    <div
+      role="region"
+      aria-label={`${env.name} environment`}
+      className="rounded-xl border border-hairline bg-surface-1 overflow-hidden transition-all hover:border-hairline-strong"
+    >
       <div className="bg-surface-2/50 px-6 py-4 flex items-center justify-between border-b border-hairline">
         <h4 className="font-medium text-ink">{env.name}</h4>
         <div className="flex gap-2">

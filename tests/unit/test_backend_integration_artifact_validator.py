@@ -43,6 +43,10 @@ def _write_junit(path: Path, nodeids: list[str]) -> None:
     path.write_text(f"<testsuite>{cases}</testsuite>\n", encoding="utf-8")
 
 
+def _write_junit_body(path: Path, body: str) -> None:
+    path.write_text(f"<testsuite>{body}</testsuite>\n", encoding="utf-8")
+
+
 def test_validate_backend_integration_artifacts_matches_collect_and_junit_nodeids(
     tmp_path: Path,
 ):
@@ -73,8 +77,10 @@ def test_validate_backend_integration_artifacts_rejects_missing_junit_nodeid(
 
     errors = validator.validate_pairs([collect])
 
-    assert len(errors) == 1
-    assert errors[0].startswith(f"junit_missing_nodeid_properties={junit}")
+    assert errors == [
+        f"junit_missing_nodeid_properties={junit} "
+        "count=1 preview=tests.integration.sample::test_one"
+    ]
 
 
 def test_validate_backend_integration_artifacts_rejects_nodeid_mismatch(
@@ -88,8 +94,171 @@ def test_validate_backend_integration_artifacts_rejects_nodeid_mismatch(
 
     errors = validator.validate_pairs([collect])
 
-    assert any(error.startswith(f"junit_missing_collected_nodeids={junit}") for error in errors)
-    assert any(error.startswith(f"junit_unexpected_nodeids={junit}") for error in errors)
+    assert errors == [
+        f"junit_missing_collected_nodeids={junit} "
+        "count=1 preview=['tests/integration/test_sample.py::test_one']",
+        f"junit_unexpected_nodeids={junit} "
+        "count=1 preview=['tests/integration/test_sample.py::test_other']",
+    ]
+
+
+def test_validate_backend_integration_artifacts_rejects_duplicate_junit_nodeids(
+    tmp_path: Path,
+):
+    validator = _load_validator_module()
+    collect = tmp_path / "required-integration-collect.txt"
+    junit = tmp_path / "required-integration.xml"
+    duplicate = "tests/integration/test_sample.py::test_one"
+    _write_collect(collect, [duplicate])
+    _write_junit(junit, [duplicate, duplicate])
+
+    errors = validator.validate_pairs([collect])
+
+    assert errors == [
+        f"junit_duplicate_nodeids={junit} count=1 preview={[duplicate]!r}"
+    ]
+
+
+def test_validate_backend_integration_artifacts_rejects_multiple_nodeids_per_case(
+    tmp_path: Path,
+):
+    validator = _load_validator_module()
+    collect = tmp_path / "required-integration-collect.txt"
+    junit = tmp_path / "required-integration.xml"
+    _write_collect(
+        collect,
+        [
+            "tests/integration/test_sample.py::test_one",
+            "tests/integration/test_sample.py::test_two",
+        ],
+    )
+    _write_junit_body(
+        junit,
+        """
+        <testcase classname="tests.integration.sample" name="test_one">
+          <properties>
+            <property name="nodeid" value="tests/integration/test_sample.py::test_one" />
+            <property name="nodeid" value="tests/integration/test_sample.py::test_two" />
+          </properties>
+        </testcase>
+        """,
+    )
+
+    errors = validator.validate_pairs([collect])
+
+    assert errors == [
+        f"junit_multiple_nodeid_properties={junit} "
+        "count=1 preview=tests.integration.sample::test_one"
+    ]
+
+
+def test_validate_backend_integration_artifacts_rejects_failed_and_error_outcomes(
+    tmp_path: Path,
+):
+    validator = _load_validator_module()
+    collect = tmp_path / "required-integration-collect.txt"
+    junit = tmp_path / "required-integration.xml"
+    _write_collect(
+        collect,
+        [
+            "tests/integration/test_sample.py::test_failed",
+            "tests/integration/test_sample.py::test_error",
+        ],
+    )
+    _write_junit_body(
+        junit,
+        """
+        <testcase classname="tests.integration.sample" name="test_failed">
+          <properties>
+            <property name="nodeid" value="tests/integration/test_sample.py::test_failed" />
+          </properties>
+          <failure message="failed">boom</failure>
+        </testcase>
+        <testcase classname="tests.integration.sample" name="test_error">
+          <properties>
+            <property name="nodeid" value="tests/integration/test_sample.py::test_error" />
+          </properties>
+          <error message="error">boom</error>
+        </testcase>
+        """,
+    )
+
+    errors = validator.validate_pairs([collect])
+
+    assert errors == [
+        f"junit_failures={junit} count=1",
+        f"junit_errors={junit} count=1",
+    ]
+
+
+def test_validate_backend_integration_artifacts_rejects_skipped_outcomes_by_default(
+    tmp_path: Path,
+):
+    validator = _load_validator_module()
+    collect = tmp_path / "required-integration-collect.txt"
+    junit = tmp_path / "required-integration.xml"
+    _write_collect(collect, ["tests/integration/test_sample.py::test_skipped"])
+    _write_junit_body(
+        junit,
+        """
+        <testcase classname="tests.integration.sample" name="test_skipped">
+          <properties>
+            <property name="nodeid" value="tests/integration/test_sample.py::test_skipped" />
+          </properties>
+          <skipped message="external stack unavailable" />
+        </testcase>
+        """,
+    )
+
+    errors = validator.validate_pairs([collect])
+
+    assert errors == [
+        f"junit_all_skipped={junit}",
+        f"junit_skipped={junit} "
+        "classname=tests.integration.sample name=test_skipped",
+    ]
+
+
+def test_validate_backend_integration_artifacts_allows_known_nightly_oom_skip(
+    tmp_path: Path,
+):
+    validator = _load_validator_module()
+    collect = tmp_path / "heavy-docker-integration-collect.txt"
+    junit = tmp_path / "heavy-docker-integration.xml"
+    _write_collect(
+        collect,
+        [
+            "tests/integration/test_sample.py::test_passed",
+            "tests/integration/test_oom_e2e.py::test_oom_kill_sets_oom_killed_true",
+        ],
+    )
+    _write_junit_body(
+        junit,
+        """
+        <testcase classname="tests.integration.sample" name="test_passed">
+          <properties>
+            <property name="nodeid" value="tests/integration/test_sample.py::test_passed" />
+          </properties>
+        </testcase>
+        <testcase classname="tests.integration.test_oom_e2e" name="test_oom_kill_sets_oom_killed_true">
+          <properties>
+            <property name="nodeid" value="tests/integration/test_oom_e2e.py::test_oom_kill_sets_oom_killed_true" />
+          </properties>
+          <skipped message="QAP_TEST_OOM=1 opt-in not set" />
+        </testcase>
+        """,
+    )
+
+    assert validator.validate_pairs([collect], allow_nightly_oom_skips=True) == []
+    assert validator.validate_pairs(
+        [collect],
+        strict_skips=True,
+        allow_nightly_oom_skips=True,
+    ) == [
+        f"junit_skipped={junit} "
+        "classname=tests.integration.test_oom_e2e "
+        "name=test_oom_kill_sets_oom_killed_true"
+    ]
 
 
 def test_integration_conftest_writes_nodeids_to_real_pytest_junit(tmp_path: Path):

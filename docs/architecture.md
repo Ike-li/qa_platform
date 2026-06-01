@@ -47,10 +47,12 @@ domain → (无外部依赖)
 - `infra` 是唯一接触数据库/缓存/存储的层
 - `api` 不得直接操作数据库，必须通过 `infra.repositories`
 
-**当前偏差（待技术债修复）：**
-- `engine/executor.py` 为上报终态指标仍会局部 import `api.metrics.run_terminal_total`；目标是把指标定义迁到 `observability` / `infra` 外的中立模块，避免 engine 反向依赖 API。
-- `engine/reclaim.py` 仍通过 worker 兼容 shim 引用 `worker._redact.redact_url_userinfo`；目标是直接使用 `engine.redact`，保留 worker shim 只服务旧调用方。
-- `api/v1/admin.py`、`api/v1/analytics.py`、`api/v1/auth.py`、`api/v1/runs.py` 和 `api/deps.py` 仍存在直接 SQLAlchemy 查询；目标是把可复用查询下沉到 repositories / query service，逐步收敛到上面的分层规则。
+**已收敛与当前偏差：**
+- Prometheus 指标定义已迁到 `qaplatform.observability.metrics`；`api.metrics` 只负责 `/metrics` endpoint 并兼容 re-export，`engine/executor.py` 直接引用中立指标模块。
+- `engine/reclaim.py` 已直接使用 `engine.redact`；`worker._redact` 仅作为旧调用方兼容 shim 保留。
+- `tests/unit/test_architecture_boundaries.py` 锁住 `engine` 不得 import `qaplatform.api.*` 或 `qaplatform.worker.*`，避免 engine 反向依赖回流。
+- `api/deps.py` 的项目可见性 / ProjectMember 角色查询已下沉到 `ProjectRepository` / `ProjectMemberRepository`；`api/v1/admin.py` 的 status 计数已下沉到 `RunRepository`；`api/auth/middleware.py` 的平台管理员复核与 `api/v1/auth.py` 的租户注册 / fallback 查询已下沉到 `UserRepository` / `TenantRepository`；`api/v1/runs.py` 的成员项目过滤已下沉到 `ProjectMemberRepository`；`api/v1/analytics.py` 的趋势、flaky、单用例历史聚合已下沉到 `RunRepository` / `TestResultRepository`。
+- `tests/unit/test_architecture_boundaries.py` 锁住上述 API 入口不得直接 `session.execute()` / `db.execute()`；本轮静态扫描未发现 `src/qaplatform/api` 下仍有 route 层直接执行 SQLAlchemy 查询。
 
 ---
 
@@ -67,7 +69,7 @@ domain → (无外部依赖)
 | 实时通信 | SSE | 单向推送足够、HTTP 原生、自动重连 |
 | ORM | SQLAlchemy 2.0 async | 类型安全、async session |
 | 迁移 | Alembic | SQLAlchemy 生态标配 |
-| 可观测性 | Prometheus + structlog；OpenTelemetry 追踪待 T10 装配 | 指标 + 结构化日志；链路追踪为待办 |
+| 可观测性 | Prometheus + structlog；OpenTelemetry 基础追踪装配 | 指标 + 结构化日志；`setup_tracing`、FastAPI/SQLAlchemy/Redis instrumentation 与 worker/executor 手动 span 已落地，OTLP HTTP exporter 依赖和接收端部署验证待 T10 收口 |
 
 ---
 
@@ -212,7 +214,7 @@ POST /api/v1/webhooks/{project_id}/trigger
 按当前 FairScheduler 入队执行（见 §6.1 队列边界）
 ```
 
-当前 `main` 的项目级 webhook 已实现 HMAC 验签、分支过滤和同 commit 去重；尚未实现 Git 平台事件类型解析与按 repo URL 匹配项目的 provider 级入口。
+当前 `main` 的项目级 webhook 已实现 HMAC 验签、分支过滤和同 commit 去重。GitHub provider 入口也已支持 `POST /webhooks/github` 与 `POST /api/v1/webhooks/github`：解析 push payload，按 repository URL candidates 匹配项目，使用匹配项目的 `webhook_secret` 验签，并以系统身份触发 Run / 写入 filtered 或 duplicate 决策审计。剩余增强是 GitLab/Gitee provider、PR/fork 策略、URL 规范化/歧义运营提示和更完整 provider 事件矩阵。
 
 ### 6.6 Worker 故障恢复
 
@@ -245,6 +247,7 @@ Scheduler 定期扫描（每 60s）
 - Runtime checkable，支持动态加载
 - 内置插件与第三方插件使用相同接口
 - Runner 和 Collector 在 Worker 进程中调用，但测试代码本身在 Docker 容器内执行；Runner 负责构建容器执行命令和解析退出码，不直接运行测试代码
+- `RunnerProtocol.build_command()` 返回值会作为 `sh -c` 命令进入容器；插件应显式切到 `/workspace`，并对参数做 shell quoting，避免 `-k "not slow"`、带空格路径等配置在容器内被拆坏
 
 ### 7.2 插件接口
 
@@ -276,7 +279,7 @@ class SourceProtocol(Protocol):
 | pytest_runner | Runner | 执行 pytest |
 | jest_runner | Runner | 执行 Jest |
 | playwright_runner | Runner | 执行 Playwright |
-| go_test_runner | Runner | 执行 Go test |
+| go_test_runner | Runner | 执行 Go test，并把 `go test -json` 转为默认 JUnit collector 可读取的 `results/junit.xml` |
 | junit_collector | Collector | 解析 JUnit XML |
 
 ### 7.4 扩展点
@@ -320,7 +323,7 @@ Run 1──N NotificationLog
 | Tenant | name, settings(JSONB) | 租户级配置（默认资源限制等） |
 | AppUser | username, email, role, is_platform_admin, is_active, last_login_at | 登录用户与租户级角色 |
 | ApiToken | token_id, secret_hash, scopes, expires_at, is_revoked | 机器访问 token，明文 token 不落库 |
-| Project | slug, git_url, git_auth_method, credential_id, default_branch, settings(JSONB), status | 项目聚合根，settings 当前承载 `webhook_secret`、`allowed_branches` 等嵌入配置；`silent_windows` 为 T05 计划写入同一 JSONB 的字段；`credential_id` 可绑定项目内 Git 凭证，执行侧按 Run metadata 解密并注入 clone |
+| Project | slug, git_url, git_auth_method, credential_id, default_branch, settings(JSONB), status | 项目聚合根，settings 当前承载 `webhook_secret`、`allowed_branches`、`silent_windows` 等嵌入配置；`silent_windows` 用于项目级发布冻结期，cron 命中时跳过 schedule 且写 audit；`credential_id` 可绑定项目内 Git 凭证，执行侧按 Run metadata 解密并注入 clone |
 | Environment | base_image, setup_script, memory_mb, cpu_cores, resource_limits(JSONB), network_policy, env_vars(JSONB), cache_key | 执行环境；`memory_mb` / `cpu_cores` 是 ORM 离散列；API 暴露的 `disk_mb` / `max_artifact_size_mb` / `max_artifacts_count` 当前存放在 `resource_limits` JSONB 中，不是独立列；`disk_mb` 可传到 Docker `StorageOpt.size`；`env_vars` 当前在 JSONB 中保存 AES-256-GCM envelope，API 读写和 worker 执行侧会按 environment_id AAD 解密 |
 | Pipeline | stages(JSONB), selector(JSONB), trigger_config(JSONB), collectors(JSONB), retry_policy(JSONB), timeout_seconds, enabled | 管道定义，使用 JSONB 支持多阶段执行、不同 runner 和 collector；默认 JUnit collector |
 | Schedule | cron_expr, timezone, quiet_windows(JSONB), next_run_at, last_run_at, last_error | 定时触发配置，当前已有 schedule 级 quiet window |
@@ -343,7 +346,7 @@ Run 1──N NotificationLog
 ### 8.4 数据保留策略
 
 - 执行记录保留配置默认 90 天；worker 已注册 `cleanup_old_runs` cron，当前会硬删超期终态 Run（`done/failed/cancelled/timeout`）并通过 FK 级联清理 result/artifact/event，真实 Postgres 集成测试已覆盖该路径
-- 审计日志默认保留配置为 1095 天（`QAP_RETENTION_AUDIT_DAYS`）；当前 `main` 只有配置项，尚未发现独立审计清理任务
+- 审计日志默认保留配置为 1095 天（`QAP_RETENTION_AUDIT_DAYS`）；worker 已注册 `cleanup_old_audit_events` cron，按 `retention_audit_days` 调用 `AuditEventRepository.delete_older_than()` 硬删超期 `audit.event`，unit 覆盖 cron 入口，真实 Postgres 集成测试覆盖普通租户审计、系统审计和未超期审计保留边界
 - Run 日志归档到 S3；数据库执行记录当前目标是按保留期清理，DB 行冷归档未实现
 - MVP 阶段使用普通表 + 覆盖索引；数据量达到阈值后迁移到按时间分区
 
@@ -414,10 +417,10 @@ Run 1──N NotificationLog
 
 ### 9.6 审计
 
-- 关键写操作记录审计事件（who/what/when/from_where）；当前主路径已覆盖，批量取消/批量重试已补 audit 写入与真实 DB 验证
+- 关键写操作记录审计事件（who/what/when/from_where）；当前 API POST/PUT/PATCH/DELETE 路由由架构契约锁住直接写审计或委托已审计 helper，批量取消/批量重试已补 audit 写入与真实 DB 验证；新增写接口必须同步补审计与敏感字段脱敏回归
 - 审计事件类型：用户登录/登出、项目变更、凭证操作、执行触发/取消、权限变更
 - 审计日志默认保留配置为 3 年（1095 天），由 `QAP_RETENTION_AUDIT_DAYS` 控制
-- 目标提供审计日志查询 API（仅 Admin+ 可访问）；当前 `main` 写入端已就位，查询路由待 T02 补齐
+- 审计日志查询 API 已就位：`GET /api/v1/audit-events` 支持 Owner/Admin 分页查询、组合过滤、跨租户资源过滤 404/空结果收敛，成功查询写 `audit_events.list` 自审计；API token 必须具备 `audit.read`，`run.read` / `project.read` / 空 scope 会被拒绝且不写误导性自审计。正式 PRD 章节仍待补，当前执行真源为 catalog / TODO / T02 验收档案
 
 ---
 
@@ -451,7 +454,7 @@ Run 1──N NotificationLog
 |------|------|------|
 | 日志 | structlog（JSON 格式） | 调试、审计 |
 | 指标 | Prometheus client | 告警、容量规划 |
-| 追踪 | OpenTelemetry | 待 T10 装配，用于请求链路分析 |
+| 追踪 | OpenTelemetry | 基础追踪装配已实现：API app 调用 `setup_tracing` + `instrument_fastapi`，API/worker 初始化后调用 `instrument_infra`，worker/executor 有 `execute_run`、`source_clone`、`container_run`、`collect_results`、`upload_artifacts` 手动 span；OTLP HTTP exporter 依赖、接收端部署验证和 trace-log 关联仍是后续项 |
 
 ### 11.2 关键指标
 

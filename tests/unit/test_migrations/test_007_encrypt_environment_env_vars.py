@@ -5,7 +5,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from qaplatform.dependencies import CryptoService
-from qaplatform.domain.services.env_vars_crypto import decrypt_env_vars, encrypt_env_vars
+from qaplatform.domain.services.env_vars_crypto import (
+    decrypt_env_vars,
+    encrypt_env_vars,
+    is_encrypted_env_vars,
+)
 
 
 def _load_migration():
@@ -59,12 +63,17 @@ def test_upgrade_encrypts_plain_env_vars_and_skips_existing_envelopes(monkeypatc
 
     migration.upgrade()
 
-    assert len(conn.updates) == 1
+    assert [update["id"] for update in conn.updates] == [plain_id]
     updated = conn.updates[0]
-    assert updated["id"] == plain_id
-    assert "TOKEN" not in repr(updated["env_vars"])
-    assert "secret-value" not in repr(updated["env_vars"])
-    assert decrypt_env_vars(updated["env_vars"], environment_id=plain_id, crypto=crypto) == {
+    updated_env_vars = updated["env_vars"]
+    assert set(updated_env_vars) == {"__encrypted__", "ciphertext"}
+    assert updated_env_vars["__encrypted__"] == "qaplatform.env_vars.v1"
+    assert isinstance(updated_env_vars["ciphertext"], str)
+    assert updated_env_vars["ciphertext"]
+    assert is_encrypted_env_vars(updated_env_vars)
+    assert "TOKEN" not in repr(updated_env_vars)
+    assert "secret-value" not in repr(updated_env_vars)
+    assert decrypt_env_vars(updated_env_vars, environment_id=plain_id, crypto=crypto) == {
         "TOKEN": "secret-value",
     }
 

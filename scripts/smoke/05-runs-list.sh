@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/smoke/lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 init_results_dir
 
@@ -80,7 +81,6 @@ fi
 # Use table row links to avoid matching navigation links
 RUN_LINK="$(opencli browser "${BROWSER_SESSION}" find --css 'table a[href*="/runs/"]' 2>&1 || echo "")"
 if [[ -n "${RUN_LINK}" && "${RUN_LINK}" != *"matches_n\": 0"* ]]; then
-  BEFORE_URL="$(opencli browser "${BROWSER_SESSION}" state 2>/dev/null | sed -n 's/^URL: //p' | head -1 || echo "")"
   opencli browser "${BROWSER_SESSION}" click 'table a[href*="/runs/"]' --nth 0
   sleep 3
   AFTER_URL="$(opencli browser "${BROWSER_SESSION}" state 2>/dev/null | sed -n 's/^URL: //p' | head -1 || echo "")"

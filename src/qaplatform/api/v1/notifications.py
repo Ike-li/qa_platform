@@ -41,21 +41,33 @@ class _NotificationRuleAuditState(BaseModel):
     created_at: datetime
 
 
+def _condition_payload(conditions) -> list[dict]:
+    return [
+        condition.model_dump(exclude_none=True)
+        if isinstance(condition, BaseModel)
+        else condition
+        for condition in conditions
+    ]
+
+
 def _to_rule_response(orm) -> NotificationRuleResponse:
     return NotificationRuleResponse.model_validate(orm)
 
 
+def _rule_channel_type(channel) -> str:
+    if isinstance(channel, dict):
+        return str(channel.get("type", "unknown"))
+    return str(getattr(channel, "type", "unknown"))
+
+
 def _to_rule_audit_state(response: NotificationRuleResponse) -> _NotificationRuleAuditState:
-    channel_types = [
-        str(channel.get("type", "unknown")) if isinstance(channel, dict) else "unknown"
-        for channel in response.channels
-    ]
+    channel_types = [_rule_channel_type(channel) for channel in response.channels]
     return _NotificationRuleAuditState(
         id=response.id,
         project_id=response.project_id,
         name=response.name,
         enabled=response.enabled,
-        conditions=response.conditions,
+        conditions=_condition_payload(response.conditions),
         channels={
             "redacted": True,
             "count": len(response.channels),
@@ -72,6 +84,10 @@ def _to_rule_audit_state(response: NotificationRuleResponse) -> _NotificationRul
 
 def _to_log_response(orm) -> NotificationLogResponse:
     return NotificationLogResponse.model_validate(orm)
+
+
+def _channel_payload(channels) -> list[dict]:
+    return [channel.model_dump(exclude_none=True) for channel in channels]
 
 
 @router.get(
@@ -126,8 +142,8 @@ async def create_notification_rule(
         project_id=project.id,
         name=body.name,
         enabled=body.enabled,
-        conditions=body.conditions,
-        channels=body.channels,
+        conditions=_condition_payload(body.conditions),
+        channels=_channel_payload(body.channels),
         template=body.template,
     )
 
@@ -191,23 +207,26 @@ async def update_notification_rule(
 
     before = _to_rule_response(rule)
 
+    update_data = {}
     if body.name is not None:
-        rule.name = body.name
+        update_data["name"] = body.name
     if body.enabled is not None:
-        rule.enabled = body.enabled
+        update_data["enabled"] = body.enabled
     if body.conditions is not None:
-        rule.conditions = body.conditions
+        update_data["conditions"] = _condition_payload(body.conditions)
     if body.channels is not None:
-        rule.channels = body.channels
+        update_data["channels"] = _channel_payload(body.channels)
     if "template" in body.model_fields_set:
-        rule.template = body.template
+        update_data["template"] = body.template
 
-    response = _to_rule_response(rule)
+    updated_rule = await repos.notification_rule.update(rule, **update_data)
+
+    response = _to_rule_response(updated_rule)
     await write_audit(
         repos, user,
         action="notification_rule.update",
         resource_type="notification_rule",
-        resource_id=rule.id,
+        resource_id=updated_rule.id,
         before=_to_rule_audit_state(before),
         after=_to_rule_audit_state(response),
     )

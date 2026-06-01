@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/smoke/lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 init_results_dir
 
@@ -49,9 +50,6 @@ fi
 # 6. 搜索过滤测试
 SEARCH_INPUT="$(opencli browser "${BROWSER_SESSION}" find --css 'input[placeholder*="search" i], input[placeholder*="Search"], input[type="search"]' 2>&1 || echo "")"
 if [[ -n "${SEARCH_INPUT}" && "${SEARCH_INPUT}" != *"matches_n\": 0"* ]]; then
-  # 记录搜索前的项目数量
-  PRE_SEARCH_CARDS="$(opencli browser "${BROWSER_SESSION}" find --css 'a[href*="/projects/"]' 2>&1 || echo "")"
-
   # 输入搜索关键词
   opencli browser "${BROWSER_SESSION}" fill 'input[placeholder*="search" i], input[placeholder*="Search"], input[type="search"]' "test"
   sleep 2

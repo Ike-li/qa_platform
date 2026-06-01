@@ -1,13 +1,14 @@
 import { CheckCircle2, XCircle, AlertCircle, SkipForward, HelpCircle } from "lucide-react";
 import { cn } from "../lib/utils";
 
-type TestStatus = "passed" | "failed" | "error" | "skipped";
+type TestStatus = "passed" | "failed" | "error" | "skipped" | "xfail";
 
 const statusConfig: Record<TestStatus, { icon: typeof CheckCircle2; color: string }> = {
   passed: { icon: CheckCircle2, color: "text-status-passed" },
   failed: { icon: XCircle, color: "text-status-failed" },
   error: { icon: AlertCircle, color: "text-status-failed" },
-  skipped: { icon: SkipForward, color: "text-ink-tertiary" },
+  skipped: { icon: SkipForward, color: "text-status-skipped" },
+  xfail: { icon: AlertCircle, color: "text-status-skipped" },
 };
 
 export function TestStatusIcon({ status, className }: { status: string; className?: string }) {

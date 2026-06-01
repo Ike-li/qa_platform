@@ -17,6 +17,8 @@ def compute_next_run_at(
     base = base_time or datetime.now(tz)
     if base.tzinfo is None:
         base = base.replace(tzinfo=tz)
+    else:
+        base = base.astimezone(tz)
     cron = croniter(cron_expr, base)
     return cron.get_next(datetime)
 

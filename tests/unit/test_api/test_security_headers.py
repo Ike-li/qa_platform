@@ -9,6 +9,25 @@ import pytest
 from qaplatform.api.middleware.security_headers import SecurityHeadersMiddleware
 
 
+EXPECTED_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "X-XSS-Protection": "0",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'"
+    ),
+}
+
+EXPECTED_HSTS = "max-age=31536000; includeSubDomains"
+
+
 def _make_settings(enable_hsts: bool = False) -> SimpleNamespace:
     return SimpleNamespace(enable_hsts=enable_hsts)
 
@@ -35,92 +54,20 @@ async def _dispatch(mw: SecurityHeadersMiddleware, path: str = "/") -> dict[str,
     return dict(resp.headers)
 
 
-class TestSecurityHeadersPresent:
-    """All required security headers must be set on every response."""
+class TestSecurityHeaders:
+    """Security headers must be exact, not substring smoke checks."""
 
     @pytest.mark.asyncio
-    async def test_x_content_type_options(self):
-        headers = await _dispatch(_make_middleware())
-        assert headers["X-Content-Type-Options"] == "nosniff"
-
-    @pytest.mark.asyncio
-    async def test_x_frame_options(self):
-        headers = await _dispatch(_make_middleware())
-        assert headers["X-Frame-Options"] == "DENY"
-
-    @pytest.mark.asyncio
-    async def test_x_xss_protection(self):
-        headers = await _dispatch(_make_middleware())
-        assert headers["X-XSS-Protection"] == "0"
-
-    @pytest.mark.asyncio
-    async def test_referrer_policy(self):
-        headers = await _dispatch(_make_middleware())
-        assert headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
-
-    @pytest.mark.asyncio
-    async def test_permissions_policy(self):
-        headers = await _dispatch(_make_middleware())
-        assert headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
-
-    @pytest.mark.asyncio
-    async def test_content_security_policy(self):
-        headers = await _dispatch(_make_middleware())
-        expected = (
-            "default-src 'self'; "
-            "script-src 'self'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; "
-            "connect-src 'self'; "
-            "frame-ancestors 'none'"
-        )
-        assert headers["Content-Security-Policy"] == expected
-
-
-class TestCSPDirectives:
-    """Verify individual CSP directives are present in the header value."""
-
-    @pytest.mark.asyncio
-    async def test_default_src_self(self):
-        headers = await _dispatch(_make_middleware())
-        assert "default-src 'self'" in headers["Content-Security-Policy"]
-
-    @pytest.mark.asyncio
-    async def test_script_src_self(self):
-        headers = await _dispatch(_make_middleware())
-        assert "script-src 'self'" in headers["Content-Security-Policy"]
-
-    @pytest.mark.asyncio
-    async def test_style_src_self_unsafe_inline(self):
-        headers = await _dispatch(_make_middleware())
-        assert "style-src 'self' 'unsafe-inline'" in headers["Content-Security-Policy"]
-
-    @pytest.mark.asyncio
-    async def test_img_src_self_data(self):
-        headers = await _dispatch(_make_middleware())
-        assert "img-src 'self' data:" in headers["Content-Security-Policy"]
-
-    @pytest.mark.asyncio
-    async def test_connect_src_self(self):
-        headers = await _dispatch(_make_middleware())
-        assert "connect-src 'self'" in headers["Content-Security-Policy"]
-
-    @pytest.mark.asyncio
-    async def test_frame_ancestors_none(self):
-        headers = await _dispatch(_make_middleware())
-        assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
-
-
-class TestHSTS:
-    """HSTS header controlled by enable_hsts setting."""
-
-    @pytest.mark.asyncio
-    async def test_hsts_present_when_enabled(self):
-        headers = await _dispatch(_make_middleware(enable_hsts=True))
-        assert "Strict-Transport-Security" in headers
-        assert headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
-
-    @pytest.mark.asyncio
-    async def test_hsts_absent_when_disabled(self):
+    async def test_exact_headers_when_hsts_disabled(self):
         headers = await _dispatch(_make_middleware(enable_hsts=False))
-        assert "Strict-Transport-Security" not in headers
+
+        assert headers == EXPECTED_SECURITY_HEADERS
+
+    @pytest.mark.asyncio
+    async def test_exact_headers_when_hsts_enabled(self):
+        headers = await _dispatch(_make_middleware(enable_hsts=True))
+
+        assert headers == {
+            **EXPECTED_SECURITY_HEADERS,
+            "Strict-Transport-Security": EXPECTED_HSTS,
+        }

@@ -238,6 +238,7 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
             if await run_repo.cancel_if_current(run.id):
                 log.info("run %s cancelled before execution started", run_id)
                 await publish_status_event(redis, run_id, "cancelled", previous="preparing")
+            await run_repo.release_worker(run.id, worker_id=worker_id)
             await session.commit()
             return
 
@@ -253,6 +254,7 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
             if await run_repo.cancel_if_current(run.id):
                 log.info("run %s skipped: project archived or deleted", run_id)
                 await publish_status_event(redis, run_id, "cancelled", previous="preparing")
+            await run_repo.release_worker(run.id, worker_id=worker_id)
             await session.commit()
             return
 
@@ -284,7 +286,7 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
 
         except Exception as exc:
             log.exception("execute_run failed for run %s", run_id)
-            from qaplatform.worker._redact import redact_url_userinfo
+            from qaplatform.engine.redact import redact_url_userinfo
             updated = await run_repo.fail_if_current(
                 run.id,
                 message=redact_url_userinfo(str(exc)),

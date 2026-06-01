@@ -9,12 +9,13 @@ These tests intentionally exercise production wiring where it matters:
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -26,6 +27,80 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_INTEGRATION_TESTS") != "1",
     reason="set RUN_INTEGRATION_TESTS=1 to run integration tests",
 )
+
+
+def _assert_integrity_constraint(error: IntegrityError, constraint: str) -> None:
+    haystack = " ".join(
+        str(part)
+        for part in (
+            error,
+            getattr(error, "orig", ""),
+            repr(getattr(error, "orig", "")),
+        )
+    )
+    assert constraint in haystack
+
+
+def _json_datetime(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _parse_sse_events(text: str) -> list[dict[str, str]]:
+    events: list[dict[str, str]] = []
+    for block in text.replace("\r\n", "\n").strip().split("\n\n"):
+        if not block:
+            continue
+        event: dict[str, str] = {}
+        data_lines: list[str] = []
+        for line in block.split("\n"):
+            if not line or line.startswith(":"):
+                continue
+            field, _, value = line.partition(":")
+            if value.startswith(" "):
+                value = value[1:]
+            if field == "data":
+                data_lines.append(value)
+            else:
+                event[field] = value
+        if data_lines:
+            event["data"] = "\n".join(data_lines)
+        events.append(event)
+    return events
+
+
+def _decode_redis_entry(data: dict) -> dict:
+    return {
+        key.decode() if isinstance(key, bytes) else key: (
+            value.decode() if isinstance(value, bytes) else value
+        )
+        for key, value in data.items()
+    }
+
+
+def _assert_token_revoke_warning(caplog, jti: str) -> None:
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "qaplatform.api.v1.auth"
+        and record.levelno == logging.WARNING
+        and getattr(record, "jti", None) == jti
+    ]
+    assert [
+        {
+            "message": record.getMessage(),
+            "jti": getattr(record, "jti", None),
+            "exc_type": type(record.exc_info[1]) if record.exc_info else None,
+            "exc_message": str(record.exc_info[1]) if record.exc_info else None,
+        }
+        for record in records
+    ] == [
+        {
+            "message": "token_revoke_failed",
+            "jti": jti,
+            "exc_type": RuntimeError,
+            "exc_message": "redis revoke unavailable",
+        }
+    ]
 
 
 @pytest_asyncio.fixture
@@ -299,6 +374,7 @@ async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_re
         headers={"Authorization": f"Bearer {access_token}"},
     )
     assert revoke_resp.status_code == 204, revoke_resp.text
+    assert revoke_resp.content == b""
 
     await integration_db_session.refresh(record)
     assert record.is_revoked is True
@@ -308,6 +384,7 @@ async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_re
         headers={"Authorization": f"Bearer {full_api_token}"},
     )
     assert rejected_resp.status_code == 401, rejected_resp.text
+    assert rejected_resp.json() == {"detail": "Invalid or revoked API token"}
 
     create_audit = (
         await integration_db_session.execute(
@@ -349,6 +426,72 @@ async def test_real_jwt_created_api_token_authenticates_updates_last_used_and_re
 
 
 @pytest.mark.asyncio
+async def test_auth_token_routes_require_authorization_without_side_effects(
+    real_auth_client,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import ApiToken, AuditEvent
+
+    token_count_before = (
+        await integration_db_session.execute(select(func.count()).select_from(ApiToken))
+    ).scalar_one()
+    audit_count_before = (
+        await integration_db_session.execute(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(
+                AuditEvent.action.in_(
+                    ["auth.api_token_create", "auth.api_token_revoke"]
+                )
+            )
+        )
+    ).scalar_one()
+
+    responses = [
+        await real_auth_client.post(
+            "/api/v1/auth/tokens",
+            json={"name": "unauth-token", "scopes": ["project.read"]},
+        ),
+        await real_auth_client.get("/api/v1/auth/tokens"),
+        await real_auth_client.delete("/api/v1/auth/tokens/missing-token"),
+    ]
+
+    assert [
+        {"status_code": response.status_code, "body": response.json()}
+        for response in responses
+    ] == [
+        {
+            "status_code": 401,
+            "body": {"detail": "Missing Authorization header"},
+        },
+        {
+            "status_code": 401,
+            "body": {"detail": "Missing Authorization header"},
+        },
+        {
+            "status_code": 401,
+            "body": {"detail": "Missing Authorization header"},
+        },
+    ]
+    token_count_after = (
+        await integration_db_session.execute(select(func.count()).select_from(ApiToken))
+    ).scalar_one()
+    audit_count_after = (
+        await integration_db_session.execute(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(
+                AuditEvent.action.in_(
+                    ["auth.api_token_create", "auth.api_token_revoke"]
+                )
+            )
+        )
+    ).scalar_one()
+    assert token_count_after == token_count_before
+    assert audit_count_after == audit_count_before
+
+
+@pytest.mark.asyncio
 async def test_auth_tokens_list_is_paginated(real_auth_client):
     suffix = uuid4().hex[:8]
     username = f"api_token_page_{suffix}"
@@ -366,6 +509,7 @@ async def test_auth_tokens_list_is_paginated(real_auth_client):
     access_token = register_resp.json()["access_token"]
 
     token_names = [f"ci-page-{idx}-{suffix}" for idx in range(3)]
+    created_tokens = []
     for name in token_names:
         create_resp = await real_auth_client.post(
             "/api/v1/auth/tokens",
@@ -373,6 +517,18 @@ async def test_auth_tokens_list_is_paginated(real_auth_client):
             json={"name": name, "scopes": ["project.read"], "expires_days": 7},
         )
         assert create_resp.status_code == 201, create_resp.text
+        token_body = create_resp.json()
+        created_tokens.append(
+            {
+                "token_id": token_body["token_id"],
+                "name": token_body["name"],
+                "scopes": token_body["scopes"],
+                "expires_at": token_body["expires_at"],
+                "last_used_at": None,
+                "is_revoked": False,
+                "created_at": token_body["created_at"],
+            }
+        )
 
     page_resp = await real_auth_client.get(
         "/api/v1/auth/tokens",
@@ -381,21 +537,25 @@ async def test_auth_tokens_list_is_paginated(real_auth_client):
     )
     assert page_resp.status_code == 200, page_resp.text
     page_body = page_resp.json()
-    assert page_body["page"] == 2
-    assert page_body["per_page"] == 2
-    assert page_body["total"] == 3
-    assert len(page_body["data"]) == 1
-    assert page_body["data"][0]["name"] in token_names
-    assert "token" not in page_body["data"][0]
-
+    assert page_body == {
+        "data": [created_tokens[0]],
+        "page": 2,
+        "per_page": 2,
+        "total": 3,
+    }
     empty_resp = await real_auth_client.get(
         "/api/v1/auth/tokens",
         headers={"Authorization": f"Bearer {access_token}"},
         params={"page": 99, "per_page": 2},
     )
     assert empty_resp.status_code == 200, empty_resp.text
-    assert empty_resp.json()["data"] == []
-    assert empty_resp.json()["total"] == 3
+    empty_body = empty_resp.json()
+    assert empty_body == {
+        "data": [],
+        "page": 99,
+        "per_page": 2,
+        "total": 3,
+    }
 
 
 @pytest.mark.asyncio
@@ -418,18 +578,18 @@ async def test_audit_events_api_token_requires_audit_read_scope_without_self_aud
     resource_id = uuid4()
     action = f"audit.scope_probe.{uuid4().hex}"
 
-    integration_db_session.add(
-        AuditEvent(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            action=action,
-            resource_type="project",
-            resource_id=resource_id,
-            before_state=None,
-            after_state={"marker": action},
-        )
+    audit_event = AuditEvent(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action=action,
+        resource_type="project",
+        resource_id=resource_id,
+        before_state=None,
+        after_state={"marker": action},
     )
+    integration_db_session.add(audit_event)
     await integration_db_session.commit()
+    await integration_db_session.refresh(audit_event)
 
     async def count_self_audits() -> int:
         result = await integration_db_session.execute(
@@ -489,6 +649,7 @@ async def test_audit_events_api_token_requires_audit_read_scope_without_self_aud
             params=params,
         )
         assert denied_resp.status_code == 403, f"{label}: {denied_resp.text}"
+        assert denied_resp.json() == {"detail": "Insufficient permissions"}
         assert action not in denied_resp.text, label
         assert str(resource_id) not in denied_resp.text, label
 
@@ -501,10 +662,29 @@ async def test_audit_events_api_token_requires_audit_read_scope_without_self_aud
     )
     assert allowed_resp.status_code == 200, allowed_resp.text
     body = allowed_resp.json()
-    assert body["total"] == 1
-    assert [item["action"] for item in body["data"]] == [action]
-    assert body["data"][0]["resource_id"] == str(resource_id)
-
+    assert body == {
+        "data": [
+            {
+                "id": str(audit_event.id),
+                "tenant_id": str(tenant_id),
+                "user_id": str(user_id),
+                "action": action,
+                "resource_type": "project",
+                "resource_id": str(resource_id),
+                "before_state": None,
+                "after_state": {"marker": action},
+                "ip_address": None,
+                "user_agent": None,
+                "created_at": audit_event.created_at.isoformat().replace(
+                    "+00:00",
+                    "Z",
+                ),
+            }
+        ],
+        "page": 1,
+        "per_page": 10,
+        "total": 1,
+    }
     assert await count_self_audits() == before_self_audits + 1
     self_audit = (
         await integration_db_session.execute(
@@ -519,27 +699,17 @@ async def test_audit_events_api_token_requires_audit_read_scope_without_self_aud
             .limit(1)
         )
     ).scalar_one()
-    assert set(self_audit.after_state) == {
-        "actor_id",
-        "action",
-        "resource_type",
-        "resource_id",
-        "start_at",
-        "end_at",
-        "page",
-        "per_page",
-        "total",
+    assert self_audit.after_state == {
+        "actor_id": None,
+        "action": action,
+        "resource_type": "project",
+        "resource_id": str(resource_id),
+        "start_at": None,
+        "end_at": None,
+        "page": 1,
+        "per_page": 10,
+        "total": 1,
     }
-    assert self_audit.after_state["actor_id"] is None
-    assert self_audit.after_state["action"] == action
-    assert self_audit.after_state["resource_type"] == "project"
-    assert self_audit.after_state["resource_id"] == str(resource_id)
-    assert self_audit.after_state["start_at"] is None
-    assert self_audit.after_state["end_at"] is None
-    assert self_audit.after_state["page"] == 1
-    assert self_audit.after_state["per_page"] == 10
-    assert self_audit.after_state["total"] == 1
-    assert "data" not in self_audit.after_state
 
 
 @pytest.mark.asyncio
@@ -592,6 +762,7 @@ async def test_auth_refresh_logout_audits_do_not_store_tokens_or_passwords(
         },
     )
     assert logout_resp.status_code == 204, logout_resp.text
+    assert logout_resp.content == b""
 
     audits = (
         await integration_db_session.execute(
@@ -605,11 +776,13 @@ async def test_auth_refresh_logout_audits_do_not_store_tokens_or_passwords(
     ).scalars().all()
     audits_by_action = {audit.action: audit for audit in audits}
 
-    assert set(audits_by_action) == {
-        "auth.register",
-        "auth.refresh",
-        "auth.logout",
-    }
+    assert Counter(audit.action for audit in audits) == Counter(
+        {
+            "auth.register": 1,
+            "auth.refresh": 1,
+            "auth.logout": 1,
+        }
+    )
     register_audit = audits_by_action["auth.register"]
     refresh_audit = audits_by_action["auth.refresh"]
     logout_audit = audits_by_action["auth.logout"]
@@ -618,10 +791,14 @@ async def test_auth_refresh_logout_audits_do_not_store_tokens_or_passwords(
     assert register_audit.after_state == {"username": username, "email": email}
     assert refresh_audit.tenant_id == tenant_id
     assert refresh_audit.before_state is not None
-    assert set(refresh_audit.before_state) == {"old_jti"}
-    assert refresh_audit.before_state["old_jti"]
+    old_refresh_jti = refresh_audit.before_state.get("old_jti")
+    assert refresh_audit.before_state == {"old_jti": old_refresh_jti}
+    assert old_refresh_jti
     assert refresh_audit.after_state is not None
-    assert set(refresh_audit.after_state) == {"new_jti"}
+    new_refresh_jti = refresh_audit.after_state.get("new_jti")
+    assert refresh_audit.after_state == {"new_jti": new_refresh_jti}
+    assert new_refresh_jti
+    assert new_refresh_jti != old_refresh_jti
     assert logout_audit.tenant_id == tenant_id
     assert logout_audit.after_state == {"had_access_token": True}
 
@@ -687,24 +864,34 @@ async def test_refresh_survives_refresh_token_revoke_outage(
     access_token = await _register_real_user(real_auth_client, prefix="refresh_revoke")
     jwt_svc = JWTService(real_auth_app.state.container.settings)
     user_id = jwt_svc.decode_token(access_token)["sub"]
+    refresh_token = jwt_svc.create_refresh_token(user_id)
+    old_refresh_payload = jwt_svc.decode_token(refresh_token)
+    old_jti = old_refresh_payload["jti"]
     real_auth_client.cookies.set(
         "refresh_token",
-        jwt_svc.create_refresh_token(user_id),
+        refresh_token,
         path="/api/v1/auth",
     )
     redis = real_auth_app.state.container.redis_client
 
-    async def _raise_revoke_outage(*args, **kwargs):
-        raise RuntimeError("redis revoke unavailable")
-
-    monkeypatch.setattr(redis, "set", _raise_revoke_outage)
+    revoke_spy = AsyncMock(side_effect=RuntimeError("redis revoke unavailable"))
+    monkeypatch.setattr(redis, "set", revoke_spy)
     caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
 
     resp = await real_auth_client.post("/api/v1/auth/refresh")
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["access_token"]
-    assert "token_revoke_failed" in caplog.text
+    body = resp.json()
+    assert body["access_token"]
+    assert body["token_type"] == "bearer"
+    revoke_spy.assert_awaited_once()
+    assert revoke_spy.await_args.args == (f"jwt:revoked:{old_jti}", "1")
+    (revoke_expires_in,) = revoke_spy.await_args.kwargs.values()
+    assert revoke_spy.await_args.kwargs == {"ex": revoke_expires_in}
+    assert 1 <= revoke_expires_in <= (
+        real_auth_app.state.container.settings.jwt_refresh_token_ttl
+    )
+    _assert_token_revoke_warning(caplog, old_jti)
 
 
 @pytest.mark.asyncio
@@ -756,6 +943,10 @@ async def test_real_sse_logs_resume_after_last_event_id_uses_ticket_rbac_and_red
         scopes=[],
     )
 
+    missing_ticket_resp = await real_auth_client.get(f"/api/v1/runs/{run_id}/logs")
+    assert missing_ticket_resp.status_code == 401, missing_ticket_resp.text
+    assert missing_ticket_resp.json() == {"detail": "Invalid or expired SSE ticket"}
+
     ticket_resp = await real_auth_client.post(
         "/api/v1/auth/sse-ticket",
         headers={"Authorization": f"Bearer {access_token}"},
@@ -769,16 +960,30 @@ async def test_real_sse_logs_resume_after_last_event_id_uses_ticket_rbac_and_red
     )
     assert resume_resp.status_code == 200, resume_resp.text
     assert "text/event-stream" in resume_resp.headers.get("content-type", "")
-    assert first_line not in resume_resp.text
-    assert second_line in resume_resp.text
-    assert "event: done" in resume_resp.text
-    assert '"status": "done"' in resume_resp.text
+    log_events = _parse_sse_events(resume_resp.text)
+    expected_log_frames = [
+        {
+            "event": "log",
+            "id": entries[1]["id"],
+            "data": {"stream": "stderr", "line": second_line},
+        },
+        {"event": "done", "id": None, "data": {"status": "done"}},
+    ]
+    assert [
+        {
+            "event": event["event"],
+            "id": event.get("id"),
+            "data": json.loads(event["data"]),
+        }
+        for event in log_events
+    ] == expected_log_frames
 
     reuse_resp = await real_auth_client.get(
         f"/api/v1/runs/{run_id}/logs?ticket={ticket}",
         headers={"Last-Event-ID": entries[0]["id"]},
     )
     assert reuse_resp.status_code == 401, reuse_resp.text
+    assert reuse_resp.json() == {"detail": "Invalid or expired SSE ticket"}
 
     run_read_ticket_resp = await real_auth_client.post(
         "/api/v1/auth/sse-ticket",
@@ -790,8 +995,15 @@ async def test_real_sse_logs_resume_after_last_event_id_uses_ticket_rbac_and_red
         headers={"Last-Event-ID": entries[0]["id"]},
     )
     assert run_read_resp.status_code == 200, run_read_resp.text
-    assert first_line not in run_read_resp.text
-    assert second_line in run_read_resp.text
+    run_read_events = _parse_sse_events(run_read_resp.text)
+    assert [
+        {
+            "event": event["event"],
+            "id": event.get("id"),
+            "data": json.loads(event["data"]),
+        }
+        for event in run_read_events
+    ] == expected_log_frames
 
     empty_ticket_resp = await real_auth_client.post(
         "/api/v1/auth/sse-ticket",
@@ -803,8 +1015,7 @@ async def test_real_sse_logs_resume_after_last_event_id_uses_ticket_rbac_and_red
         headers={"Last-Event-ID": entries[0]["id"]},
     )
     assert empty_resp.status_code == 403, empty_resp.text
-    assert first_line not in empty_resp.text
-    assert second_line not in empty_resp.text
+    assert empty_resp.json() == {"detail": "Insufficient permissions"}
 
 
 @pytest.mark.asyncio
@@ -829,7 +1040,27 @@ async def test_real_sse_events_resume_after_last_event_id_uses_ticket_rbac_and_r
     await publish_status_event(redis, run_id, "running", previous="preparing")
     await publish_status_event(redis, run_id, "done", previous="running")
     events = await redis.xrange(EVENT_STREAM_KEY.format(run_id=run_id))
-    assert len(events) == 2
+    event_payloads = [_decode_redis_entry(data) for _event_id, data in events]
+    assert [
+        {
+            "run_id": payload["run_id"],
+            "status": payload["status"],
+            "previous": payload["previous"],
+        }
+        for payload in event_payloads
+    ] == [
+        {
+            "run_id": run_id,
+            "status": "running",
+            "previous": "preparing",
+        },
+        {
+            "run_id": run_id,
+            "status": "done",
+            "previous": "running",
+        },
+    ]
+    assert [bool(payload["timestamp"]) for payload in event_payloads] == [True, True]
     first_event_id = events[0][0]
     second_event_id = events[1][0]
 
@@ -846,18 +1077,35 @@ async def test_real_sse_events_resume_after_last_event_id_uses_ticket_rbac_and_r
     )
     assert resume_resp.status_code == 200, resume_resp.text
     assert "text/event-stream" in resume_resp.headers.get("content-type", "")
-    assert f"id: {first_event_id}" not in resume_resp.text
-    assert f"id: {second_event_id}" in resume_resp.text
-    assert "event: status_change" in resume_resp.text
-    assert '"status": "done"' in resume_resp.text
-    assert '"previous": "running"' in resume_resp.text
-    assert "event: done" in resume_resp.text
+    sse_events = _parse_sse_events(resume_resp.text)
+    expected_sse_frames = [
+        {
+            "event": "status_change",
+            "id": second_event_id,
+            "data": {
+                "run_id": run_id,
+                "status": "done",
+                "previous": "running",
+                "timestamp": event_payloads[1]["timestamp"],
+            },
+        },
+        {"event": "done", "id": None, "data": {"status": "done"}},
+    ]
+    assert [
+        {
+            "event": event["event"],
+            "id": event.get("id"),
+            "data": json.loads(event["data"]),
+        }
+        for event in sse_events
+    ] == expected_sse_frames
 
     reuse_resp = await real_auth_client.get(
         f"/api/v1/runs/{run_id}/events?ticket={ticket}",
         headers={"Last-Event-ID": first_event_id},
     )
     assert reuse_resp.status_code == 401, reuse_resp.text
+    assert reuse_resp.json() == {"detail": "Invalid or expired SSE ticket"}
 
 
 @pytest.mark.asyncio
@@ -902,11 +1150,18 @@ async def test_archived_logs_api_replays_s3_jsonl_after_real_rbac(
 
     assert replay_resp.status_code == 200, replay_resp.text
     body = replay_resp.json()
-    assert body["total"] == 5
-    assert body["data"][:2] == [
-        {"stream": "stdout", "line": "archived-line-0"},
-        {"stream": "stdout", "line": "archived-line-1"},
-    ]
+    assert body == {
+        "data": [
+            {"stream": "stdout", "line": "archived-line-0"},
+            {"stream": "stdout", "line": "archived-line-1"},
+            {"stream": "stdout", "line": "archived-line-2"},
+            {"stream": "stderr", "line": "archived-line-3"},
+            {"stream": "stdout", "line": "archived-line-4"},
+        ],
+        "page": 1,
+        "per_page": 100,
+        "total": 5,
+    }
 
     page_resp = await real_auth_client.get(
         f"/api/v1/runs/{run_id}/logs/archive",
@@ -915,13 +1170,15 @@ async def test_archived_logs_api_replays_s3_jsonl_after_real_rbac(
     )
     assert page_resp.status_code == 200, page_resp.text
     page_body = page_resp.json()
-    assert page_body["total"] == 5
-    assert page_body["page"] == 2
-    assert page_body["per_page"] == 2
-    assert page_body["data"] == [
-        {"stream": "stdout", "line": "archived-line-2"},
-        {"stream": "stderr", "line": "archived-line-3"},
-    ]
+    assert page_body == {
+        "data": [
+            {"stream": "stdout", "line": "archived-line-2"},
+            {"stream": "stderr", "line": "archived-line-3"},
+        ],
+        "page": 2,
+        "per_page": 2,
+        "total": 5,
+    }
 
 
 @pytest.mark.asyncio
@@ -971,17 +1228,11 @@ async def test_archived_logs_api_replays_large_page_without_presign_after_real_r
 
     assert replay_resp.status_code == 200, replay_resp.text
     body = replay_resp.json()
-    assert body["total"] == 1500
-    assert body["page"] == 15
-    assert body["per_page"] == 100
-    assert len(body["data"]) == 100
-    assert body["data"][0] == {
-        "stream": "stdout",
-        "line": "archived-large-line-1400",
-    }
-    assert body["data"][-1] == {
-        "stream": "stdout",
-        "line": "archived-large-line-1499",
+    assert body == {
+        "data": entries[1400:1500],
+        "page": 15,
+        "per_page": 100,
+        "total": 1500,
     }
     assert s3.get_calls == [{"bucket": bucket, "key": f"logs/{run_id}.jsonl"}]
     assert s3.presign_calls == []
@@ -1043,6 +1294,7 @@ async def test_archived_logs_api_token_requires_run_read_scope(
             headers={"Authorization": f"Bearer {denied_token}"},
         )
         assert denied_resp.status_code == 403, f"{label}: {denied_resp.text}"
+        assert denied_resp.json() == {"detail": "Insufficient permissions"}
         assert f"logs/{run_id}.jsonl" not in denied_resp.text, label
         assert "scope-line-" not in denied_resp.text, label
     assert s3.get_calls == []
@@ -1157,9 +1409,24 @@ async def test_run_read_token_replays_logs_and_presigns_artifact_without_extra_s
 
     assert list_resp.status_code == 200, list_resp.text
     artifacts_body = list_resp.json()
-    assert artifacts_body["total"] == 1
-    assert artifacts_body["data"][0]["id"] == str(artifact.id)
-    assert artifacts_body["data"][0]["storage_path"] == storage_path
+    assert artifacts_body == {
+        "data": [
+            {
+                "id": str(artifact.id),
+                "run_id": str(run_id),
+                "type": "html",
+                "name": "bundle-summary.html",
+                "storage_path": storage_path,
+                "size_bytes": 512,
+                "mime_type": "text/html",
+                "expires_at": None,
+                "created_at": _json_datetime(artifact.created_at),
+            }
+        ],
+        "page": 1,
+        "per_page": 10,
+        "total": 1,
+    }
 
     assert download_resp.status_code == 200, download_resp.text
     ttl = real_auth_app.state.container.settings.s3_presigned_url_ttl
@@ -1250,9 +1517,14 @@ async def test_archived_logs_api_returns_404_when_s3_object_missing(
     )
 
     assert replay_resp.status_code == 404, replay_resp.text
-    error = replay_resp.json()["error"]
-    assert error["code"] == "NOT_FOUND"
-    assert error["message"] == "Archived logs not found"
+    assert replay_resp.json() == {
+        "error": {
+            "code": "NOT_FOUND",
+            "message": "Archived logs not found",
+            "details": [],
+        }
+    }
+    assert str(run_id) not in replay_resp.text
 
 
 @pytest.mark.asyncio
@@ -1282,7 +1554,7 @@ async def test_archived_logs_api_returns_503_when_storage_unconfigured_after_rba
         real_auth_app.state.container.s3_client = old_s3
 
     assert replay_resp.status_code == 503, replay_resp.text
-    assert replay_resp.json()["detail"] == "Archived logs are not available"
+    assert replay_resp.json() == {"detail": "Archived logs are not available"}
 
 
 @pytest.mark.asyncio
@@ -1323,9 +1595,24 @@ async def test_artifact_download_url_uses_real_auth_rbac_and_db_row(
     )
     assert list_resp.status_code == 200, list_resp.text
     list_body = list_resp.json()
-    assert list_body["total"] == 1
-    assert list_body["data"][0]["id"] == str(artifact.id)
-    assert list_body["data"][0]["storage_path"] == storage_path
+    assert list_body == {
+        "data": [
+            {
+                "id": str(artifact.id),
+                "run_id": str(run_id),
+                "type": "html",
+                "name": "summary.html",
+                "storage_path": storage_path,
+                "size_bytes": 128,
+                "mime_type": "text/html",
+                "expires_at": None,
+                "created_at": _json_datetime(artifact.created_at),
+            }
+        ],
+        "page": 1,
+        "per_page": 20,
+        "total": 1,
+    }
 
     s3 = _MemoryS3()
     real_auth_app.state.container.s3_client = s3
@@ -1449,6 +1736,7 @@ async def test_artifact_list_api_token_requires_run_read_scope(
     run_id = trigger_resp.json()["id"]
 
     artifact_repo = ArtifactRepository(integration_db_session)
+    artifact_created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     first = await artifact_repo.create(
         run_id=run_id,
         type="html",
@@ -1456,6 +1744,7 @@ async def test_artifact_list_api_token_requires_run_read_scope(
         storage_path=f"reports/{run_id}/summary.html",
         size_bytes=128,
         mime_type="text/html",
+        created_at=artifact_created_at,
     )
     second = await artifact_repo.create(
         run_id=run_id,
@@ -1464,6 +1753,7 @@ async def test_artifact_list_api_token_requires_run_read_scope(
         storage_path=f"reports/{run_id}/results.xml",
         size_bytes=256,
         mime_type="application/xml",
+        created_at=artifact_created_at + timedelta(seconds=1),
     )
     await integration_db_session.commit()
 
@@ -1502,6 +1792,7 @@ async def test_artifact_list_api_token_requires_run_read_scope(
         real_auth_app.state.container.s3_client = old_s3
     for label, denied_resp in denied_responses:
         assert denied_resp.status_code == 403, f"{label}: {denied_resp.text}"
+        assert denied_resp.json() == {"detail": "Insufficient permissions"}
         assert "summary.html" not in denied_resp.text, label
         assert "results.xml" not in denied_resp.text, label
         assert f"reports/{run_id}/" not in denied_resp.text, label
@@ -1521,29 +1812,26 @@ async def test_artifact_list_api_token_requires_run_read_scope(
     )
     assert allowed_resp.status_code == 200, allowed_resp.text
     body = allowed_resp.json()
-    assert body["total"] == 2
-    assert body["page"] == 1
-    assert body["per_page"] == 10
-    artifacts_by_id = {item["id"]: item for item in body["data"]}
-    assert set(artifacts_by_id) == {str(first.id), str(second.id)}
-    first_body = artifacts_by_id[str(first.id)]
-    assert first_body["run_id"] == run_id
-    assert first_body["type"] == "html"
-    assert first_body["name"] == "summary.html"
-    assert first_body["storage_path"] == f"reports/{run_id}/summary.html"
-    assert first_body["size_bytes"] == 128
-    assert first_body["mime_type"] == "text/html"
-    assert first_body["expires_at"] is None
-    assert first_body["created_at"]
-    second_body = artifacts_by_id[str(second.id)]
-    assert second_body["run_id"] == run_id
-    assert second_body["type"] == "junit"
-    assert second_body["name"] == "results.xml"
-    assert second_body["storage_path"] == f"reports/{run_id}/results.xml"
-    assert second_body["size_bytes"] == 256
-    assert second_body["mime_type"] == "application/xml"
-    assert second_body["expires_at"] is None
-    assert second_body["created_at"]
+    expected_body = {
+        "data": [
+            {
+                "id": str(artifact.id),
+                "run_id": run_id,
+                "type": artifact.type,
+                "name": artifact.name,
+                "storage_path": artifact.storage_path,
+                "size_bytes": artifact.size_bytes,
+                "mime_type": artifact.mime_type,
+                "expires_at": None,
+                "created_at": _json_datetime(artifact.created_at),
+            }
+            for artifact in (second, first)
+        ],
+        "page": 1,
+        "per_page": 10,
+        "total": 2,
+    }
+    assert body == expected_body
 
 
 @pytest.mark.asyncio
@@ -1601,28 +1889,33 @@ async def test_run_artifacts_list_paginates_real_db_without_s3_side_effects(
 
     assert page_two_resp.status_code == 200, page_two_resp.text
     page_two = page_two_resp.json()
-    assert page_two["page"] == 2
-    assert page_two["per_page"] == 2
-    assert page_two["total"] == 5
-    assert [item["id"] for item in page_two["data"]] == [
-        str(artifact.id) for artifact in expected_desc[2:4]
-    ]
-    assert [item["name"] for item in page_two["data"]] == [
-        artifact.name for artifact in expected_desc[2:4]
-    ]
-    assert [item["storage_path"] for item in page_two["data"]] == [
-        artifact.storage_path for artifact in expected_desc[2:4]
-    ]
-    assert [item["size_bytes"] for item in page_two["data"]] == [
-        artifact.size_bytes for artifact in expected_desc[2:4]
-    ]
-
+    assert page_two == {
+        "data": [
+            {
+                "id": str(artifact.id),
+                "run_id": run_id,
+                "type": "report",
+                "name": artifact.name,
+                "storage_path": artifact.storage_path,
+                "size_bytes": artifact.size_bytes,
+                "mime_type": "text/html",
+                "expires_at": None,
+                "created_at": _json_datetime(artifact.created_at),
+            }
+            for artifact in expected_desc[2:4]
+        ],
+        "page": 2,
+        "per_page": 2,
+        "total": 5,
+    }
     assert empty_page_resp.status_code == 200, empty_page_resp.text
     empty_page = empty_page_resp.json()
-    assert empty_page["page"] == 4
-    assert empty_page["per_page"] == 2
-    assert empty_page["total"] == 5
-    assert empty_page["data"] == []
+    assert empty_page == {
+        "data": [],
+        "page": 4,
+        "per_page": 2,
+        "total": 5,
+    }
 
     assert s3.presign_calls == []
     assert s3.get_calls == []
@@ -1683,6 +1976,7 @@ async def test_artifact_download_api_token_requires_run_read_scope(
             headers={"Authorization": f"Bearer {denied_token}"},
         )
         assert denied_resp.status_code == 403, f"{label}: {denied_resp.text}"
+        assert denied_resp.json() == {"detail": "Insufficient permissions"}
         assert artifact.name not in denied_resp.text, label
         assert artifact.storage_path not in denied_resp.text, label
     assert s3.presign_calls == []
@@ -1757,7 +2051,7 @@ async def test_artifact_download_returns_503_when_storage_unconfigured_after_rba
         real_auth_app.state.container.s3_client = old_s3
 
     assert download_resp.status_code == 503, download_resp.text
-    assert download_resp.json()["detail"] == "Artifact download is not available"
+    assert download_resp.json() == {"detail": "Artifact download is not available"}
 
 
 @pytest.mark.asyncio
@@ -1822,7 +2116,14 @@ async def test_artifact_download_soft_deleted_row_returns_404_without_presign(
 
     assert random_resp.status_code == 404, random_resp.text
     assert deleted_resp.status_code == 404, deleted_resp.text
-    assert deleted_resp.json() == random_resp.json()
+    expected_404 = {
+        "error": {
+            "code": "NOT_FOUND",
+            "message": "Artifact not found",
+            "details": [],
+        }
+    }
+    assert deleted_resp.json() == random_resp.json() == expected_404
     assert s3.presign_calls == []
     assert s3.get_calls == []
 
@@ -1878,8 +2179,18 @@ async def test_artifact_download_api_token_cross_tenant_returns_same_404(
     )
 
     assert tenant_b_resp.status_code == random_resp.status_code == 404
-    assert tenant_b_resp.json() == random_resp.json()
+    expected_404 = {
+        "error": {
+            "code": "NOT_FOUND",
+            "message": "Artifact not found",
+            "details": [],
+        }
+    }
+    assert tenant_b_resp.json() == random_resp.json() == expected_404
+    assert str(artifact_b.id) not in tenant_b_resp.text
+    assert artifact_b.storage_path not in tenant_b_resp.text
     assert s3.presign_calls == []
+    assert s3.get_calls == []
 
 
 @pytest.mark.asyncio
@@ -1920,17 +2231,75 @@ async def test_artifact_upload_enforces_limits_before_real_db_rows(
     await integration_db_session.commit()
 
     rows, total = await artifact_repo.list_by_run(run_id, limit=10)
-    assert total == 2
-    assert {row.name for row in rows} == {"a.txt", "c.txt"}
-    assert {
-        key for _bucket, key in s3.objects
-    } == {
-        f"reports/{run_id}/a.txt",
-        f"reports/{run_id}/c.txt",
+    artifact_rows = sorted(
+        [
+            {
+                "run_id": str(row.run_id),
+                "type": row.type,
+                "name": row.name,
+                "storage_path": row.storage_path,
+                "size_bytes": row.size_bytes,
+                "mime_type": row.mime_type,
+            }
+            for row in rows
+        ],
+        key=lambda row: row["name"],
+    )
+    assert {"total": total, "rows": artifact_rows} == {
+        "total": 2,
+        "rows": [
+            {
+                "run_id": str(run_id),
+                "type": "log",
+                "name": "a.txt",
+                "storage_path": f"reports/{run_id}/a.txt",
+                "size_bytes": 2,
+                "mime_type": "text/plain",
+            },
+            {
+                "run_id": str(run_id),
+                "type": "log",
+                "name": "c.txt",
+                "storage_path": f"reports/{run_id}/c.txt",
+                "size_bytes": 2,
+                "mime_type": "text/plain",
+            },
+        ],
     }
-    log_lines = [call.args[1] for call in log_stream.write_log.await_args_list]
-    assert any("exceeds limit" in line and "b.txt" in line for line in log_lines)
-    assert any("count limit exceeded" in line and "d.txt" in line for line in log_lines)
+    assert s3.objects == {
+        ("qa-platform-test", f"reports/{run_id}/a.txt"): b"ok",
+        ("qa-platform-test", f"reports/{run_id}/c.txt"): b"ok",
+    }
+    log_calls = [
+        {
+            "run_id": call.args[0],
+            "line": call.args[1],
+            "stream": call.kwargs.get("stream", "stdout"),
+        }
+        for call in log_stream.write_log.await_args_list
+    ]
+    assert log_calls == [
+        {
+            "run_id": str(run_id),
+            "line": "Uploaded artifact: a.txt",
+            "stream": "stdout",
+        },
+        {
+            "run_id": str(run_id),
+            "line": "Skipped artifact b.txt: size 9 exceeds limit 2 bytes",
+            "stream": "stderr",
+        },
+        {
+            "run_id": str(run_id),
+            "line": "Uploaded artifact: c.txt",
+            "stream": "stdout",
+        },
+        {
+            "run_id": str(run_id),
+            "line": "Skipped artifact d.txt: artifact count limit exceeded",
+            "stream": "stderr",
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -2012,27 +2381,58 @@ async def test_artifact_upload_recurses_allure_report_with_real_db_rows(
     await integration_db_session.commit()
 
     rows, total = await artifact_repo.list_by_run(run_id, limit=10)
-    by_name = {row.name: row for row in rows}
     assert total == 2
-    assert set(by_name) == {
-        "allure-report/assets/app.js",
-        "allure-report/index.html",
-    }
-    assert by_name["allure-report/index.html"].type == "allure-report"
-    assert by_name["allure-report/index.html"].mime_type == "text/html"
-    assert by_name["allure-report/assets/app.js"].type == "allure-report"
-    assert {
-        key for _bucket, key in s3.objects
-    } == {
-        f"reports/{run_id}/allure-report/assets/app.js",
-        f"reports/{run_id}/allure-report/index.html",
+    artifact_rows = sorted(
+        [
+            {
+                "run_id": str(row.run_id),
+                "type": row.type,
+                "name": row.name,
+                "storage_path": row.storage_path,
+                "size_bytes": row.size_bytes,
+                "mime_type": row.mime_type,
+            }
+            for row in rows
+        ],
+        key=lambda item: item["name"],
+    )
+    assert artifact_rows == [
+        {
+            "run_id": str(run_id),
+            "type": "allure-report",
+            "name": "allure-report/assets/app.js",
+            "storage_path": f"reports/{run_id}/allure-report/assets/app.js",
+            "size_bytes": len("ok"),
+            "mime_type": "text/javascript",
+        },
+        {
+            "run_id": str(run_id),
+            "type": "allure-report",
+            "name": "allure-report/index.html",
+            "storage_path": f"reports/{run_id}/allure-report/index.html",
+            "size_bytes": len("<html/>"),
+            "mime_type": "text/html",
+        },
+    ]
+    assert s3.objects == {
+        (
+            "qa-platform-test",
+            f"reports/{run_id}/allure-report/assets/app.js",
+        ): b"ok",
+        (
+            "qa-platform-test",
+            f"reports/{run_id}/allure-report/index.html",
+        ): b"<html/>",
     }
 
 
 @pytest.mark.asyncio
 async def test_api_token_scope_matrix_enforced_by_real_routes(
     real_auth_client,
+    integration_db_session,
 ):
+    from qaplatform.infra.database.models import Project, Run, RunStatusEnum, Schedule
+
     access_token = await _register_real_user(real_auth_client, prefix="scope_matrix")
     stack = await _create_project_environment_and_pipeline(real_auth_client, access_token)
 
@@ -2045,17 +2445,28 @@ async def test_api_token_scope_matrix_enforced_by_real_routes(
     read_headers = {"Authorization": f"Bearer {read_token}"}
     read_resp = await real_auth_client.get("/api/v1/projects", headers=read_headers)
     assert read_resp.status_code == 200, read_resp.text
+    read_body = read_resp.json()
+    assert read_body["total"] == 1
+    assert [item["id"] for item in read_body["data"]] == [stack["project_id"]]
 
+    denied_slug = f"denied-{uuid4().hex[:8]}"
     denied_write = await real_auth_client.post(
         "/api/v1/projects",
         headers=read_headers,
         json={
             "name": "denied",
-            "slug": f"denied-{uuid4().hex[:8]}",
+            "slug": denied_slug,
             "git_url": "https://example.com/denied.git",
         },
     )
     assert denied_write.status_code == 403, denied_write.text
+    assert denied_write.json() == {"detail": "Insufficient permissions"}
+    denied_project_count = await integration_db_session.scalar(
+        select(func.count())
+        .select_from(Project)
+        .where(Project.slug == denied_slug)
+    )
+    assert denied_project_count == 0
 
     run_trigger_token = await _create_real_api_token(
         real_auth_client,
@@ -2070,7 +2481,29 @@ async def test_api_token_scope_matrix_enforced_by_real_routes(
         json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
     )
     assert trigger_resp.status_code == 201, trigger_resp.text
+    triggered = trigger_resp.json()
+    assert triggered["project_id"] == stack["project_id"]
+    assert triggered["pipeline_id"] == stack["pipeline_id"]
+    assert triggered["environment_id"] == stack["environment_id"]
+    assert triggered["status"] == "queued"
+    assert triggered["trigger_type"] == "manual"
+    assert triggered["git_ref"] == "main"
+    run = await integration_db_session.get(Run, UUID(triggered["id"]))
+    assert run is not None
+    assert str(run.project_id) == stack["project_id"]
+    assert str(run.pipeline_id) == stack["pipeline_id"]
+    assert str(run.environment_id) == stack["environment_id"]
+    assert run.status == RunStatusEnum.QUEUED
+    assert run.trigger_type == "manual"
 
+    schedule_count_before = await integration_db_session.scalar(
+        select(func.count())
+        .select_from(Schedule)
+        .where(
+            Schedule.project_id == UUID(stack["project_id"]),
+            Schedule.pipeline_id == UUID(stack["pipeline_id"]),
+        )
+    )
     denied_schedule = await real_auth_client.post(
         f"/api/v1/projects/{stack['project_id']}/schedules",
         headers=run_headers,
@@ -2084,6 +2517,16 @@ async def test_api_token_scope_matrix_enforced_by_real_routes(
         },
     )
     assert denied_schedule.status_code == 403, denied_schedule.text
+    assert denied_schedule.json() == {"detail": "Insufficient permissions"}
+    schedule_count_after = await integration_db_session.scalar(
+        select(func.count())
+        .select_from(Schedule)
+        .where(
+            Schedule.project_id == UUID(stack["project_id"]),
+            Schedule.pipeline_id == UUID(stack["pipeline_id"]),
+        )
+    )
+    assert schedule_count_after == schedule_count_before
 
     wrong_scope_token = await _create_real_api_token(
         real_auth_client,
@@ -2096,6 +2539,7 @@ async def test_api_token_scope_matrix_enforced_by_real_routes(
         headers={"Authorization": f"Bearer {wrong_scope_token}"},
     )
     assert wrong_scope_resp.status_code == 403, wrong_scope_resp.text
+    assert wrong_scope_resp.json() == {"detail": "Insufficient permissions"}
 
     empty_scope_token = await _create_real_api_token(
         real_auth_client,
@@ -2109,6 +2553,7 @@ async def test_api_token_scope_matrix_enforced_by_real_routes(
         json={"pipeline_id": stack["pipeline_id"], "git_ref": "main"},
     )
     assert empty_scope_resp.status_code == 403, empty_scope_resp.text
+    assert empty_scope_resp.json() == {"detail": "Insufficient permissions"}
 
 
 @pytest.mark.asyncio
@@ -2122,8 +2567,9 @@ async def test_run_results_api_filters_real_rows_and_recovers_after_duplicate(
 
     run_id = seed_run["run"].id
     repo = TestResultRepository(integration_db_session)
+    result_created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
-    await repo.bulk_create(
+    created_results = await repo.bulk_create(
         [
             {
                 "run_id": run_id,
@@ -2133,6 +2579,7 @@ async def test_run_results_api_filters_real_rows_and_recovers_after_duplicate(
                 "duration_ms": 42,
                 "tags": ["smoke"],
                 "metadata_": {"node": "gw0"},
+                "created_at": result_created_at,
             },
             {
                 "run_id": run_id,
@@ -2143,10 +2590,37 @@ async def test_run_results_api_filters_real_rows_and_recovers_after_duplicate(
                 "error_message": "AssertionError: card declined",
                 "tags": ["payments"],
                 "metadata_": {"node": "gw1"},
+                "created_at": result_created_at + timedelta(seconds=1),
             },
         ]
     )
     await integration_db_session.commit()
+    expected_results_by_name = {
+        "test_cart_total": {
+            "id": str(created_results[0].id),
+            "run_id": str(run_id),
+            "suite": "checkout",
+            "name": "test_cart_total",
+            "status": "passed",
+            "duration_ms": 42,
+            "error_message": None,
+            "stack_trace": None,
+            "tags": ["smoke"],
+            "metadata": {"node": "gw0"},
+        },
+        "test_payment_decline": {
+            "id": str(created_results[1].id),
+            "run_id": str(run_id),
+            "suite": "checkout",
+            "name": "test_payment_decline",
+            "status": "failed",
+            "duration_ms": 87,
+            "error_message": "AssertionError: card declined",
+            "stack_trace": None,
+            "tags": ["payments"],
+            "metadata": {"node": "gw1"},
+        },
+    }
 
     resp = await integration_client.get(
         f"/api/v1/runs/{run_id}/results",
@@ -2154,11 +2628,13 @@ async def test_run_results_api_filters_real_rows_and_recovers_after_duplicate(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["total"] == 1
-    assert body["data"][0]["name"] == "test_payment_decline"
-    assert body["data"][0]["status"] == "failed"
-
-    with pytest.raises(IntegrityError):
+    assert body == {
+        "data": [expected_results_by_name["test_payment_decline"]],
+        "page": 1,
+        "per_page": 20,
+        "total": 1,
+    }
+    with pytest.raises(IntegrityError) as exc_info:
         await repo.bulk_create(
             [
                 {
@@ -2173,6 +2649,7 @@ async def test_run_results_api_filters_real_rows_and_recovers_after_duplicate(
             ]
         )
         await integration_db_session.commit()
+    _assert_integrity_constraint(exc_info.value, "uq_test_result_run_suite_name")
 
     await integration_db_session.rollback()
 
@@ -2182,10 +2659,15 @@ async def test_run_results_api_filters_real_rows_and_recovers_after_duplicate(
     )
     assert after_rollback_resp.status_code == 200, after_rollback_resp.text
     after_rollback_body = after_rollback_resp.json()
-    assert after_rollback_body["total"] == 2
-    assert {
-        item["name"] for item in after_rollback_body["data"]
-    } == {"test_cart_total", "test_payment_decline"}
+    assert after_rollback_body == {
+        "data": [
+            expected_results_by_name["test_payment_decline"],
+            expected_results_by_name["test_cart_total"],
+        ],
+        "page": 1,
+        "per_page": 100,
+        "total": 2,
+    }
 
 
 @pytest.mark.asyncio
@@ -2225,6 +2707,21 @@ async def test_run_artifacts_api_hides_soft_deleted_real_rows(
     resp = await integration_client.get(f"/api/v1/runs/{run_id}/artifacts")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["total"] == 1
-    assert body["data"][0]["id"] == str(visible.id)
-    assert body["data"][0]["name"] == "summary.html"
+    assert body == {
+        "data": [
+            {
+                "id": str(visible.id),
+                "run_id": str(run_id),
+                "type": "report",
+                "name": "summary.html",
+                "storage_path": f"runs/{run_id}/summary.html",
+                "size_bytes": 2048,
+                "mime_type": "text/html",
+                "expires_at": None,
+                "created_at": _json_datetime(visible.created_at),
+            }
+        ],
+        "page": 1,
+        "per_page": 20,
+        "total": 1,
+    }

@@ -73,7 +73,11 @@ async def list_credentials(
     "",
     response_model=CredentialResponse,
     status_code=201,
-    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
     summary="创建凭证",
 )
 async def create_credential(
@@ -137,7 +141,7 @@ async def get_credential(
 @router.put(
     "/{credential_id}",
     response_model=CredentialResponse,
-    responses={404: {"model": ErrorResponse}},
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="轮换凭证 value",
 )
 async def update_credential(

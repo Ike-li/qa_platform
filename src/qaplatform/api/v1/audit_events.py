@@ -13,6 +13,7 @@ from qaplatform.api.schemas import ErrorResponse, PaginatedResponse
 from qaplatform.infra.database.models import AuditEvent as AuditEventORM
 
 router = APIRouter(prefix="/audit-events", tags=["audit-events"])
+_AUDIT_TEXT_FILTER_MAX_LENGTH = 200
 
 
 class AuditEventResponse(BaseModel):
@@ -61,10 +62,23 @@ def _to_response(orm: AuditEventORM) -> AuditEventResponse:
     )
 
 
+def _validate_text_filter(name: str, value: str | None) -> None:
+    if value is None:
+        return
+    if value.strip() == "":
+        raise HTTPException(status_code=422, detail=f"Invalid audit {name}: empty")
+    if len(value) > _AUDIT_TEXT_FILTER_MAX_LENGTH:
+        raise HTTPException(status_code=422, detail=f"Invalid audit {name}: too long")
+
+
 @router.get(
     "",
     response_model=PaginatedResponse[AuditEventResponse],
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    responses={
+        403: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
     summary="审计日志列表",
 )
 async def list_audit_events(
@@ -80,6 +94,14 @@ async def list_audit_events(
     per_page: int = Query(20, ge=1, le=100),
     _perm=require_permission(Action.AUDIT_READ),
 ):
+    _validate_text_filter("action", action)
+    _validate_text_filter("resource_type", resource_type)
+    if start_at is not None and end_at is not None and start_at > end_at:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid audit time range: start_at must be before end_at",
+        )
+
     items, total = await repos.audit.list(
         tenant_id=user.tenant_id,
         actor_id=actor_id,

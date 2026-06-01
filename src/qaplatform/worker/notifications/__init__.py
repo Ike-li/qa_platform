@@ -4,55 +4,171 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
-from qaplatform.infra.database.models import NotificationStatusEnum
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+
+from qaplatform.engine.redact import redact_sensitive_text
+from qaplatform.domain.models.notification import (
+    NOTIFICATION_CONDITION_FIELDS,
+    NOTIFICATION_CONDITION_OPERATORS,
+    normalize_notification_channel,
+)
+from qaplatform.infra.database.models import NotificationStatusEnum, Run, RunStatusEnum
 
 log = logging.getLogger(__name__)
 
 _TEMPLATE_VAR_RE = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
+_CONSECUTIVE_FAILURE_FIELDS = frozenset({"consecutive_failures", "consecutive_failed_runs"})
+_NOTIFICATION_LOG_UNIQUE_CONSTRAINT = "uq_notification_log_run_rule_channel"
+_TERMINAL_RUN_STATUSES = (
+    RunStatusEnum.DONE,
+    RunStatusEnum.FAILED,
+    RunStatusEnum.CANCELLED,
+    RunStatusEnum.TIMEOUT,
+)
 
 
-def _evaluate_conditions(conditions: list[dict], run_summary: dict | None, status: str) -> bool:
-    """Check whether a run matches all conditions of a notification rule.
+def _evaluate_conditions(
+    conditions: list[dict],
+    run_summary: dict | None,
+    status: str,
+    condition_context: dict | None = None,
+) -> bool:
+    """Check whether a run matches the notification rule conditions.
 
     Conditions are dicts with ``field``, ``operator``, ``value`` keys.
-    Supported fields: ``status``, ``pass_rate``, ``failed``.
+    Supported fields: ``status``, ``pass_rate``, ``failed``, ``consecutive_failures``.
     Supported operators: ``eq``, ``ne``, ``lt``, ``gt``, ``lte``, ``gte``.
+    A condition may also be a group: ``{"all": [...]}`` or ``{"any": [...]}``.
 
-    Returns True if all conditions match (or if conditions is empty).
+    Returns True if all top-level conditions match (or if conditions is empty).
     """
     if not conditions:
         return True
 
-    for cond in conditions:
-        field = cond.get("field")
-        op = cond.get("operator", "eq")
-        expected = cond.get("value")
+    return all(
+        _evaluate_condition(cond, run_summary, status, condition_context or {})
+        for cond in conditions
+    )
 
-        if field == "status":
-            actual = status
-        elif field == "pass_rate":
-            actual = (run_summary or {}).get("pass_rate", 0.0)
-            try:
-                expected = float(expected)
-            except (TypeError, ValueError):
-                pass
-        elif field == "failed":
-            actual = (run_summary or {}).get("failed", 0)
-            try:
-                expected = int(expected)
-            except (TypeError, ValueError):
-                pass
-        else:
-            log.warning("unknown_condition_field", extra={"field": field})
-            continue
 
-        if not _compare(actual, op, expected):
+def _evaluate_condition(
+    cond: dict,
+    run_summary: dict | None,
+    status: str,
+    condition_context: dict,
+) -> bool:
+    if not isinstance(cond, dict):
+        log.warning("invalid_condition", extra={"condition": cond})
+        return False
+
+    group_keys = [key for key in ("all", "any") if key in cond]
+    if len(group_keys) > 1:
+        log.warning("invalid_condition_group", extra={"condition": cond})
+        return False
+    if group_keys:
+        group_key = group_keys[0]
+        children = cond.get(group_key)
+        if not isinstance(children, list) or not children:
+            log.warning("invalid_condition_group", extra={"condition": cond})
             return False
+        if any(key not in group_keys for key in cond):
+            log.warning("invalid_condition_group", extra={"condition": cond})
+            return False
+        if group_key == "all":
+            return all(
+                _evaluate_condition(child, run_summary, status, condition_context)
+                for child in children
+            )
+        return any(
+            _evaluate_condition(child, run_summary, status, condition_context)
+            for child in children
+        )
 
-    return True
+    field = cond.get("field")
+    op = cond.get("operator", "eq")
+    expected = cond.get("value")
+
+    if field not in NOTIFICATION_CONDITION_FIELDS:
+        log.warning("unknown_condition_field", extra={"field": field})
+        return False
+    if op not in NOTIFICATION_CONDITION_OPERATORS:
+        log.warning("unknown_condition_operator", extra={"operator": op})
+        return False
+
+    if field == "status":
+        actual = status
+    elif field == "pass_rate":
+        actual = (run_summary or {}).get("pass_rate", 0.0)
+        try:
+            expected = float(expected)
+        except (TypeError, ValueError):
+            pass
+    elif field == "failed":
+        actual = (run_summary or {}).get("failed", 0)
+        try:
+            expected = int(expected)
+        except (TypeError, ValueError):
+            pass
+    elif field in _CONSECUTIVE_FAILURE_FIELDS:
+        actual = condition_context.get("consecutive_failures")
+        if actual is None:
+            actual = (run_summary or {}).get("consecutive_failures", 0)
+        try:
+            actual = int(actual)
+            expected = int(expected)
+        except (TypeError, ValueError):
+            pass
+    return _compare(actual, op, expected)
+
+
+def _conditions_include_fields(conditions: list[dict], fields: frozenset[str]) -> bool:
+    for cond in conditions:
+        if not isinstance(cond, dict):
+            continue
+        if cond.get("field") in fields:
+            return True
+        for group_key in ("all", "any"):
+            children = cond.get(group_key)
+            if isinstance(children, list) and _conditions_include_fields(children, fields):
+                return True
+    return False
+
+
+async def _load_consecutive_failures(session: Any, project_id: UUID, run_id: UUID) -> int:
+    current_result = await session.execute(
+        select(Run).where(
+            Run.id == run_id,
+            Run.project_id == project_id,
+            Run.deleted_at.is_(None),
+        )
+    )
+    current = current_result.scalar_one_or_none()
+    if current is None or current.status != RunStatusEnum.FAILED:
+        return 0
+
+    result = await session.execute(
+        select(Run.status)
+        .where(
+            Run.project_id == project_id,
+            Run.deleted_at.is_(None),
+            Run.status.in_(_TERMINAL_RUN_STATUSES),
+            Run.created_at <= current.created_at,
+        )
+        .order_by(Run.created_at.desc(), Run.id.desc())
+        .limit(100)
+    )
+
+    count = 0
+    for run_status in result.scalars():
+        if run_status != RunStatusEnum.FAILED:
+            break
+        count += 1
+    return count
 
 
 def _compare(actual: Any, op: str, expected: Any) -> bool:
@@ -102,14 +218,17 @@ def _render_message(
     run_id: UUID,
     status: str,
     summary: dict | None,
+    project_name: str | None = None,
 ) -> str:
     values = {
         "run_id": str(run_id),
         "status": status,
+        "project_name": project_name or "",
         "passed": str((summary or {}).get("passed", 0)),
         "failed": str((summary or {}).get("failed", 0)),
         "total": str((summary or {}).get("total", 0)),
         "pass_rate": str((summary or {}).get("pass_rate", 0)),
+        "failed_tests": _format_failed_tests(summary),
     }
 
     if template:
@@ -125,6 +244,59 @@ def _render_message(
     if summary:
         message += f" (passed: {summary.get('passed', 0)}, failed: {summary.get('failed', 0)})"
     return message
+
+
+def _format_failed_tests(summary: dict | None) -> str:
+    failed_tests = (summary or {}).get("failed_tests") or []
+    if isinstance(failed_tests, str):
+        return failed_tests
+    if not isinstance(failed_tests, list):
+        return str(failed_tests)
+
+    formatted: list[str] = []
+    for item in failed_tests:
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("test_name") or item.get("nodeid")
+            suite = item.get("suite")
+            if suite and name:
+                formatted.append(f"{suite}::{name}")
+            elif name:
+                formatted.append(str(name))
+            elif item:
+                formatted.append(str(item))
+        elif item is not None:
+            formatted.append(str(item))
+    return ", ".join(formatted)
+
+
+def _uses_template_variable(template: str | None, variable: str) -> bool:
+    if not template:
+        return False
+    return variable in _TEMPLATE_VAR_RE.findall(template)
+
+
+def _iter_config_values(value: Any):
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            yield from _iter_config_values(nested)
+        return
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for nested in value:
+            yield from _iter_config_values(nested)
+        return
+    yield value
+
+
+def _notification_error_message(exc: Exception, channel_config: dict) -> str:
+    return redact_sensitive_text(str(exc), _iter_config_values(channel_config))[:500]
+
+
+def _is_duplicate_notification_log_error(exc: IntegrityError) -> bool:
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None)
+    if getattr(diag, "constraint_name", None) == _NOTIFICATION_LOG_UNIQUE_CONSTRAINT:
+        return True
+    return _NOTIFICATION_LOG_UNIQUE_CONSTRAINT in str(exc)
 
 
 async def evaluate_and_notify(
@@ -144,35 +316,45 @@ async def evaluate_and_notify(
     from qaplatform.infra.database.repositories.project_repo import (
         NotificationLogRepository,
         NotificationRuleRepository,
+        ProjectRepository,
     )
 
     async with session_factory() as session:
         rule_repo = NotificationRuleRepository(session)
         log_repo = NotificationLogRepository(session)
+        project_repo = ProjectRepository(session)
+        project_loaded = False
+        project_name = ""
 
         rules = await rule_repo.find_enabled_by_project(project_id)
         if not rules:
             return
+        condition_context: dict[str, int] = {}
+        if any(
+            _conditions_include_fields(rule.conditions, _CONSECUTIVE_FAILURE_FIELDS)
+            for rule in rules
+        ):
+            consecutive_failures = await _load_consecutive_failures(session, project_id, run_id)
+            condition_context["consecutive_failures"] = consecutive_failures
+            condition_context["consecutive_failed_runs"] = consecutive_failures
+
+        async def load_project_name() -> str:
+            nonlocal project_loaded, project_name
+            if not project_loaded:
+                project = await project_repo.get_by_id(project_id)
+                project_name = getattr(project, "name", "") if project is not None else ""
+                project_loaded = True
+            return project_name
 
         for rule in rules:
-            if not _evaluate_conditions(rule.conditions, summary, status):
+            if not _evaluate_conditions(rule.conditions, summary, status, condition_context):
                 continue
 
-            template_error: Exception | None = None
-            try:
-                message = _render_message(
-                    rule.template,
-                    run_id=run_id,
-                    status=status,
-                    summary=summary,
-                )
-            except Exception as exc:
-                message = ""
-                template_error = exc
-
             for channel in rule.channels:
-                channel_type = channel.get("type", "unknown")
-                channel_config = channel.get("config", {})
+                normalized_channel = normalize_notification_channel(channel)
+                channel_type = normalized_channel["type"]
+                channel_config = normalized_channel["config"]
+                template = normalized_channel.get("template", rule.template)
                 log_status = NotificationStatusEnum.SENT
                 error_message = None
 
@@ -189,12 +371,20 @@ async def evaluate_and_notify(
                     continue
 
                 try:
-                    if template_error is not None:
-                        raise RuntimeError(str(template_error))
+                    render_project_name = ""
+                    if _uses_template_variable(template, "project_name"):
+                        render_project_name = await load_project_name()
+                    message = _render_message(
+                        template,
+                        run_id=run_id,
+                        status=status,
+                        summary=summary,
+                        project_name=render_project_name,
+                    )
                     await _send_channel(channel_type, channel_config, message)
                 except Exception as exc:
                     log_status = NotificationStatusEnum.FAILED
-                    error_message = str(exc)[:500]
+                    error_message = _notification_error_message(exc, channel_config)
                     log.exception(
                         "notification_send_failed",
                         extra={
@@ -213,7 +403,9 @@ async def evaluate_and_notify(
                         status=log_status,
                         error_message=error_message,
                     )
-                except Exception:
+                except IntegrityError as exc:
+                    if not _is_duplicate_notification_log_error(exc):
+                        raise
                     log.info(
                         "notification_log_already_exists",
                         extra={"run_id": str(run_id), "rule_id": str(rule.id)},

@@ -3,10 +3,11 @@
 > **来源**：feature-catalog.md §4.1（F-NT-02 钉钉通知）
 > **必要性**：P1（PRD §8 中国大陆网络硬约束）
 > **预计**：S
+> **状态**：已完成（`DingtalkChannel` + `ChannelRouter` + 前端通知规则表单 + unit/frontend contract 验证）
 
 ## 背景
 
-PRD §8 显式约束"需要支持中国大陆网络环境（钉钉/企业微信集成）"。当前 `worker/notifications/channels.py` 已实现 Email 和 Webhook，钉钉缺。
+PRD §8 显式约束"需要支持中国大陆网络环境（钉钉/企业微信集成）"。当前 `worker/notifications/channels.py` 已实现 Email、Webhook、DingTalk、WeCom，前端通知规则表单也可创建 DingTalk 渠道；本文保留为实现与验收口径记录。
 
 ## 实施起点
 
@@ -39,13 +40,13 @@ PRD §8 显式约束"需要支持中国大陆网络环境（钉钉/企业微信�
 
 ## 验收标准
 
-- [ ] `DingtalkChannel.send(config, message) -> ChannelResult` 实现
-- [ ] 注册到 `ChannelRouter`，type 名为 `dingtalk`
-- [ ] 支持加签（HMAC-SHA256 + base64）
-- [ ] 支持 text / markdown 两种 msgtype，payload 字段分别为 `text.content` / `markdown.title + markdown.text`
-- [ ] HTTP 超时 10s；非 2xx 返回 ChannelResult(success=False, error=...)
-- [ ] 钉钉 errcode != 0（API 层错误）也算失败
-- [ ] 单元测试：成功 / 加签 / 超时 / errcode 非 0 / msgtype markdown 5 种用例（不要引入 `pytest-httpx`；沿用 patch `httpx.AsyncClient` 的本地测试风格）
+- [x] `DingtalkChannel.send(config, message) -> ChannelResult` 实现
+- [x] 注册到 `ChannelRouter`，type 名为 `dingtalk`
+- [x] 支持加签（HMAC-SHA256 + base64）
+- [x] 支持 text / markdown 两种 msgtype，payload 字段分别为 `text.content` / `markdown.title + markdown.text`
+- [x] HTTP 超时 10s；非 2xx 返回 ChannelResult(success=False, error=...)
+- [x] 钉钉 errcode != 0（API 层错误）也算失败
+- [x] 单元测试：成功 / 加签 / 超时 / errcode 非 0 / msgtype markdown 5 种用例（不要引入 `pytest-httpx`；沿用 patch `httpx.AsyncClient` 的本地测试风格）
 
 ## 约束
 

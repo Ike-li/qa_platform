@@ -3,27 +3,34 @@
 > 状态：已完成于 `main`。当前实现位于 `src/qaplatform/api/v1/audit_events.py`，集成测试位于 `tests/integration/test_audit_events_api.py`；本文保留为验收档案。
 
 > **来源**：feature-catalog.md §4.1（审计日志查询 API）
-> **必要性**：P0（未达 catalog §4.1 审计查询验收）
+> **必要性**：P0（已完成，保留为验收档案；正式 PRD 章节仍待补）
 > **预计**：S
 
 ## 背景
 
-[feature-catalog.md](../feature-catalog.md) §4.1 要求提供审计日志查询 API（仅 Admin+ 可访问）。当前写入端 `api/audit.py` + 仓储 `infra/database/repositories/audit_repo.py` 已就位，查询路由也已落地。
+[feature-catalog.md](../feature-catalog.md) §4.1 要求提供审计日志查询 API（仅 Owner/Admin 可访问）。当前写入端 `api/audit.py`、仓储 `infra/database/repositories/audit_repo.py`、查询路由 `api/v1/audit_events.py`、`Action.AUDIT_READ` 权限和真实 API/DB 测试均已落地。
 
 > 注意：旧文档曾引用 `PRD §9.6`，但当前 `docs/prd.md` 实际只到第 8 章。PR 描述不要继续引用不存在的章节；如需 PRD 出处，应先补 PRD 章节或引用 catalog。
 
-## 缺什么
+## 已实现
 
-新建 `src/qaplatform/api/v1/audit_events.py`，提供分页查询审计事件的 GET 端点。
+- `GET /api/v1/audit-events` 返回 `PaginatedResponse[AuditEventResponse]`
+- 支持 `actor_id`、`action`、`resource_type`、`resource_id`、`start_at`、`end_at`、`page`、`per_page` 组合过滤
+- 默认按 `created_at DESC` 排序
+- Owner/Admin 可访问，Member/Viewer 返回 403
+- API token 必须具备 `audit.read`；`run.read`、`project.read`、空 scope 会被拒绝
+- 成功查询写 `audit_events.list` 自审计，拒绝路径和跨租户过滤不写误导性自审计
+- 跨租户资源 ID 过滤收敛为 404 或空结果，不返回其他租户数据
 
-## 实施起点
+## 实施位置
 
-- **ORM**：`AuditEvent` 已存在（`infra/database/models.py`，在 AuditBase schema 下）
-- **仓储**：`infra/database/repositories/audit_repo.py`（按需扩展 list 方法）
-- **路由模式参考**：`api/v1/admin.py`（admin 端点组织方式参考） + `api/v1/runs.py`（分页参考）
-- **权限**：`api/auth/permissions.py` 中租户 Owner/Admin 才能访问；注意 `admin.py::_require_platform_admin` 是平台管理员校验，不能直接照搬成 T02 的权限策略
-- **路由注册**：新增 router 后必须在 `src/qaplatform/main.py::create_app` 引入并 `include_router(..., prefix="/api/v1")`；`api/v1/__init__.py` 当前不是自动发现机制
-- **权限实现注意**：当前 `Action` 枚举没有 `AUDIT_READ`；实现时要么新增 tenant-scoped action 并只授予 Owner/Admin，要么在 T02 路由内写显式 Owner/Admin guard。不要复用会放行 Member 的现有读权限
+- **ORM**：`infra/database/models.py::AuditEvent`
+- **仓储**：`infra/database/repositories/audit_repo.py`
+- **路由**：`src/qaplatform/api/v1/audit_events.py`
+- **路由注册**：`src/qaplatform/main.py::create_app`
+- **权限**：`api/auth/permissions.py::Action.AUDIT_READ`，tenant Owner/Admin 与具备 `audit.read` scope 的 API token 可访问
+- **单元测试**：`tests/unit/test_api/test_audit.py`
+- **集成测试**：`tests/integration/test_audit_events_api.py`、`tests/integration/test_real_auth_results_artifacts.py`
 
 ## API 设计
 
@@ -44,21 +51,20 @@ Response: PaginatedResponse[AuditEventResponse]
 
 ## 验收标准
 
-- [ ] 仅租户 Owner/Admin 可访问（Member/Viewer 返回 403）
-- [ ] 跨租户隔离：列表只返回当前 tenant_id 的事件；带具体跨租户 resource id 的访问/过滤不得泄露存在性，按路由语义返回 404 或空结果
-- [ ] 所有过滤参数可组合
-- [ ] 默认按 `created_at DESC` 排序
-- [ ] 响应体沿用 `PaginatedResponse`，返回 `page` / `per_page` / `total` 字段（当前仓库分页不是 HTTP header 口径）
-- [ ] 集成测试：覆盖权限、过滤、跨租户隔离 3 类用例
+- [x] 仅租户 Owner/Admin 可访问（Member/Viewer 返回 403）
+- [x] 跨租户隔离：列表只返回当前 tenant_id 的事件；带具体跨租户 resource id 的访问/过滤不得泄露存在性，按路由语义返回 404 或空结果
+- [x] 所有过滤参数可组合
+- [x] 默认按 `created_at DESC` 排序
+- [x] 响应体沿用 `PaginatedResponse`，返回 `page` / `per_page` / `total` 字段（当前仓库分页不是 HTTP header 口径）
+- [x] 集成测试：覆盖权限、过滤、跨租户隔离 3 类用例
+- [x] 成功查询写 `audit_events.list` 自审计；拒绝路径不误写自审计
+- [x] API token scope：`audit.read` 可查询，`run.read` / `project.read` / 空 scope 被拒绝
 
 ## 约束
 
 - 跨租户资源 id 访问返回 **404 非 403**（project memory directive）；普通列表过滤不得返回其他 tenant 数据
-- 端点本身的访问也要写 audit（self-referential：管理员看 audit 也被 audit）
-- commit 拆分建议：
-  1. `feat: audit_events 仓储 list 方法支持过滤参数`
-  2. `feat: GET /api/v1/audit-events 路由 + Admin 权限`
-  3. `test: audit_events 查询权限与跨租户隔离集成测试`
+- 端点本身的成功访问也要写 audit（self-referential：管理员看 audit 也被 audit）；拒绝路径不写误导性自审计
+- 正式 PRD 章节仍待产品文档补齐；当前验收依据为 feature-catalog / TODO / 本档案
 
 ## 不要做
 

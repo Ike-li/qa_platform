@@ -21,6 +21,18 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _assert_integrity_constraint(error: IntegrityError, constraint: str) -> None:
+    haystack = " ".join(
+        str(part)
+        for part in (
+            error,
+            getattr(error, "orig", ""),
+            repr(getattr(error, "orig", "")),
+        )
+    )
+    assert constraint in haystack
+
+
 def _project_payload(slug: str) -> dict:
     return {
         "name": f"project-{slug}",
@@ -87,11 +99,10 @@ async def test_project_repository_filters_tenant_paginates_and_excludes_soft_del
 
     items, total = await repo.list_by_tenant(tenant_a, offset=0, limit=50)
 
-    assert total >= 2
     ids = {item.id for item in items}
     tenant_ids = {item.tenant_id for item in items}
-    assert keep.id in ids
-    assert seed_run["project"].id in ids
+    assert total == 2
+    assert ids == {keep.id, seed_run["project"].id}
     assert seed_second_tenant["project"].id not in ids
     assert soft_deleted.id not in ids
     assert tenant_ids == {tenant_a}
@@ -99,7 +110,8 @@ async def test_project_repository_filters_tenant_paginates_and_excludes_soft_del
     tenant_b_items, tenant_b_total = await repo.list_by_tenant(
         tenant_b, offset=0, limit=50
     )
-    assert tenant_b_total >= 1
+    assert tenant_b_total == 1
+    assert {item.id for item in tenant_b_items} == {seed_second_tenant["project"].id}
     assert {item.tenant_id for item in tenant_b_items} == {tenant_b}
 
 
@@ -122,8 +134,9 @@ async def test_project_slug_unique_constraint_rolls_back_without_dirty_data(
             **_project_payload(existing_slug),
         )
     )
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError) as exc_info:
         await integration_db_session.commit()
+    _assert_integrity_constraint(exc_info.value, "uq_project_tenant_slug")
 
     await integration_db_session.rollback()
 
@@ -199,13 +212,15 @@ async def test_pipeline_api_persists_rows_and_soft_delete_hides_from_repository(
         f"/api/v1/projects/{project_id}/pipelines/{pipeline_id}"
     )
     assert delete_resp.status_code == 204, delete_resp.text
+    assert delete_resp.content == b""
 
     await integration_db_session.refresh(pipeline)
     assert pipeline.deleted_at is not None
 
     repo = PipelineRepository(integration_db_session)
-    visible, _ = await repo.list_by_project(project_id, limit=100)
-    assert pipeline.id not in {item.id for item in visible}
+    visible, total = await repo.list_by_project(project_id, limit=100)
+    assert total == 1
+    assert [item.id for item in visible] == [seed_run["pipeline"].id]
 
 
 @pytest.mark.asyncio

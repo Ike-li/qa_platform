@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import sys
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -94,7 +93,7 @@ async def main():
         await session.commit()
 
     await engine.dispose()
-    print(f"\nLogin credentials:\n  username: {ADMIN_USERNAME}\n  password: {ADMIN_PASSWORD}")
+    print(f"\nLogin credentials:\n  username: {ADMIN_USERNAME}\n  password: <redacted>")
 
 
 if __name__ == "__main__":

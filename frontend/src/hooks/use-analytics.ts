@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import api from "../lib/api";
-import type { TrendDataPoint, FlakyTest } from "../types/api";
+import type { TrendDataPoint, FlakyTest, TestHistoryPoint } from "../types/api";
 
 interface PaginatedAnalytics<T> {
   data: T[];
@@ -32,5 +32,24 @@ export function useFlakyTests(projectId: string, days: number = 30, minRuns: num
       return data.data;
     },
     enabled: !!projectId,
+  });
+}
+
+export function useTestHistory(
+  projectId: string,
+  suite: string | undefined,
+  name: string | undefined,
+  days: number = 30,
+) {
+  return useQuery({
+    queryKey: ["projects", projectId, "test-history", suite, name, days],
+    queryFn: async () => {
+      const { data } = await api.get<PaginatedAnalytics<TestHistoryPoint>>(
+        `/projects/${projectId}/analytics/test-history`,
+        { params: { suite, name, days } },
+      );
+      return data.data;
+    },
+    enabled: !!projectId && !!suite && !!name,
   });
 }

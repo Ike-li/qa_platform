@@ -35,7 +35,15 @@ export default function Runs() {
     }, { replace: true });
   }, [setSearchParams]);
 
-  const { data, isLoading, isError } = useRuns({ per_page: 20, page });
+  const { data, isLoading, isError, refetch } = useRuns({ per_page: 20, page });
+
+  const handleRetry = () => {
+    if (page === 1) {
+      void refetch();
+      return;
+    }
+    setPage(1);
+  };
 
   return (
     <div className="space-y-6">
@@ -49,7 +57,7 @@ export default function Runs() {
       {isError && (
         <div className="rounded-xl border border-status-failed/20 bg-status-failed/5 p-6 text-center">
           <p className="text-sm text-status-failed">{t('runs.failedToLoad')}</p>
-          <Button variant="outline" size="sm" className="mt-3" onClick={() => setPage(1)}>{t('common.retry')}</Button>
+          <Button variant="outline" size="sm" className="mt-3" onClick={handleRetry}>{t('common.retry')}</Button>
         </div>
       )}
 

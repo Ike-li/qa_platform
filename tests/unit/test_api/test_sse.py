@@ -119,14 +119,55 @@ def _make_run(*, run_id, tenant_id, project_id=None):
     return run
 
 
+def _assert_run_not_found_response(resp, run_id):
+    assert resp.status_code == 404
+    assert resp.json() == {
+        "error": {
+            "code": "NOT_FOUND",
+            "message": "Run not found",
+            "details": [],
+        }
+    }
+    assert str(run_id) not in resp.text
+
+
+def _parse_sse_events(text: str) -> list[dict[str, str]]:
+    events: list[dict[str, str]] = []
+    for block in text.replace("\r\n", "\n").strip().split("\n\n"):
+        if not block:
+            continue
+        event: dict[str, str] = {}
+        data_lines: list[str] = []
+        for line in block.split("\n"):
+            if not line or line.startswith(":"):
+                continue
+            field, _, value = line.partition(":")
+            if value.startswith(" "):
+                value = value[1:]
+            if field == "data":
+                data_lines.append(value)
+            else:
+                event[field] = value
+        if data_lines:
+            event["data"] = "\n".join(data_lines)
+        events.append(event)
+    return events
+
+
 @pytest.mark.asyncio
-async def test_logs_sse_endpoint_exists(client, mock_redis, mock_run_repo, tenant_id):
+async def test_logs_sse_streams_log_event_payload(
+    client,
+    mock_redis,
+    mock_run_repo,
+    tenant_id,
+):
     run_id = uuid.uuid4()
     mock_run_repo.get_for_tenant.return_value = _make_run(run_id=run_id, tenant_id=tenant_id)
 
+    stream_key = f"run:{run_id}:logs"
     mock_redis.xread = AsyncMock(
         side_effect=[
-            [(f"run:{run_id}:logs".encode(), [(b"1234-0", {"level": "info", "message": "hello"})])],
+            [(stream_key.encode(), [(b"1234-0", {"stream": "stdout", "line": "hello"})])],
             [],
         ]
     )
@@ -137,18 +178,33 @@ async def test_logs_sse_endpoint_exists(client, mock_redis, mock_run_repo, tenan
     )
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers.get("content-type", "")
+    events = _parse_sse_events(resp.text)
+    assert [event["event"] for event in events] == ["log", "done"]
+    assert events[0]["id"] == "1234-0"
+    assert json.loads(events[0]["data"]) == {"stream": "stdout", "line": "hello"}
+    assert "id" not in events[1]
+    assert json.loads(events[1]["data"]) == {"status": RunStatus.DONE.value}
+    first_xread = mock_redis.xread.await_args_list[0]
+    assert first_xread.args[0] == {stream_key: "0"}
+    assert first_xread.kwargs == {"count": 100, "block": 5000}
 
 
 @pytest.mark.asyncio
-async def test_events_sse_endpoint_exists(client, mock_redis, mock_run_repo, tenant_id):
+async def test_events_sse_streams_status_event_payload(
+    client,
+    mock_redis,
+    mock_run_repo,
+    tenant_id,
+):
     run_id = uuid.uuid4()
     mock_run_repo.get_for_tenant.return_value = _make_run(run_id=run_id, tenant_id=tenant_id)
 
+    stream_key = f"run:{run_id}:events"
     mock_redis.xread = AsyncMock(
         side_effect=[
             [
                 (
-                    f"run:{run_id}:events".encode(),
+                    stream_key.encode(),
                     [(b"5678-0", {"type": "status_change", "status": "running", "summary": "", "timestamp": "2026-01-01T00:00:00Z"})],
                 )
             ],
@@ -162,28 +218,46 @@ async def test_events_sse_endpoint_exists(client, mock_redis, mock_run_repo, ten
     )
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers.get("content-type", "")
+    events = _parse_sse_events(resp.text)
+    assert [event["event"] for event in events] == ["status_change", "done"]
+    assert events[0]["id"] == "5678-0"
+    assert json.loads(events[0]["data"]) == {
+        "type": "status_change",
+        "status": "running",
+        "summary": "",
+        "timestamp": "2026-01-01T00:00:00Z",
+    }
+    assert "id" not in events[1]
+    assert json.loads(events[1]["data"]) == {"status": RunStatus.DONE.value}
+    first_xread = mock_redis.xread.await_args_list[0]
+    assert first_xread.args[0] == {stream_key: "0"}
+    assert first_xread.kwargs == {"count": 50, "block": 5000}
 
 
 @pytest.mark.asyncio
-async def test_logs_sse_no_ticket(app):
+async def test_logs_sse_no_ticket_returns_401_without_touching_redis(app, mock_redis):
     from qaplatform.api.v1.sse import _authenticate_sse_ticket
 
     app.dependency_overrides.pop(_authenticate_sse_ticket, None)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.get(f"/api/v1/runs/{uuid.uuid4()}/logs")
-    assert resp.status_code in (401, 422)
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Invalid or expired SSE ticket"}
+    mock_redis.getdel.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_events_sse_no_ticket(app):
+async def test_events_sse_no_ticket_returns_401_without_touching_redis(app, mock_redis):
     from qaplatform.api.v1.sse import _authenticate_sse_ticket
 
     app.dependency_overrides.pop(_authenticate_sse_ticket, None)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.get(f"/api/v1/runs/{uuid.uuid4()}/events")
-    assert resp.status_code in (401, 422)
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Invalid or expired SSE ticket"}
+    mock_redis.getdel.assert_not_awaited()
 
 
 # ── P0-A regression: SSE cross-tenant log leak (F-AU-03) ────────────────────
@@ -191,7 +265,7 @@ async def test_events_sse_no_ticket(app):
 
 @pytest.mark.asyncio
 async def test_stream_logs_cross_tenant_returns_404(
-    client, mock_redis, mock_run_repo, other_tenant_id
+    client, mock_redis, mock_run_repo, tenant_id, other_tenant_id
 ):
     """A user holding a valid ticket for tenant_A must not be able to
     subscribe to a run owned by tenant_B by tampering the path run_id.
@@ -204,47 +278,50 @@ async def test_stream_logs_cross_tenant_returns_404(
     # — get_for_tenant filters in SQL, so it surfaces as None.
     mock_run_repo.get_for_tenant.return_value = None
     mock_redis.xread = AsyncMock()
+    mock_redis.hget = AsyncMock()
 
     resp = await client.get(f"/api/v1/runs/{run_id}/logs?ticket=test-ticket")
 
-    assert resp.status_code == 404
-    body = resp.json()
-    message = body.get("detail") or body.get("error", {}).get("message", "")
-    assert message == "Run not found"
-    mock_redis.xread.assert_not_called()
+    _assert_run_not_found_response(resp, run_id)
+    mock_run_repo.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+    mock_redis.xread.assert_not_awaited()
+    mock_redis.hget.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_stream_events_cross_tenant_returns_404(
-    client, mock_redis, mock_run_repo, other_tenant_id
+    client, mock_redis, mock_run_repo, tenant_id, other_tenant_id
 ):
     """Same cross-tenant guard for the events endpoint."""
     run_id = uuid.uuid4()
     mock_run_repo.get_for_tenant.return_value = None
     mock_redis.xread = AsyncMock()
+    mock_redis.hget = AsyncMock()
 
     resp = await client.get(f"/api/v1/runs/{run_id}/events?ticket=test-ticket")
 
-    assert resp.status_code == 404
-    body = resp.json()
-    message = body.get("detail") or body.get("error", {}).get("message", "")
-    assert message == "Run not found"
-    mock_redis.xread.assert_not_called()
+    _assert_run_not_found_response(resp, run_id)
+    mock_run_repo.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+    mock_redis.xread.assert_not_awaited()
+    mock_redis.hget.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_stream_logs_run_not_found_returns_404(
-    client, mock_redis, mock_run_repo
+    client, mock_redis, mock_run_repo, tenant_id
 ):
     """Non-existent run_id must yield 404 just like cross-tenant access."""
     run_id = uuid.uuid4()
     mock_run_repo.get_for_tenant.return_value = None
     mock_redis.xread = AsyncMock()
+    mock_redis.hget = AsyncMock()
 
     resp = await client.get(f"/api/v1/runs/{run_id}/logs?ticket=test-ticket")
 
-    assert resp.status_code == 404
-    mock_redis.xread.assert_not_called()
+    _assert_run_not_found_response(resp, run_id)
+    mock_run_repo.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+    mock_redis.xread.assert_not_awaited()
+    mock_redis.hget.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -288,10 +365,10 @@ async def test_stream_logs_same_tenant_no_project_perm_returns_403(
     app.dependency_overrides[_get_db_session] = _override_session
 
     run_id = uuid.uuid4()
-    mock_run_repo.get_for_tenant.return_value = _make_run(
-        run_id=run_id, tenant_id=tenant_id
-    )
+    run = _make_run(run_id=run_id, tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.return_value = run
     mock_redis.xread = AsyncMock()
+    mock_redis.hget = AsyncMock()
 
     # Patch the project-role resolver to simulate "no membership".
     import qaplatform.api.deps as deps_mod
@@ -306,7 +383,10 @@ async def test_stream_logs_same_tenant_no_project_perm_returns_403(
             resp = await ac.get(f"/api/v1/runs/{run_id}/logs?ticket=test-ticket")
 
     assert resp.status_code == 403
-    mock_redis.xread.assert_not_called()
+    assert resp.json() == {"detail": "Insufficient permissions"}
+    mock_run_repo.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+    mock_redis.xread.assert_not_awaited()
+    mock_redis.hget.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -346,10 +426,10 @@ async def test_stream_events_same_tenant_no_project_perm_returns_403(
     app.dependency_overrides[_get_db_session] = _override_session
 
     run_id = uuid.uuid4()
-    mock_run_repo.get_for_tenant.return_value = _make_run(
-        run_id=run_id, tenant_id=tenant_id
-    )
+    run = _make_run(run_id=run_id, tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.return_value = run
     mock_redis.xread = AsyncMock()
+    mock_redis.hget = AsyncMock()
 
     import qaplatform.api.deps as deps_mod
     from unittest.mock import patch
@@ -363,7 +443,10 @@ async def test_stream_events_same_tenant_no_project_perm_returns_403(
             resp = await ac.get(f"/api/v1/runs/{run_id}/events?ticket=test-ticket")
 
     assert resp.status_code == 403
-    mock_redis.xread.assert_not_called()
+    assert resp.json() == {"detail": "Insufficient permissions"}
+    mock_run_repo.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+    mock_redis.xread.assert_not_awaited()
+    mock_redis.hget.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -389,7 +472,11 @@ async def test_stream_logs_same_project_returns_200_event_stream(
 
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers.get("content-type", "")
-    assert "expected-log-line" in resp.text
+    events = _parse_sse_events(resp.text)
+    assert [event["event"] for event in events] == ["log", "done"]
+    assert events[0]["id"] == "1234-0"
+    assert json.loads(events[0]["data"]) == log_payload
+    assert json.loads(events[1]["data"]) == {"status": RunStatus.DONE.value}
 
 
 @pytest.mark.asyncio
@@ -415,7 +502,16 @@ async def test_stream_logs_accepts_last_event_id_query_param(
     )
 
     assert resp.status_code == 200
-    assert mock_redis.xread.await_args_list[0].args[0] == {stream_key: "1234-0"}
+    assert "text/event-stream" in resp.headers.get("content-type", "")
+    events = _parse_sse_events(resp.text)
+    assert [event["event"] for event in events] == ["log", "done"]
+    assert events[0]["id"] == "1235-0"
+    assert json.loads(events[0]["data"]) == {"message": "resumed"}
+    assert "id" not in events[1]
+    assert json.loads(events[1]["data"]) == {"status": RunStatus.DONE.value}
+    first_xread = mock_redis.xread.await_args_list[0]
+    assert first_xread.args[0] == {stream_key: "1234-0"}
+    assert first_xread.kwargs == {"count": 100, "block": 5000}
 
 
 @pytest.mark.asyncio
@@ -446,14 +542,26 @@ async def test_stream_events_accepts_last_event_id_query_param(
     )
 
     assert resp.status_code == 200
-    assert mock_redis.xread.await_args_list[0].args[0] == {stream_key: "5678-0"}
+    assert "text/event-stream" in resp.headers.get("content-type", "")
+    events = _parse_sse_events(resp.text)
+    assert [event["event"] for event in events] == ["status_change", "done"]
+    assert events[0]["id"] == "5679-0"
+    assert json.loads(events[0]["data"]) == {
+        "type": "status_change",
+        "status": "done",
+    }
+    assert "id" not in events[1]
+    assert json.loads(events[1]["data"]) == {"status": RunStatus.DONE.value}
+    first_xread = mock_redis.xread.await_args_list[0]
+    assert first_xread.args[0] == {stream_key: "5678-0"}
+    assert first_xread.kwargs == {"count": 50, "block": 5000}
 
 
 @pytest.mark.asyncio
 async def test_authenticate_sse_ticket_consumes_atomically():
     """Two concurrent calls with the same ticket must yield exactly one success
     and one failure — the getdel operation must be atomic.
-    
+
     This test verifies that _authenticate_sse_ticket uses redis.getdel (atomic)
     and not the racy get+delete pattern.
     """
@@ -461,7 +569,7 @@ async def test_authenticate_sse_ticket_consumes_atomically():
     from qaplatform.api.v1.sse import _authenticate_sse_ticket
     from qaplatform.api.deps import UserIdentity
     from fastapi import HTTPException
-    
+
     ticket = "test-ticket-atomic"
     user_id = uuid.uuid4()
     role = "platform_admin"
@@ -474,55 +582,53 @@ async def test_authenticate_sse_ticket_consumes_atomically():
             "scopes": None,
         }
     )
-    
-    # Mock redis with getdel that returns payload on first call, None on second
-    call_count = 0
-    
-    async def mock_getdel(key):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return payload
-        return None
-    
+
     mock_redis = MagicMock()
-    mock_redis.getdel = mock_getdel
-    mock_redis.get = MagicMock()
-    mock_redis.delete = MagicMock()
-    
+    mock_redis.getdel = AsyncMock(side_effect=[payload, None])
+    mock_redis.get = AsyncMock(return_value=payload)
+    mock_redis.delete = AsyncMock()
+
     # Mock request with redis client
     mock_request = MagicMock()
     mock_request.app.state.container.redis_client = mock_redis
-    
+
     # Run two concurrent calls with the same ticket
     results = await asyncio.gather(
         _authenticate_sse_ticket(mock_request, ticket),
         _authenticate_sse_ticket(mock_request, ticket),
         return_exceptions=True,
     )
-    
-    # Verify exactly one success and one failure
-    successes = [r for r in results if isinstance(r, UserIdentity)]
-    failures = [r for r in results if isinstance(r, HTTPException)]
-    
-    assert len(successes) == 1, f"Expected 1 success, got {len(successes)}"
-    assert len(failures) == 1, f"Expected 1 failure, got {len(failures)}"
-    
-    # Verify the success has correct identity
-    success = successes[0]
-    assert success.user_id == user_id
-    assert success.role == role
-    assert success.tenant_id == tenant_id
-    assert success.scopes is None
-    
-    # Verify the failure is 401
-    failure = failures[0]
-    assert failure.status_code == 401
-    
+
+    def _project_result(result):
+        if isinstance(result, UserIdentity):
+            return (
+                "success",
+                str(result.user_id),
+                result.role,
+                str(result.tenant_id),
+                result.scopes,
+            )
+        if isinstance(result, HTTPException):
+            return ("failure", result.status_code, result.detail)
+        return ("unexpected", type(result).__name__, repr(result))
+
+    assert sorted(_project_result(result) for result in results) == [
+        ("failure", 401, "Invalid or expired SSE ticket"),
+        ("success", str(user_id), role, str(tenant_id), None),
+    ]
+
+    failure = next(result for result in results if isinstance(result, HTTPException))
+    assert failure.detail == "Invalid or expired SSE ticket"
+    assert ticket not in failure.detail
+    assert ticket not in repr(results)
+
     # Verify getdel was called exactly twice (not get+delete separately)
-    assert call_count == 2
-    mock_redis.get.assert_not_called()
-    mock_redis.delete.assert_not_called()
+    assert [call.args for call in mock_redis.getdel.await_args_list] == [
+        (f"sse_ticket:{ticket}",),
+        (f"sse_ticket:{ticket}",),
+    ]
+    mock_redis.get.assert_not_awaited()
+    mock_redis.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -535,6 +641,8 @@ async def test_authenticate_sse_ticket_rejects_legacy_payload_without_scopes():
     mock_redis.getdel = AsyncMock(
         return_value=f"{uuid.uuid4()}:owner:{uuid.uuid4()}"
     )
+    mock_redis.get = AsyncMock()
+    mock_redis.delete = AsyncMock()
 
     mock_request = MagicMock()
     mock_request.app.state.container.redis_client = mock_redis
@@ -543,6 +651,116 @@ async def test_authenticate_sse_ticket_rejects_legacy_payload_without_scopes():
         await _authenticate_sse_ticket(mock_request, "legacy-ticket")
 
     assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Invalid or expired SSE ticket"
+    mock_redis.getdel.assert_awaited_once_with("sse_ticket:legacy-ticket")
+    mock_redis.get.assert_not_awaited()
+    mock_redis.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "secret_marker"),
+    [
+        ("not-json-secret-fragment", "secret-fragment"),
+        (json.dumps(["not", "a", "json", "object", "secret-list"]), "secret-list"),
+        (
+            json.dumps(
+                {
+                    "user_id": str(uuid.uuid4()),
+                    "role": "owner",
+                    "scopes": None,
+                    "secret": "missing-tenant-secret",
+                }
+            ),
+            "missing-tenant-secret",
+        ),
+        (
+            json.dumps(
+                {
+                    "user_id": str(uuid.uuid4()),
+                    "role": ["owner"],
+                    "tenant_id": str(uuid.uuid4()),
+                    "scopes": None,
+                    "secret": "bad-role-secret",
+                }
+            ),
+            "bad-role-secret",
+        ),
+        (
+            json.dumps(
+                {
+                    "user_id": str(uuid.uuid4()),
+                    "role": "owner",
+                    "tenant_id": str(uuid.uuid4()),
+                    "scopes": "run.read",
+                    "secret": "bad-scopes-secret",
+                }
+            ),
+            "bad-scopes-secret",
+        ),
+        (
+            json.dumps(
+                {
+                    "user_id": str(uuid.uuid4()),
+                    "role": "owner",
+                    "tenant_id": str(uuid.uuid4()),
+                    "scopes": ["run.read", 123],
+                    "secret": "bad-scope-item-secret",
+                }
+            ),
+            "bad-scope-item-secret",
+        ),
+        (
+            json.dumps(
+                {
+                    "user_id": "not-a-uuid-secret-user",
+                    "role": "owner",
+                    "tenant_id": str(uuid.uuid4()),
+                    "scopes": None,
+                }
+            ),
+            "not-a-uuid-secret-user",
+        ),
+        (
+            json.dumps(
+                {
+                    "user_id": str(uuid.uuid4()),
+                    "role": "owner",
+                    "tenant_id": "not-a-uuid-secret-tenant",
+                    "scopes": None,
+                }
+            ),
+            "not-a-uuid-secret-tenant",
+        ),
+    ],
+)
+async def test_authenticate_sse_ticket_rejects_malformed_payload_without_leaking(
+    payload,
+    secret_marker,
+):
+    from fastapi import HTTPException
+
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
+
+    mock_redis = MagicMock()
+    mock_redis.getdel = AsyncMock(return_value=payload)
+    mock_redis.get = AsyncMock()
+    mock_redis.delete = AsyncMock()
+
+    mock_request = MagicMock()
+    mock_request.app.state.container.redis_client = mock_redis
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _authenticate_sse_ticket(mock_request, "malformed-ticket")
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Invalid or expired SSE ticket"
+    serialized_error = repr(exc_info.value.detail) + repr(exc_info.value.args)
+    assert secret_marker not in serialized_error
+    assert "malformed-ticket" not in serialized_error
+    mock_redis.getdel.assert_awaited_once_with("sse_ticket:malformed-ticket")
+    mock_redis.get.assert_not_awaited()
+    mock_redis.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -575,5 +793,12 @@ async def test_authenticate_sse_ticket_preserves_api_token_scopes():
     assert identity.scopes == ["run.read"]
 
     mock_redis.getdel.return_value = None
-    with pytest.raises(HTTPException):
+    with pytest.raises(HTTPException) as exc_info:
         await _authenticate_sse_ticket(mock_request, "scoped-ticket")
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Invalid or expired SSE ticket"
+    assert [call.args for call in mock_redis.getdel.await_args_list] == [
+        ("sse_ticket:scoped-ticket",),
+        ("sse_ticket:scoped-ticket",),
+    ]

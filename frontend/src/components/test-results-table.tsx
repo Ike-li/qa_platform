@@ -84,7 +84,7 @@ function TestResultRow({ result }: { result: TestResult }) {
             "inline-flex items-center gap-1.5 text-xs font-medium",
             result.status === "passed" && "text-status-passed",
             isFailed && "text-status-failed",
-            result.status === "skipped" && "text-ink-tertiary"
+            (result.status === "skipped" || result.status === "xfail") && "text-status-skipped"
           )}>
             <TestStatusIcon status={result.status} className="h-3 w-3" />
             {t('testStatus.' + result.status)}

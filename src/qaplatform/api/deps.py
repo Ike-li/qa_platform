@@ -5,7 +5,6 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.auth.jwt_service import JWTService
@@ -22,6 +21,10 @@ from qaplatform.api.auth.permissions import (
     normalize_tenant_role,
 )
 from qaplatform.dependencies import RepositoryBundle
+from qaplatform.infra.database.repositories.project_repo import (
+    ProjectMemberRepository,
+    ProjectRepository,
+)
 
 
 # ── Database session (request-scoped with commit/rollback) ───────────────────
@@ -187,19 +190,15 @@ async def _resolve_project_role(
     bypass is applied at the :func:`check_permission` level so this stays
     purely a fact lookup.
     """
-    from qaplatform.infra.database.models import ProjectMember
-
-    stmt = select(ProjectMember.role).where(
-        ProjectMember.project_id == project_id,
-        ProjectMember.user_id == user.user_id,
-        ProjectMember.tenant_id == user.tenant_id,
-        ProjectMember.deleted_at.is_(None),
+    member = await ProjectMemberRepository(session).get_existing(
+        project_id,
+        user.user_id,
+        user.tenant_id,
     )
-    raw = (await session.execute(stmt)).scalar_one_or_none()
-    if raw is None:
+    if member is None:
         return None
     try:
-        return ProjectRole(raw)
+        return ProjectRole(member.role)
     except ValueError:
         return None
 
@@ -210,14 +209,7 @@ async def _ensure_project_visible(
     project_id: UUID,
 ) -> None:
     """Hide missing, cross-tenant, and soft-deleted projects behind one 404."""
-    from qaplatform.infra.database.models import Project
-
-    stmt = select(Project.id).where(
-        Project.id == project_id,
-        Project.tenant_id == user.tenant_id,
-        Project.deleted_at.is_(None),
-    )
-    if (await session.execute(stmt)).scalar_one_or_none() is None:
+    if await ProjectRepository(session).get_for_tenant(project_id, user.tenant_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
 

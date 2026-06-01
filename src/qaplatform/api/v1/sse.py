@@ -35,13 +35,19 @@ def _resolve_last_event_id(
 
 async def _authenticate_sse_ticket(
     request: Request,
-    ticket: str = Query(...),
+    ticket: str | None = Query(None),
 ) -> UserIdentity:
     """Authenticate SSE connection via single-use ticket from Redis.
-    
+
     Uses atomic GETDEL to prevent race condition where two concurrent
     requests both succeed with the same ticket.
     """
+    if not ticket:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired SSE ticket",
+        )
+
     redis = request.app.state.container.redis_client
     key = f"sse_ticket:{ticket}"
     payload = await redis.getdel(key)

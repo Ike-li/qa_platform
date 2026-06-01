@@ -25,17 +25,17 @@ QA 自动化执行平台 —— 管理项目、配置流水线、执行测试、
 | 任务队列 | arq (Redis-backed) |
 | 执行引擎 | Docker (aiodocker) 容器化执行测试 |
 | 存储 | PostgreSQL 16 · Redis 7 · MinIO (S3 兼容) |
-| 可观测性 | structlog · Prometheus；OpenTelemetry 追踪待 T10 装配 |
+| 可观测性 | structlog · Prometheus；OpenTelemetry 基础追踪装配已落地，OTLP HTTP exporter 依赖/部署验证待 T10 收口 |
 
 ## 核心功能
 
 - **多租户 RBAC** — 租户级 (Owner/Admin/Member/Viewer) + 项目级 (Admin/Developer/Viewer) 双层权限
 - **流水线管理** — 定义测试流水线，配置运行环境与凭据存储；私有 HTTPS token / SSH key 可在执行时安全注入 Git clone
 - **容器化执行** — 测试在隔离 Docker 容器中运行，支持超时、取消与 Docker OOMKilled 状态识别
-- **实时日志** — SSE 推送执行日志，前端实时展示
+- **实时日志** — SSE 推送执行日志，终态 Run 可从 S3 归档日志回看
 - **插件系统** — Runner / Collector / Source 三类插件协议，内置 pytest、Jest、Playwright、Go test、JUnit、Git
-- **产物管理** — `results/` 下直接文件上传至 S3，支持预签名下载；Allure/HTML 预览与产物限额闭环见 TODO
-- **审计日志** — 关键操作审计；写入侧需用不含 PII/Secret 的 schema，查询 API 与部分批量操作覆盖仍在待办中
+- **产物管理** — 递归上传 `results/` 到 S3，支持数量/大小限制、预签名下载与 HTML/Allure 预览
+- **审计日志** — 关键操作审计，提供 `/api/v1/audit-events` 查询；API 写路径审计基线由架构契约锁住，新增写接口必须同步审计与脱敏回归
 - **定时调度** — Cron 风格定时触发测试流水线
 
 ## 快速开始
@@ -161,8 +161,13 @@ qa_platform/
 | `POST /api/v1/projects/{project_id}/pipelines` | 创建流水线 |
 | `POST /api/v1/runs` | 触发测试运行 |
 | `GET /api/v1/runs/{id}` | 运行详情 |
+| `GET /api/v1/runs/{id}/results` | 测试结果过滤查询 |
 | `GET /api/v1/runs/{id}/artifacts` | 产物列表 |
+| `GET /api/v1/artifacts/{id}/download` | 产物预签名下载 |
 | `GET /api/v1/runs/{id}/logs?ticket=...` | SSE 实时日志 |
+| `GET /api/v1/runs/{id}/logs/archive` | 归档日志分页回看 |
+| `GET /api/v1/runs/{id}/events?ticket=...` | SSE 状态事件 |
+| `GET /api/v1/audit-events` | 审计事件查询 |
 
 ## 常用命令
 
@@ -207,6 +212,16 @@ RUN_INTEGRATION_TESTS=1 .venv/bin/pytest tests/integration -q
 # 且已按快速开始创建 .venv；Playwright 会按配置启动 API 与前端）
 npm run test:e2e -- tests/e2e/auth-flow.spec.ts
 
+# 本地真实 worker-backed E2E；脚本默认导出 QAP_E2E_WORKER=1，
+# real-run-trigger 会启动受控 worker 而不是被 skip
+E2E_ADMIN_PASSWORD=admin123 ./scripts/run-e2e.sh
+
+# 交互式 smoke 默认把 skip 当失败；探索性排查才显式允许 skip
+# 可用 RESULTS_DIR=... 固定父级产物目录；子脚本证据会落在 <script-name>/ 下
+./scripts/smoke/run-all.sh
+SMOKE_ADMIN_PASSWORD="$E2E_ADMIN_PASSWORD" ./scripts/smoke/run-all.sh
+SMOKE_ALLOW_SKIPS=1 ./scripts/smoke/run-all.sh
+
 # 覆盖率
 .venv/bin/pytest --cov=qaplatform --cov-report=html
 ```
@@ -220,6 +235,7 @@ npm run test:e2e -- tests/e2e/auth-flow.spec.ts
 - **SourceProtocol** — 代码获取（如 Git、SVN）
 
 ```python
+import shlex
 from pathlib import Path
 
 from qaplatform.plugins.protocols import RunnerProtocol, TestRunResult
@@ -228,7 +244,8 @@ class MyRunner:
     name = "my-runner"
 
     def build_command(self, config: dict) -> str:
-        return "python -m pytest --junitxml=results/junit.xml tests"
+        argv = ["python", "-m", "pytest", "--junitxml=results/junit.xml", "tests"]
+        return "cd /workspace && " + " ".join(shlex.quote(part) for part in argv)
 
     async def run_tests(self, working_dir: Path, config: dict, env_vars=None):
         # 执行测试并返回结果

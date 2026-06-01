@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from pathlib import PurePosixPath
 import shlex
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from qaplatform.plugins.builtin._paths import safe_workspace_output_path, safe_workspace_paths
 from qaplatform.plugins.protocols import TestRunResult
 
 log = logging.getLogger(__name__)
+_DEFAULT_JUNIT_XML = "results/junit.xml"
 
 
 class JestRunner:
@@ -24,16 +28,14 @@ class JestRunner:
 
     def build_command(self, config: dict[str, Any]) -> str:
         """Return the shell command to execute this runner inside a container."""
-        args = config.get("args", [])
-        test_paths = config.get("test_paths", [])
-        extras = " ".join(args) if args else ""
-        paths = " ".join(test_paths) if test_paths else ""
-        parts = ["npx jest --ci --reporters=default --reporters=jest-junit"]
-        if extras:
-            parts.append(extras)
-        if paths:
-            parts.append(paths)
-        return " ".join(parts)
+        cmd = self._build_command(config)
+        junit_xml = self._junit_xml_path(config)
+        parent = PurePosixPath(junit_xml).parent.as_posix()
+        mkdir = ""
+        if parent not in {"", "."}:
+            mkdir = f"mkdir -p {shlex.quote(parent)} && "
+        env = f"JEST_JUNIT_OUTPUT_FILE={shlex.quote(junit_xml)} "
+        return "cd /workspace && " + mkdir + env + " ".join(shlex.quote(part) for part in cmd)
 
     async def run_tests(
         self,
@@ -44,7 +46,14 @@ class JestRunner:
         cmd = self._build_command(config)
         log.info("running jest: %s (cwd=%s)", " ".join(cmd), working_dir)
 
-        env_override = dict(env_vars) if env_vars else None
+        junit_xml = self._junit_xml_path(config)
+        junit_path = working_dir / junit_xml
+        junit_path.parent.mkdir(parents=True, exist_ok=True)
+
+        env_override = os.environ.copy()
+        if env_vars:
+            env_override.update(env_vars)
+        env_override["JEST_JUNIT_OUTPUT_FILE"] = junit_xml
 
         started = time.monotonic()
         process = await asyncio.create_subprocess_exec(
@@ -60,8 +69,7 @@ class JestRunner:
         stdout = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
         stderr = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
 
-        junit_path = config.get("junit_xml", "junit.xml")
-        counts = self._parse_junit_xml(working_dir / junit_path)
+        counts = self._parse_junit_xml(junit_path)
 
         return TestRunResult(
             passed=counts["passed"],
@@ -87,12 +95,18 @@ class JestRunner:
             extra_args = shlex.split(extra_args)
         cmd.extend(extra_args)
 
-        test_paths = config.get("test_paths", [])
-        if isinstance(test_paths, str):
-            test_paths = [test_paths]
+        test_paths = safe_workspace_paths(config.get("test_paths"), field="test_paths")
         cmd.extend(test_paths)
 
         return cmd
+
+    @staticmethod
+    def _junit_xml_path(config: dict[str, Any]) -> str:
+        return safe_workspace_output_path(
+            config.get("junit_xml"),
+            _DEFAULT_JUNIT_XML,
+            field="junit_xml",
+        )
 
     @staticmethod
     def _parse_junit_xml(junit_path: Path) -> dict[str, int]:
@@ -106,11 +120,18 @@ class JestRunner:
             return {"passed": 0, "failed": 0, "skipped": 0, "error": 0}
 
         for testsuite in root.iter("testsuite"):
-            passed += int(testsuite.get("tests", 0)) - int(
-                testsuite.get("failures", 0)
-            ) - int(testsuite.get("errors", 0)) - int(testsuite.get("skipped", 0))
-            failed += int(testsuite.get("failures", 0))
-            error += int(testsuite.get("errors", 0))
-            skipped += int(testsuite.get("skipped", 0))
+            try:
+                tests = int(testsuite.get("tests", 0))
+                failures = int(testsuite.get("failures", 0))
+                errors = int(testsuite.get("errors", 0))
+                skips = int(testsuite.get("skipped", 0))
+            except ValueError:
+                log.warning("failed to parse JUnit XML counts: %s", junit_path)
+                return {"passed": 0, "failed": 0, "skipped": 0, "error": 0}
+
+            passed += max(tests - failures - errors - skips, 0)
+            failed += failures
+            error += errors
+            skipped += skips
 
         return {"passed": passed, "failed": failed, "skipped": skipped, "error": error}

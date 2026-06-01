@@ -4,6 +4,7 @@ import base64
 import uuid
 
 import pytest
+from cryptography.exceptions import InvalidTag
 
 from qaplatform.dependencies import CryptoService
 from qaplatform.domain.services.env_vars_crypto import (
@@ -31,14 +32,44 @@ def test_env_vars_encrypt_decrypt_roundtrip_hides_plaintext() -> None:
 
 
 def test_env_vars_aad_mismatch_fails() -> None:
+    wrong_env_id = uuid.uuid4()
     encrypted = encrypt_env_vars(
         {"TOKEN": "secret"},
         environment_id=uuid.uuid4(),
         crypto=_crypto(),
     )
 
-    with pytest.raises(Exception):
-        decrypt_env_vars(encrypted, environment_id=uuid.uuid4(), crypto=_crypto())
+    with pytest.raises(ValueError) as exc_info:
+        decrypt_env_vars(encrypted, environment_id=wrong_env_id, crypto=_crypto())
+
+    assert str(exc_info.value) == "Invalid encrypted env_vars payload"
+    assert isinstance(exc_info.value.__cause__, InvalidTag)
+    serialized_error = repr(exc_info.value)
+    assert "TOKEN" not in serialized_error
+    assert "secret" not in serialized_error
+    assert encrypted["ciphertext"] not in serialized_error
+    assert str(wrong_env_id) not in serialized_error
+
+
+@pytest.mark.parametrize("raw_ciphertext", [b"", b"\x10", b"\x10" + b"\x00" * 12])
+def test_env_vars_truncated_ciphertext_fails_with_sanitized_error(
+    raw_ciphertext: bytes,
+) -> None:
+    encrypted = {
+        "__encrypted__": "qaplatform.env_vars.v1",
+        "ciphertext": base64.b64encode(raw_ciphertext).decode("ascii"),
+    }
+    env_id = uuid.uuid4()
+
+    with pytest.raises(ValueError) as exc_info:
+        decrypt_env_vars(encrypted, environment_id=env_id, crypto=_crypto())
+
+    assert str(exc_info.value) == "Invalid encrypted env_vars payload"
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    serialized_error = repr(exc_info.value)
+    if encrypted["ciphertext"]:
+        assert encrypted["ciphertext"] not in serialized_error
+    assert str(env_id) not in serialized_error
 
 
 def test_env_vars_key_version_rotation_decrypts_old_and_encrypts_new() -> None:

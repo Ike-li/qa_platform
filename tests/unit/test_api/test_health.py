@@ -21,6 +21,7 @@ def _settings() -> Settings:
         encryption_key="0" * 64,
         debug=True,
         environment="test",
+        _env_file=None,
     )
 
 
@@ -76,6 +77,19 @@ def _client(app):
     return AsyncClient(transport=transport, base_url="http://test")
 
 
+def _assert_uptime_seconds(value: str) -> float:
+    assert value.endswith("s")
+    seconds_text = value.removesuffix("s")
+    whole, dot, fraction = seconds_text.partition(".")
+    assert dot == "."
+    assert whole == "0" or (whole.isdecimal() and not whole.startswith("0"))
+    assert fraction.isdecimal()
+    assert len(fraction) == 2
+    seconds = float(seconds_text)
+    assert seconds >= 0
+    return seconds
+
+
 @pytest.mark.asyncio
 async def test_health_returns_lightweight_liveness_contract():
     app = create_app(container=_container(), settings=_settings())
@@ -85,9 +99,12 @@ async def test_health_returns_lightweight_liveness_contract():
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "ok"
-    assert body["version"] == app.version
-    assert body["uptime"].endswith("s")
+    assert body == {
+        "status": "ok",
+        "version": app.version,
+        "uptime": body["uptime"],
+    }
+    _assert_uptime_seconds(body["uptime"])
 
 
 @pytest.mark.asyncio
@@ -99,9 +116,17 @@ async def test_ready_returns_ok_when_database_and_redis_probes_pass():
         response = await client.get("/ready")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
-    assert response.json()["checks"] == {"db": "ok", "redis": "ok"}
-    assert len(container.session.statements) == 1
+    body = response.json()
+    assert body == {
+        "status": "ok",
+        "version": app.version,
+        "uptime": body["uptime"],
+        "checks": {"db": "ok", "redis": "ok"},
+    }
+    _assert_uptime_seconds(body["uptime"])
+    assert [str(statement) for statement in container.session.statements] == [
+        "SELECT 1"
+    ]
     assert container.redis_client.ping_count == 1
 
 
@@ -114,8 +139,15 @@ async def test_ready_returns_degraded_when_database_probe_fails():
         response = await client.get("/ready")
 
     assert response.status_code == 503
-    assert response.json()["status"] == "degraded"
-    assert response.json()["checks"] == {"db": "error", "redis": "ok"}
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["version"] == app.version
+    _assert_uptime_seconds(body["uptime"])
+    assert body["checks"] == {"db": "error", "redis": "ok"}
+    assert [str(statement) for statement in container.session.statements] == [
+        "SELECT 1"
+    ]
+    assert container.redis_client.ping_count == 1
 
 
 @pytest.mark.asyncio
@@ -127,8 +159,40 @@ async def test_ready_returns_degraded_when_redis_probe_fails():
         response = await client.get("/ready")
 
     assert response.status_code == 503
-    assert response.json()["status"] == "degraded"
-    assert response.json()["checks"] == {"db": "ok", "redis": "error"}
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["version"] == app.version
+    _assert_uptime_seconds(body["uptime"])
+    assert body["checks"] == {"db": "ok", "redis": "error"}
+    assert [str(statement) for statement in container.session.statements] == [
+        "SELECT 1"
+    ]
+    assert container.redis_client.ping_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ready_checks_all_dependencies_and_redacts_probe_errors_when_degraded():
+    container = _container(db_fail=True, redis_fail=True)
+    app = create_app(container=container, settings=container.settings)
+
+    async with _client(app) as client:
+        response = await client.get("/ready")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body == {
+        "status": "degraded",
+        "version": app.version,
+        "uptime": body["uptime"],
+        "checks": {"db": "error", "redis": "error"},
+    }
+    _assert_uptime_seconds(body["uptime"])
+    assert "database probe failed" not in response.text
+    assert "redis probe failed" not in response.text
+    assert [str(statement) for statement in container.session.statements] == [
+        "SELECT 1"
+    ]
+    assert container.redis_client.ping_count == 1
 
 
 @pytest.mark.asyncio

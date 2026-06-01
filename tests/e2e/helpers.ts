@@ -50,12 +50,12 @@ export function uniqueSuffix() {
 function clearAuthRateLimits() {
   execFileSync(".venv/bin/python", ["-c", `
 import asyncio
+import os
 import redis.asyncio as redis
 
-from qaplatform.config import Settings
-
 async def main():
-    client = redis.from_url(Settings().redis_url, decode_responses=True)
+    redis_url = os.environ.get("QAP_REDIS_URL", "redis://localhost:6379/0")
+    client = redis.from_url(redis_url, decode_responses=True)
     keys = []
     async for key in client.scan_iter("rate_limit:*:/api/v1/auth/*"):
         keys.append(key)
@@ -78,6 +78,8 @@ export async function loginViaUi(page: Page) {
   await page.getByLabel("Password").fill(adminPassword);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/projects$/);
+  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Log out/i })).toBeVisible();
 }
 
 export async function loginViaApi(
@@ -109,6 +111,15 @@ export function authHeaders(token: string) {
   };
 }
 
+export async function expectApiOk(
+  response: { ok(): boolean; status(): number; text(): Promise<string> },
+  context: string,
+) {
+  if (!response.ok()) {
+    throw new Error(`${context} failed with ${response.status()}: ${await response.text()}`);
+  }
+}
+
 export async function createProject(
   request: APIRequestContext,
   token: string,
@@ -128,7 +139,7 @@ export async function createProject(
       settings: overrides.settings ?? {},
     },
   });
-  expect(response.ok()).toBeTruthy();
+  await expectApiOk(response, "Create project");
   return response.json();
 }
 
@@ -142,7 +153,7 @@ export async function updateProject(
     headers: authHeaders(token),
     data,
   });
-  expect(response.ok()).toBeTruthy();
+  await expectApiOk(response, "Update project");
   return response.json();
 }
 
@@ -154,7 +165,7 @@ export async function ensureEnvironment(
     name?: string;
     env_vars?: Record<string, string>;
     base_image?: string;
-    network_policy?: "allow" | "block";
+    network_policy?: "allow" | "deny" | "restricted";
     setup_script?: string;
     memory_mb?: number;
     cpu_cores?: number;
@@ -181,7 +192,7 @@ export async function ensureEnvironment(
         : {}),
     },
   });
-  expect(createResponse.ok()).toBeTruthy();
+  await expectApiOk(createResponse, "Create environment");
   return createResponse.json();
 }
 
@@ -239,7 +250,7 @@ export async function ensurePipeline(
       enabled: true,
     },
   });
-  expect(createResponse.ok()).toBeTruthy();
+  await expectApiOk(createResponse, "Create pipeline");
   return createResponse.json();
 }
 
@@ -270,12 +281,15 @@ import os
 from argon2 import PasswordHasher
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from qaplatform.config import Settings
 from qaplatform.infra.database.models import AppUser
 
 async def main():
     data = json.loads(os.environ["E2E_PAYLOAD"])
-    engine = create_async_engine(Settings().database_url)
+    database_url = os.environ.get(
+        "QAP_DATABASE_URL",
+        "postgresql+asyncpg://qaplatform:qaplatform@localhost:5432/qaplatform",
+    )
+    engine = create_async_engine(database_url)
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
         user = AppUser(
@@ -308,7 +322,7 @@ export function createRunWithResultsViaDb(payload: {
   results: Array<{
     suite: string;
     name: string;
-    status: "passed" | "failed" | "error" | "skipped";
+    status: "passed" | "failed" | "error" | "skipped" | "xfail";
     duration_ms?: number;
     error_message?: string | null;
     stack_trace?: string | null;
@@ -324,18 +338,25 @@ import os
 from uuid import UUID
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from qaplatform.config import Settings
 from qaplatform.infra.database.models import Run, RunStatusEnum, TestResult, TestResultStatusEnum
 
 async def main():
     data = json.loads(os.environ["E2E_PAYLOAD"])
+    total = len(data["results"])
+    passed = sum(1 for item in data["results"] if item["status"] == "passed")
     summary = {
-        "total": len(data["results"]),
-        "passed": sum(1 for item in data["results"] if item["status"] == "passed"),
-        "failed": sum(1 for item in data["results"] if item["status"] in {"failed", "error"}),
-        "skipped": sum(1 for item in data["results"] if item["status"] == "skipped"),
+        "total": total,
+        "passed": passed,
+        "failed": sum(1 for item in data["results"] if item["status"] == "failed"),
+        "skipped": sum(1 for item in data["results"] if item["status"] in {"skipped", "xfail"}),
+        "error": sum(1 for item in data["results"] if item["status"] == "error"),
+        "pass_rate": passed / total if total else 0,
     }
-    engine = create_async_engine(Settings().database_url)
+    database_url = os.environ.get(
+        "QAP_DATABASE_URL",
+        "postgresql+asyncpg://qaplatform:qaplatform@localhost:5432/qaplatform",
+    )
+    engine = create_async_engine(database_url)
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
         run = Run(
@@ -401,7 +422,6 @@ from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from qaplatform.config import Settings
 from qaplatform.infra.database.models import Artifact, Run, RunStatusEnum
 
 async def ensure_bucket(s3_client, bucket):
@@ -414,8 +434,16 @@ async def ensure_bucket(s3_client, bucket):
 
 async def main():
     data = json.loads(os.environ["E2E_PAYLOAD"])
-    settings = Settings()
-    engine = create_async_engine(settings.database_url)
+    database_url = os.environ.get(
+        "QAP_DATABASE_URL",
+        "postgresql+asyncpg://qaplatform:qaplatform@localhost:5432/qaplatform",
+    )
+    s3_endpoint = os.environ.get("QAP_S3_ENDPOINT", "http://localhost:9000")
+    s3_access_key = os.environ.get("QAP_S3_ACCESS_KEY", "minioadmin")
+    s3_secret_key = os.environ.get("QAP_S3_SECRET_KEY", "minioadmin")
+    s3_bucket = os.environ.get("QAP_S3_BUCKET", "qa-platform")
+    s3_region = os.environ.get("QAP_S3_REGION", "us-east-1")
+    engine = create_async_engine(database_url)
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
         run = Run(
@@ -429,7 +457,7 @@ async def main():
             triggered_by=UUID(data["userId"]),
             git_ref=data["branch"],
             git_sha=data["gitSha"],
-            summary={"total": 1, "passed": 1, "failed": 0, "skipped": 0},
+            summary={"total": 1, "passed": 1, "failed": 0, "skipped": 0, "error": 0, "pass_rate": 1.0},
             duration_ms=1000,
             metadata_={"source": "playwright-archived-evidence"},
         )
@@ -459,20 +487,20 @@ async def main():
     s3_session = get_session()
     async with s3_session.create_client(
         "s3",
-        endpoint_url=settings.s3_endpoint,
-        aws_access_key_id=settings.s3_access_key,
-        aws_secret_access_key=settings.s3_secret_key,
-        region_name=settings.s3_region,
+        endpoint_url=s3_endpoint,
+        aws_access_key_id=s3_access_key,
+        aws_secret_access_key=s3_secret_key,
+        region_name=s3_region,
     ) as s3_client:
-        await ensure_bucket(s3_client, settings.s3_bucket)
+        await ensure_bucket(s3_client, s3_bucket)
         await s3_client.put_object(
-            Bucket=settings.s3_bucket,
+            Bucket=s3_bucket,
             Key=f"logs/{run.id}.jsonl",
             Body=logs_body,
             ContentType="application/x-ndjson",
         )
         await s3_client.put_object(
-            Bucket=settings.s3_bucket,
+            Bucket=s3_bucket,
             Key=storage_path,
             Body=data["artifactHtml"].encode("utf-8"),
             ContentType="text/html",
@@ -505,12 +533,15 @@ import os
 from uuid import UUID
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from qaplatform.config import Settings
 from qaplatform.infra.database.models import Run, RunStatusEnum
 
 async def main():
     data = json.loads(os.environ["E2E_PAYLOAD"])
-    engine = create_async_engine(Settings().database_url)
+    database_url = os.environ.get(
+        "QAP_DATABASE_URL",
+        "postgresql+asyncpg://qaplatform:qaplatform@localhost:5432/qaplatform",
+    )
+    engine = create_async_engine(database_url)
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
         run = Run(

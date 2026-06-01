@@ -8,6 +8,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from qaplatform.infra.database.models import RunStatusEnum
+
+
+_QUEUE_STATUSES = [RunStatusEnum.QUEUED, RunStatusEnum.PREPARING]
+_IN_FLIGHT_STATUSES = [RunStatusEnum.RUNNING, RunStatusEnum.COLLECTING]
+_TERMINAL_STATUSES = [
+    RunStatusEnum.DONE,
+    RunStatusEnum.FAILED,
+    RunStatusEnum.CANCELLED,
+    RunStatusEnum.TIMEOUT,
+]
+_PASSED_STATUSES = [RunStatusEnum.DONE]
+
 
 @pytest.fixture
 def admin_user():
@@ -33,7 +46,9 @@ def _make_app(user):
     from qaplatform.api.v1.admin import _require_platform_admin
     from qaplatform.main import create_app
 
-    app = create_app(container=MagicMock())
+    container = MagicMock()
+    container.redis_client = None
+    app = create_app(container=container)
 
     async def _override_admin():
         return user
@@ -42,34 +57,48 @@ def _make_app(user):
     return app
 
 
-def _mock_session(*scalars):
-    """Return a mock session whose execute() returns scalars in order."""
-    session = AsyncMock()
-    results = []
-    for val in scalars:
-        r = MagicMock()
-        r.scalar = MagicMock(return_value=val)
-        results.append(r)
-    session.execute = AsyncMock(side_effect=results)
+def _mock_repos(*counts):
+    """Return repository bundle mock whose run count methods return in order."""
+    repos = MagicMock()
+    repos.run.count_by_statuses = AsyncMock(side_effect=counts[:2])
+    repos.run.count_finished_since_by_statuses = AsyncMock(side_effect=counts[2:])
+    return repos
 
 
-    async def _gen():
-        yield session
+def _assert_status_query_contract(repos):
+    assert [
+        await_args.args[0]
+        for await_args in repos.run.count_by_statuses.await_args_list
+    ] == [_QUEUE_STATUSES, _IN_FLIGHT_STATUSES]
+    terminal_call, passed_call = repos.run.count_finished_since_by_statuses.await_args_list
+    assert terminal_call.kwargs["statuses"] == _TERMINAL_STATUSES
+    assert passed_call.kwargs["statuses"] == _PASSED_STATUSES
+    assert terminal_call.kwargs["since"] is passed_call.kwargs["since"]
+    assert terminal_call.kwargs["since"].tzinfo is not None
 
-    return session
+
+def test_status_documents_non_admin_403(admin_user):
+    app = _make_app(admin_user)
+
+    responses = app.openapi()["paths"]["/api/v1/admin/status"]["get"]["responses"]
+
+    schema = responses["403"]["content"]["application/json"]["schema"]
+    assert schema["type"] == "object"
+    assert schema["required"] == ["detail"]
+    assert schema["properties"]["detail"]["type"] == "string"
 
 
 @pytest.mark.asyncio
 async def test_status_returns_expected_shape(admin_user):
     app = _make_app(admin_user)
-    session = _mock_session(5, 2, 10, 8)  # queue, flight, total, passed
+    repos = _mock_repos(5, 2, 12, 8)  # queue, flight, total terminal, passed
 
-    from qaplatform.api.deps import _get_db_session
+    from qaplatform.api.deps import _get_repos
 
-    async def _gen():
-        yield session
+    async def _repos():
+        return repos
 
-    app.dependency_overrides[_get_db_session] = _gen
+    app.dependency_overrides[_get_repos] = _repos
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -80,23 +109,26 @@ async def test_status_returns_expected_shape(admin_user):
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["queue_depth"] == 5
-    assert body["in_flight"] == 2
-    assert body["total_runs_1h"] == 10
-    assert body["success_rate_1h"] == 0.8
+    assert body == {
+        "queue_depth": 5,
+        "in_flight": 2,
+        "success_rate_1h": 0.6667,
+        "total_runs_1h": 12,
+    }
+    _assert_status_query_contract(repos)
 
 
 @pytest.mark.asyncio
 async def test_status_zero_runs_returns_100_percent(admin_user):
     app = _make_app(admin_user)
-    session = _mock_session(0, 0, 0, 0)
+    repos = _mock_repos(0, 0, 0, 0)
 
-    from qaplatform.api.deps import _get_db_session
+    from qaplatform.api.deps import _get_repos
 
-    async def _gen():
-        yield session
+    async def _repos():
+        return repos
 
-    app.dependency_overrides[_get_db_session] = _gen
+    app.dependency_overrides[_get_repos] = _repos
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -107,20 +139,32 @@ async def test_status_zero_runs_returns_100_percent(admin_user):
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["success_rate_1h"] == 1.0
+    assert body == {
+        "queue_depth": 0,
+        "in_flight": 0,
+        "success_rate_1h": 1.0,
+        "total_runs_1h": 0,
+    }
+    _assert_status_query_contract(repos)
 
 
 @pytest.mark.asyncio
 async def test_status_non_admin_gets_403(non_admin_user):
-    from qaplatform.api.deps import get_current_user
+    from qaplatform.api.deps import _get_repos, get_current_user
     from qaplatform.main import create_app
 
-    app = create_app(container=MagicMock())
+    container = MagicMock()
+    container.redis_client = None
+    app = create_app(container=container)
 
     async def _override_user():
         return non_admin_user
 
+    async def _repos_should_not_open():
+        raise AssertionError("non-admin status request should not open repositories")
+
     app.dependency_overrides[get_current_user] = _override_user
+    app.dependency_overrides[_get_repos] = _repos_should_not_open
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -130,3 +174,4 @@ async def test_status_non_admin_gets_403(non_admin_user):
         )
 
     assert resp.status_code == 403
+    assert resp.json() == {"detail": "Platform admin required"}

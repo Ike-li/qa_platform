@@ -5,10 +5,10 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
-from typing import AsyncIterator, Collection
+from typing import Any, AsyncIterator, Collection
 from uuid import UUID
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import and_, case, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.infra.database.models import (
@@ -17,6 +17,7 @@ from qaplatform.infra.database.models import (
     Run,
     RunStatusEnum,
     TestResult,
+    TestResultStatusEnum,
 )
 from qaplatform.infra.database.repositories.base import BaseRepository
 
@@ -143,7 +144,7 @@ class RunRepository(BaseRepository[Run]):
         """Set retry_group_id for a run (typically to its own id)."""
         stmt = (
             update(Run)
-            .where(Run.id == run_id)
+            .where(Run.id == run_id, Run.deleted_at.is_(None))
             .values(retry_group_id=group_id, updated_at=_utcnow())
         )
         await self.session.execute(stmt)
@@ -170,7 +171,11 @@ class RunRepository(BaseRepository[Run]):
         expected = self._expected_statuses(expected_in, self._FINISH_EXPECTED)
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.status.in_(expected))
+            .where(
+                Run.id == run_id,
+                Run.status.in_(expected),
+                Run.deleted_at.is_(None),
+            )
             .values(**values)
         )
         result = await self.session.execute(stmt)
@@ -196,7 +201,11 @@ class RunRepository(BaseRepository[Run]):
         expected = self._expected_statuses(expected_in, self._FAIL_EXPECTED)
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.status.in_(expected))
+            .where(
+                Run.id == run_id,
+                Run.status.in_(expected),
+                Run.deleted_at.is_(None),
+            )
             .values(**values)
         )
         result = await self.session.execute(stmt)
@@ -214,7 +223,11 @@ class RunRepository(BaseRepository[Run]):
         expected = self._expected_statuses(expected_in, self._CANCEL_EXPECTED)
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.status.in_(expected))
+            .where(
+                Run.id == run_id,
+                Run.status.in_(expected),
+                Run.deleted_at.is_(None),
+            )
             .values(
                 status=RunStatusEnum.CANCELLED,
                 finished_at=now,
@@ -234,7 +247,11 @@ class RunRepository(BaseRepository[Run]):
         now = _utcnow()
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.status.in_(expected_in))
+            .where(
+                Run.id == run_id,
+                Run.status.in_(expected_in),
+                Run.deleted_at.is_(None),
+            )
             .values(
                 status=RunStatusEnum.TIMEOUT,
                 finished_at=now,
@@ -252,7 +269,7 @@ class RunRepository(BaseRepository[Run]):
         now = _utcnow()
         stmt = (
             update(Run)
-            .where(Run.id == run_id)
+            .where(Run.id == run_id, Run.deleted_at.is_(None))
             .values(
                 queue_name=queue_name,
                 arq_job_id=arq_job_id,
@@ -268,7 +285,7 @@ class RunRepository(BaseRepository[Run]):
         now = _utcnow()
         stmt = (
             update(Run)
-            .where(Run.id == run_id)
+            .where(Run.id == run_id, Run.deleted_at.is_(None))
             .values(updated_at=now)
         )
         await self.session.execute(stmt)
@@ -285,7 +302,11 @@ class RunRepository(BaseRepository[Run]):
         now = _utcnow()
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.status == RunStatusEnum.PREPARING)
+            .where(
+                Run.id == run_id,
+                Run.status == RunStatusEnum.PREPARING,
+                Run.deleted_at.is_(None),
+            )
             .values(
                 status=RunStatusEnum.RUNNING,
                 started_at=now,
@@ -308,7 +329,11 @@ class RunRepository(BaseRepository[Run]):
         now = _utcnow()
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.status == RunStatusEnum.RUNNING)
+            .where(
+                Run.id == run_id,
+                Run.status == RunStatusEnum.RUNNING,
+                Run.deleted_at.is_(None),
+            )
             .values(
                 status=RunStatusEnum.COLLECTING,
                 status_updated_at=now,
@@ -342,7 +367,11 @@ class RunRepository(BaseRepository[Run]):
         now = _utcnow()
         stmt = (
             update(Run)
-            .where(Run.id == run_id, Run.worker_id == worker_id)
+            .where(
+                Run.id == run_id,
+                Run.worker_id == worker_id,
+                Run.deleted_at.is_(None),
+            )
             .values(worker_id=None, updated_at=now)
         )
         await self.session.execute(stmt)
@@ -368,6 +397,7 @@ class RunRepository(BaseRepository[Run]):
                 Run.id == run_id,
                 Run.worker_id == worker_id,
                 Run.status.in_(self._FAIL_EXPECTED),
+                Run.deleted_at.is_(None),
             )
             .values(
                 status=RunStatusEnum.FAILED,
@@ -391,6 +421,7 @@ class RunRepository(BaseRepository[Run]):
             .where(Run.status == RunStatusEnum.QUEUED, Run.enqueued_at.is_(None), Run.deleted_at.is_(None))
             .order_by(Run.priority, Run.created_at)
             .limit(limit)
+            .with_for_update(of=Run, skip_locked=True)
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
@@ -496,6 +527,82 @@ class RunRepository(BaseRepository[Run]):
         result = await self.session.execute(stmt)
         return result.scalar_one()
 
+    async def count_by_statuses(self, statuses: Collection[RunStatusEnum]) -> int:
+        """Count non-deleted runs whose status is in ``statuses``."""
+        stmt = select(func.count()).select_from(Run).where(
+            Run.deleted_at.is_(None),
+            Run.status.in_(statuses),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
+    async def count_finished_since_by_statuses(
+        self,
+        *,
+        since: datetime,
+        statuses: Collection[RunStatusEnum],
+    ) -> int:
+        """Count non-deleted terminal runs in ``statuses`` finished since ``since``."""
+        stmt = select(func.count()).select_from(Run).where(
+            Run.deleted_at.is_(None),
+            Run.finished_at >= since,
+            Run.status.in_(statuses),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
+    async def list_trend_points(
+        self,
+        *,
+        project_id: UUID,
+        cutoff: datetime,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[Any], int]:
+        filters = (
+            Run.project_id == project_id,
+            Run.created_at >= cutoff,
+            Run.deleted_at.is_(None),
+            Run.status.in_([
+                RunStatusEnum.DONE,
+                RunStatusEnum.FAILED,
+                RunStatusEnum.TIMEOUT,
+            ]),
+        )
+        count_stmt = select(func.count(func.distinct(func.date(Run.created_at)))).where(
+            *filters
+        )
+        total = (await self.session.execute(count_stmt)).scalar_one()
+
+        stmt = (
+            select(
+                func.date(Run.created_at).label("date"),
+                func.count().label("total_runs"),
+                func.sum(case((Run.status == RunStatusEnum.DONE, 1), else_=0)).label(
+                    "passed_runs"
+                ),
+                func.sum(
+                    case(
+                        (
+                            Run.status.in_([
+                                RunStatusEnum.FAILED,
+                                RunStatusEnum.TIMEOUT,
+                            ]),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("failed_runs"),
+            )
+            .where(*filters)
+            .group_by(func.date(Run.created_at))
+            .order_by(func.date(Run.created_at))
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.all()), total
+
     @asynccontextmanager
     async def scheduler_lock(self) -> AsyncIterator[None]:
         """Acquire a PostgreSQL advisory lock for the scheduler."""
@@ -507,7 +614,7 @@ class RunRepository(BaseRepository[Run]):
         """Write the resolved git commit SHA back to the run record."""
         stmt = (
             update(Run)
-            .where(Run.id == run_id)
+            .where(Run.id == run_id, Run.deleted_at.is_(None))
             .values(git_sha=sha, updated_at=_utcnow())
         )
         await self.session.execute(stmt)
@@ -517,7 +624,7 @@ class RunRepository(BaseRepository[Run]):
         """Write the container execution ID to the run record."""
         stmt = (
             update(Run)
-            .where(Run.id == run_id)
+            .where(Run.id == run_id, Run.deleted_at.is_(None))
             .values(execution_id=execution_id, updated_at=_utcnow())
         )
         await self.session.execute(stmt)
@@ -582,6 +689,122 @@ class TestResultRepository(BaseRepository[TestResult]):
         for inst in instances:
             await self.session.refresh(inst)
         return instances
+
+    async def list_flaky_tests(
+        self,
+        *,
+        project_id: UUID,
+        cutoff: datetime,
+        min_runs: int,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[Any], int]:
+        filters = (
+            Run.project_id == project_id,
+            Run.created_at >= cutoff,
+            Run.deleted_at.is_(None),
+            Run.status.in_([
+                RunStatusEnum.DONE,
+                RunStatusEnum.FAILED,
+                RunStatusEnum.TIMEOUT,
+            ]),
+        )
+        failed_filter = TestResult.status.in_([
+            TestResultStatusEnum.FAILED,
+            TestResultStatusEnum.ERROR,
+        ])
+        having_cond = and_(
+            func.count() >= min_runs,
+            func.sum(
+                case((TestResult.status == TestResultStatusEnum.PASSED, 1), else_=0)
+            )
+            > 0,
+            func.sum(case((failed_filter, 1), else_=0)) > 0,
+        )
+        failed_expr = func.sum(case((failed_filter, 1), else_=0))
+
+        count_stmt = (
+            select(func.count())
+            .select_from(
+                select(TestResult.suite, TestResult.name)
+                .join(Run, Run.id == TestResult.run_id)
+                .where(*filters)
+                .group_by(TestResult.suite, TestResult.name)
+                .having(having_cond)
+                .subquery()
+            )
+        )
+        total = (await self.session.execute(count_stmt)).scalar_one()
+
+        stmt = (
+            select(
+                TestResult.suite,
+                TestResult.name,
+                func.count().label("total_runs"),
+                func.sum(
+                    case((TestResult.status == TestResultStatusEnum.PASSED, 1), else_=0)
+                ).label("passed_count"),
+                failed_expr.label("failed_count"),
+            )
+            .join(Run, Run.id == TestResult.run_id)
+            .where(*filters)
+            .group_by(TestResult.suite, TestResult.name)
+            .having(having_cond)
+            .order_by(failed_expr.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.all()), total
+
+    async def list_test_history(
+        self,
+        *,
+        project_id: UUID,
+        suite: str,
+        name: str,
+        cutoff: datetime,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[Any], int]:
+        filters = (
+            Run.project_id == project_id,
+            Run.created_at >= cutoff,
+            Run.deleted_at.is_(None),
+            Run.status.in_([
+                RunStatusEnum.DONE,
+                RunStatusEnum.FAILED,
+                RunStatusEnum.TIMEOUT,
+            ]),
+            TestResult.suite == suite,
+            TestResult.name == name,
+        )
+        count_stmt = (
+            select(func.count())
+            .select_from(TestResult)
+            .join(Run, Run.id == TestResult.run_id)
+            .where(*filters)
+        )
+        total = (await self.session.execute(count_stmt)).scalar_one()
+
+        stmt = (
+            select(
+                TestResult.run_id,
+                TestResult.status,
+                TestResult.duration_ms,
+                TestResult.error_message,
+                Run.created_at.label("run_created_at"),
+                Run.status.label("run_status"),
+                Run.git_ref,
+            )
+            .join(Run, Run.id == TestResult.run_id)
+            .where(*filters)
+            .order_by(Run.created_at.asc(), Run.id.asc())
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.all()), total
 
 
 class ArtifactRepository(BaseRepository[Artifact]):

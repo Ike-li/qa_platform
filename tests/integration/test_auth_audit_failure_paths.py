@@ -88,6 +88,7 @@ async def seeded_user(integration_db_engine):
     ph = PasswordHasher()
     password = "correct-horse-battery"
     sfx = uuid4().hex[:8]
+    username = f"audit_user_{sfx}"
 
     async with integration_db_engine.begin() as conn:
         # Insert tenant
@@ -100,7 +101,7 @@ async def seeded_user(integration_db_engine):
         tenant_id = tenant_row.fetchone()[0]
 
         # Insert user
-        await conn.execute(
+        user_row = await conn.execute(
             text(
                 """
                 INSERT INTO app_user
@@ -108,20 +109,23 @@ async def seeded_user(integration_db_engine):
                      is_platform_admin, is_active)
                 VALUES
                     (:tid, :uname, :email, :phash, 'member', false, true)
+                RETURNING id
                 """
             ),
             {
                 "tid": tenant_id,
-                "uname": f"audit-user-{sfx}",
-                "email": f"audit-user-{sfx}@test.local",
+                "uname": username,
+                "email": f"{username}@test.local",
                 "phash": ph.hash(password),
             },
         )
+        user_id = user_row.fetchone()[0]
 
     return {
-        "username": f"audit-user-{sfx}",
+        "username": username,
         "password": password,
         "tenant_id": tenant_id,
+        "user_id": user_id,
     }
 
 
@@ -206,6 +210,41 @@ def _force_auth_audit_writes_to_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _assert_auth_audit_warning(caplog, action: str) -> None:
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "qaplatform.api.v1.auth"
+        and record.levelno == logging.WARNING
+        and getattr(record, "action", None) == action
+    ]
+    assert [
+        {
+            "message": record.getMessage(),
+            "exc_type": type(record.exc_info[1]) if record.exc_info else None,
+            "exc_message": str(record.exc_info[1]) if record.exc_info else None,
+        }
+        for record in records
+    ] == [
+        {
+            "message": "audit_write_failed",
+            "exc_type": RuntimeError,
+            "exc_message": "audit store unavailable",
+        }
+    ]
+
+
+def _assert_rate_limited_response(response, retry_after: int) -> None:
+    assert response.status_code == 429, response.text
+    assert response.headers["Retry-After"] == str(retry_after)
+    assert response.json() == {
+        "error": {
+            "code": "TOO_MANY_REQUESTS",
+            "message": "Rate limit exceeded. Please try again later.",
+        }
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Tests
 # --------------------------------------------------------------------------- #
@@ -220,22 +259,32 @@ async def test_login_nonexistent_user_returns_401_not_500(
     Before the fix, audit_repo.create(tenant_id=None) raised IntegrityError
     (NOT NULL violation) which the global handler turned into 500.
     """
+    username = "totally_nonexistent_user"
+    password = "wrong"
     resp = await auth_client.post(
         "/api/v1/auth/login",
-        json={"username": "totally-nonexistent-user", "password": "wrong"},
+        json={"username": username, "password": password},
     )
     assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
+    assert resp.json() == {"detail": "Invalid credentials"}
 
     row = await _latest_audit_row(integration_db_engine, "auth.login_failed")
     assert row is not None, "audit.login_failed row must be written"
+    assert row.action == "auth.login_failed"
     assert row.tenant_id is None, "tenant_id must be NULL for unknown-user path"
-    assert "invalid_credentials" in str(row.after_state)
+    assert row.user_id is None
+    assert row.after_state == {
+        "reason": "invalid_credentials",
+        "username": username,
+    }
+    assert password not in repr(row.after_state)
 
 
 @pytest.mark.asyncio
 async def test_auth_login_rate_limit_uses_real_redis_token_hash_bucket(
     auth_app,
     auth_client,
+    integration_db_engine,
 ):
     """Auth abuse protection uses real Redis and never stores the raw bearer token."""
     token = f"rate-limit-secret-{uuid4().hex}"
@@ -245,13 +294,14 @@ async def test_auth_login_rate_limit_uses_real_redis_token_hash_bucket(
     assert redis is not None
     await redis.delete(bucket_key)
 
+    before_count = await _audit_count(integration_db_engine, "auth.login_failed")
     headers = {"Authorization": f"Bearer {token}"}
     for index in range(5):
         resp = await auth_client.post(
             "/api/v1/auth/login",
             headers=headers,
             json={
-                "username": f"rate-limit-missing-{index}-{uuid4().hex}",
+                "username": f"rl_missing_{index}_{uuid4().hex[:8]}",
                 "password": "wrong-password",
             },
         )
@@ -261,15 +311,14 @@ async def test_auth_login_rate_limit_uses_real_redis_token_hash_bucket(
         "/api/v1/auth/login",
         headers=headers,
         json={
-            "username": f"rate-limit-missing-final-{uuid4().hex}",
+            "username": f"rl_missing_final_{uuid4().hex[:8]}",
             "password": "wrong-password",
         },
     )
-    assert limited.status_code == 429, limited.text
-    assert limited.headers["Retry-After"] == str(
-        auth_app.state.container.settings.rate_limit_auth_failure_window
+    _assert_rate_limited_response(
+        limited,
+        auth_app.state.container.settings.rate_limit_auth_failure_window,
     )
-    assert limited.json()["error"]["code"] == "TOO_MANY_REQUESTS"
 
     keys = [
         key
@@ -279,6 +328,9 @@ async def test_auth_login_rate_limit_uses_real_redis_token_hash_bucket(
     assert keys == [bucket_key]
     assert token not in keys[0]
     assert await redis.zcard(bucket_key) == 6
+
+    after_count = await _audit_count(integration_db_engine, "auth.login_failed")
+    assert after_count - before_count == 5
 
 
 @pytest.mark.asyncio
@@ -317,19 +369,18 @@ async def test_auth_register_rate_limit_uses_real_redis_ip_bucket_and_audit_coun
             "password": password,
         },
     )
-    assert limited.status_code == 429, limited.text
-    assert limited.headers["Retry-After"] == str(
-        auth_app.state.container.settings.rate_limit_auth_failure_window
+    _assert_rate_limited_response(
+        limited,
+        auth_app.state.container.settings.rate_limit_auth_failure_window,
     )
-    assert limited.json()["error"]["code"] == "TOO_MANY_REQUESTS"
 
     keys = [
         key async for key in redis.scan_iter("rate_limit:ip:*:/api/v1/auth/register")
     ]
-    assert len(keys) == 1
-    assert prefix not in keys[0]
-    assert password not in keys[0]
-    assert await redis.zcard(keys[0]) == 6
+    (bucket_key,) = keys
+    assert prefix not in bucket_key
+    assert password not in bucket_key
+    assert await redis.zcard(bucket_key) == 6
 
     after_count = await _audit_count(integration_db_engine, "auth.register")
     assert after_count - before_count == 5
@@ -339,6 +390,24 @@ def _refresh_cookie(auth_client) -> str:
     cookie = auth_client.cookies.get("refresh_token")
     assert cookie
     return cookie
+
+
+def _assert_refresh_cookie_clear_header(response) -> None:
+    clear_cookie = next(
+        (
+            header
+            for header in response.headers.get_list("set-cookie")
+            if header.startswith("refresh_token=")
+        ),
+        None,
+    )
+    assert clear_cookie is not None
+    clear_cookie = clear_cookie.lower()
+    assert "max-age=0" in clear_cookie
+    assert "path=/api/v1/auth" in clear_cookie
+    assert "httponly" in clear_cookie
+    assert "secure" in clear_cookie
+    assert "samesite=strict" in clear_cookie
 
 
 @pytest.mark.asyncio
@@ -359,37 +428,54 @@ async def test_auth_refresh_rate_limit_uses_real_redis_ip_bucket_and_audit_count
         "auth.refresh",
         user_id,
     )
-    seen_refresh_tokens = {_refresh_cookie(auth_client)}
+    refresh_tokens = [_refresh_cookie(auth_client)]
     for _ in range(5):
         refresh_token = _refresh_cookie(auth_client)
+        assert refresh_token == refresh_tokens[-1]
         resp = await auth_client.post(
             "/api/v1/auth/refresh",
             headers={"Cookie": f"refresh_token={refresh_token}"},
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["access_token"]
-        seen_refresh_tokens.add(_refresh_cookie(auth_client))
+        refresh_tokens.append(_refresh_cookie(auth_client))
 
-    assert len(seen_refresh_tokens) == 6
+    (
+        initial_refresh_token,
+        first_rotated_token,
+        second_rotated_token,
+        third_rotated_token,
+        fourth_rotated_token,
+        fifth_rotated_token,
+    ) = refresh_tokens
+    assert sorted(refresh_tokens) == sorted(
+        {
+            initial_refresh_token,
+            first_rotated_token,
+            second_rotated_token,
+            third_rotated_token,
+            fourth_rotated_token,
+            fifth_rotated_token,
+        }
+    )
     limited_refresh_token = _refresh_cookie(auth_client)
     limited = await auth_client.post(
         "/api/v1/auth/refresh",
         headers={"Cookie": f"refresh_token={limited_refresh_token}"},
     )
-    assert limited.status_code == 429, limited.text
-    assert limited.headers["Retry-After"] == str(
-        auth_app.state.container.settings.rate_limit_auth_failure_window
+    _assert_rate_limited_response(
+        limited,
+        auth_app.state.container.settings.rate_limit_auth_failure_window,
     )
-    assert limited.json()["error"]["code"] == "TOO_MANY_REQUESTS"
     assert _refresh_cookie(auth_client) == limited_refresh_token
 
     keys = [
         key async for key in redis.scan_iter("rate_limit:ip:*:/api/v1/auth/refresh")
     ]
-    assert len(keys) == 1
-    for token in seen_refresh_tokens:
-        assert token not in keys[0]
-    assert await redis.zcard(keys[0]) == 6
+    (bucket_key,) = keys
+    for token in refresh_tokens:
+        assert token not in bucket_key
+    assert await redis.zcard(bucket_key) == 6
 
     after_count = await _audit_count_for_user(
         integration_db_engine,
@@ -443,11 +529,10 @@ async def test_auth_api_token_create_rate_limit_uses_real_redis_token_bucket(
             "expires_days": 7,
         },
     )
-    assert limited.status_code == 429, limited.text
-    assert limited.headers["Retry-After"] == str(
-        auth_app.state.container.settings.rate_limit_auth_failure_window
+    _assert_rate_limited_response(
+        limited,
+        auth_app.state.container.settings.rate_limit_auth_failure_window,
     )
-    assert limited.json()["error"]["code"] == "TOO_MANY_REQUESTS"
 
     keys = [
         key
@@ -504,11 +589,10 @@ async def test_auth_sse_ticket_rate_limit_uses_real_redis_token_hash_bucket(
         "/api/v1/auth/sse-ticket",
         headers=headers,
     )
-    assert limited.status_code == 429, limited.text
-    assert limited.headers["Retry-After"] == str(
-        auth_app.state.container.settings.rate_limit_auth_failure_window
+    _assert_rate_limited_response(
+        limited,
+        auth_app.state.container.settings.rate_limit_auth_failure_window,
     )
-    assert limited.json()["error"]["code"] == "TOO_MANY_REQUESTS"
 
     keys = [
         key
@@ -530,20 +614,25 @@ async def test_auth_sse_ticket_rate_limit_uses_real_redis_token_hash_bucket(
 @pytest.mark.asyncio
 async def test_login_nonexistent_user_returns_401_when_audit_write_fails(
     auth_client,
+    integration_db_engine,
     monkeypatch,
     caplog,
 ):
     """Audit storage outage must not turn auth failure into a 500."""
     _force_auth_audit_writes_to_fail(monkeypatch)
     caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+    before_count = await _audit_count(integration_db_engine, "auth.login_failed")
 
     resp = await auth_client.post(
         "/api/v1/auth/login",
-        json={"username": "audit-outage-user", "password": "wrong"},
+        json={"username": "audit_outage_user", "password": "wrong"},
     )
 
     assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
-    assert "audit_write_failed" in caplog.text
+    assert resp.json() == {"detail": "Invalid credentials"}
+    _assert_auth_audit_warning(caplog, "auth.login_failed")
+    after_count = await _audit_count(integration_db_engine, "auth.login_failed")
+    assert after_count == before_count
 
 
 @pytest.mark.asyncio
@@ -555,21 +644,28 @@ async def test_login_valid_user_wrong_password_returns_401_with_tenant_id(
     This verifies the happy-path audit write (tenant resolved) still works
     correctly after the schema change.
     """
+    wrong_password = "definitely-wrong"
     resp = await auth_client.post(
         "/api/v1/auth/login",
         json={
             "username": seeded_user["username"],
-            "password": "definitely-wrong",
+            "password": wrong_password,
             "tenant_id": str(seeded_user["tenant_id"]),
         },
     )
     assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
+    assert resp.json() == {"detail": "Invalid credentials"}
 
     row = await _latest_audit_row(integration_db_engine, "auth.login_failed")
     assert row is not None, "audit.login_failed row must be written"
-    # tenant_id is resolved because the user was found before password check
-    assert row.tenant_id is not None, "tenant_id must be set when user is found"
-    assert "invalid_credentials" in str(row.after_state)
+    assert row.tenant_id == seeded_user["tenant_id"]
+    assert row.user_id == seeded_user["user_id"]
+    assert row.after_state == {
+        "reason": "invalid_credentials",
+        "username": seeded_user["username"],
+    }
+    assert seeded_user["password"] not in repr(row.after_state)
+    assert wrong_password not in repr(row.after_state)
 
 
 @pytest.mark.asyncio
@@ -584,6 +680,8 @@ async def test_refresh_with_invalid_token_returns_401_not_500(
     )
     resp = await auth_client.post("/api/v1/auth/refresh")
     assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
+    assert resp.json() == {"detail": "Invalid refresh token"}
+    _assert_refresh_cookie_clear_header(resp)
 
     row = await _latest_audit_row(integration_db_engine, "auth.refresh_failed")
     assert row is not None, "audit.refresh_failed row must be written"
@@ -594,12 +692,14 @@ async def test_refresh_with_invalid_token_returns_401_not_500(
 @pytest.mark.asyncio
 async def test_refresh_invalid_token_returns_401_when_audit_write_fails(
     auth_client,
+    integration_db_engine,
     monkeypatch,
     caplog,
 ):
     """Invalid refresh tokens stay 401 even if failure audit cannot be written."""
     _force_auth_audit_writes_to_fail(monkeypatch)
     caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+    before_count = await _audit_count(integration_db_engine, "auth.refresh_failed")
     auth_client.cookies.set(
         "refresh_token",
         "this.is.not.a.valid.jwt",
@@ -609,7 +709,11 @@ async def test_refresh_invalid_token_returns_401_when_audit_write_fails(
     resp = await auth_client.post("/api/v1/auth/refresh")
 
     assert resp.status_code == 401, f"Expected 401, got {resp.status_code}: {resp.text}"
-    assert "audit_write_failed" in caplog.text
+    assert resp.json() == {"detail": "Invalid refresh token"}
+    _assert_refresh_cookie_clear_header(resp)
+    _assert_auth_audit_warning(caplog, "auth.refresh_failed")
+    after_count = await _audit_count(integration_db_engine, "auth.refresh_failed")
+    assert after_count == before_count
 
 
 @pytest.mark.asyncio
@@ -623,6 +727,7 @@ async def test_logout_without_authorization_returns_204_not_500(
     """
     resp = await auth_client.post("/api/v1/auth/logout")
     assert resp.status_code == 204, f"Expected 204, got {resp.status_code}: {resp.text}"
+    assert resp.content == b""
 
     row = await _latest_audit_row(integration_db_engine, "auth.logout")
     assert row is not None, "audit.logout row must be written"
@@ -633,14 +738,19 @@ async def test_logout_without_authorization_returns_204_not_500(
 @pytest.mark.asyncio
 async def test_logout_without_authorization_returns_204_when_audit_write_fails(
     auth_client,
+    integration_db_engine,
     monkeypatch,
     caplog,
 ):
     """Logout is idempotent and must survive an audit write outage."""
     _force_auth_audit_writes_to_fail(monkeypatch)
     caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+    before_count = await _audit_count(integration_db_engine, "auth.logout")
 
     resp = await auth_client.post("/api/v1/auth/logout")
 
     assert resp.status_code == 204, f"Expected 204, got {resp.status_code}: {resp.text}"
-    assert "audit_write_failed" in caplog.text
+    assert resp.content == b""
+    _assert_auth_audit_warning(caplog, "auth.logout")
+    after_count = await _audit_count(integration_db_engine, "auth.logout")
+    assert after_count == before_count

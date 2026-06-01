@@ -157,29 +157,21 @@ async def update_schedule(
 
     before = _to_response(schedule)
 
-    if body.cron_expr is not None:
-        schedule.cron_expr = body.cron_expr
-    if body.timezone is not None:
-        schedule.timezone = body.timezone
-    if body.missed_fire_policy is not None:
-        schedule.missed_fire_policy = body.missed_fire_policy
-    if body.quiet_windows is not None:
-        schedule.quiet_windows = body.quiet_windows
-    if body.enabled is not None:
-        schedule.enabled = body.enabled
-
-    # Recompute next_run_at if cron or timezone changed
-    if body.cron_expr is not None or body.timezone is not None:
-        schedule.next_run_at = compute_next_run_at(
-            schedule.cron_expr, schedule.timezone,
+    update_data = body.model_dump(exclude_none=True, exclude_unset=True)
+    if "cron_expr" in update_data or "timezone" in update_data:
+        update_data["next_run_at"] = compute_next_run_at(
+            update_data.get("cron_expr", schedule.cron_expr),
+            update_data.get("timezone", schedule.timezone),
         )
 
-    response = _to_response(schedule)
+    updated_schedule = await repos.schedule.update(schedule, **update_data)
+
+    response = _to_response(updated_schedule)
     await write_audit(
         repos, user,
         action="schedule.update",
         resource_type="schedule",
-        resource_id=schedule.id,
+        resource_id=updated_schedule.id,
         before=before,
         after=response,
     )

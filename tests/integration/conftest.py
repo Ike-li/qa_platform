@@ -19,7 +19,6 @@ testcontainers session cost.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import subprocess
 import sys
@@ -93,24 +92,24 @@ def pull_docker_image():
 def integration_db_schema(pg_container, test_settings):
     """Run ``alembic upgrade head`` once per session against the test PG.
 
-    Falls back to ``Base.metadata.create_all`` + manual ``CREATE SCHEMA audit``
-    if alembic refuses the test environment for any reason. The fallback path
-    is logged via the returned dict so tests that care about the exact schema
-    fidelity can observe it.
+    The integration suite must exercise the same migration chain production
+    uses. If Alembic fails, fail the suite instead of rebuilding tables from
+    SQLAlchemy metadata and hiding migration regressions.
     """
     asyncpg_url = pg_container.get_connection_url().replace(
         "psycopg2", "asyncpg"
     )
 
-    env = os.environ.copy()
-    # Settings() 走 env_prefix="QAP_"；不带前缀的变量会被 .env 的 QAP_DATABASE_URL
-    # 默默覆盖，alembic 就跑去本地 dev DB 而不是 testcontainers PG。
+    env = {key: value for key, value in os.environ.items() if not key.startswith("QAP_")}
+    # Settings() 走 env_prefix="QAP_"；外部 QAP_* 或 .env 的 QAP_DATABASE_URL
+    # 不能默默覆盖，否则 Alembic 可能跑去本地 dev DB 而不是 testcontainers PG。
     env["QAP_DATABASE_URL"] = asyncpg_url
     env["QAP_REDIS_URL"] = "redis://localhost:6379"
     env["QAP_S3_ENDPOINT"] = "http://localhost:9000"
     env["QAP_S3_ACCESS_KEY"] = "minioadmin"
     env["QAP_S3_SECRET_KEY"] = "minioadmin"
     env["QAP_S3_BUCKET"] = "qa-platform-test"
+    env["QAP_S3_REGION"] = "us-east-1"
     env["QAP_JWT_SECRET"] = "test-secret-at-least-32bytes-long!"
     env["QAP_ENCRYPTION_KEY"] = "0" * 64
 
@@ -127,27 +126,12 @@ def integration_db_schema(pg_container, test_settings):
     if result.returncode == 0:
         return {"mode": "alembic"}
 
-    # Fallback: build the schema directly from SQLAlchemy metadata. We log the
-    # alembic stderr so a regression in env.py shows up loudly, but we keep
-    # the suite runnable so the cancel/visibility contracts can still be
-    # exercised against real PG.
-    fallback_reason = result.stderr[:500] or result.stdout[:500]
-
-    async def _create_all() -> None:
-        from qaplatform.infra.database.models import AuditBase, Base
-        from sqlalchemy import text as _text
-
-        engine = create_async_engine(asyncpg_url)
-        try:
-            async with engine.begin() as conn:
-                await conn.execute(_text("CREATE SCHEMA IF NOT EXISTS audit"))
-                await conn.run_sync(Base.metadata.create_all)
-                await conn.run_sync(AuditBase.metadata.create_all)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(_create_all())
-    return {"mode": "metadata.create_all", "alembic_error": fallback_reason}
+    detail = (result.stderr or result.stdout or "").strip()
+    pytest.fail(
+        "alembic upgrade head failed for integration schema bootstrap"
+        f" (exit={result.returncode}):\n{detail[:2000]}",
+        pytrace=False,
+    )
 
 
 # --------------------------------------------------------------------------- #

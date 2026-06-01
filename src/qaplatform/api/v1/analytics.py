@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.auth.permissions import Action
@@ -16,19 +15,21 @@ from qaplatform.api.deps import (
 )
 from qaplatform.api.schemas import (
     AnalyticsPaginationMeta,
+    ErrorResponse,
     FlakyResponse,
     FlakyTest,
+    TestHistoryPoint,
+    TestHistoryResponse,
     TrendDataPoint,
     TrendsResponse,
 )
-from qaplatform.infra.database.models import (
-    Run as RunORM,
-    RunStatusEnum,
-    TestResult as TestResultORM,
-    TestResultStatusEnum,
-)
 
 router = APIRouter(prefix="/projects/{project_id}/analytics", tags=["analytics"])
+
+
+def _validate_history_text_filter(name: str, value: str) -> None:
+    if value.strip() == "":
+        raise HTTPException(status_code=422, detail=f"Invalid analytics {name}: empty")
 
 
 @router.get(
@@ -51,38 +52,12 @@ async def get_run_trends(
     await enforce_project_action(session, user, project.id, Action.RUN_READ)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-
-    # Shared filter conditions
-    filters = (
-        RunORM.project_id == project_id,
-        RunORM.created_at >= cutoff,
-        RunORM.status.in_([RunStatusEnum.DONE, RunStatusEnum.FAILED, RunStatusEnum.TIMEOUT]),
+    rows, total = await repos.run.list_trend_points(
+        project_id=project_id,
+        cutoff=cutoff,
+        offset=offset,
+        limit=limit,
     )
-
-    # Total count of distinct dates
-    count_sub = (
-        select(func.count(func.distinct(func.date(RunORM.created_at))))
-        .where(*filters)
-    )
-    total = (await session.execute(count_sub)).scalar_one()
-
-    # Paginated data
-    stmt = (
-        select(
-            func.date(RunORM.created_at).label("date"),
-            func.count().label("total_runs"),
-            func.sum(case((RunORM.status == RunStatusEnum.DONE, 1), else_=0)).label("passed_runs"),
-            func.sum(case((RunORM.status.in_([RunStatusEnum.FAILED, RunStatusEnum.TIMEOUT]), 1), else_=0)).label("failed_runs"),
-        )
-        .where(*filters)
-        .group_by(func.date(RunORM.created_at))
-        .order_by(func.date(RunORM.created_at))
-        .offset(offset)
-        .limit(limit)
-    )
-
-    result = await session.execute(stmt)
-    rows = result.all()
 
     return TrendsResponse(
         data=[
@@ -120,60 +95,13 @@ async def get_flaky_tests(
     await enforce_project_action(session, user, project.id, Action.RUN_READ)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-
-    # Shared filter conditions
-    filters = (
-        RunORM.project_id == project_id,
-        RunORM.created_at >= cutoff,
-        RunORM.status.in_([RunStatusEnum.DONE, RunStatusEnum.FAILED, RunStatusEnum.TIMEOUT]),
+    rows, total = await repos.test_result.list_flaky_tests(
+        project_id=project_id,
+        cutoff=cutoff,
+        min_runs=min_runs,
+        offset=offset,
+        limit=limit,
     )
-
-    # HAVING conditions for flaky tests
-    having_cond = and_(
-        func.count() >= min_runs,
-        func.sum(case((TestResultORM.status == TestResultStatusEnum.PASSED, 1), else_=0)) > 0,
-        func.sum(case((TestResultORM.status.in_([TestResultStatusEnum.FAILED, TestResultStatusEnum.ERROR]), 1), else_=0)) > 0,
-    )
-
-    failed_expr = func.sum(case((TestResultORM.status.in_([TestResultStatusEnum.FAILED, TestResultStatusEnum.ERROR]), 1), else_=0))
-
-    # Count total flaky test groups
-    count_sub = (
-        select(func.count())
-        .select_from(
-            select(
-                TestResultORM.suite,
-                TestResultORM.name,
-            )
-            .join(RunORM, RunORM.id == TestResultORM.run_id)
-            .where(*filters)
-            .group_by(TestResultORM.suite, TestResultORM.name)
-            .having(having_cond)
-            .subquery()
-        )
-    )
-    total = (await session.execute(count_sub)).scalar_one()
-
-    # Paginated data
-    stmt = (
-        select(
-            TestResultORM.suite,
-            TestResultORM.name,
-            func.count().label("total_runs"),
-            func.sum(case((TestResultORM.status == TestResultStatusEnum.PASSED, 1), else_=0)).label("passed_count"),
-            func.sum(case((TestResultORM.status.in_([TestResultStatusEnum.FAILED, TestResultStatusEnum.ERROR]), 1), else_=0)).label("failed_count"),
-        )
-        .join(RunORM, RunORM.id == TestResultORM.run_id)
-        .where(*filters)
-        .group_by(TestResultORM.suite, TestResultORM.name)
-        .having(having_cond)
-        .order_by(failed_expr.desc())
-        .offset(offset)
-        .limit(limit)
-    )
-
-    result = await session.execute(stmt)
-    rows = result.all()
 
     return FlakyResponse(
         data=[
@@ -184,6 +112,58 @@ async def get_flaky_tests(
                 passed_count=row.passed_count,
                 failed_count=row.failed_count,
                 flaky_rate=round(row.failed_count / row.total_runs, 4),
+            )
+            for row in rows
+        ],
+        pagination=AnalyticsPaginationMeta(offset=offset, limit=limit, total=total),
+    )
+
+
+@router.get(
+    "/test-history",
+    response_model=TestHistoryResponse,
+    responses={422: {"model": ErrorResponse}},
+    summary="单用例历史趋势",
+)
+async def get_test_history(
+    project_id: UUID,
+    repos: Repos,
+    user: CurrentUser,
+    suite: str = Query(..., min_length=1, max_length=255),
+    name: str = Query(..., min_length=1, max_length=500),
+    days: int = Query(30, ge=1, le=365),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(_get_db_session),
+):
+    _validate_history_text_filter("suite", suite)
+    _validate_history_text_filter("name", name)
+
+    project = await repos.project.get_for_tenant(project_id, user.tenant_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await enforce_project_action(session, user, project.id, Action.RUN_READ)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    rows, total = await repos.test_result.list_test_history(
+        project_id=project_id,
+        suite=suite,
+        name=name,
+        cutoff=cutoff,
+        offset=offset,
+        limit=limit,
+    )
+
+    return TestHistoryResponse(
+        data=[
+            TestHistoryPoint(
+                run_id=row.run_id,
+                run_created_at=row.run_created_at,
+                run_status=row.run_status,
+                status=row.status,
+                duration_ms=row.duration_ms,
+                error_message=row.error_message,
+                git_ref=row.git_ref,
             )
             for row in rows
         ],

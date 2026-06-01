@@ -62,9 +62,11 @@ async def on_startup(ctx: dict) -> None:
     from qaplatform.engine.docker_backend import DockerBackend
     from qaplatform.engine.executor import RunExecutor
     from qaplatform.engine.log_stream import LogStream
+    from qaplatform.logging import configure_logging
     from qaplatform.plugins.registry import PluginRegistry
 
     settings = Settings()
+    configure_logging(settings)
     container = DependencyContainer(settings)
     await container.init_db()
     await container.init_redis()
@@ -118,8 +120,8 @@ async def on_shutdown(ctx: dict) -> None:
 
 async def reclaim_resources(ctx: dict) -> None:
     """Periodic task: reclaim orphan containers and timeout stale runs."""
-    from qaplatform.api.metrics import run_queue_depth, runs_in_flight
     from qaplatform.engine.reclaim import reclaim_worker_lost
+    from qaplatform.observability.metrics import run_queue_depth, runs_in_flight
     from qaplatform.infra.database.repositories.run_repo import RunRepository
     from qaplatform.worker.tasks import _schedule_retry_for_run
 
@@ -323,6 +325,7 @@ async def check_schedules(ctx: dict) -> None:
                         next_run_at=compute_next_run_at(schedule.cron_expr, schedule.timezone, now),
                         last_error="project not found",
                     )
+                    await session.commit()
                     continue
 
                 silent_window = is_in_silent_window(
@@ -373,7 +376,7 @@ async def check_schedules(ctx: dict) -> None:
                     trigger_type="schedule",
                     metadata_=metadata,
                 )
-                run.retry_group_id = run.id
+                await run_repo.set_retry_group_id(run.id, run.id)
                 await session.commit()
 
                 enqueued = await enqueue_run(arq, run_repo, run, "schedule", settings)
@@ -441,7 +444,7 @@ async def after_job_end(ctx: dict) -> None:
 
     run = await run_repo.get(run_id)
     if run and run.status not in TERMINAL_STATUSES:
-        from qaplatform.worker._redact import redact_url_userinfo
+        from qaplatform.engine.redact import redact_url_userinfo
         await run_repo.fail_if_current(
             run.id,
             message=redact_url_userinfo(

@@ -6,15 +6,14 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.deps import (
     UserIdentity,
-    _get_db_session,
+    _get_repos,
     get_current_user,
 )
-from qaplatform.infra.database.models import Run, RunStatusEnum
+from qaplatform.dependencies import RepositoryBundle
+from qaplatform.infra.database.models import RunStatusEnum
 
 
 class SystemStatusResponse(BaseModel):
@@ -22,6 +21,21 @@ class SystemStatusResponse(BaseModel):
     in_flight: int
     success_rate_1h: float
     total_runs_1h: int
+
+
+ADMIN_FORBIDDEN_RESPONSE = {
+    "description": "Platform admin role is required",
+    "content": {
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "properties": {"detail": {"type": "string"}},
+                "required": ["detail"],
+            }
+        }
+    },
+}
+
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -35,41 +49,36 @@ async def _require_platform_admin(
     return user
 
 
-@router.get("/status", response_model=SystemStatusResponse)
+@router.get(
+    "/status",
+    response_model=SystemStatusResponse,
+    responses={403: ADMIN_FORBIDDEN_RESPONSE},
+)
 async def system_status(
-    db: AsyncSession = Depends(_get_db_session),
     _user: UserIdentity = Depends(_require_platform_admin),
+    repos: RepositoryBundle = Depends(_get_repos),
 ):
     """Return system-level queue / in-flight / success-rate metrics."""
-    # Queue depth: runs in queued/preparing status
-    queue_q = select(func.count()).where(
-        Run.status.in_([RunStatusEnum.QUEUED, RunStatusEnum.PREPARING]),
-        Run.deleted_at.is_(None),
+    queue_depth = await repos.run.count_by_statuses(
+        [RunStatusEnum.QUEUED, RunStatusEnum.PREPARING],
     )
-    queue_depth = (await db.execute(queue_q)).scalar() or 0
-
-    # In-flight: runs in running/collecting status
-    flight_q = select(func.count()).where(
-        Run.status.in_([RunStatusEnum.RUNNING, RunStatusEnum.COLLECTING]),
-        Run.deleted_at.is_(None),
+    in_flight = await repos.run.count_by_statuses(
+        [RunStatusEnum.RUNNING, RunStatusEnum.COLLECTING],
     )
-    in_flight = (await db.execute(flight_q)).scalar() or 0
-
-    # Success rate (last 1 hour)
     one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
-    total_q = select(func.count()).where(
-        Run.finished_at >= one_hour_ago,
-        Run.status.in_([RunStatusEnum.DONE, RunStatusEnum.FAILED]),
-        Run.deleted_at.is_(None),
+    total = await repos.run.count_finished_since_by_statuses(
+        since=one_hour_ago,
+        statuses=[
+            RunStatusEnum.DONE,
+            RunStatusEnum.FAILED,
+            RunStatusEnum.CANCELLED,
+            RunStatusEnum.TIMEOUT,
+        ],
     )
-    total = (await db.execute(total_q)).scalar() or 0
-
-    passed_q = select(func.count()).where(
-        Run.finished_at >= one_hour_ago,
-        Run.status == RunStatusEnum.DONE,
-        Run.deleted_at.is_(None),
+    passed = await repos.run.count_finished_since_by_statuses(
+        since=one_hour_ago,
+        statuses=[RunStatusEnum.DONE],
     )
-    passed = (await db.execute(passed_q)).scalar() or 0
 
     return {
         "queue_depth": queue_depth,

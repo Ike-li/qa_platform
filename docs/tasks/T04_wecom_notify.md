@@ -3,10 +3,11 @@
 > **来源**：feature-catalog.md §4.1（F-NT-02 企业微信通知）
 > **必要性**：P1（PRD §8 中国大陆网络硬约束）
 > **预计**：S
+> **状态**：已完成（`WecomChannel` + `ChannelRouter` + 前端通知规则表单 + unit/frontend contract 验证）
 
 ## 背景
 
-PRD §8"中国大陆网络"约束的第二个渠道。模式与钉钉非常相似但更简单（无加签）。
+PRD §8"中国大陆网络"约束的第二个渠道。当前 `worker/notifications/channels.py` 已实现 WeCom 群机器人，前端通知规则表单也可创建 WeCom 渠道；本文保留为实现与验收口径记录。
 
 ## 实施起点
 
@@ -35,12 +36,12 @@ PRD §8"中国大陆网络"约束的第二个渠道。模式与钉钉非常相�
 
 ## 验收标准
 
-- [ ] `WecomChannel.send(config, message) -> ChannelResult` 实现
-- [ ] 注册到 `ChannelRouter`，type 名为 `wecom`
-- [ ] 支持 text / markdown 两种 msgtype，payload 字段分别为 `text.content` / `markdown.content`
-- [ ] HTTP 超时 10s；非 2xx 返回失败
-- [ ] 企微 errcode != 0 也算失败
-- [ ] 单元测试：成功 / 超时 / errcode 非 0 / msgtype markdown 4 种用例（不要引入 `pytest-httpx`；沿用 patch `httpx.AsyncClient` 的本地测试风格）
+- [x] `WecomChannel.send(config, message) -> ChannelResult` 实现
+- [x] 注册到 `ChannelRouter`，type 名为 `wecom`
+- [x] 支持 text / markdown 两种 msgtype，payload 字段分别为 `text.content` / `markdown.content`
+- [x] HTTP 超时 10s；非 2xx 返回失败
+- [x] 企微 errcode != 0 也算失败
+- [x] 单元测试：成功 / 超时 / errcode 非 0 / msgtype markdown 4 种用例（不要引入 `pytest-httpx`；沿用 patch `httpx.AsyncClient` 的本地测试风格）
 
 ## 约束
 

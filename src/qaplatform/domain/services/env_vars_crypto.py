@@ -6,6 +6,8 @@ import json
 from typing import Any
 from uuid import UUID
 
+from cryptography.exceptions import InvalidTag
+
 from qaplatform.dependencies import CryptoService
 
 _ENVELOPE_MARKER = "qaplatform.env_vars.v1"
@@ -55,7 +57,13 @@ def decrypt_env_vars(
         ciphertext = base64.b64decode(encoded.encode("ascii"), validate=True)
         plaintext = crypto.decrypt(ciphertext, context_id=env_vars_aad(environment_id))
         decoded = json.loads(plaintext)
-    except (binascii.Error, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+    except (
+        binascii.Error,
+        UnicodeError,
+        ValueError,
+        json.JSONDecodeError,
+        InvalidTag,
+    ) as exc:
         raise ValueError("Invalid encrypted env_vars payload") from exc
 
     return _validate_env_vars(decoded)

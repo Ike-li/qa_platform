@@ -5,12 +5,11 @@ import logging
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
-from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
 
 from argon2 import PasswordHasher as _PasswordHasher
 from argon2.exceptions import VerifyMismatchError as _VerifyMismatchError
@@ -21,10 +20,11 @@ from qaplatform.api.auth.middleware import CurrentUser, get_current_user
 from qaplatform.api.auth.permissions import Role
 from qaplatform.api.auth.token_service import TokenService
 from qaplatform.api.schemas import PaginatedResponse
-from qaplatform.infra.database.models import AppUser, Tenant
+from qaplatform.infra.database.models import AppUser
 from qaplatform.infra.database.repositories.audit_repo import AuditEventRepository
 from qaplatform.infra.database.repositories.user_repo import (
     ApiTokenRepository,
+    TenantRepository,
     UserRepository,
 )
 
@@ -39,17 +39,33 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 # --- Request / Response schemas ---
 
+_USERNAME_PATTERN = r"^[a-zA-Z0-9_]+$"
+
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=3, max_length=32, pattern=_USERNAME_PATTERN)
+    password: str = Field(min_length=1, max_length=128)
     tenant_id: UUID | None = None  # MVP: optional, defaults to first tenant
+
+    @field_validator("password")
+    @classmethod
+    def _validate_password_not_blank(cls, value: str) -> str:
+        if value.strip() == "":
+            raise ValueError("login password must not be blank")
+        return value
 
 
 class RegisterRequest(BaseModel):
-    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_]+$")
+    username: str = Field(min_length=3, max_length=32, pattern=_USERNAME_PATTERN)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def _validate_password_not_blank(cls, value: str) -> str:
+        if value.strip() == "":
+            raise ValueError("register password must not be blank")
+        return value
 
 
 class TokenPair(BaseModel):
@@ -63,10 +79,30 @@ class LoginResponse(BaseModel):
     user: dict
 
 
+def _validate_api_token_scope(scope: str) -> str:
+    if scope.strip() == "":
+        raise ValueError("api token scope must not be blank")
+    return scope
+
+
+ApiTokenScope = Annotated[
+    str,
+    Field(min_length=1, max_length=100),
+    AfterValidator(_validate_api_token_scope),
+]
+
+
 class CreateTokenRequest(BaseModel):
-    name: str
-    scopes: list[str] = Field(default_factory=lambda: ["*"])
+    name: str = Field(..., min_length=1, max_length=100)
+    scopes: list[ApiTokenScope] = Field(default_factory=lambda: ["*"], max_length=100)
     expires_days: int = Field(default=90, ge=1, le=365)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name_not_blank(cls, value: str) -> str:
+        if value.strip() == "":
+            raise ValueError("api token name must not be blank")
+        return value
 
 
 class ApiTokenResponse(BaseModel):
@@ -116,14 +152,31 @@ def _clear_refresh_cookie(response: Response) -> None:
     )
 
 
+def _refresh_cookie_clear_headers() -> dict[str, str]:
+    clear_response = Response()
+    _clear_refresh_cookie(clear_response)
+    return {"Set-Cookie": clear_response.headers["set-cookie"]}
+
+
+def _raise_refresh_unauthorized_clearing_cookie(
+    response: Response,
+    detail: str,
+) -> None:
+    _clear_refresh_cookie(response)
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers=_refresh_cookie_clear_headers(),
+    )
+
+
 async def _resolve_tenant_id(
     session: AsyncSession, tenant_id: UUID | None
 ) -> UUID:
     """Resolve tenant_id for MVP (single-tenant fallback)."""
     if tenant_id is not None:
         return tenant_id
-    result = await session.execute(select(Tenant).limit(1))
-    tenant = result.scalar_one_or_none()
+    tenant = await TenantRepository(session).get_first()
     if tenant is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -154,28 +207,21 @@ async def register(
 
     async with session_factory() as session:
         try:
-            existing_tenant = await session.execute(
-                select(Tenant).where(Tenant.name == body.username)
-            )
-            if existing_tenant.scalar_one_or_none() is not None:
+            tenant_repo = TenantRepository(session)
+            if await tenant_repo.get_by_name(body.username) is not None:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Username already taken",
                 )
 
-            tenant = Tenant(name=body.username)
-            session.add(tenant)
-            await session.flush()
-
-            user = AppUser(
+            tenant = await tenant_repo.create(name=body.username)
+            user = await UserRepository(session).create(
                 tenant_id=tenant.id,
                 username=body.username,
                 email=body.email,
                 password_hash=password_hash,
                 role=Role.OWNER.value,
             )
-            session.add(user)
-            await session.flush()
 
             user_id = str(user.id)
             user_tenant_id = str(user.tenant_id)
@@ -350,6 +396,28 @@ async def refresh(
     client_ip = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
 
+    async def _write_refresh_failed_audit(reason: str) -> None:
+        async with session_factory() as audit_session:
+            try:
+                await AuditEventRepository(audit_session).create(
+                    tenant_id=None,
+                    user_id=None,
+                    action="auth.refresh_failed",
+                    resource_type="auth",
+                    resource_id=None,
+                    after_state={"reason": reason},
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+                await audit_session.commit()
+            except Exception:
+                await audit_session.rollback()
+                log.warning(
+                    "audit_write_failed",
+                    extra={"action": "auth.refresh_failed"},
+                    exc_info=True,
+                )
+
     if refresh_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -359,58 +427,37 @@ async def refresh(
     try:
         payload = jwt_svc.decode_token(refresh_token)
     except Exception:
-        _clear_refresh_cookie(response)
-        async with session_factory() as audit_session:
-            try:
-                await AuditEventRepository(audit_session).create(
-                    tenant_id=None,
-                    user_id=None,
-                    action="auth.refresh_failed",
-                    resource_type="auth",
-                    after_state={"reason": "invalid_refresh_token"},
-                    ip_address=client_ip,
-                    user_agent=user_agent,
-                )
-                await audit_session.commit()
-            except Exception:
-                await audit_session.rollback()
-                log.warning(
-                    "audit_write_failed",
-                    extra={"action": "auth.refresh_failed"},
-                    exc_info=True,
-                )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
+        await _write_refresh_failed_audit("invalid_refresh_token")
+        _raise_refresh_unauthorized_clearing_cookie(
+            response,
+            "Invalid refresh token",
         )
 
     if payload.get("type") != "refresh":
-        _clear_refresh_cookie(response)
-        async with session_factory() as audit_session:
-            try:
-                await AuditEventRepository(audit_session).create(
-                    tenant_id=None,
-                    user_id=None,
-                    action="auth.refresh_failed",
-                    resource_type="auth",
-                    after_state={"reason": "invalid_token_type"},
-                    ip_address=client_ip,
-                    user_agent=user_agent,
-                )
-                await audit_session.commit()
-            except Exception:
-                await audit_session.rollback()
-                log.warning(
-                    "audit_write_failed",
-                    extra={"action": "auth.refresh_failed"},
-                    exc_info=True,
-                )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token type",
+        await _write_refresh_failed_audit("invalid_token_type")
+        _raise_refresh_unauthorized_clearing_cookie(
+            response,
+            "Invalid token type",
         )
 
     old_jti = payload.get("jti")
+    if old_jti:
+        try:
+            revoked = await jwt_svc.is_revoked(old_jti)
+        except Exception:
+            log.warning(
+                "refresh_blacklist_lookup_failed",
+                extra={"jti": old_jti},
+                exc_info=True,
+            )
+            revoked = False
+        if revoked:
+            await _write_refresh_failed_audit("revoked_refresh_token")
+            _raise_refresh_unauthorized_clearing_cookie(
+                response,
+                "Refresh token has been revoked",
+            )
+
     old_exp = payload.get("exp")
     user_id = payload["sub"]
 
@@ -420,10 +467,9 @@ async def refresh(
             user: AppUser | None = await user_repo.get_by_id(UUID(user_id))
 
             if user is None or not user.is_active:
-                _clear_refresh_cookie(response)
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="User not found or deactivated",
+                _raise_refresh_unauthorized_clearing_cookie(
+                    response,
+                    "User not found or deactivated",
                 )
 
             # Revoke the old refresh token only after confirming user is valid
@@ -438,15 +484,24 @@ async def refresh(
                         exc_info=True,
                     )
 
-            new_jti_placeholder = None
+            access_token = jwt_svc.create_access_token(
+                user_id=str(user.id),
+                role=user.role,
+                tenant_id=str(user.tenant_id),
+                is_platform_admin=bool(getattr(user, "is_platform_admin", False)),
+            )
+            new_refresh_token = jwt_svc.create_refresh_token(user_id=str(user.id))
+            new_jti = jwt_svc.decode_token(new_refresh_token).get("jti")
+
             audit_repo = AuditEventRepository(session)
             await audit_repo.create(
                 tenant_id=user.tenant_id,
                 user_id=user.id,
                 action="auth.refresh",
                 resource_type="auth",
+                resource_id=None,
                 before_state={"old_jti": old_jti},
-                after_state={"new_jti": new_jti_placeholder},
+                after_state={"new_jti": new_jti},
                 ip_address=client_ip,
                 user_agent=user_agent,
             )
@@ -455,13 +510,6 @@ async def refresh(
             await session.rollback()
             raise
 
-    access_token = jwt_svc.create_access_token(
-        user_id=str(user.id),
-        role=user.role,
-        tenant_id=str(user.tenant_id),
-        is_platform_admin=bool(getattr(user, "is_platform_admin", False)),
-    )
-    new_refresh_token = jwt_svc.create_refresh_token(user_id=str(user.id))
     _set_refresh_cookie(response, new_refresh_token, settings.jwt_refresh_token_ttl)
 
     return TokenPair(
@@ -541,6 +589,7 @@ async def logout(
                 user_id=audit_user_id,
                 action="auth.logout",
                 resource_type="auth",
+                resource_id=None,
                 after_state={"had_access_token": auth_header.lower().startswith("bearer ")},
                 ip_address=client_ip,
                 user_agent=user_agent,

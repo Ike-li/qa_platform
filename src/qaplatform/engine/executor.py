@@ -57,8 +57,25 @@ GRACE_PERIOD_SECONDS = 30
 # stages, the workdir teardown, and worker release dangling.
 _LOG_DRAIN_TIMEOUT = 5
 _FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+_FAILED_TESTS_SUMMARY_LIMIT = 20
 
 _INFRA_EXCEPTIONS = (ConnectionError, TimeoutError, OSError)
+
+
+def _failed_tests_summary(results: list[Any]) -> tuple[list[dict[str, str]], int]:
+    failed_tests = [
+        {
+            "suite": result.suite,
+            "name": result.name,
+            "status": result.status,
+        }
+        for result in results
+        if result.status in {"failed", "error"}
+    ]
+    return (
+        failed_tests[:_FAILED_TESTS_SUMMARY_LIMIT],
+        max(0, len(failed_tests) - _FAILED_TESTS_SUMMARY_LIMIT),
+    )
 
 
 def _resource_termination_summary(exit_result: ExitResult) -> dict[str, Any] | None:
@@ -442,7 +459,7 @@ class RunExecutor:
                     results.extend(collector_results)
                 passed = sum(1 for r in results if r.status == "passed")
                 failed = sum(1 for r in results if r.status == "failed")
-                skipped = sum(1 for r in results if r.status == "skipped")
+                skipped = sum(1 for r in results if r.status in {"skipped", "xfail"})
                 error = sum(1 for r in results if r.status == "error")
                 total = passed + failed + skipped + error
 
@@ -454,6 +471,11 @@ class RunExecutor:
                     "error": error,
                     "pass_rate": passed / total if total > 0 else 0.0,
                 }
+                failed_tests, failed_tests_omitted = _failed_tests_summary(results)
+                if failed_tests:
+                    summary["failed_tests"] = failed_tests
+                if failed_tests_omitted:
+                    summary["failed_tests_omitted"] = failed_tests_omitted
                 if resource_termination:
                     summary["resource_termination"] = resource_termination
 
@@ -503,7 +525,7 @@ class RunExecutor:
                 summary=summary,
             )
             if updated:
-                from qaplatform.api.metrics import run_terminal_total
+                from qaplatform.observability.metrics import run_terminal_total
                 run_terminal_total.labels(status=status.value).inc()
                 await self._publish(run_id, status.value, previous=RunStatus.COLLECTING.value)
                 await self.log_stream.write_log(run_id, f"Run completed: {status.value}")
@@ -518,7 +540,7 @@ class RunExecutor:
                 run_id, message=redact_sensitive_text(str(exc), pipeline.env_vars)
             )
             if failed:
-                from qaplatform.api.metrics import run_terminal_total
+                from qaplatform.observability.metrics import run_terminal_total
                 run_terminal_total.labels(status=RunStatus.FAILED.value).inc()
                 await self._publish(run_id, RunStatus.FAILED.value)
             if isinstance(exc, _INFRA_EXCEPTIONS):
@@ -867,7 +889,7 @@ class RunExecutor:
 
         spec = ExecutionSpec(
             image=pipeline.image,
-            command=["sh", "-c", pipeline.setup_script or ""],
+            command=["sh", "-c", f"cd /workspace && {pipeline.setup_script or ''}"],
             env_vars=pipeline.env_vars,
             mounts=[
                 Mount(source=str(working_dir), target="/workspace", read_only=False),

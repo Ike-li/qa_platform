@@ -7,7 +7,7 @@ re-claimed or already finished is left untouched.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -72,15 +72,28 @@ async def test_expired_heartbeat_marks_failed_and_cleans_container(run_repo, bac
     redis = AsyncMock()
     redis.exists = AsyncMock(return_value=0)
 
-    n = await reclaim_worker_lost(run_repo=run_repo, redis=redis, backend=backend)
+    with patch(
+        "qaplatform.engine.reclaim.publish_status_event",
+        new_callable=AsyncMock,
+    ) as publish_status_event:
+        n = await reclaim_worker_lost(
+            run_repo=run_repo,
+            redis=redis,
+            backend=backend,
+        )
 
     assert n == 1
-    run_repo.mark_worker_lost.assert_awaited_once()
-    kwargs = run_repo.mark_worker_lost.call_args.kwargs
-    assert kwargs["worker_id"] == "worker-a"
-    assert "worker_lost" in kwargs["message"]
-    # status_change event published with previous=running
-    redis.xadd.assert_awaited()
+    run_repo.mark_worker_lost.assert_awaited_once_with(
+        run.id,
+        worker_id="worker-a",
+        message="worker_lost: heartbeat expired for worker-a",
+    )
+    publish_status_event.assert_awaited_once_with(
+        redis,
+        run.id,
+        "failed",
+        previous="running",
+    )
     # Orphan container forced removed
     backend.cleanup.assert_awaited_once_with("ctr-1")
 
@@ -92,10 +105,24 @@ async def test_expired_without_execution_id_skips_cleanup(run_repo, backend):
     redis = AsyncMock()
     redis.exists = AsyncMock(return_value=0)
 
-    n = await reclaim_worker_lost(run_repo=run_repo, redis=redis, backend=backend)
+    with patch(
+        "qaplatform.engine.reclaim.publish_status_event",
+        new_callable=AsyncMock,
+    ) as publish_status_event:
+        n = await reclaim_worker_lost(run_repo=run_repo, redis=redis, backend=backend)
 
     assert n == 1
-    run_repo.mark_worker_lost.assert_awaited_once()
+    run_repo.mark_worker_lost.assert_awaited_once_with(
+        run.id,
+        worker_id="worker-a",
+        message="worker_lost: heartbeat expired for worker-a",
+    )
+    publish_status_event.assert_awaited_once_with(
+        redis,
+        run.id,
+        "failed",
+        previous="running",
+    )
     backend.cleanup.assert_not_awaited()
 
 
@@ -107,11 +134,28 @@ async def test_mark_worker_lost_returns_false_skips_event_and_cleanup(run_repo, 
     run_repo.mark_worker_lost = AsyncMock(return_value=False)
     redis = AsyncMock()
     redis.exists = AsyncMock(return_value=0)
+    on_reclaimed = AsyncMock()
 
-    n = await reclaim_worker_lost(run_repo=run_repo, redis=redis, backend=backend)
+    with patch(
+        "qaplatform.engine.reclaim.publish_status_event",
+        new_callable=AsyncMock,
+    ) as publish_status_event:
+        n = await reclaim_worker_lost(
+            run_repo=run_repo,
+            redis=redis,
+            backend=backend,
+            on_reclaimed=on_reclaimed,
+        )
 
     assert n == 0
-    redis.xadd.assert_not_awaited()
+    redis.exists.assert_awaited_once_with(HEARTBEAT_KEY.format(worker_id="worker-a"))
+    run_repo.mark_worker_lost.assert_awaited_once_with(
+        run.id,
+        worker_id="worker-a",
+        message="worker_lost: heartbeat expired for worker-a",
+    )
+    publish_status_event.assert_not_awaited()
+    on_reclaimed.assert_not_awaited()
     backend.cleanup.assert_not_awaited()
 
 
@@ -126,7 +170,9 @@ async def test_redis_probe_failure_is_fail_open(run_repo, backend):
     n = await reclaim_worker_lost(run_repo=run_repo, redis=redis, backend=backend)
 
     assert n == 0
+    redis.exists.assert_awaited_once_with(HEARTBEAT_KEY.format(worker_id="worker-a"))
     run_repo.mark_worker_lost.assert_not_awaited()
+    backend.cleanup.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -140,7 +186,12 @@ async def test_cleanup_failure_does_not_block_status_transition(run_repo, backen
     n = await reclaim_worker_lost(run_repo=run_repo, redis=redis, backend=backend)
 
     assert n == 1
-    run_repo.mark_worker_lost.assert_awaited_once()
+    run_repo.mark_worker_lost.assert_awaited_once_with(
+        run.id,
+        worker_id="worker-a",
+        message="worker_lost: heartbeat expired for worker-a",
+    )
+    backend.cleanup.assert_awaited_once_with("ctr-1")
 
 
 @pytest.mark.asyncio
@@ -159,10 +210,10 @@ async def test_expired_heartbeat_invokes_retry_callback(run_repo, backend):
     )
 
     assert n == 1
-    on_reclaimed.assert_awaited_once()
-    args = on_reclaimed.await_args.args
-    assert args[0] is run
-    assert "worker_lost" in args[1]
+    on_reclaimed.assert_awaited_once_with(
+        run,
+        "worker_lost: heartbeat expired for worker-a",
+    )
 
 
 @pytest.mark.asyncio
@@ -208,4 +259,8 @@ async def test_no_backend_skips_cleanup_but_still_marks_failed(run_repo):
     n = await reclaim_worker_lost(run_repo=run_repo, redis=redis, backend=None)
 
     assert n == 1
-    run_repo.mark_worker_lost.assert_awaited_once()
+    run_repo.mark_worker_lost.assert_awaited_once_with(
+        run.id,
+        worker_id="worker-a",
+        message="worker_lost: heartbeat expired for worker-a",
+    )

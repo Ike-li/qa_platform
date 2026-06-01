@@ -2,11 +2,16 @@
 
 需要 docker daemon 可用、docker-compose 启动 postgres+redis+minio。
 默认 skip 除非 RUN_INTEGRATION_TESTS=1 环境变量设置。
+
+部分 external-stack 场景会写入本地 ``pytest.py`` runner simulator，
+用于稳定地产生日志、JUnit 和 artifact，以验证平台收集链路。真实
+pytest 包兼容性由 ``test_trigger_run_completes_terminal_state`` 保留覆盖。
 """
 import asyncio
 import hashlib
 import json
 import os
+import re
 import subprocess
 import urllib.parse
 from datetime import datetime, timezone
@@ -279,22 +284,6 @@ def docker_available():
     return True
 
 
-@pytest.fixture(scope="module")
-def fixture_git_repo(tmp_path_factory):
-    """创建一个最小 pytest 项目作为 fixture，本地 git init。"""
-    repo = tmp_path_factory.mktemp("fixture-repo")
-    (repo / "tests").mkdir()
-    (repo / "tests" / "test_smoke.py").write_text(
-        "def test_pass():\n    assert True\n"
-    )
-    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "e2e@test"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "E2E"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
-    return str(repo)
-
-
 @pytest.fixture
 async def api_client(api_server_available):
     """假设后端已经启动在 BASE_URL（由 conftest 或外部启动）。"""
@@ -457,6 +446,63 @@ async def _poll_json(api_client, url: str, headers, predicate, *, timeout_second
     pytest.fail(f"{url} did not satisfy predicate within {timeout_seconds}s; last={last_seen}")
 
 
+def _artifact_names(body: dict) -> set[str]:
+    return {artifact["name"] for artifact in body["data"]}
+
+
+def _artifact_projection(body: dict) -> list[dict[str, str]]:
+    return sorted(
+        [
+            {
+                "name": artifact["name"],
+                "type": artifact["type"],
+                "storage_path": artifact["storage_path"],
+            }
+            for artifact in body["data"]
+        ],
+        key=lambda artifact: artifact["name"],
+    )
+
+
+def _artifact_page_projection(body: dict) -> dict:
+    return {
+        "data": _artifact_projection(body),
+        "page": body["page"],
+        "per_page": body["per_page"],
+        "total": body["total"],
+    }
+
+
+def _archive_page_projection(body: dict) -> dict[str, int]:
+    return {
+        "page": body["page"],
+        "per_page": body["per_page"],
+        "total": body["total"],
+        "data_count": len(body["data"]),
+    }
+
+
+def _has_exact_artifact_names(*expected_names: str):
+    expected = set(expected_names)
+
+    def _predicate(body: dict) -> bool:
+        return body["total"] == len(expected) and _artifact_names(body) == expected
+
+    return _predicate
+
+
+def _archive_contains_all(*fragments: str):
+    def _predicate(body: dict) -> bool:
+        lines = [entry["line"] for entry in body["data"]]
+        return all(any(fragment in line for line in lines) for fragment in fragments)
+
+    return _predicate
+
+
+def _assert_line_once(lines: list[str], expected_line: str) -> None:
+    assert [line for line in lines if line == expected_line] == [expected_line]
+
+
 async def _poll_project_runs(api_client, project_id: str, headers, predicate, *, timeout_seconds: int = 90):
     return await _poll_json(
         api_client,
@@ -489,8 +535,10 @@ async def _assert_project_has_no_retry_runs(
             "expected original run while checking retry absence; "
             f"observed_attempts={observed_attempts}"
         )
-        assert all(attempt == 1 for attempt in attempts), (
+        unexpected_attempts = [attempt for attempt in attempts if attempt != 1]
+        assert unexpected_attempts == [], (
             "failure should not create retry runs; "
+            f"unexpected_attempts={unexpected_attempts}; "
             f"observed_attempts={observed_attempts}"
         )
         await asyncio.sleep(2)
@@ -704,27 +752,45 @@ async def _read_sse_until_log_line(
 
 @pytest.mark.asyncio
 async def test_trigger_run_completes_terminal_state(
-    docker_available, fixture_git_repo, api_client, admin_token
+    docker_available, api_client, admin_token
 ):
-    """完整链路：触发 run → worker 拾取 → 容器执行 → status 终态。"""
+    """真实 pytest 包链路：触发 run → worker 容器执行 → passed 结果和 JUnit artifact。"""
+    _require_compose_worker_stack()
     headers = {"Authorization": f"Bearer {admin_token}"}
-    
-    # 1. 创建 project（用 fixture git repo 路径）
+    suffix = os.urandom(4).hex()
+    test_case_name = f"test_real_pytest_package_smoke_{suffix}"
+    marker = f"real-pytest-package-marker-{suffix}"
+    test_source = (
+        "from pathlib import Path\n"
+        f"def {test_case_name}():\n"
+        f"    assert Path('qap-real-pytest-marker.txt').read_text() == {marker!r}\n"
+    )
+    setup_script = (
+        "python -m pip install pytest && "
+        "python - <<'PY'\n"
+        "from pathlib import Path\n"
+        "workspace = Path('/workspace')\n"
+        "(workspace / 'tests').mkdir(exist_ok=True)\n"
+        f"(workspace / 'qap-real-pytest-marker.txt').write_text({marker!r})\n"
+        f"(workspace / 'tests' / 'test_real_pytest_package.py').write_text({test_source!r})\n"
+        "PY"
+    )
+
+    # 1. 创建 project（使用外部栈 worker 可访问的真实 git 远端）
     project_resp = await api_client.post(
         "/api/v1/projects",
         headers=headers,
         json={
-            "name": "Integration Test Project",
-            "slug": f"integration-test-{os.urandom(4).hex()}",
-            "git_url": f"file://{fixture_git_repo}",
-            "default_branch": "main",
-            "shallow_clone": False,  # local file repo doesn't support shallow
+            "name": f"Real Pytest Package {suffix}",
+            "slug": f"real-pytest-package-{suffix}",
+            "git_url": EXTERNAL_STACK_GIT_URL,
+            "default_branch": EXTERNAL_STACK_GIT_REF,
         },
     )
-    assert project_resp.status_code in (200, 201), project_resp.text
+    assert project_resp.status_code == 201, project_resp.text
     project = project_resp.json()
     project_id = project["id"]
-    
+
     # 2. 创建 environment（alpine + python）
     env_resp = await api_client.post(
         f"/api/v1/projects/{project_id}/environments",
@@ -736,10 +802,12 @@ async def test_trigger_run_completes_terminal_state(
             "cpu_cores": 1.0,
             "network_policy": "allow",  # 测试容器需要安装 pytest
             "env_vars": {},
-            "setup_script": "python -m pip install pytest"
+            "setup_script": setup_script,
+            "max_artifact_size_mb": 10,
+            "max_artifacts_count": 5,
         },
     )
-    assert env_resp.status_code in (200, 201), env_resp.text
+    assert env_resp.status_code == 201, env_resp.text
     # 3. 创建 pipeline（用 pytest plugin）
     pipeline_resp = await api_client.post(
         f"/api/v1/projects/{project_id}/pipelines",
@@ -755,41 +823,99 @@ async def test_trigger_run_completes_terminal_state(
             "enabled": True,
         },
     )
-    assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+    assert pipeline_resp.status_code == 201, pipeline_resp.text
     pipeline = pipeline_resp.json()
-    
+
     # 4. 触发 run
     trigger_resp = await api_client.post(
         "/api/v1/runs",
         headers=headers,
-        json={"pipeline_id": pipeline["id"], "git_ref": "main"},
+        json={"pipeline_id": pipeline["id"], "git_ref": EXTERNAL_STACK_GIT_REF},
     )
-    assert trigger_resp.status_code in (200, 201), trigger_resp.text
+    assert trigger_resp.status_code == 201, trigger_resp.text
     run = trigger_resp.json()
+    assert run["status"] == "queued"
+    assert run["priority"] == 1
     run_id = run["id"]
-    
+    await _assert_run_trigger_audit_event(
+        api_client,
+        headers,
+        run_id,
+        expected_git_ref=EXTERNAL_STACK_GIT_REF,
+        expected_priority=1,
+        expected_after_state=run,
+    )
+
     # 5. 轮询直到终态（最长 180s 给 docker pull 留时间）
     final_status = await _wait_for_terminal(
         api_client, headers, run_id, timeout_seconds=180
     )
-    
-    assert final_status in TERMINAL_STATUSES, f"run timed out, last status: {final_status}"
-    
-    # 6. 验证关键事实
-    # - status 必须是 done（pytest 应该全通过）；如果 failed，至少证明 worker 真的执行了
-    print(f"Final status: {final_status}")
-    assert final_status in {"done", "failed"}, f"unexpected status: {final_status}"
-    
-    # - run 详情应该有 finished_at（说明 worker 真的处理到了 fail/done）
-    detail = (await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)).json()
-    assert detail.get("finished_at") is not None, "finished_at missing → worker didn't finish"
-    # started_at 可能为 None 如果 fail 发生在 mark_running 之前（如 git clone 失败）
-    
-    # - 至少 1 条日志（证明 _stream_logs 工作）
-    # SSE ticket
+
+    assert final_status == "done", f"run did not complete successfully: {final_status}"
+
+    # 6. 验证关键事实：真实 pytest 执行、结果入库、artifact 和归档日志都可读。
+    detail_resp = await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
+    assert detail_resp.status_code == 200, detail_resp.text
+    detail = detail_resp.json()
+    assert detail["status"] == "done"
+    assert detail["started_at"] is not None
+    assert detail["finished_at"] is not None
+    assert detail["summary"]["total"] == 1
+    assert detail["summary"]["passed"] == 1
+    assert detail["summary"].get("failed", 0) == 0
+    assert detail["summary"].get("error", 0) == 0
+    assert detail["summary"].get("skipped", 0) == 0
+
+    results_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{run_id}/results",
+        headers,
+        lambda body: body["total"] == 1,
+        timeout_seconds=30,
+    )
+    assert results_body["data"][0]["name"] == test_case_name
+    assert results_body["data"][0]["status"] == "passed"
+
     ticket_resp = await api_client.post("/api/v1/auth/sse-ticket", headers=headers)
-    assert ticket_resp.status_code == 200
-    # 注意：SSE 流测试这里跳过，已被 E2E 验证过
+    assert ticket_resp.status_code == 200, ticket_resp.text
+
+    artifacts_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{run_id}/artifacts",
+        headers,
+        _has_exact_artifact_names("junit.xml"),
+        timeout_seconds=30,
+    )
+    assert artifacts_body["total"] == 1
+    junit_artifact = artifacts_body["data"][0]
+    assert junit_artifact["name"] == "junit.xml"
+    assert junit_artifact["type"] == "junit"
+    assert junit_artifact["storage_path"] == f"reports/{run_id}/junit.xml"
+    junit_download_resp = await api_client.get(
+        f"/api/v1/artifacts/{junit_artifact['id']}/download",
+        headers=headers,
+    )
+    assert junit_download_resp.status_code == 200, junit_download_resp.text
+    junit_text = await _download_presigned_text(junit_download_resp.json()["download_url"])
+    assert test_case_name in junit_text
+    assert "<failure" not in junit_text
+    assert "<error" not in junit_text
+    assert "<skipped" not in junit_text
+
+    archive_body = await _poll_json(
+        api_client,
+        f"/api/v1/runs/{run_id}/logs/archive",
+        headers,
+        _archive_contains_all("Starting stage: test", "Run completed: done"),
+        timeout_seconds=60,
+    )
+    archive_lines = [entry["line"] for entry in archive_body["data"]]
+    assert [line for line in archive_lines if line == "Starting stage: test"] == [
+        "Starting stage: test"
+    ]
+    assert [line for line in archive_lines if line == "Run completed: done"] == [
+        "Run completed: done"
+    ]
 
 
 @pytest.mark.asyncio
@@ -832,7 +958,9 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
         "workspace = Path('/workspace')\n"
         "(workspace / 'tests').mkdir(exist_ok=True)\n"
         "(workspace / 'tests' / 'test_sse_live_worker.py').write_text(\n"
-        "    'def test_sse_live_worker():\\n    assert True\\n'\n"
+        "    'from pathlib import Path\\n\\n'\n"
+        "    'def test_sse_live_worker():\\n'\n"
+        "    \"    assert Path('pytest.py').exists()\\n\"\n"
         ")\n"
         f"(workspace / 'pytest.py').write_text({pytest_source!r})\n"
         "PY"
@@ -848,7 +976,7 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
             "default_branch": EXTERNAL_STACK_GIT_REF,
         },
     )
-    assert project_resp.status_code in (200, 201), project_resp.text
+    assert project_resp.status_code == 201, project_resp.text
     project_id = project_resp.json()["id"]
 
     env_resp = await api_client.post(
@@ -866,7 +994,7 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
             "max_artifacts_count": 5,
         },
     )
-    assert env_resp.status_code in (200, 201), env_resp.text
+    assert env_resp.status_code == 201, env_resp.text
 
     pipeline_resp = await api_client.post(
         f"/api/v1/projects/{project_id}/pipelines",
@@ -887,7 +1015,7 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
             "enabled": True,
         },
     )
-    assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+    assert pipeline_resp.status_code == 201, pipeline_resp.text
     pipeline_id = pipeline_resp.json()["id"]
 
     trigger_resp = await api_client.post(
@@ -899,7 +1027,7 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
             "priority": 1,
         },
     )
-    assert trigger_resp.status_code in (200, 201), trigger_resp.text
+    assert trigger_resp.status_code == 201, trigger_resp.text
     run_body = trigger_resp.json()
     assert run_body["status"] == "queued"
     assert run_body["priority"] == 1
@@ -914,7 +1042,8 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
     )
 
     no_ticket_resp = await api_client.get(f"/api/v1/runs/{run_id}/logs")
-    assert no_ticket_resp.status_code in (401, 422), no_ticket_resp.text
+    assert no_ticket_resp.status_code == 401, no_ticket_resp.text
+    assert no_ticket_resp.json() == {"detail": "Invalid or expired SSE ticket"}
 
     first_ticket_resp = await api_client.post(
         "/api/v1/auth/sse-ticket",
@@ -930,12 +1059,16 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
         timeout_seconds=180,
     )
     first_lines = [_sse_log_line(event) for event in first_events]
-    assert any("Starting stage: pytest" in line for line in first_lines), (
+    assert "Starting stage: pytest" in first_lines, (
         _format_sse_transcript(first_events)
     )
-    first_marker_event = next(
-        event for event in first_events if start_marker in _sse_log_line(event)
+    first_marker_events = [
+        event for event in first_events if _sse_log_line(event) == start_marker
+    ]
+    assert [_sse_log_line(event) for event in first_marker_events] == [start_marker], (
+        _format_sse_transcript(first_events)
     )
+    (first_marker_event,) = first_marker_events
     first_marker_id = first_marker_event["id"]
 
     live_detail_resp = await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
@@ -951,6 +1084,7 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
         headers={"Last-Event-ID": first_marker_id},
     )
     assert reuse_resp.status_code == 401, reuse_resp.text
+    assert reuse_resp.json() == {"detail": "Invalid or expired SSE ticket"}
 
     second_ticket_resp = await api_client.post(
         "/api/v1/auth/sse-ticket",
@@ -965,10 +1099,12 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
         timeout_seconds=120,
     )
     second_lines = [_sse_log_line(event) for event in second_events]
-    assert all(start_marker not in line for line in second_lines), (
+    replayed_start_markers = [line for line in second_lines if line == start_marker]
+    assert replayed_start_markers == [], (
         _format_sse_transcript(second_events)
     )
-    assert any(end_marker in line for line in second_lines), (
+    end_marker_lines = [line for line in second_lines if line == end_marker]
+    assert end_marker_lines == [end_marker], (
         _format_sse_transcript(second_events)
     )
 
@@ -989,6 +1125,7 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
         headers={"Last-Event-ID": first_marker_id},
     )
     assert denied_resp.status_code == 403, denied_resp.text
+    assert denied_resp.json() == {"detail": "Insufficient permissions"}
     for fragment in (
         start_marker,
         end_marker,
@@ -1006,15 +1143,16 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
         api_client,
         f"/api/v1/runs/{run_id}/artifacts",
         headers,
-        lambda body: body["total"] >= 1,
+        _has_exact_artifact_names("junit.xml"),
         timeout_seconds=30,
     )
-    junit_artifacts = [
-        artifact for artifact in artifacts_body["data"] if artifact["name"] == "junit.xml"
-    ]
-    assert junit_artifacts, artifacts_body
+    assert artifacts_body["total"] == 1
+    junit_artifact = artifacts_body["data"][0]
+    assert junit_artifact["name"] == "junit.xml"
+    assert junit_artifact["type"] == "junit"
+    assert junit_artifact["storage_path"] == f"reports/{run_id}/junit.xml"
     junit_download_resp = await api_client.get(
-        f"/api/v1/artifacts/{junit_artifacts[0]['id']}/download",
+        f"/api/v1/artifacts/{junit_artifact['id']}/download",
         headers=headers,
     )
     assert junit_download_resp.status_code == 200, junit_download_resp.text
@@ -1027,13 +1165,15 @@ async def test_real_worker_streams_live_logs_over_sse_external_stack(
         api_client,
         f"/api/v1/runs/{run_id}/logs/archive",
         headers,
-        lambda body: body["total"] >= 1,
+        _archive_contains_all(start_marker, end_marker, "Run completed: done"),
         timeout_seconds=60,
     )
     archive_lines = [entry["line"] for entry in archive_body["data"]]
-    assert any(start_marker in line for line in archive_lines)
-    assert any(end_marker in line for line in archive_lines)
-    assert any("Run completed: done" in line for line in archive_lines)
+    assert [line for line in archive_lines if line == start_marker] == [start_marker]
+    assert [line for line in archive_lines if line == end_marker] == [end_marker]
+    assert [line for line in archive_lines if line == "Run completed: done"] == [
+        "Run completed: done"
+    ]
 
 
 @pytest.mark.performance
@@ -1083,7 +1223,9 @@ async def test_external_stack_worker_e2e_slo_smoke(
         "workspace = Path('/workspace')\n"
         "(workspace / 'tests').mkdir(exist_ok=True)\n"
         "(workspace / 'tests' / 'test_external_stack_worker_slo.py').write_text(\n"
-        "    'def test_external_stack_worker_slo():\\n    assert True\\n'\n"
+        "    'from pathlib import Path\\n\\n'\n"
+        "    'def test_external_stack_worker_slo():\\n'\n"
+        "    \"    assert Path('pytest.py').exists()\\n\"\n"
         ")\n"
         f"(workspace / 'pytest.py').write_text({pytest_source!r})\n"
         "PY"
@@ -1099,7 +1241,7 @@ async def test_external_stack_worker_e2e_slo_smoke(
             "default_branch": EXTERNAL_STACK_GIT_REF,
         },
     )
-    assert project_resp.status_code in (200, 201), project_resp.text
+    assert project_resp.status_code == 201, project_resp.text
     project_id = project_resp.json()["id"]
 
     env_resp = await api_client.post(
@@ -1117,7 +1259,7 @@ async def test_external_stack_worker_e2e_slo_smoke(
             "max_artifacts_count": 5,
         },
     )
-    assert env_resp.status_code in (200, 201), env_resp.text
+    assert env_resp.status_code == 201, env_resp.text
 
     pipeline_resp = await api_client.post(
         f"/api/v1/projects/{project_id}/pipelines",
@@ -1138,7 +1280,7 @@ async def test_external_stack_worker_e2e_slo_smoke(
             "enabled": True,
         },
     )
-    assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+    assert pipeline_resp.status_code == 201, pipeline_resp.text
     pipeline_id = pipeline_resp.json()["id"]
 
     e2e_started = perf_counter()
@@ -1151,7 +1293,7 @@ async def test_external_stack_worker_e2e_slo_smoke(
             "priority": 1,
         },
     )
-    assert trigger_resp.status_code in (200, 201), trigger_resp.text
+    assert trigger_resp.status_code == 201, trigger_resp.text
     run_body = trigger_resp.json()
     assert run_body["status"] == "queued"
     assert run_body["priority"] == 1
@@ -1181,7 +1323,10 @@ async def test_external_stack_worker_e2e_slo_smoke(
     )
 
     first_lines = [_sse_log_line(event) for event in first_events]
-    assert any("Starting stage: pytest" in line for line in first_lines), (
+    assert "Starting stage: pytest" in first_lines, (
+        _format_sse_transcript(first_events)
+    )
+    assert [line for line in first_lines if line == first_marker] == [first_marker], (
         _format_sse_transcript(first_events)
     )
     live_detail_resp = await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
@@ -1208,9 +1353,8 @@ async def test_external_stack_worker_e2e_slo_smoke(
         api_client,
         f"/api/v1/runs/{run_id}/logs/archive",
         headers,
-        lambda body: any(
-            done_marker in entry["line"] or "Run completed: done" in entry["line"]
-            for entry in body["data"]
+        lambda body: {done_marker, "Run completed: done"}.issubset(
+            {entry["line"] for entry in body["data"]}
         ),
         timeout_seconds=60,
     )
@@ -1221,16 +1365,22 @@ async def test_external_stack_worker_e2e_slo_smoke(
         _threshold("PERF_EXTERNAL_STACK_WORKER_ARCHIVE_READY_MS", 60000),
     )
     archive_lines = [entry["line"] for entry in archive_body["data"]]
-    assert any(first_marker in line for line in archive_lines)
-    assert any(done_marker in line for line in archive_lines)
-    assert any("Run completed: done" in line for line in archive_lines)
+    assert [line for line in archive_lines if line == first_marker] == [first_marker]
+    assert [line for line in archive_lines if line == done_marker] == [done_marker]
+    assert [line for line in archive_lines if line == "Run completed: done"] == [
+        "Run completed: done"
+    ]
 
+    expected_artifacts = {
+        "junit.xml": ("junit", f"reports/{run_id}/junit.xml"),
+        "logs/e2e-slo.txt": ("log", f"reports/{run_id}/logs/e2e-slo.txt"),
+    }
     artifact_started = perf_counter()
     artifacts_body = await _poll_json(
         api_client,
         f"/api/v1/runs/{run_id}/artifacts",
         headers,
-        lambda body: body["total"] >= 2,
+        lambda body: body["total"] == len(expected_artifacts),
         timeout_seconds=30,
     )
     artifact_elapsed_ms = _elapsed_ms(artifact_started)
@@ -1242,10 +1392,20 @@ async def test_external_stack_worker_e2e_slo_smoke(
     artifacts_by_name = {
         artifact["name"]: artifact for artifact in artifacts_body["data"]
     }
-    assert {"junit.xml", "logs/e2e-slo.txt"} <= artifacts_by_name.keys(), artifacts_body
+    expected_artifact_projection = sorted(
+        [
+            {"name": name, "type": artifact_type, "storage_path": storage_path}
+            for name, (artifact_type, storage_path) in expected_artifacts.items()
+        ],
+        key=lambda artifact: artifact["name"],
+    )
+    assert _artifact_page_projection(artifacts_body) == {
+        "data": expected_artifact_projection,
+        "page": 1,
+        "per_page": 20,
+        "total": 2,
+    }
     junit_artifact = artifacts_by_name["junit.xml"]
-    assert junit_artifact["type"] == "junit"
-    assert junit_artifact["storage_path"] == f"reports/{run_id}/junit.xml"
 
     download_started = perf_counter()
     download_resp = await api_client.get(
@@ -1316,7 +1476,9 @@ async def test_external_stack_single_worker_runs_ten_containers_concurrently(
         "workspace = Path('/workspace')\n"
         "(workspace / 'tests').mkdir(exist_ok=True)\n"
         "(workspace / 'tests' / 'test_external_stack_worker_concurrency.py').write_text(\n"
-        "    'def test_external_stack_worker_concurrency():\\n    assert True\\n'\n"
+        "    'from pathlib import Path\\n\\n'\n"
+        "    'def test_external_stack_worker_concurrency():\\n'\n"
+        "    \"    assert Path('pytest.py').exists()\\n\"\n"
         ")\n"
         f"(workspace / 'pytest.py').write_text({pytest_source!r})\n"
         "PY"
@@ -1332,7 +1494,7 @@ async def test_external_stack_single_worker_runs_ten_containers_concurrently(
             "default_branch": EXTERNAL_STACK_GIT_REF,
         },
     )
-    assert project_resp.status_code in (200, 201), project_resp.text
+    assert project_resp.status_code == 201, project_resp.text
     project_id = project_resp.json()["id"]
 
     env_resp = await api_client.post(
@@ -1353,7 +1515,7 @@ async def test_external_stack_single_worker_runs_ten_containers_concurrently(
             "max_artifacts_count": 1,
         },
     )
-    assert env_resp.status_code in (200, 201), env_resp.text
+    assert env_resp.status_code == 201, env_resp.text
 
     pipeline_resp = await api_client.post(
         f"/api/v1/projects/{project_id}/pipelines",
@@ -1374,11 +1536,11 @@ async def test_external_stack_single_worker_runs_ten_containers_concurrently(
             "enabled": True,
         },
     )
-    assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+    assert pipeline_resp.status_code == 201, pipeline_resp.text
     pipeline_id = pipeline_resp.json()["id"]
 
     started = perf_counter()
-    run_ids: set[str] = set()
+    run_ids: list[str] = []
     for index in range(run_count):
         trigger_resp = await api_client.post(
             "/api/v1/runs",
@@ -1389,22 +1551,26 @@ async def test_external_stack_single_worker_runs_ten_containers_concurrently(
                 "priority": 1,
             },
         )
-        assert trigger_resp.status_code in (200, 201), (
+        assert trigger_resp.status_code == 201, (
             f"trigger {index} failed: {trigger_resp.text}"
         )
         body = trigger_resp.json()
         assert body["status"] == "queued"
         assert body["priority"] == 1
-        run_ids.add(body["id"])
+        run_ids.append(body["id"])
 
-    assert len(run_ids) == run_count
+    duplicate_run_ids = sorted(
+        run_id for run_id in set(run_ids) if run_ids.count(run_id) != 1
+    )
+    assert duplicate_run_ids == []
+    run_id_set = set(run_ids)
     running_count = await _wait_for_running_qaplatform_container_count(
-        run_ids,
+        run_id_set,
         minimum=run_count,
         timeout_seconds=240,
     )
     ready_elapsed_ms = _elapsed_ms(started)
-    assert running_count >= run_count
+    assert running_count == run_count
     _assert_elapsed_under(
         "external stack worker 10 containers ready",
         ready_elapsed_ms,
@@ -1415,11 +1581,11 @@ async def test_external_stack_single_worker_runs_ten_containers_concurrently(
         api_client,
         headers,
         project_id,
-        run_ids,
+        run_id_set,
         timeout_seconds=360,
     )
-    assert set(final_statuses) == run_ids
-    assert all(status == "done" for status in final_statuses.values()), final_statuses
+    expected_final_statuses = {run_id: "done" for run_id in run_id_set}
+    assert final_statuses == expected_final_statuses
     _assert_elapsed_under(
         "external stack worker 10 containers terminal",
         _elapsed_ms(started),
@@ -1445,7 +1611,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
             "default_branch": EXTERNAL_STACK_GIT_REF,
         },
     )
-    assert project_resp.status_code in (200, 201), project_resp.text
+    assert project_resp.status_code == 201, project_resp.text
     project_id = project_resp.json()["id"]
     worker_secret = f"worker-secret-{suffix}"
     worker_secret_sha256 = hashlib.sha256(worker_secret.encode("utf-8")).hexdigest()
@@ -1479,7 +1645,9 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
                 "workspace = Path('/workspace')\n"
                 "(workspace / 'tests').mkdir(exist_ok=True)\n"
                 "(workspace / 'tests' / 'test_real_worker_smoke.py').write_text(\n"
-                "    'def test_real_worker_smoke():\\n    assert True\\n'\n"
+                "    'from pathlib import Path\\n\\n'\n"
+                "    'def test_real_worker_smoke():\\n'\n"
+                "    \"    assert Path('pytest.py').exists()\\n\"\n"
                 ")\n"
                 "(workspace / 'pytest.py').write_text(\n"
                 "    \"from pathlib import Path\\n\"\n"
@@ -1522,7 +1690,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
             "max_artifacts_count": 4,
         },
     )
-    assert env_resp.status_code in (200, 201), env_resp.text
+    assert env_resp.status_code == 201, env_resp.text
 
     pipeline_resp = await api_client.post(
         f"/api/v1/projects/{project_id}/pipelines",
@@ -1543,7 +1711,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
             "enabled": True,
         },
     )
-    assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+    assert pipeline_resp.status_code == 201, pipeline_resp.text
     pipeline_id = pipeline_resp.json()["id"]
 
     trigger_resp = await api_client.post(
@@ -1555,7 +1723,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
             "priority": 1,
         },
     )
-    assert trigger_resp.status_code in (200, 201), trigger_resp.text
+    assert trigger_resp.status_code == 201, trigger_resp.text
     run_body = trigger_resp.json()
     run_id = run_body["id"]
     await _assert_run_trigger_audit_event(
@@ -1598,7 +1766,12 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         api_client,
         f"/api/v1/runs/{run_id}/artifacts",
         headers,
-        lambda body: body["total"] >= 4,
+        _has_exact_artifact_names(
+            "junit.xml",
+            "html/report.html",
+            "logs/trace.txt",
+            "allure-report/index.html",
+        ),
         timeout_seconds=30,
     )
     artifacts_by_name = {artifact["name"]: artifact for artifact in artifacts_body["data"]}
@@ -1608,8 +1781,26 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         "logs/trace.txt": ("log", "real-worker-trace"),
         "allure-report/index.html": ("allure-report", "real-worker-allure"),
     }
-    assert expected_artifacts.keys() <= artifacts_by_name.keys(), artifacts_body
-    assert artifacts_body["total"] == len(expected_artifacts)
+    expected_artifact_projection = sorted(
+        [
+            {
+                "name": artifact_name,
+                "type": artifact_type,
+                "storage_path": f"reports/{run_id}/{artifact_name}",
+            }
+            for artifact_name, (artifact_type, _expected_text) in (
+                expected_artifacts.items()
+            )
+        ],
+        key=lambda artifact: artifact["name"],
+    )
+    expected_artifact_page = {
+        "data": expected_artifact_projection,
+        "page": 1,
+        "per_page": 20,
+        "total": 4,
+    }
+    assert _artifact_page_projection(artifacts_body) == expected_artifact_page
     assert "zz-over-limit.txt" not in artifacts_by_name
     assert worker_secret not in str(artifacts_body)
     assert "over-limit-artifact-content" not in str(artifacts_body)
@@ -1650,28 +1841,39 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         and len(body.get("data", [])) > 0,
         timeout_seconds=60,
     )
-    assert archive_body["page"] == 1
-    assert archive_body["per_page"] == 1000
-    assert archive_tail_body["page"] == 2
-    assert archive_tail_body["per_page"] == 1000
     lines = [
         *(entry["line"] for entry in archive_body["data"]),
         *(entry["line"] for entry in archive_tail_body["data"]),
     ]
+    expected_archive_pages = [
+        {"page": 1, "per_page": 1000, "total": len(lines), "data_count": 1000},
+        {
+            "page": 2,
+            "per_page": 1000,
+            "total": len(lines),
+            "data_count": len(lines) - 1000,
+        },
+    ]
+    assert [
+        _archive_page_projection(archive_body),
+        _archive_page_projection(archive_tail_body),
+    ] == expected_archive_pages
     joined_lines = "\n".join(lines)
     assert worker_secret not in joined_lines
-    assert "active stdout secret: [REDACTED]" in joined_lines
-    assert "active stderr secret: [REDACTED]" in joined_lines
-    assert "active bulk secret: [REDACTED]" in joined_lines
+    redacted_stdout_line = "active stdout secret: [REDACTED]"
+    redacted_stderr_line = "active stderr secret: [REDACTED]"
+    redacted_bulk_line = f"{bulk_marker}-1001 active bulk secret: [REDACTED]"
+    for expected_line in [
+        "Repository cloned successfully",
+        redacted_stdout_line,
+        redacted_stderr_line,
+        redacted_bulk_line,
+        *(f"Uploaded artifact: {artifact_name}" for artifact_name in expected_artifacts),
+        "Skipped artifact zz-over-limit.txt: artifact count limit exceeded",
+        "Run completed: done",
+    ]:
+        _assert_line_once(lines, expected_line)
     assert collect_bulk_indexes(lines) == list(range(bulk_log_count))
-    assert any("Repository cloned successfully" in line for line in lines)
-    for artifact_name in expected_artifacts:
-        assert any(f"Uploaded artifact: {artifact_name}" in line for line in lines)
-    assert any(
-        "Skipped artifact zz-over-limit.txt: artifact count limit exceeded" in line
-        for line in lines
-    )
-    assert any("Run completed: done" in line for line in lines)
 
     run_read_token = await _create_external_api_token(
         api_client,
@@ -1733,8 +1935,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     token_artifacts_by_name = {
         artifact["name"]: artifact for artifact in token_artifacts_body["data"]
     }
-    assert expected_artifacts.keys() <= token_artifacts_by_name.keys()
-    assert token_artifacts_body["total"] == len(expected_artifacts)
+    assert _artifact_page_projection(token_artifacts_body) == expected_artifact_page
     assert "zz-over-limit.txt" not in token_artifacts_by_name
     assert worker_secret not in json.dumps(token_artifacts_body, sort_keys=True)
     assert "over-limit-artifact-content" not in json.dumps(
@@ -1756,26 +1957,25 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
     assert token_archive_tail_resp.status_code == 200, token_archive_tail_resp.text
     token_archive_body = token_archive_resp.json()
     token_archive_tail_body = token_archive_tail_resp.json()
-    assert token_archive_body["page"] == 1
-    assert token_archive_body["per_page"] == 1000
-    assert token_archive_tail_body["page"] == 2
-    assert token_archive_tail_body["per_page"] == 1000
-    assert token_archive_tail_body["total"] == token_archive_body["total"]
     token_lines = [
         *(entry["line"] for entry in token_archive_body["data"]),
         *(entry["line"] for entry in token_archive_tail_body["data"]),
     ]
+    assert [
+        _archive_page_projection(token_archive_body),
+        _archive_page_projection(token_archive_tail_body),
+    ] == expected_archive_pages
     token_joined_lines = "\n".join(token_lines)
-    assert any("Repository cloned successfully" in line for line in token_lines)
-    assert any("Run completed: done" in line for line in token_lines)
-    assert "active stdout secret: [REDACTED]" in token_joined_lines
-    assert "active stderr secret: [REDACTED]" in token_joined_lines
-    assert "active bulk secret: [REDACTED]" in token_joined_lines
+    for expected_line in [
+        "Repository cloned successfully",
+        redacted_stdout_line,
+        redacted_stderr_line,
+        redacted_bulk_line,
+        "Skipped artifact zz-over-limit.txt: artifact count limit exceeded",
+        "Run completed: done",
+    ]:
+        _assert_line_once(token_lines, expected_line)
     assert collect_bulk_indexes(token_lines) == list(range(bulk_log_count))
-    assert any(
-        "Skipped artifact zz-over-limit.txt: artifact count limit exceeded" in line
-        for line in token_lines
-    )
     assert worker_secret not in token_joined_lines
 
     for artifact_name, (artifact_type, expected_text) in expected_artifacts.items():
@@ -1858,6 +2058,7 @@ async def test_real_worker_persists_artifacts_and_archived_logs(
         *denied_download_responses,
     ):
         assert response.status_code == 403, response.text
+        assert response.json() == {"detail": "Insufficient permissions"}
         for fragment in forbidden_fragments:
             assert fragment not in response.text
 
@@ -1882,7 +2083,7 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
                 "default_branch": EXTERNAL_STACK_GIT_REF,
             },
         )
-        assert project_resp.status_code in (200, 201), project_resp.text
+        assert project_resp.status_code == 201, project_resp.text
         project_id = project_resp.json()["id"]
 
         env_resp = await api_client.post(
@@ -1901,7 +2102,9 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
                     "workspace = Path('/workspace')\n"
                     "(workspace / 'tests').mkdir(exist_ok=True)\n"
                     "(workspace / 'tests' / 'test_worker_lost_retry.py').write_text(\n"
-                    "    'def test_worker_lost_retry():\\n    assert True\\n'\n"
+                    "    'from pathlib import Path\\n\\n'\n"
+                    "    'def test_worker_lost_retry():\\n'\n"
+                    "    \"    assert Path('pytest.py').exists()\\n\"\n"
                     ")\n"
                     "(workspace / 'pytest.py').write_text(\n"
                     "    \"from pathlib import Path\\n\"\n"
@@ -1924,7 +2127,7 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
                 "max_artifacts_count": 5,
             },
         )
-        assert env_resp.status_code in (200, 201), env_resp.text
+        assert env_resp.status_code == 201, env_resp.text
 
         pipeline_resp = await api_client.post(
             f"/api/v1/projects/{project_id}/pipelines",
@@ -1950,7 +2153,7 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
                 "enabled": True,
             },
         )
-        assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+        assert pipeline_resp.status_code == 201, pipeline_resp.text
         pipeline_id = pipeline_resp.json()["id"]
 
         trigger_resp = await api_client.post(
@@ -1962,7 +2165,7 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
                 "priority": 1,
             },
         )
-        assert trigger_resp.status_code in (200, 201), trigger_resp.text
+        assert trigger_resp.status_code == 201, trigger_resp.text
         original_run_body = trigger_resp.json()
         original_run_id = original_run_body["id"]
         await _assert_run_trigger_audit_event(
@@ -1997,18 +2200,55 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
         original_detail = (
             await api_client.get(f"/api/v1/runs/{original_run_id}", headers=headers)
         ).json()
-        assert "worker_lost" in (original_detail.get("error_message") or "")
+        error_message = original_detail.get("error_message") or ""
+        error_prefix = "worker_lost: heartbeat expired for "
+        assert error_message.startswith(error_prefix)
+        reclaimed_worker_id = error_message.removeprefix(error_prefix)
+        deleted_worker_ids = {
+            key.removeprefix("worker:").removesuffix(":heartbeat")
+            for key in heartbeat_keys
+        }
+        assert reclaimed_worker_id in deleted_worker_ids
+        assert re.fullmatch(r"worker-[0-9a-f]{8}", reclaimed_worker_id)
 
         retry_runs_body = await _poll_project_runs(
             api_client,
             project_id,
             headers,
-            lambda body: any(run["attempt"] == 2 for run in body["data"]),
+            lambda body: [
+                run["attempt"] for run in body["data"] if run["attempt"] == 2
+            ]
+            == [2],
             timeout_seconds=120,
         )
-        retry_run = next(
+        (retry_run,) = [
             run for run in retry_runs_body["data"] if run["attempt"] == 2
-        )
+        ]
+        assert {
+            "project_id": retry_run["project_id"],
+            "pipeline_id": retry_run["pipeline_id"],
+            "environment_id": retry_run["environment_id"],
+            "status": retry_run["status"],
+            "trigger_type": retry_run["trigger_type"],
+            "priority": retry_run["priority"],
+            "triggered_by": retry_run["triggered_by"],
+            "git_ref": retry_run["git_ref"],
+            "attempt": retry_run["attempt"],
+            "summary": retry_run["summary"],
+            "error_message": retry_run["error_message"],
+        } == {
+            "project_id": original_run_body["project_id"],
+            "pipeline_id": original_run_body["pipeline_id"],
+            "environment_id": original_run_body["environment_id"],
+            "status": "queued",
+            "trigger_type": original_run_body["trigger_type"],
+            "priority": original_run_body["priority"],
+            "triggered_by": original_run_body["triggered_by"],
+            "git_ref": original_run_body["git_ref"],
+            "attempt": 2,
+            "summary": None,
+            "error_message": None,
+        }
         retry_run_id = retry_run["id"]
 
         _compose(["start", "worker"], timeout=60)
@@ -2032,16 +2272,14 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
             api_client,
             f"/api/v1/runs/{retry_run_id}/artifacts",
             headers,
-            lambda body: body["total"] >= 1,
+            _has_exact_artifact_names("junit.xml"),
             timeout_seconds=30,
         )
-        junit_artifacts = [
-            artifact
-            for artifact in artifacts_body["data"]
-            if artifact["name"] == "junit.xml"
-        ]
-        assert junit_artifacts, artifacts_body
-        retry_junit_artifact = junit_artifacts[0]
+        assert artifacts_body["total"] == 1
+        retry_junit_artifact = artifacts_body["data"][0]
+        assert retry_junit_artifact["name"] == "junit.xml"
+        assert retry_junit_artifact["type"] == "junit"
+        assert retry_junit_artifact["storage_path"] == f"reports/{retry_run_id}/junit.xml"
 
         retry_download_resp = await api_client.get(
             f"/api/v1/artifacts/{retry_junit_artifact['id']}/download",
@@ -2059,13 +2297,20 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
             api_client,
             f"/api/v1/runs/{retry_run_id}/logs/archive",
             headers,
-            lambda body: body["total"] >= 1,
+            _archive_contains_all(
+                "Repository cloned successfully",
+                "Uploaded artifact: junit.xml",
+                "Run completed: done",
+            ),
             timeout_seconds=60,
         )
         lines = [entry["line"] for entry in archive_body["data"]]
-        assert any("Repository cloned successfully" in line for line in lines)
-        assert any("Uploaded artifact: junit.xml" in line for line in lines)
-        assert any("Run completed: done" in line for line in lines)
+        for expected_line in [
+            "Repository cloned successfully",
+            "Uploaded artifact: junit.xml",
+            "Run completed: done",
+        ]:
+            _assert_line_once(lines, expected_line)
 
         run_read_token = await _create_external_api_token(
             api_client,
@@ -2090,9 +2335,12 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
         token_lines = [
             entry["line"] for entry in token_archive_resp.json()["data"]
         ]
-        assert any("Repository cloned successfully" in line for line in token_lines)
-        assert any("Uploaded artifact: junit.xml" in line for line in token_lines)
-        assert any("Run completed: done" in line for line in token_lines)
+        for expected_line in [
+            "Repository cloned successfully",
+            "Uploaded artifact: junit.xml",
+            "Run completed: done",
+        ]:
+            _assert_line_once(token_lines, expected_line)
 
         token_artifacts_resp = await api_client.get(
             f"/api/v1/runs/{retry_run_id}/artifacts",
@@ -2100,13 +2348,12 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
         )
         assert token_artifacts_resp.status_code == 200, token_artifacts_resp.text
         token_artifacts_body = token_artifacts_resp.json()
-        token_junit_artifacts = [
-            artifact
-            for artifact in token_artifacts_body["data"]
-            if artifact["name"] == "junit.xml"
+        token_artifact_names = [
+            artifact["name"] for artifact in token_artifacts_body["data"]
         ]
-        assert token_junit_artifacts, token_artifacts_body
-        token_junit_artifact = token_junit_artifacts[0]
+        assert token_artifacts_body["total"] == 1
+        assert token_artifact_names == ["junit.xml"], token_artifacts_body
+        token_junit_artifact = token_artifacts_body["data"][0]
         assert token_junit_artifact["type"] == "junit"
         assert token_junit_artifact["storage_path"] == (
             f"reports/{retry_run_id}/junit.xml"
@@ -2152,6 +2399,7 @@ async def test_worker_lost_retry_completes_with_artifacts_and_archived_logs(
             denied_download_resp,
         ):
             assert response.status_code == 403, response.text
+            assert response.json() == {"detail": "Insufficient permissions"}
             for fragment in forbidden_fragments:
                 assert fragment not in response.text
     finally:
@@ -2180,7 +2428,7 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
                 "default_branch": EXTERNAL_STACK_GIT_REF,
             },
         )
-        assert project_resp.status_code in (200, 201), project_resp.text
+        assert project_resp.status_code == 201, project_resp.text
         project_id = project_resp.json()["id"]
 
         env_resp = await api_client.post(
@@ -2199,7 +2447,9 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
                     "workspace = Path('/workspace')\n"
                     "(workspace / 'tests').mkdir(exist_ok=True)\n"
                     "(workspace / 'tests' / 'test_priority_queue.py').write_text(\n"
-                    "    'def test_priority_queue():\\n    assert True\\n'\n"
+                    "    'from pathlib import Path\\n\\n'\n"
+                    "    'def test_priority_queue():\\n'\n"
+                    "    \"    assert Path('pytest.py').exists()\\n\"\n"
                     ")\n"
                     "(workspace / 'pytest.py').write_text(\n"
                     "    \"from pathlib import Path\\n\"\n"
@@ -2219,7 +2469,7 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
                 "max_artifacts_count": 5,
             },
         )
-        assert env_resp.status_code in (200, 201), env_resp.text
+        assert env_resp.status_code == 201, env_resp.text
 
         pipeline_resp = await api_client.post(
             f"/api/v1/projects/{project_id}/pipelines",
@@ -2240,7 +2490,7 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
                 "enabled": True,
             },
         )
-        assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+        assert pipeline_resp.status_code == 201, pipeline_resp.text
         pipeline_id = pipeline_resp.json()["id"]
 
         triggered_runs: dict[str, str] = {}
@@ -2254,7 +2504,7 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
                     "priority": priority,
                 },
             )
-            assert trigger_resp.status_code in (200, 201), trigger_resp.text
+            assert trigger_resp.status_code == 201, trigger_resp.text
             body = trigger_resp.json()
             assert body["priority"] == priority
             assert body["status"] == "queued"
@@ -2312,18 +2562,17 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
                 api_client,
                 f"/api/v1/runs/{run_id}/artifacts",
                 headers,
-                lambda body: body["total"] >= 1,
+                _has_exact_artifact_names("junit.xml"),
                 timeout_seconds=30,
             )
-            junit_artifacts = [
-                artifact
-                for artifact in artifacts_body["data"]
-                if artifact["name"] == "junit.xml"
-            ]
-            assert junit_artifacts, artifacts_body
+            assert artifacts_body["total"] == 1
+            junit_artifact = artifacts_body["data"][0]
+            assert junit_artifact["name"] == "junit.xml"
+            assert junit_artifact["type"] == "junit"
+            assert junit_artifact["storage_path"] == f"reports/{run_id}/junit.xml"
 
             download_resp = await api_client.get(
-                f"/api/v1/artifacts/{junit_artifacts[0]['id']}/download",
+                f"/api/v1/artifacts/{junit_artifact['id']}/download",
                 headers=headers,
             )
             assert download_resp.status_code == 200, download_resp.text
@@ -2336,13 +2585,20 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
                 api_client,
                 f"/api/v1/runs/{run_id}/logs/archive",
                 headers,
-                lambda body: body["total"] >= 1,
+                _archive_contains_all(
+                    "Repository cloned successfully",
+                    "Uploaded artifact: junit.xml",
+                    "Run completed: done",
+                ),
                 timeout_seconds=60,
             )
             lines = [entry["line"] for entry in archive_body["data"]]
-            assert any("Repository cloned successfully" in line for line in lines)
-            assert any("Uploaded artifact: junit.xml" in line for line in lines)
-            assert any("Run completed: done" in line for line in lines), label
+            for expected_line in [
+                "Repository cloned successfully",
+                "Uploaded artifact: junit.xml",
+                "Run completed: done",
+            ]:
+                _assert_line_once(lines, expected_line)
 
             token_detail_resp = await api_client.get(
                 f"/api/v1/runs/{run_id}",
@@ -2362,11 +2618,12 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
             token_lines = [
                 entry["line"] for entry in token_archive_resp.json()["data"]
             ]
-            assert any(
-                "Repository cloned successfully" in line for line in token_lines
-            ), label
-            assert any("Uploaded artifact: junit.xml" in line for line in token_lines)
-            assert any("Run completed: done" in line for line in token_lines), label
+            for expected_line in [
+                "Repository cloned successfully",
+                "Uploaded artifact: junit.xml",
+                "Run completed: done",
+            ]:
+                _assert_line_once(token_lines, expected_line)
 
             token_artifacts_resp = await api_client.get(
                 f"/api/v1/runs/{run_id}/artifacts",
@@ -2376,13 +2633,12 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
                 token_artifacts_resp.text
             )
             token_artifacts_body = token_artifacts_resp.json()
-            token_junit_artifacts = [
-                artifact
-                for artifact in token_artifacts_body["data"]
-                if artifact["name"] == "junit.xml"
+            token_artifact_names = [
+                artifact["name"] for artifact in token_artifacts_body["data"]
             ]
-            assert token_junit_artifacts, token_artifacts_body
-            token_junit_artifact = token_junit_artifacts[0]
+            assert token_artifacts_body["total"] == 1, label
+            assert token_artifact_names == ["junit.xml"], token_artifacts_body
+            token_junit_artifact = token_artifacts_body["data"][0]
             assert token_junit_artifact["type"] == "junit", label
             assert token_junit_artifact["storage_path"] == (
                 f"reports/{run_id}/junit.xml"
@@ -2426,6 +2682,7 @@ async def test_priority_queues_wait_for_matching_external_workers_then_finish(
                 denied_download_resp,
             ):
                 assert response.status_code == 403, response.text
+                assert response.json() == {"detail": "Insufficient permissions"}
                 for fragment in forbidden_fragments:
                     assert fragment not in response.text
     finally:
@@ -2457,7 +2714,7 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
                 "default_branch": EXTERNAL_STACK_GIT_REF,
             },
         )
-        assert project_resp.status_code in (200, 201), project_resp.text
+        assert project_resp.status_code == 201, project_resp.text
         project_id = project_resp.json()["id"]
 
         env_resp = await api_client.post(
@@ -2475,7 +2732,7 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
                 "max_artifacts_count": 5,
             },
         )
-        assert env_resp.status_code in (200, 201), env_resp.text
+        assert env_resp.status_code == 201, env_resp.text
 
         pipeline_resp = await api_client.post(
             f"/api/v1/projects/{project_id}/pipelines",
@@ -2501,7 +2758,7 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
                 "enabled": True,
             },
         )
-        assert pipeline_resp.status_code in (200, 201), pipeline_resp.text
+        assert pipeline_resp.status_code == 201, pipeline_resp.text
         pipeline_id = pipeline_resp.json()["id"]
 
         trigger_resp = await api_client.post(
@@ -2513,7 +2770,7 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
                 "priority": 1,
             },
         )
-        assert trigger_resp.status_code in (200, 201), trigger_resp.text
+        assert trigger_resp.status_code == 201, trigger_resp.text
         run_body = trigger_resp.json()
         run_id = run_body["id"]
         await _assert_run_trigger_audit_event(
@@ -2565,7 +2822,12 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
     )
     assert clone_artifacts_resp.status_code == 200, clone_artifacts_resp.text
     clone_artifacts = clone_artifacts_resp.json()
-    assert clone_artifacts["total"] == 0
+    assert clone_artifacts == {
+        "data": [],
+        "page": 1,
+        "per_page": 20,
+        "total": 0,
+    }
     clone_archive_body = await _poll_json(
         api_client,
         f"/api/v1/runs/{clone_run_id}/logs/archive",
@@ -2622,6 +2884,7 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
     assert clone_denied_archive_resp.status_code == 403, (
         clone_denied_archive_resp.text
     )
+    assert clone_denied_archive_resp.json() == {"detail": "Insufficient permissions"}
     for fragment in (
         f"logs/{clone_run_id}.jsonl",
         secret,
@@ -2649,9 +2912,13 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
     )
     assert setup_detail_resp.status_code == 200, setup_detail_resp.text
     setup_detail = setup_detail_resp.json()
-    assert "Setup script failed (exit 1)" in (
-        setup_detail.get("error_message") or ""
+    assert setup_detail.get("error_message") == "Setup script failed (exit 1)"
+    serialized_setup_detail = json.dumps(
+        setup_detail,
+        ensure_ascii=False,
+        sort_keys=True,
     )
+    assert "setup-boundary-failure" not in serialized_setup_detail
     await _assert_project_has_no_retry_runs(
         api_client,
         setup_project_id,
@@ -2663,19 +2930,31 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
     )
     assert setup_artifacts_resp.status_code == 200, setup_artifacts_resp.text
     setup_artifacts = setup_artifacts_resp.json()
-    assert setup_artifacts["total"] == 0
+    assert setup_artifacts == {
+        "data": [],
+        "page": 1,
+        "per_page": 20,
+        "total": 0,
+    }
 
     archive_body = await _poll_json(
         api_client,
         f"/api/v1/runs/{setup_run_id}/logs/archive",
         headers,
-        lambda body: body["total"] >= 1,
+        _archive_contains_all(
+            "Repository cloned successfully",
+            "Running setup script...",
+            "setup-boundary-failure",
+        ),
         timeout_seconds=60,
     )
     lines = [entry["line"] for entry in archive_body["data"]]
-    assert any("Repository cloned successfully" in line for line in lines)
-    assert any("Running setup script..." in line for line in lines)
-    assert any("setup-boundary-failure" in line for line in lines)
+    for expected_line in [
+        "Repository cloned successfully",
+        "Running setup script...",
+        "setup-boundary-failure",
+    ]:
+        _assert_line_once(lines, expected_line)
 
     setup_token_archive_resp = await api_client.get(
         f"/api/v1/runs/{setup_run_id}/logs/archive",
@@ -2685,9 +2964,12 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
     setup_token_lines = [
         entry["line"] for entry in setup_token_archive_resp.json()["data"]
     ]
-    assert any("Repository cloned successfully" in line for line in setup_token_lines)
-    assert any("Running setup script..." in line for line in setup_token_lines)
-    assert any("setup-boundary-failure" in line for line in setup_token_lines)
+    for expected_line in [
+        "Repository cloned successfully",
+        "Running setup script...",
+        "setup-boundary-failure",
+    ]:
+        _assert_line_once(setup_token_lines, expected_line)
 
     setup_denied_archive_resp = await api_client.get(
         f"/api/v1/runs/{setup_run_id}/logs/archive",
@@ -2696,6 +2978,7 @@ async def test_worker_clone_and_setup_failures_do_not_retry_or_leak_external_sta
     assert setup_denied_archive_resp.status_code == 403, (
         setup_denied_archive_resp.text
     )
+    assert setup_denied_archive_resp.json() == {"detail": "Insufficient permissions"}
     for fragment in (
         f"logs/{setup_run_id}.jsonl",
         "Repository cloned successfully",

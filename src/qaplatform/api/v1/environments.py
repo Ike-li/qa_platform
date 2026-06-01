@@ -175,6 +175,7 @@ async def _verify_project_access(project_id: UUID, repos: Repos, user):
 @router.get(
     "",
     response_model=PaginatedResponse[EnvironmentResponse],
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="环境列表",
 )
 async def list_environments(
@@ -213,7 +214,7 @@ async def list_environments(
     "",
     response_model=EnvironmentResponse,
     status_code=201,
-    responses={404: {"model": ErrorResponse}},
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="创建环境",
 )
 async def create_environment(
@@ -275,7 +276,7 @@ async def create_environment(
 @router.get(
     "/{env_id}",
     response_model=EnvironmentResponse,
-    responses={404: {"model": ErrorResponse}},
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="环境详情",
 )
 async def get_environment(
@@ -303,7 +304,7 @@ async def get_environment(
 @router.put(
     "/{env_id}",
     response_model=EnvironmentResponse,
-    responses={404: {"model": ErrorResponse}},
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="更新环境",
 )
 async def update_environment(
@@ -372,7 +373,7 @@ async def update_environment(
 @router.delete(
     "/{env_id}",
     status_code=204,
-    responses={404: {"model": ErrorResponse}},
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     summary="删除环境",
 )
 async def delete_environment(

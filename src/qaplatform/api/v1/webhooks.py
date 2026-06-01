@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from fnmatch import fnmatch
 from types import SimpleNamespace
 from typing import Any
@@ -40,6 +41,40 @@ _RESERVED_METADATA_KEYS = {
     "default_branch",
 }
 _RESERVED_METADATA_KEYS_LOWER = {key.lower() for key in _RESERVED_METADATA_KEYS}
+_FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def _detail_response(description: str) -> dict[str, Any]:
+    return {
+        "description": description,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {"detail": {"type": "string"}},
+                    "required": ["detail"],
+                }
+            }
+        },
+    }
+
+
+def _webhook_decision_response(description: str) -> dict[str, Any]:
+    return {
+        "description": description,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["status"],
+                }
+            }
+        },
+    }
 
 
 def _branch_name_from_ref(git_ref: str) -> str:
@@ -182,6 +217,14 @@ def _github_repo_url_candidates(repo: dict[str, Any]) -> set[str]:
     return candidates
 
 
+def _validate_github_commit_sha(value: Any, *, context: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise HTTPException(status_code=400, detail=f"Missing GitHub {context} SHA")
+    if not _FULL_GIT_SHA_RE.fullmatch(value):
+        raise HTTPException(status_code=400, detail=f"Invalid GitHub {context} SHA")
+    return value
+
+
 def _github_payload_to_trigger_request(
     payload: dict[str, Any],
     *,
@@ -197,11 +240,12 @@ def _github_payload_to_trigger_request(
         if not isinstance(repo, dict):
             raise HTTPException(status_code=400, detail="Missing GitHub repository payload")
         git_ref = payload.get("ref")
-        git_sha = payload.get("after")
-        if not isinstance(git_ref, str) or not git_ref:
+        if not isinstance(git_ref, str) or not git_ref.strip():
             raise HTTPException(status_code=400, detail="Missing GitHub ref")
-        if not isinstance(git_sha, str) or not git_sha:
-            raise HTTPException(status_code=400, detail="Missing GitHub commit SHA")
+        git_sha = _validate_github_commit_sha(
+            payload.get("after"),
+            context="commit",
+        )
         full_name = repo.get("full_name")
         if isinstance(full_name, str):
             metadata["repository"] = full_name
@@ -226,9 +270,9 @@ def _github_payload_to_trigger_request(
         if head_repo.get("full_name") != base_repo.get("full_name"):
             raise HTTPException(status_code=202, detail="Fork pull requests are ignored")
         number = pull_request.get("number")
-        sha = head.get("sha")
-        if not isinstance(number, int) or not isinstance(sha, str) or not sha:
+        if not isinstance(number, int):
             raise HTTPException(status_code=400, detail="Missing GitHub pull_request number or SHA")
+        sha = _validate_github_commit_sha(head.get("sha"), context="pull_request")
         full_name = base_repo.get("full_name")
         if isinstance(full_name, str):
             metadata["repository"] = full_name
@@ -348,7 +392,7 @@ async def _create_webhook_run(
             body=body,
             branch_name=branch_name,
         )
-    run.retry_group_id = run.id
+    await repos.run.set_retry_group_id(run.id, run.id)
 
     container = request.app.state.container
     arq_pool = getattr(container, "arq_pool", None)
@@ -373,7 +417,12 @@ async def _create_webhook_run(
     "/{project_id}/trigger",
     response_model=RunResponse,
     status_code=201,
-    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    responses={
+        200: _webhook_decision_response("Webhook was filtered or marked duplicate"),
+        401: _detail_response("Missing or invalid webhook signature"),
+        404: {"model": ErrorResponse},
+        409: _detail_response("Webhook cannot trigger a run for the project state"),
+    },
     summary="Webhook 触发执行",
 )
 async def webhook_trigger(
@@ -419,7 +468,14 @@ async def webhook_trigger(
     "/{provider}",
     response_model=RunResponse,
     status_code=201,
-    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    responses={
+        200: _webhook_decision_response("Webhook was filtered or marked duplicate"),
+        202: _detail_response("Provider event was accepted but ignored"),
+        400: _detail_response("Provider webhook payload is invalid"),
+        401: _detail_response("Missing or invalid webhook signature"),
+        404: {"model": ErrorResponse},
+        409: _detail_response("Webhook repository match is ambiguous or not runnable"),
+    },
     summary="Git provider webhook 触发执行",
 )
 async def provider_webhook_trigger(

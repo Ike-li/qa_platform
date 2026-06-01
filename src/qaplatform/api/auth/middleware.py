@@ -26,6 +26,27 @@ class CurrentUser:
     scopes: list[str] | None = None
 
 
+def _invalid_token_claims_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid token claims",
+    )
+
+
+def _required_string_claim(payload: dict, name: str) -> str:
+    value = payload.get(name)
+    if not isinstance(value, str) or not value:
+        raise _invalid_token_claims_error()
+    return value
+
+
+def _validate_uuid_claim(value: str) -> UUID:
+    try:
+        return UUID(value)
+    except ValueError:
+        raise _invalid_token_claims_error() from None
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> CurrentUser:
@@ -67,9 +88,24 @@ async def _authenticate_jwt(token: str, container: DependencyContainer) -> Curre
             detail="Invalid token type",
         )
 
+    user_id = _required_string_claim(payload, "sub")
+    tenant_id = _required_string_claim(payload, "tenant_id")
+    user_uuid = _validate_uuid_claim(user_id)
+    _validate_uuid_claim(tenant_id)
+
+    role = payload.get("role", "viewer")
+    if not isinstance(role, str) or not role:
+        raise _invalid_token_claims_error()
+
+    is_admin_claim = payload.get("is_platform_admin", False)
+    if not isinstance(is_admin_claim, bool):
+        raise _invalid_token_claims_error()
+
     # Blacklist check — only when jti is present (old tokens without jti pass through)
     jti = payload.get("jti")
     if jti is not None:
+        if not isinstance(jti, str) or not jti:
+            raise _invalid_token_claims_error()
         import logging
 
         jwt_svc = JWTService(settings, redis=container.redis_client)
@@ -93,24 +129,43 @@ async def _authenticate_jwt(token: str, container: DependencyContainer) -> Curre
                 detail="Token has been revoked",
             )
 
-    # Verify is_platform_admin against database to handle stale tokens
-    is_admin_claim = bool(payload.get("is_platform_admin", False))
     is_admin_verified = False
-    if is_admin_claim and container.db_session_factory is not None:
-        from sqlalchemy import select
-        from qaplatform.infra.database.models import AppUser
+    if container.db_session_factory is not None:
+        from qaplatform.infra.database.repositories.user_repo import UserRepository
 
         async with container.db_session_factory() as session:
-            result = await session.execute(
-                select(AppUser.is_platform_admin).where(AppUser.id == UUID(payload["sub"]))
+            user = await UserRepository(session).get_by_id(user_uuid)
+
+        user_tenant = getattr(user, "tenant", None)
+        user_role = getattr(user, "role", None)
+        user_tenant_id = getattr(user, "tenant_id", None)
+        if (
+            user is None
+            or not getattr(user, "is_active", False)
+            or getattr(user, "deleted_at", None) is not None
+            or (
+                user_tenant is not None
+                and getattr(user_tenant, "deleted_at", None) is not None
             )
-            row = result.scalar_one_or_none()
-            is_admin_verified = bool(row) if row is not None else False
+            or str(user_tenant_id) != tenant_id
+            or not isinstance(user_role, str)
+            or not user_role
+            or user_role != role
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+            )
+
+        # Verify platform-admin privilege against the current database row.
+        is_admin_verified = (
+            is_admin_claim and bool(getattr(user, "is_platform_admin", False))
+        )
 
     return CurrentUser(
-        user_id=payload["sub"],
-        role=payload.get("role", "viewer"),
-        tenant_id=payload["tenant_id"],
+        user_id=user_id,
+        role=role,
+        tenant_id=tenant_id,
         is_platform_admin=is_admin_verified,
     )
 
@@ -144,18 +199,34 @@ async def _authenticate_api_token(
                 detail="Invalid or revoked API token",
             )
 
+        if not TokenService.verify_token(secret, token.secret_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or revoked API token",
+            )
+
+        owner = token.user
+        owner_tenant = getattr(owner, "tenant", None)
+        if (
+            owner is None
+            or not getattr(owner, "is_active", False)
+            or getattr(owner, "deleted_at", None) is not None
+            or (
+                owner_tenant is not None
+                and getattr(owner_tenant, "deleted_at", None) is not None
+            )
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or revoked API token",
+            )
+
         from datetime import datetime, timezone
 
         if token.expires_at < datetime.now(timezone.utc):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="API token has expired",
-            )
-
-        if not TokenService.verify_token(secret, token.secret_hash):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or revoked API token",
             )
 
         # Update last_used_at (best-effort)
@@ -168,9 +239,9 @@ async def _authenticate_api_token(
             await session.rollback()
 
         # Eagerly read ORM relationship attributes before session closes
-        user_role = token.user.role
-        user_tenant_id = str(token.user.tenant_id)
-        user_is_platform_admin = bool(getattr(token.user, "is_platform_admin", False))
+        user_role = owner.role
+        user_tenant_id = str(owner.tenant_id)
+        user_is_platform_admin = bool(getattr(owner, "is_platform_admin", False))
 
     return CurrentUser(
         user_id=str(token.user_id),

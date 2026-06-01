@@ -9,7 +9,7 @@ Three test groups:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock, call
 from uuid import uuid4
 
 import pytest
@@ -118,9 +118,11 @@ class TestExecutorFailRedactsGitUrlUserinfo:
         """
         await fail_executor.execute(sample_run, _make_pipeline())
 
-        mock_run_repo.fail_if_current.assert_awaited_once()
-        _, kwargs = mock_run_repo.fail_if_current.call_args
-        message = kwargs.get("message", "")
+        mock_run_repo.fail_if_current.assert_awaited_once_with(
+            str(sample_run.id),
+            message=ANY,
+        )
+        message = mock_run_repo.fail_if_current.await_args.kwargs["message"]
 
         # Token and username must be gone
         assert "ghp_SECRETTOKEN" not in message, (
@@ -258,13 +260,7 @@ class TestExecutorLogRedaction:
             redact_env_vars={"QAP_REAL_WORKER_SECRET": secret},
         )
 
-        assert log_stream.write_log.await_count == 2
-        written = [
-            call.args[1] for call in log_stream.write_log.await_args_list
+        assert log_stream.write_log.await_args_list == [
+            call("run-1", "stdout printed [REDACTED]", stream="stdout"),
+            call("run-1", "stderr printed [REDACTED]", stream="stderr"),
         ]
-        assert all(secret not in line for line in written)
-        assert all("[REDACTED]" in line for line in written)
-        streams = [
-            call.kwargs["stream"] for call in log_stream.write_log.await_args_list
-        ]
-        assert streams == ["stdout", "stderr"]

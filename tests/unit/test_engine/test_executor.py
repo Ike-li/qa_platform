@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import stat
 from pathlib import Path
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
-from uuid import uuid4
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -80,6 +81,17 @@ def sample_run():
     run.git_sha = None
     run.metadata = {"git_url": "https://github.com/org/repo.git"}
     return run
+
+
+def _mount_projection(mounts):
+    return [
+        {
+            "source": mount.source,
+            "target": mount.target,
+            "read_only": mount.read_only,
+        }
+        for mount in mounts
+    ]
 
 
 class TestRunSetupContainerised:
@@ -172,23 +184,37 @@ class TestRunSetupContainerised:
             shell_patch.assert_not_called()
 
         # backend.create_execution must receive an ExecutionSpec carrying the
-        # script as ["sh", "-c", <script>] and the workspace mount.
-        mock_backend.create_execution.assert_called_once()
-        spec = mock_backend.create_execution.call_args.args[0]
+        # script through the sandbox shell, rooted at the mounted workspace.
+        mock_backend.create_execution.assert_awaited_once()
+        spec = mock_backend.create_execution.await_args.args[0]
         assert isinstance(spec, ExecutionSpec)
         assert spec.image == "python:3.12-alpine"
-        assert spec.command[:2] == ["sh", "-c"]
-        assert spec.command[2] == "pip install -r requirements.txt"
-        assert any(m.target == "/workspace" for m in spec.mounts)
+        assert spec.command == ["sh", "-c", "cd /workspace && pip install -r requirements.txt"]
+        assert spec.env_vars == {"FOO": "bar"}
+        assert spec.resource_limits is setup_pipeline.resource_limits
+        assert spec.network_policy == "deny"
+        assert spec.user == "1000:1000"
+        assert spec.security.readonly_rootfs is False
+        assert _mount_projection(spec.mounts) == [
+            {
+                "source": str(tmp_path),
+                "target": "/workspace",
+                "read_only": False,
+            }
+        ]
         # Setup container is labeled distinctly so an operator inspecting
         # docker ps can tell setup containers from stage containers.
-        assert spec.labels.get("phase") == "setup"
+        assert spec.labels == {"run_id": str(sample_run.id), "phase": "setup"}
+        mock_backend.start.assert_awaited_once_with("setup-container-1")
+        mock_backend.wait.assert_awaited_once_with("setup-container-1", 300)
+        mock_backend.cleanup.assert_awaited_once_with("setup-container-1")
+        assert executor._active_execution_id is None
 
     @pytest.mark.asyncio
     async def test_setup_timeout_capped_at_600s(
         self, executor, mock_backend, sample_run, tmp_path
     ):
-        from qaplatform.engine.executor import PipelineConfig
+        from qaplatform.engine.executor import ExecutionSpec, PipelineConfig
         pipeline = PipelineConfig(
             image="python:3.12-alpine",
             stages=[],
@@ -196,7 +222,7 @@ class TestRunSetupContainerised:
             setup_script="echo hi",
         )
 
-        mock_backend.create_execution = AsyncMock(return_value="c")
+        mock_backend.create_execution = AsyncMock(return_value="setup-capped-container")
         mock_backend.start = AsyncMock()
         mock_backend.wait = AsyncMock(
             return_value=MagicMock(exit_code=0, timed_out=False)
@@ -210,16 +236,34 @@ class TestRunSetupContainerised:
 
         await executor._run_setup(sample_run, pipeline, tmp_path)
 
-        # The wait timeout is the second positional arg to backend.wait().
-        wait_args = mock_backend.wait.call_args
-        timeout_passed = wait_args.args[1]
-        assert timeout_passed == 600, f"expected 600s cap, got {timeout_passed}"
+        mock_backend.create_execution.assert_awaited_once()
+        spec = mock_backend.create_execution.await_args.args[0]
+        assert isinstance(spec, ExecutionSpec)
+        assert spec.image == "python:3.12-alpine"
+        assert spec.command == ["sh", "-c", "cd /workspace && echo hi"]
+        assert spec.env_vars == {}
+        assert spec.resource_limits is pipeline.resource_limits
+        assert spec.network_policy == "deny"
+        assert spec.user == "1000:1000"
+        assert spec.security.readonly_rootfs is False
+        assert _mount_projection(spec.mounts) == [
+            {
+                "source": str(tmp_path),
+                "target": "/workspace",
+                "read_only": False,
+            }
+        ]
+        assert spec.labels == {"run_id": str(sample_run.id), "phase": "setup"}
+        mock_backend.start.assert_awaited_once_with("setup-capped-container")
+        mock_backend.wait.assert_awaited_once_with("setup-capped-container", 600)
+        mock_backend.cleanup.assert_awaited_once_with("setup-capped-container")
+        assert executor._active_execution_id is None
 
     @pytest.mark.asyncio
     async def test_setup_uses_pipeline_timeout_when_below_cap(
         self, executor, mock_backend, sample_run, tmp_path
     ):
-        from qaplatform.engine.executor import PipelineConfig
+        from qaplatform.engine.executor import ExecutionSpec, PipelineConfig
         pipeline = PipelineConfig(
             image="python:3.12-alpine",
             stages=[],
@@ -227,7 +271,7 @@ class TestRunSetupContainerised:
             setup_script="echo hi",
         )
 
-        mock_backend.create_execution = AsyncMock(return_value="c")
+        mock_backend.create_execution = AsyncMock(return_value="setup-short-container")
         mock_backend.start = AsyncMock()
         mock_backend.wait = AsyncMock(
             return_value=MagicMock(exit_code=0, timed_out=False)
@@ -240,12 +284,35 @@ class TestRunSetupContainerised:
         mock_backend.stream_logs = _empty_logs
 
         await executor._run_setup(sample_run, pipeline, tmp_path)
-        assert mock_backend.wait.call_args.args[1] == 120
+        mock_backend.create_execution.assert_awaited_once()
+        spec = mock_backend.create_execution.await_args.args[0]
+        assert isinstance(spec, ExecutionSpec)
+        assert spec.image == "python:3.12-alpine"
+        assert spec.command == ["sh", "-c", "cd /workspace && echo hi"]
+        assert spec.env_vars == {}
+        assert spec.resource_limits is pipeline.resource_limits
+        assert spec.network_policy == "deny"
+        assert spec.user == "1000:1000"
+        assert spec.security.readonly_rootfs is False
+        assert _mount_projection(spec.mounts) == [
+            {
+                "source": str(tmp_path),
+                "target": "/workspace",
+                "read_only": False,
+            }
+        ]
+        assert spec.labels == {"run_id": str(sample_run.id), "phase": "setup"}
+        mock_backend.start.assert_awaited_once_with("setup-short-container")
+        mock_backend.wait.assert_awaited_once_with("setup-short-container", 120)
+        mock_backend.cleanup.assert_awaited_once_with("setup-short-container")
+        assert executor._active_execution_id is None
 
     @pytest.mark.asyncio
     async def test_setup_nonzero_exit_raises(
         self, executor, mock_backend, sample_run, setup_pipeline, tmp_path
     ):
+        from qaplatform.engine.executor import ExecutionSpec
+
         mock_backend.create_execution = AsyncMock(return_value="c")
         mock_backend.start = AsyncMock()
         mock_backend.wait = AsyncMock(
@@ -258,13 +325,43 @@ class TestRunSetupContainerised:
                 yield
         mock_backend.stream_logs = _empty_logs
 
-        with pytest.raises(RuntimeError, match="Setup script failed"):
+        with pytest.raises(RuntimeError) as exc_info:
             await executor._run_setup(sample_run, setup_pipeline, tmp_path)
+
+        assert exc_info.value.args == ("Setup script failed (exit 1)",)
+        mock_backend.create_execution.assert_awaited_once()
+        spec = mock_backend.create_execution.await_args.args[0]
+        assert isinstance(spec, ExecutionSpec)
+        assert spec.image == "python:3.12-alpine"
+        assert spec.command == [
+            "sh",
+            "-c",
+            "cd /workspace && pip install -r requirements.txt",
+        ]
+        assert spec.env_vars == {"FOO": "bar"}
+        assert spec.resource_limits is setup_pipeline.resource_limits
+        assert spec.network_policy == "deny"
+        assert spec.user == "1000:1000"
+        assert spec.security.readonly_rootfs is False
+        assert _mount_projection(spec.mounts) == [
+            {
+                "source": str(tmp_path),
+                "target": "/workspace",
+                "read_only": False,
+            }
+        ]
+        assert spec.labels == {"run_id": str(sample_run.id), "phase": "setup"}
+        mock_backend.start.assert_awaited_once_with("c")
+        mock_backend.wait.assert_awaited_once_with("c", 300)
+        mock_backend.cleanup.assert_awaited_once_with("c")
+        assert executor._active_execution_id is None
 
     @pytest.mark.asyncio
     async def test_setup_timeout_raises(
         self, executor, mock_backend, sample_run, setup_pipeline, tmp_path
     ):
+        from qaplatform.engine.executor import ExecutionSpec
+
         mock_backend.create_execution = AsyncMock(return_value="c")
         mock_backend.start = AsyncMock()
         mock_backend.wait = AsyncMock(
@@ -277,8 +374,36 @@ class TestRunSetupContainerised:
                 yield
         mock_backend.stream_logs = _empty_logs
 
-        with pytest.raises(RuntimeError, match="timed out"):
+        with pytest.raises(RuntimeError) as exc_info:
             await executor._run_setup(sample_run, setup_pipeline, tmp_path)
+
+        assert exc_info.value.args == ("Setup script timed out after 300s",)
+        mock_backend.create_execution.assert_awaited_once()
+        spec = mock_backend.create_execution.await_args.args[0]
+        assert isinstance(spec, ExecutionSpec)
+        assert spec.image == "python:3.12-alpine"
+        assert spec.command == [
+            "sh",
+            "-c",
+            "cd /workspace && pip install -r requirements.txt",
+        ]
+        assert spec.env_vars == {"FOO": "bar"}
+        assert spec.resource_limits is setup_pipeline.resource_limits
+        assert spec.network_policy == "deny"
+        assert spec.user == "1000:1000"
+        assert spec.security.readonly_rootfs is False
+        assert _mount_projection(spec.mounts) == [
+            {
+                "source": str(tmp_path),
+                "target": "/workspace",
+                "read_only": False,
+            }
+        ]
+        assert spec.labels == {"run_id": str(sample_run.id), "phase": "setup"}
+        mock_backend.start.assert_awaited_once_with("c")
+        mock_backend.wait.assert_awaited_once_with("c", 300)
+        mock_backend.cleanup.assert_awaited_once_with("c")
+        assert executor._active_execution_id is None
 
     @pytest.mark.asyncio
     async def test_setup_outer_wait_for_triggers_graceful_stop(
@@ -313,16 +438,22 @@ class TestRunSetupContainerised:
             setup_script=setup_pipeline.setup_script,
         )
 
-        with patch.object(
-            executor, "_graceful_stop", new=AsyncMock()
-        ) as graceful:
-            with pytest.raises(RuntimeError, match="timed out"):
+        with patch.object(executor, "_graceful_stop", new=AsyncMock()) as graceful:
+            with pytest.raises(RuntimeError) as exc_info:
                 await executor._run_setup(sample_run, setup_pipeline, tmp_path)
 
-        graceful.assert_awaited_once()
-        kwargs = graceful.call_args.kwargs
-        assert "setup timeout" in kwargs.get("reason", "")
-        mock_backend.cleanup.assert_awaited_once()
+        assert exc_info.value.args == ("Setup script timed out after 0s",)
+        graceful.assert_awaited_once_with("c", reason="setup timeout 0s")
+        mock_backend.cleanup.assert_awaited_once_with("c")
+        mock_log_stream = executor.log_stream
+        assert mock_log_stream.write_log.await_args_list == [
+            call(str(sample_run.id), "Running setup script..."),
+            call(
+                str(sample_run.id),
+                "Setup script exceeded timeout 0s, sending SIGTERM",
+                stream="stderr",
+            ),
+        ]
 
     @pytest.mark.asyncio
     async def test_log_task_stuck_does_not_block_cleanup(
@@ -354,7 +485,7 @@ class TestRunSetupContainerised:
                 timeout=2.0,
             )
 
-        mock_backend.cleanup.assert_awaited_once()
+        mock_backend.cleanup.assert_awaited_once_with("c")
 
 
 class TestExecutorUsesSourcePlugin:
@@ -367,7 +498,7 @@ class TestExecutorUsesSourcePlugin:
 
         mock_plugin_registry.get_source.assert_called_once_with("git")
         source = mock_plugin_registry.get_source.return_value
-        source.clone.assert_called_once_with(
+        source.clone.assert_awaited_once_with(
             "https://github.com/org/repo.git", "main", dest,
         )
 
@@ -381,7 +512,7 @@ class TestExecutorUsesSourcePlugin:
         await executor._clone_repo(sample_run, dest)
 
         source = mock_plugin_registry.get_source.return_value
-        source.clone.assert_called_once_with(
+        source.clone.assert_awaited_once_with(
             "https://github.com/org/repo.git",
             "0123456789abcdef0123456789abcdef01234567",
             dest,
@@ -397,7 +528,7 @@ class TestExecutorUsesSourcePlugin:
         await executor._clone_repo(sample_run, dest, auth)
 
         source = mock_plugin_registry.get_source.return_value
-        source.clone.assert_called_once_with(
+        source.clone.assert_awaited_once_with(
             "https://github.com/org/repo.git",
             "main",
             dest,
@@ -409,7 +540,7 @@ class TestExecutorUsesSourcePlugin:
         dest = Path("/tmp/test")
         await executor._clone_repo(sample_run, dest)
 
-        mock_run_repo.update_git_sha.assert_called_once_with(
+        mock_run_repo.update_git_sha.assert_awaited_once_with(
             sample_run.id, "abc123def456",
         )
 
@@ -432,8 +563,18 @@ class TestExecutorUsesSourcePlugin:
         source.clone.side_effect = RuntimeError("git clone failed (exit 128): fatal: repo not found")
 
         dest = Path("/tmp/test")
-        with pytest.raises(RuntimeError, match="git clone failed"):
+        with pytest.raises(RuntimeError) as exc_info:
             await executor._clone_repo(sample_run, dest)
+
+        assert exc_info.value.args == ("git clone failed (exit 128): fatal: repo not found",)
+        mock_plugin_registry.get_source.assert_called_once_with("git")
+        source.clone.assert_awaited_once_with(
+            "https://github.com/org/repo.git",
+            "main",
+            dest,
+        )
+        executor.run_repo.update_git_sha.assert_not_awaited()
+        executor.run_repo.commit.assert_not_awaited()
 
 
 class TestUploadArtifacts:
@@ -466,20 +607,58 @@ class TestUploadArtifacts:
         run_id = "11111111-1111-1111-1111-111111111111"
         await executor._upload_artifacts(run_id, tmp_path)
 
-        assert s3.put_object.await_count == 3
-        assert artifact_repo.create.await_count == 3
+        uploaded = [
+            (
+                upload.kwargs["Bucket"],
+                upload.kwargs["Key"],
+                Path(upload.kwargs["Body"].name).relative_to(results_dir).as_posix(),
+            )
+            for upload in s3.put_object.await_args_list
+        ]
+        assert uploaded == [
+            ("test-bucket", f"reports/{run_id}/extra.bin", "extra.bin"),
+            ("test-bucket", f"reports/{run_id}/junit.xml", "junit.xml"),
+            ("test-bucket", f"reports/{run_id}/report.html", "report.html"),
+        ]
 
-        recorded = {call.kwargs["name"]: call.kwargs for call in artifact_repo.create.call_args_list}
-        assert recorded["junit.xml"]["type"] == "junit"
-        assert recorded["junit.xml"]["mime_type"] in {"application/xml", "text/xml"}
-        assert recorded["junit.xml"]["storage_path"] == f"reports/{run_id}/junit.xml"
-        assert recorded["junit.xml"]["size_bytes"] == len(b"<testsuites/>")
-
-        assert recorded["report.html"]["type"] == "report"
-        assert recorded["report.html"]["mime_type"] == "text/html"
-
-        assert recorded["extra.bin"]["type"] == "other"
-        assert recorded["extra.bin"]["mime_type"] == "application/octet-stream"
+        recorded_rows = [
+            call.kwargs for call in artifact_repo.create.await_args_list
+        ]
+        junit_mime_type = next(
+            (
+                row.get("mime_type")
+                for row in recorded_rows
+                if row.get("name") == "junit.xml"
+            ),
+            None,
+        )
+        assert junit_mime_type in {"application/xml", "text/xml"}
+        assert recorded_rows == [
+            {
+                "run_id": UUID(run_id),
+                "type": "other",
+                "name": "extra.bin",
+                "storage_path": f"reports/{run_id}/extra.bin",
+                "size_bytes": len(b"\x00\x01"),
+                "mime_type": "application/octet-stream",
+            },
+            {
+                "run_id": UUID(run_id),
+                "type": "junit",
+                "name": "junit.xml",
+                "storage_path": f"reports/{run_id}/junit.xml",
+                "size_bytes": len(b"<testsuites/>"),
+                "mime_type": junit_mime_type,
+            },
+            {
+                "run_id": UUID(run_id),
+                "type": "report",
+                "name": "report.html",
+                "storage_path": f"reports/{run_id}/report.html",
+                "size_bytes": len(b"<html/>"),
+                "mime_type": "text/html",
+            },
+        ]
 
     @pytest.mark.asyncio
     async def test_upload_recurses_allure_report_directories(
@@ -504,19 +683,43 @@ class TestUploadArtifacts:
         run_id = "11111111-1111-1111-1111-111111111111"
         await executor._upload_artifacts(run_id, tmp_path)
 
-        uploaded_keys = {call.kwargs["Key"] for call in s3.put_object.await_args_list}
-        assert uploaded_keys == {
-            f"reports/{run_id}/allure-report/assets/app.js",
-            f"reports/{run_id}/allure-report/index.html",
-        }
-        recorded = {call.kwargs["name"]: call.kwargs for call in artifact_repo.create.call_args_list}
-        assert set(recorded) == {
-            "allure-report/assets/app.js",
-            "allure-report/index.html",
-        }
-        assert recorded["allure-report/index.html"]["type"] == "allure-report"
-        assert recorded["allure-report/index.html"]["mime_type"] == "text/html"
-        assert recorded["allure-report/assets/app.js"]["type"] == "allure-report"
+        uploaded = [
+            (
+                upload.kwargs["Key"],
+                Path(upload.kwargs["Body"].name).relative_to(results_dir).as_posix(),
+            )
+            for upload in s3.put_object.await_args_list
+        ]
+        assert uploaded == [
+            (
+                f"reports/{run_id}/allure-report/assets/app.js",
+                "allure-report/assets/app.js",
+            ),
+            (
+                f"reports/{run_id}/allure-report/index.html",
+                "allure-report/index.html",
+            ),
+        ]
+        assert [
+            call.kwargs for call in artifact_repo.create.await_args_list
+        ] == [
+            {
+                "run_id": UUID(run_id),
+                "type": "allure-report",
+                "name": "allure-report/assets/app.js",
+                "storage_path": f"reports/{run_id}/allure-report/assets/app.js",
+                "size_bytes": len("ok"),
+                "mime_type": "text/javascript",
+            },
+            {
+                "run_id": UUID(run_id),
+                "type": "allure-report",
+                "name": "allure-report/index.html",
+                "storage_path": f"reports/{run_id}/allure-report/index.html",
+                "size_bytes": len("<html/>"),
+                "mime_type": "text/html",
+            },
+        ]
 
     @pytest.mark.asyncio
     async def test_upload_skips_artifact_row_when_repo_missing(
@@ -529,14 +732,28 @@ class TestUploadArtifacts:
             run_repo=mock_run_repo,
             plugin_registry=mock_plugin_registry,
             s3_client=s3,
+            s3_bucket="test-bucket",
             artifact_repo=None,
         )
         (tmp_path / "results").mkdir()
         (tmp_path / "results" / "x.xml").write_bytes(b"<x/>")
 
         # Should not raise — artifact_repo=None is allowed (S3-only mode)
-        await executor._upload_artifacts("rid", tmp_path)
+        run_id = "11111111-1111-1111-1111-111111111111"
+        await executor._upload_artifacts(run_id, tmp_path)
         s3.put_object.assert_awaited_once()
+        put_kwargs = s3.put_object.await_args.kwargs
+        uploaded_body = put_kwargs["Body"]
+        assert put_kwargs == {
+            "Bucket": "test-bucket",
+            "Key": f"reports/{run_id}/x.xml",
+            "Body": uploaded_body,
+        }
+        assert Path(uploaded_body.name) == tmp_path / "results" / "x.xml"
+        mock_log_stream.write_log.assert_awaited_once_with(
+            run_id,
+            "Uploaded artifact: x.xml",
+        )
 
     @pytest.mark.asyncio
     async def test_upload_skips_artifact_row_when_s3_fails(
@@ -581,20 +798,41 @@ class TestUploadArtifacts:
         (tmp_path / "results" / "big.txt").write_bytes(b"too-large")
         (tmp_path / "results" / "small.txt").write_bytes(b"ok")
 
+        run_id = "11111111-1111-1111-1111-111111111111"
         await executor._upload_artifacts(
-            "11111111-1111-1111-1111-111111111111",
+            run_id,
             tmp_path,
             ResourceLimits(max_artifact_size_bytes=2, max_artifacts_count=10),
         )
 
         s3.put_object.assert_awaited_once()
-        assert s3.put_object.call_args.kwargs["Key"].endswith("/small.txt")
-        artifact_repo.create.assert_awaited_once()
-        assert artifact_repo.create.call_args.kwargs["name"] == "small.txt"
-        assert any(
-            "exceeds limit" in call.args[1]
-            for call in mock_log_stream.write_log.await_args_list
+        put_kwargs = s3.put_object.await_args.kwargs
+        uploaded_body = put_kwargs["Body"]
+        assert put_kwargs == {
+            "Bucket": "qa-platform",
+            "Key": f"reports/{run_id}/small.txt",
+            "Body": uploaded_body,
+        }
+        assert Path(uploaded_body.name) == tmp_path / "results" / "small.txt"
+        artifact_repo.create.assert_awaited_once_with(
+            run_id=UUID(run_id),
+            type="log",
+            name="small.txt",
+            storage_path=f"reports/{run_id}/small.txt",
+            size_bytes=2,
+            mime_type="text/plain",
         )
+        assert mock_log_stream.write_log.await_args_list == [
+            call(
+                run_id,
+                "Skipped artifact big.txt: size 9 exceeds limit 2 bytes",
+                stream="stderr",
+            ),
+            call(
+                run_id,
+                "Uploaded artifact: small.txt",
+            ),
+        ]
 
     @pytest.mark.asyncio
     async def test_upload_skips_artifacts_over_count_limit(
@@ -616,20 +854,41 @@ class TestUploadArtifacts:
         (tmp_path / "results" / "a.txt").write_bytes(b"a")
         (tmp_path / "results" / "b.txt").write_bytes(b"b")
 
+        run_id = "11111111-1111-1111-1111-111111111111"
         await executor._upload_artifacts(
-            "11111111-1111-1111-1111-111111111111",
+            run_id,
             tmp_path,
             ResourceLimits(max_artifact_size_bytes=100, max_artifacts_count=1),
         )
 
         s3.put_object.assert_awaited_once()
-        assert s3.put_object.call_args.kwargs["Key"].endswith("/a.txt")
-        artifact_repo.create.assert_awaited_once()
-        assert artifact_repo.create.call_args.kwargs["name"] == "a.txt"
-        assert any(
-            "count limit exceeded" in call.args[1]
-            for call in mock_log_stream.write_log.await_args_list
+        put_kwargs = s3.put_object.await_args.kwargs
+        uploaded_body = put_kwargs["Body"]
+        assert put_kwargs == {
+            "Bucket": "qa-platform",
+            "Key": f"reports/{run_id}/a.txt",
+            "Body": uploaded_body,
+        }
+        assert Path(uploaded_body.name) == tmp_path / "results" / "a.txt"
+        artifact_repo.create.assert_awaited_once_with(
+            run_id=UUID(run_id),
+            type="log",
+            name="a.txt",
+            storage_path=f"reports/{run_id}/a.txt",
+            size_bytes=1,
+            mime_type="text/plain",
         )
+        assert mock_log_stream.write_log.await_args_list == [
+            call(
+                run_id,
+                "Uploaded artifact: a.txt",
+            ),
+            call(
+                run_id,
+                "Skipped artifact b.txt: artifact count limit exceeded",
+                stream="stderr",
+            )
+        ]
 
 
 # --------------------------------------------------------------------------- #
@@ -712,13 +971,14 @@ class TestRunStagesTimeoutGracePeriod:
 
         await timeout_executor._run_stages(sample_run, pipeline, tmp_path)
 
-        messages = [
-            call.args[1]
-            for call in timeout_executor.log_stream.write_log.await_args_list
+        assert timeout_executor.log_stream.write_log.await_args_list == [
+            call(str(sample_run.id), "Starting stage: pytest"),
+            call(
+                str(sample_run.id),
+                "Stage 'pytest' exceeded timeout 42s, sending SIGTERM",
+                stream="stderr",
+            ),
         ]
-        assert any(
-            "exceeded timeout" in m and "pytest" in m and "42" in m for m in messages
-        ), f"expected timeout log entry, got: {messages}"
 
     @pytest.mark.asyncio
     async def test_timeout_status_maps_to_timeout(
@@ -803,28 +1063,72 @@ class TestExecutorCommitsAfterStateTransitions:
             plugin_registry=mock_plugin_registry,
         )
 
+    async def _execute_with_tracked_repo_calls(
+        self, happy_executor, sample_run, mock_run_repo
+    ) -> list[str]:
+        call_log: list[str] = []
+
+        async def _mark_running(*_args, **_kwargs):
+            call_log.append("mark_running")
+            return True
+
+        async def _update_execution_id(*_args, **_kwargs):
+            call_log.append("update_execution_id")
+
+        async def _mark_collecting(*_args, **_kwargs):
+            call_log.append("mark_collecting")
+            return True
+
+        async def _commit():
+            call_log.append("commit")
+
+        mock_run_repo.mark_running.side_effect = _mark_running
+        mock_run_repo.update_execution_id.side_effect = _update_execution_id
+        mock_run_repo.mark_collecting.side_effect = _mark_collecting
+        mock_run_repo.commit.side_effect = _commit
+
+        sample_run.metadata = {}  # skip _clone_repo
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        return call_log
+
     @pytest.mark.asyncio
     async def test_commit_called_after_mark_running(
         self, happy_executor, sample_run, mock_run_repo
     ):
-        """mark_running must be followed by run_repo.commit()."""
-        sample_run.metadata = {}  # skip _clone_repo
-        await happy_executor.execute(sample_run, self._make_pipeline())
+        """mark_running must be committed before stage execution row updates."""
+        call_log = await self._execute_with_tracked_repo_calls(
+            happy_executor,
+            sample_run,
+            mock_run_repo,
+        )
 
-        mock_run_repo.mark_running.assert_awaited_once()
-        # commit was invoked at least twice (after mark_running + mark_collecting)
-        assert mock_run_repo.commit.await_count >= 2
+        mock_run_repo.mark_running.assert_awaited_once_with(str(sample_run.id))
+        assert call_log[:2] == ["mark_running", "commit"], (
+            "mark_running must be followed immediately by commit before "
+            f"later execution_id work; log={call_log}"
+        )
 
     @pytest.mark.asyncio
     async def test_commit_called_after_mark_collecting(
         self, happy_executor, sample_run, mock_run_repo
     ):
-        """mark_collecting must be followed by run_repo.commit()."""
-        sample_run.metadata = {}
-        await happy_executor.execute(sample_run, self._make_pipeline())
+        """mark_collecting must be committed before terminal result writes."""
+        call_log = await self._execute_with_tracked_repo_calls(
+            happy_executor,
+            sample_run,
+            mock_run_repo,
+        )
 
-        mock_run_repo.mark_collecting.assert_awaited_once()
-        assert mock_run_repo.commit.await_count >= 2
+        mock_run_repo.mark_collecting.assert_awaited_once_with(str(sample_run.id))
+        collecting_idx = call_log.index("mark_collecting")
+        assert call_log[collecting_idx: collecting_idx + 2] == [
+            "mark_collecting",
+            "commit",
+        ], (
+            "mark_collecting must be followed immediately by commit before "
+            f"terminal result writes; log={call_log}"
+        )
 
     @pytest.mark.asyncio
     async def test_execute_emits_manual_phase_spans(
@@ -934,6 +1238,105 @@ class TestExecutorCommitsAfterStateTransitions:
                 }
             ]
         )
+
+    @pytest.mark.asyncio
+    async def test_execute_counts_xfail_results_as_skipped_in_summary(
+        self, happy_executor, sample_run, mock_run_repo
+    ):
+        from qaplatform.plugins.protocols import TestResultData
+
+        sample_run.metadata = {}
+        collector = AsyncMock()
+        collector.collect = AsyncMock(
+            return_value=[
+                TestResultData(suite="suite", name="test_pass", status="passed"),
+                TestResultData(suite="suite", name="test_xfail", status="xfail"),
+            ]
+        )
+        happy_executor.plugin_registry.get_collector = MagicMock(return_value=collector)
+        happy_executor.test_result_repo = AsyncMock()
+
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        mock_run_repo.finish_if_current.assert_awaited_once_with(
+            str(sample_run.id),
+            status=RunStatus.DONE,
+            summary=ANY,
+        )
+        summary = mock_run_repo.finish_if_current.await_args.kwargs["summary"]
+        assert summary["total"] == 2
+        assert summary["passed"] == 1
+        assert summary["skipped"] == 1
+        assert summary["failed"] == 0
+        assert summary["error"] == 0
+        assert summary["pass_rate"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_execute_includes_failed_test_names_in_summary(
+        self, happy_executor, sample_run, mock_run_repo
+    ):
+        from qaplatform.plugins.protocols import TestResultData
+
+        sample_run.metadata = {}
+        happy_executor.backend.wait.return_value.exit_code = 1
+        collector = AsyncMock()
+        collector.collect = AsyncMock(
+            return_value=[
+                TestResultData(suite="api", name="test_login", status="failed"),
+                TestResultData(suite="ui", name="test_checkout", status="error"),
+                TestResultData(suite="ui", name="test_skip", status="skipped"),
+                TestResultData(suite="api", name="test_health", status="passed"),
+            ]
+        )
+        happy_executor.plugin_registry.get_collector = MagicMock(return_value=collector)
+        happy_executor.test_result_repo = AsyncMock()
+
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        mock_run_repo.finish_if_current.assert_awaited_once_with(
+            str(sample_run.id),
+            status=RunStatus.FAILED,
+            summary=ANY,
+        )
+        summary = mock_run_repo.finish_if_current.await_args.kwargs["summary"]
+        assert summary["failed"] == 1
+        assert summary["error"] == 1
+        assert summary["failed_tests"] == [
+            {"suite": "api", "name": "test_login", "status": "failed"},
+            {"suite": "ui", "name": "test_checkout", "status": "error"},
+        ]
+        assert "failed_tests_omitted" not in summary
+
+    @pytest.mark.asyncio
+    async def test_execute_caps_failed_test_names_in_summary(
+        self, happy_executor, sample_run, mock_run_repo
+    ):
+        from qaplatform.plugins.protocols import TestResultData
+
+        sample_run.metadata = {}
+        happy_executor.backend.wait.return_value.exit_code = 1
+        collector = AsyncMock()
+        collector.collect = AsyncMock(
+            return_value=[
+                TestResultData(suite="suite", name=f"test_{index}", status="failed")
+                for index in range(25)
+            ]
+        )
+        happy_executor.plugin_registry.get_collector = MagicMock(return_value=collector)
+        happy_executor.test_result_repo = AsyncMock()
+
+        await happy_executor.execute(sample_run, self._make_pipeline())
+
+        summary = mock_run_repo.finish_if_current.await_args.kwargs["summary"]
+        assert summary["failed_tests"] == [
+            {
+                "suite": "suite",
+                "name": f"test_{index}",
+                "status": "failed",
+            }
+            for index in range(20)
+        ]
+        assert summary["failed_tests_omitted"] == 5
 
     @pytest.mark.asyncio
     async def test_old_collector_signature_still_works(self, happy_executor, sample_run, tmp_path):
@@ -1051,9 +1454,23 @@ class TestMarkRunningSkippedLog:
             timeout_seconds=30,
         )
 
+    @staticmethod
+    def _skipped_transition_records(caplog):
+        return [
+            record for record in caplog.records
+            if record.name == "qaplatform.engine.executor"
+            and record.getMessage() == "run_status_transition_skipped"
+        ]
+
     @pytest.mark.asyncio
     async def test_executor_logs_when_mark_running_skipped(
-        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, sample_run
+        self,
+        mock_backend,
+        mock_log_stream,
+        mock_run_repo,
+        mock_plugin_registry,
+        sample_run,
+        caplog,
     ):
         """P1-4: when mark_running returns False (cancel race), executor must
         emit a structured log so post-mortem can correlate the missing
@@ -1068,38 +1485,40 @@ class TestMarkRunningSkippedLog:
             plugin_registry=mock_plugin_registry,
         )
 
-        logged_calls: list[tuple] = []
-
-        import logging
-        original_info = logging.Logger.info
-
-        def _capture_info(self_logger, msg, *args, **kwargs):
-            logged_calls.append((msg, kwargs))
-            return original_info(self_logger, msg, *args, **kwargs)
-
         sample_run.metadata = {}
-        with patch("logging.Logger.info", _capture_info):
-            await executor.execute(sample_run, self._make_pipeline())
+        caplog.set_level(logging.INFO, logger="qaplatform.engine.executor")
 
-        skipped = [
-            (msg, kw) for msg, kw in logged_calls
-            if msg == "run_status_transition_skipped"
+        result = await executor.execute(sample_run, self._make_pipeline())
+
+        assert result == RunStatus.CANCELLED
+        assert [
+            (
+                record.levelno,
+                record.run_id,
+                record.from_,
+                record.to,
+                record.reason,
+            )
+            for record in self._skipped_transition_records(caplog)
+        ] == [
+            (
+                logging.INFO,
+                str(sample_run.id),
+                RunStatus.PREPARING.value,
+                RunStatus.RUNNING.value,
+                "row not in expected state — likely cancelled concurrently",
+            )
         ]
-        assert skipped, (
-            "expected at least one 'run_status_transition_skipped' log call "
-            f"when mark_running returns False; got log calls: {logged_calls}"
-        )
-        extra = skipped[0][1].get("extra", {})
-        assert extra.get("from_") == "preparing", (
-            f"expected from_='preparing' in log extra, got: {extra}"
-        )
-        assert extra.get("to") == "running", (
-            f"expected to='running' in log extra, got: {extra}"
-        )
 
     @pytest.mark.asyncio
     async def test_executor_logs_when_mark_collecting_skipped(
-        self, mock_backend, mock_log_stream, mock_run_repo, mock_plugin_registry, sample_run
+        self,
+        mock_backend,
+        mock_log_stream,
+        mock_run_repo,
+        mock_plugin_registry,
+        sample_run,
+        caplog,
     ):
         """P1-4: when mark_collecting returns False (cancel race), executor must
         emit a structured log so post-mortem can correlate the missing
@@ -1114,34 +1533,30 @@ class TestMarkRunningSkippedLog:
             plugin_registry=mock_plugin_registry,
         )
 
-        logged_calls: list[tuple] = []
-
-        import logging
-        original_info = logging.Logger.info
-
-        def _capture_info(self_logger, msg, *args, **kwargs):
-            logged_calls.append((msg, kwargs))
-            return original_info(self_logger, msg, *args, **kwargs)
-
         sample_run.metadata = {}
-        with patch("logging.Logger.info", _capture_info):
-            await executor.execute(sample_run, self._make_pipeline())
+        caplog.set_level(logging.INFO, logger="qaplatform.engine.executor")
 
-        skipped = [
-            (msg, kw) for msg, kw in logged_calls
-            if msg == "run_status_transition_skipped"
+        result = await executor.execute(sample_run, self._make_pipeline())
+
+        assert result == RunStatus.CANCELLED
+        assert [
+            (
+                record.levelno,
+                record.run_id,
+                record.from_,
+                record.to,
+                record.reason,
+            )
+            for record in self._skipped_transition_records(caplog)
+        ] == [
+            (
+                logging.INFO,
+                str(sample_run.id),
+                RunStatus.RUNNING.value,
+                RunStatus.COLLECTING.value,
+                "row not in expected state — likely cancelled concurrently",
+            )
         ]
-        assert skipped, (
-            "expected at least one 'run_status_transition_skipped' log call "
-            f"when mark_collecting returns False; got log calls: {logged_calls}"
-        )
-        extra = skipped[0][1].get("extra", {})
-        assert extra.get("from_") == "running", (
-            f"expected from_='running' in log extra, got: {extra}"
-        )
-        assert extra.get("to") == "collecting", (
-            f"expected to='collecting' in log extra, got: {extra}"
-        )
 
     @pytest.mark.asyncio
     async def test_executor_does_not_publish_running_when_mark_running_returns_false(
@@ -1161,25 +1576,20 @@ class TestMarkRunningSkippedLog:
         )
 
         sample_run.metadata = {}
-        result = await executor.execute(sample_run, self._make_pipeline())
+        with patch(
+            "qaplatform.engine.executor.publish_status_event",
+            new_callable=AsyncMock,
+        ) as publish_status_event:
+            result = await executor.execute(sample_run, self._make_pipeline())
 
         # Should return CANCELLED, not proceed to RUNNING
         assert result == RunStatus.CANCELLED, (
             f"expected RunStatus.CANCELLED when mark_running returns False, got {result}"
         )
 
-        # _publish should NOT be called with RUNNING status
-        # Check that no RUNNING status was published
-        for call in mock_log_stream.method_calls:
-            if "_publish" in str(call):
-                # This is a mock call, check the arguments
-                pass
+        publish_status_event.assert_not_awaited()
 
-        # More direct: check that _run_stages was never called
-        # (it would be called after _publish(RUNNING))
-        assert not mock_backend.create.called or mock_backend.create.call_count == 0, (
-            "backend.create should not be called when mark_running returns False"
-        )
+        mock_backend.create_execution.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_executor_does_not_enter_stages_when_mark_running_returns_false(
@@ -1203,11 +1613,7 @@ class TestMarkRunningSkippedLog:
         # Should return CANCELLED
         assert result == RunStatus.CANCELLED
 
-        # backend.create should not be called (it's called in _run_stages)
-        assert not mock_backend.create.called, (
-            "backend.create should not be called when mark_running returns False; "
-            "_run_stages should not be entered"
-        )
+        mock_backend.create_execution.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_executor_does_not_publish_collecting_when_mark_collecting_returns_false(
@@ -1227,9 +1633,26 @@ class TestMarkRunningSkippedLog:
         )
 
         sample_run.metadata = {}
-        result = await executor.execute(sample_run, self._make_pipeline())
+        with patch(
+            "qaplatform.engine.executor.publish_status_event",
+            new_callable=AsyncMock,
+        ) as publish_status_event:
+            result = await executor.execute(sample_run, self._make_pipeline())
 
         # Should return CANCELLED, not proceed to COLLECTING
         assert result == RunStatus.CANCELLED, (
             f"expected RunStatus.CANCELLED when mark_collecting returns False, got {result}"
         )
+        publish_status_event.assert_awaited_once_with(
+            None,
+            str(sample_run.id),
+            RunStatus.RUNNING.value,
+            previous=RunStatus.PREPARING.value,
+        )
+        mock_run_repo.mark_collecting.assert_awaited_once_with(str(sample_run.id))
+        mock_run_repo.finish_if_current.assert_not_awaited()
+        mock_run_repo.fail_if_current.assert_not_awaited()
+        logged_messages = [
+            log_call.args[1] for log_call in mock_log_stream.write_log.await_args_list
+        ]
+        assert "Collecting test results..." not in logged_messages

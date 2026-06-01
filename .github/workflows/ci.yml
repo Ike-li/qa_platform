@@ -49,7 +49,7 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Lint
-        run: npm run lint --if-present
+        run: npm run lint -- --max-warnings=0
 
   backend-test:
     runs-on: ubuntu-latest
@@ -670,7 +670,7 @@ jobs:
           manifest_path = Path(sys.argv[1])
           collect_paths = [Path(path) for path in sys.argv[2:]]
           minimums = {
-              "required-integration-collect.txt": 147,
+              "required-integration-collect.txt": 161,
               "heavy-docker-integration-collect.txt": 12,
               "external-stack-integration-collect.txt": 6,
               "external-stack-performance-collect.txt": 2,
@@ -812,7 +812,7 @@ jobs:
             missing=1
           fi
 
-          if ! python scripts/validate_backend_integration_artifacts.py \
+          if ! STRICT_JUNIT_SKIPS="$strict_junit_skips" ALLOW_NIGHTLY_OOM_SKIPS="$allow_nightly_oom_skips" python scripts/validate_backend_integration_artifacts.py \
             "$manifest" \
             "${collect_paths[@]}" | tee -a "$manifest"; then
             missing=1

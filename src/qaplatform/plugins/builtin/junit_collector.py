@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -123,9 +124,8 @@ class JUnitCollector:
         name = elem.get("name", "unknown")
         classname = elem.get("classname", suite_name)
 
-        # Duration: JUnit XML uses "time" attribute (seconds)
-        time_sec = float(elem.get("time", "0"))
-        duration_ms = int(time_sec * 1000)
+        # Duration: JUnit XML uses "time" attribute (seconds).
+        duration_ms = self._parse_duration_ms(elem.get("time", "0"))
 
         # Status determination
         status = "passed"
@@ -145,7 +145,7 @@ class JUnitCollector:
             error_message = error.get("message", "")
             stack_trace = error.text or ""
         elif skipped is not None:
-            status = "skipped"
+            status = "xfail" if skipped.get("type") == "pytest.xfail" else "skipped"
             error_message = skipped.get("message")
 
         return TestResultData(
@@ -156,3 +156,13 @@ class JUnitCollector:
             error_message=error_message,
             stack_trace=stack_trace.strip() if stack_trace else None,
         )
+
+    @staticmethod
+    def _parse_duration_ms(raw_time: str | None) -> int:
+        try:
+            time_sec = float(raw_time or "0")
+        except ValueError:
+            return 0
+        if not math.isfinite(time_sec) or time_sec < 0:
+            return 0
+        return int(time_sec * 1000)

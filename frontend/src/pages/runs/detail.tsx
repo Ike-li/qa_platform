@@ -8,7 +8,8 @@ import {
   Download,
   ExternalLink,
   RotateCcw,
-  Ban
+  Ban,
+  Eye
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useRun, useRunResults, useRunArtifacts, useCancelRun } from "../../hooks/use-runs";
@@ -20,7 +21,7 @@ import { LogViewer } from "../../components/runs/log-viewer";
 import { TestResultsTable } from "../../components/test-results-table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Button } from "../../components/ui/button";
-import type { RunStatus } from "../../types/api";
+import type { Artifact } from "../../types/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,11 +39,48 @@ import { cn } from "../../lib/utils";
 import { usePageTitle } from "../../hooks/use-page-title";
 import { getArtifactDownloadUrl } from "../../lib/api";
 import { ArtifactPreview } from "../../components/runs/artifact-preview";
-import { Eye } from "lucide-react";
 import { useState } from "react";
 
+type PreviewState = {
+  url: string;
+  title: string;
+  iframeTitle: string;
+};
+
+function isPreviewableArtifact(artifact: Artifact): boolean {
+  const name = artifact.name.toLowerCase();
+  const mimeType = artifact.mime_type.toLowerCase().split(";", 1)[0].trim();
+
+  return (
+    artifact.type === "allure-report" ||
+    artifact.type === "html" ||
+    mimeType === "text/html" ||
+    name.endsWith(".html") ||
+    name.endsWith(".htm")
+  );
+}
+
+function getArtifactPreviewTitle(artifact: Artifact): string {
+  return artifact.type === "allure-report" ? "Allure Report" : artifact.name;
+}
+
+function getArtifactPreviewFrameTitle(artifact: Artifact): string {
+  return artifact.type === "allure-report"
+    ? "Allure Report Preview"
+    : `${artifact.name} Preview`;
+}
+
+function isSafeArtifactUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
 export default function RunDetail() {
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewState | null>(null);
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const { data: run, isLoading: isRunLoading } = useRun(id!);
@@ -71,8 +109,7 @@ export default function RunDetail() {
   }
 
   if (!run) return <div>{t('runs.notFound')}</div>;
-  const terminalRunStatuses: readonly RunStatus[] = ["passed", "failed", "cancelled", "timed_out"];
-  const archivedLogsEnabled = terminalRunStatuses.includes(run.status);
+  const archivedLogsEnabled = run.is_terminal;
 
   return (
     <div className="space-y-6">
@@ -201,7 +238,7 @@ export default function RunDetail() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
-                    {artifact.type === "allure-report" && (
+                    {isPreviewableArtifact(artifact) && (
                       <Button
                         variant="ghost"
                         size="icon"
@@ -211,7 +248,15 @@ export default function RunDetail() {
                         onClick={async () => {
                           try {
                             const url = await getArtifactDownloadUrl(artifact.id);
-                            setPreviewUrl(url);
+                            if (!isSafeArtifactUrl(url)) {
+                              toast.error(t('runs.artifacts.previewFailed'));
+                              return;
+                            }
+                            setPreview({
+                              url,
+                              title: getArtifactPreviewTitle(artifact),
+                              iframeTitle: getArtifactPreviewFrameTitle(artifact),
+                            });
                           } catch {
                             toast.error(t('runs.artifacts.previewFailed'));
                           }
@@ -229,14 +274,7 @@ export default function RunDetail() {
                       onClick={async () => {
                         try {
                           const url = await getArtifactDownloadUrl(artifact.id);
-                          let parsed: URL;
-                          try {
-                            parsed = new URL(url);
-                          } catch {
-                            toast.error(t('runs.artifacts.downloadFailed'));
-                            return;
-                          }
-                          if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+                          if (!isSafeArtifactUrl(url)) {
                             toast.error(t('runs.artifacts.downloadFailed'));
                             return;
                           }
@@ -255,7 +293,14 @@ export default function RunDetail() {
           </div>
         </TabsContent>
       </Tabs>
-      {previewUrl && <ArtifactPreview url={previewUrl} onClose={() => setPreviewUrl(null)} />}
+      {preview && (
+        <ArtifactPreview
+          url={preview.url}
+          title={preview.title}
+          iframeTitle={preview.iframeTitle}
+          onClose={() => setPreview(null)}
+        />
+      )}
     </div>
   );
 }

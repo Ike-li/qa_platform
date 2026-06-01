@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from pathlib import PurePosixPath
 import shlex
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from qaplatform.plugins.builtin._paths import safe_workspace_output_path, safe_workspace_paths
 from qaplatform.plugins.protocols import TestRunResult
 
 log = logging.getLogger(__name__)
+_DEFAULT_JUNIT_XML = "results/junit.xml"
 
 
 class PlaywrightRunner:
@@ -26,7 +30,13 @@ class PlaywrightRunner:
     def build_command(self, config: dict[str, Any]) -> str:
         """Return the shell command to execute this runner inside a container."""
         cmd = self._build_command(config)
-        return " ".join(shlex.quote(c) for c in cmd)
+        junit_xml = self._junit_xml_path(config)
+        parent = PurePosixPath(junit_xml).parent.as_posix()
+        mkdir = ""
+        if parent not in {"", "."}:
+            mkdir = f"mkdir -p {shlex.quote(parent)} && "
+        env = f"PLAYWRIGHT_JUNIT_OUTPUT_FILE={shlex.quote(junit_xml)} "
+        return "cd /workspace && " + mkdir + env + " ".join(shlex.quote(c) for c in cmd)
 
     async def run_tests(
         self,
@@ -37,7 +47,14 @@ class PlaywrightRunner:
         cmd = self._build_command(config)
         log.info("running playwright: %s (cwd=%s)", " ".join(cmd), working_dir)
 
-        env_override = dict(env_vars) if env_vars else None
+        junit_xml = self._junit_xml_path(config)
+        junit_path = working_dir / junit_xml
+        junit_path.parent.mkdir(parents=True, exist_ok=True)
+
+        env_override = os.environ.copy()
+        if env_vars:
+            env_override.update(env_vars)
+        env_override["PLAYWRIGHT_JUNIT_OUTPUT_FILE"] = junit_xml
 
         started = time.monotonic()
         process = await asyncio.create_subprocess_exec(
@@ -53,8 +70,6 @@ class PlaywrightRunner:
         stdout = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
         stderr = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
 
-        # Parse JUnit XML output for test counts
-        junit_path = working_dir / config.get("junit_xml", "results/junit.xml")
         counts = self._parse_junit_counts(junit_path)
 
         return TestRunResult(
@@ -74,8 +89,7 @@ class PlaywrightRunner:
         cmd = ["npx", "playwright", "test"]
 
         # JUnit XML output for collector
-        report_path = config.get("junit_xml", "results/junit.xml")
-        cmd += [f"--reporter=junit,{report_path}"]
+        cmd += ["--reporter=junit"]
 
         # Extra arguments (e.g. --grep, --project, --workers)
         extra_args = config.get("args", [])
@@ -84,12 +98,18 @@ class PlaywrightRunner:
         cmd.extend(extra_args)
 
         # Test paths
-        test_paths = config.get("test_paths", [])
-        if isinstance(test_paths, str):
-            test_paths = [test_paths]
+        test_paths = safe_workspace_paths(config.get("test_paths"), field="test_paths")
         cmd.extend(test_paths)
 
         return cmd
+
+    @staticmethod
+    def _junit_xml_path(config: dict[str, Any]) -> str:
+        return safe_workspace_output_path(
+            config.get("junit_xml"),
+            _DEFAULT_JUNIT_XML,
+            field="junit_xml",
+        )
 
     @staticmethod
     def _parse_junit_counts(xml_path: Path) -> dict[str, int]:

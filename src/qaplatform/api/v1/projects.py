@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any, get_args
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from qaplatform.api.schemas import (
     PaginatedResponse,
     ProjectCreate,
     ProjectResponse,
+    ProjectStatusValue,
     ProjectUpdate,
 )
 from qaplatform.domain.models.project import SilentWindow
@@ -25,6 +27,13 @@ from qaplatform.infra.database.models import Project as ProjectORM
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 _SSH_GIT_URL_RE = re.compile(r"^[^@]+@[^:]+:.+")
+_SENSITIVE_PROJECT_SETTINGS_RE = re.compile(
+    r"(secret|token|password|passwd|pwd|credential|api[_-]?key|private[_-]?key|auth)",
+    re.IGNORECASE,
+)
+_REDACTED = {"redacted": True}
+_PROJECT_STATUS_VALUES = set(get_args(ProjectStatusValue))
+_PROJECT_SEARCH_MAX_LENGTH = 500
 
 
 def _to_response(orm: ProjectORM) -> ProjectResponse:
@@ -42,7 +51,27 @@ def _to_response(orm: ProjectORM) -> ProjectResponse:
 def _to_audit_state(response: ProjectResponse) -> dict:
     data = response.model_dump(mode="json")
     data["git_url"] = redact_url_userinfo(data["git_url"])
+    data["settings"] = _redact_project_settings_audit_value(data.get("settings", {}))
     return data
+
+
+def _redact_project_settings_audit_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: dict(_REDACTED)
+            if _is_sensitive_project_settings_key(key)
+            else _redact_project_settings_audit_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_project_settings_audit_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_url_userinfo(value)
+    return value
+
+
+def _is_sensitive_project_settings_key(key: Any) -> bool:
+    return isinstance(key, str) and _SENSITIVE_PROJECT_SETTINGS_RE.search(key) is not None
 
 
 def _serialize_silent_windows(windows: list[SilentWindow]) -> list[dict]:
@@ -113,6 +142,7 @@ async def _validate_git_credential_binding(
 @router.get(
     "",
     response_model=PaginatedResponse[ProjectResponse],
+    responses={422: {"model": ErrorResponse}},
     summary="项目列表",
 )
 async def list_projects(
@@ -121,13 +151,25 @@ async def list_projects(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     q: str | None = Query(None, description="按名称/描述搜索"),
-    status: str | None = Query(None, description="active / archived"),
+    status: str | None = Query(
+        None,
+        description="active / archived",
+        json_schema_extra={"enum": sorted(_PROJECT_STATUS_VALUES)},
+    ),
     _perm=require_permission(Action.PROJECT_READ),
 ):
     filters = [ProjectORM.tenant_id == user.tenant_id]
-    if status:
+    if status is not None:
+        if status == "":
+            raise HTTPException(status_code=422, detail="Invalid project status: empty")
+        if status not in _PROJECT_STATUS_VALUES:
+            raise HTTPException(status_code=422, detail=f"Invalid project status: {status}")
         filters.append(ProjectORM.status == status)
-    if q:
+    if q is not None:
+        if q.strip() == "":
+            raise HTTPException(status_code=422, detail="Invalid project search query: empty")
+        if len(q) > _PROJECT_SEARCH_MAX_LENGTH:
+            raise HTTPException(status_code=422, detail="Invalid project search query: too long")
         pattern = f"%{escape_like(q)}%"
         filters.append(
             or_(
@@ -140,6 +182,7 @@ async def list_projects(
         offset=(page - 1) * per_page,
         limit=per_page,
         filters=filters,
+        order_by=ProjectORM.name.asc(),
     )
     return PaginatedResponse(
         data=[_to_response(i) for i in items],
@@ -153,7 +196,7 @@ async def list_projects(
     "",
     response_model=ProjectResponse,
     status_code=201,
-    responses={409: {"model": ErrorResponse}},
+    responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
     summary="创建项目",
 )
 async def create_project(
@@ -229,7 +272,7 @@ async def get_project(
 @router.put(
     "/{project_id}",
     response_model=ProjectResponse,
-    responses={404: {"model": ErrorResponse}},
+    responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
     summary="更新项目",
 )
 async def update_project(

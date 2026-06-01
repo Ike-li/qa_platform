@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,8 +28,10 @@ from qaplatform.api.schemas import (
     RunCancel,
     RunLogEntryResponse,
     RunResponse,
+    RunStatusValue,
     RunTrigger,
     TestResultResponse,
+    TestResultStatusValue,
 )
 from qaplatform.engine.log_stream import ArchivedLogsNotFound, LogStream
 from qaplatform.infra.database.models import (
@@ -42,6 +45,10 @@ from qaplatform.infra.database.models import (
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 _CANCELABLE = {RunStatusEnum.QUEUED, RunStatusEnum.PREPARING, RunStatusEnum.RUNNING, RunStatusEnum.COLLECTING}
+_RUN_STATUS_VALUES = set(get_args(RunStatusValue))
+_RUN_SORT_VALUES = {"created_at", "-created_at"}
+_RUN_GIT_REF_MAX_LENGTH = 200
+_BATCH_OPERATION_FAILED = "operation failed"
 
 
 def _to_run_response(orm: RunORM) -> RunResponse:
@@ -180,6 +187,7 @@ async def trigger_run(
 @router.get(
     "",
     response_model=PaginatedResponse[RunResponse],
+    responses={422: {"model": ErrorResponse}},
     summary="执行列表",
 )
 async def list_runs(
@@ -199,11 +207,33 @@ async def list_runs(
     created_to: datetime | None = Query(None, description="按创建时间上限筛选"),
     session: AsyncSession = Depends(_get_db_session),
 ):
+    if sort not in _RUN_SORT_VALUES:
+        raise HTTPException(status_code=422, detail=f"Invalid run sort: {sort}")
+
+    if git_ref is not None:
+        if git_ref.strip() == "":
+            raise HTTPException(status_code=422, detail="Invalid run git_ref: empty")
+        if len(git_ref) > _RUN_GIT_REF_MAX_LENGTH:
+            raise HTTPException(status_code=422, detail="Invalid run git_ref: too long")
+    if created_from is not None and created_to is not None and created_from > created_to:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid run created range: created_from must be before created_to",
+        )
+
     filters = [RunORM.tenant_id == user.tenant_id]
-    if status:
+    if status is not None:
         # F-LS-01: support comma-separated multi-status filtering
         # (e.g. 'queued,running' to show in-flight runs).
-        statuses = [s.strip() for s in status.split(",") if s.strip()]
+        statuses = [s.strip() for s in status.split(",")]
+        if any(s == "" for s in statuses):
+            raise HTTPException(status_code=422, detail="Invalid run status: empty")
+        invalid_statuses = sorted(set(statuses) - _RUN_STATUS_VALUES)
+        if invalid_statuses:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid run status: {', '.join(invalid_statuses)}",
+            )
         if len(statuses) == 1:
             filters.append(RunORM.status == statuses[0])
         elif statuses:
@@ -218,19 +248,13 @@ async def list_runs(
         # all runs in the tenant; everyone else is restricted to projects
         # they're a member of.
         from qaplatform.api.auth.permissions import Role, normalize_tenant_role
-        from qaplatform.infra.database.models import ProjectMember
 
         tenant_role = normalize_tenant_role(user.role)
         if not getattr(user, "is_platform_admin", False) and tenant_role not in (Role.OWNER, Role.ADMIN):
-            member_projects = (
-                await session.execute(
-                    select(ProjectMember.project_id).where(
-                        ProjectMember.user_id == user.user_id,
-                        ProjectMember.tenant_id == user.tenant_id,
-                        ProjectMember.deleted_at.is_(None),
-                    )
-                )
-            ).scalars().all()
+            member_projects = await repos.project_member.list_project_ids_by_user(
+                user.user_id,
+                user.tenant_id,
+            )
             if not member_projects:
                 return PaginatedResponse(data=[], page=page, per_page=per_page, total=0)
             filters.append(RunORM.project_id.in_(member_projects))
@@ -322,8 +346,8 @@ async def batch_cancel_runs(
                 after=after_response,
             )
             processed += 1
-        except (SQLAlchemyError, ValueError) as exc:
-            errors.append(f"{run_id}: {exc}")
+        except (SQLAlchemyError, ValueError):
+            errors.append(f"{run_id}: {_BATCH_OPERATION_FAILED}")
             failed += 1
 
     return BatchRunResponse(processed=processed, failed=failed, errors=errors)
@@ -400,8 +424,8 @@ async def batch_retry_runs(
                 },
             )
             processed += 1
-        except (SQLAlchemyError, ValueError) as exc:
-            errors.append(f"{run_id}: {exc}")
+        except (SQLAlchemyError, ValueError):
+            errors.append(f"{run_id}: {_BATCH_OPERATION_FAILED}")
             failed += 1
 
     return BatchRunResponse(processed=processed, failed=failed, errors=errors)
@@ -450,7 +474,13 @@ async def cancel_run(
     )
 
     if run.status not in _CANCELABLE:
-        raise HTTPException(status_code=409, detail=f"Run already in terminal status: {run.status}")
+        terminal_status = (
+            run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run already in terminal status: {terminal_status}",
+        )
 
     previous_status = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
     before_response = _to_run_response(run)
@@ -470,13 +500,16 @@ async def cancel_run(
 
     run = await repos.run.get_for_tenant(run_id, user.tenant_id)
     after_response = _to_run_response(run)
+    after_state = after_response.model_dump(mode="json")
+    if body is not None and body.reason:
+        after_state["cancel_reason"] = body.reason
     await write_audit(
         repos, user,
         action="run.cancel",
         resource_type="run",
         resource_id=run_id,
         before=before_response,
-        after=after_response,
+        after=after_state,
     )
     return after_response
 
@@ -493,9 +526,19 @@ async def get_run_results(
     user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    status: str | None = Query(None, description="passed / failed / error / skipped / xfail"),
-    suite: str | None = Query(None, description="精确匹配 suite 名称"),
-    q: str | None = Query(None, description="按用例名称/错误信息搜索"),
+    status: TestResultStatusValue | None = Query(None, description="passed / failed / error / skipped / xfail"),
+    suite: str | None = Query(
+        None,
+        min_length=1,
+        max_length=500,
+        description="精确匹配 suite 名称",
+    ),
+    q: str | None = Query(
+        None,
+        min_length=1,
+        max_length=500,
+        description="按用例名称/错误信息搜索",
+    ),
     session: AsyncSession = Depends(_get_db_session),
 ):
     run = await repos.run.get_for_tenant(run_id, user.tenant_id)

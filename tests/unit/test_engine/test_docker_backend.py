@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiodocker
 import pytest
 
 from qaplatform.engine.docker_backend import (
@@ -19,6 +20,11 @@ class TestDockerBackend:
     def setup_method(self):
         self.docker_client = MagicMock()
         self.backend = DockerBackend(self.docker_client)
+
+    @staticmethod
+    def _created_container_kwargs(mock_containers):
+        mock_containers.create_or_replace.assert_awaited_once()
+        return mock_containers.create_or_replace.await_args.kwargs
 
     # -- security helpers ----------------------------------------------------
 
@@ -42,8 +48,10 @@ class TestDockerBackend:
         assert DockerBackend._network_mode("restricted") == "qap-restricted"
 
     def test_network_mode_unknown_raises(self):
-        with pytest.raises(ValueError, match="Unknown network policy"):
+        with pytest.raises(ValueError) as exc_info:
             DockerBackend._network_mode("unknown")
+
+        assert exc_info.value.args == ("Unknown network policy: unknown",)
 
     def test_build_binds_empty(self):
         assert DockerBackend._build_binds([]) == []
@@ -108,20 +116,36 @@ class TestDockerBackend:
         result = await self.backend.create_execution(spec)
         assert result == "abc123def456"
 
-        # Verify container config
-        call_kwargs = mock_containers.create_or_replace.call_args
-        config = call_kwargs.kwargs["config"]
-        assert config["Image"] == "python:3.12"
-        assert config["User"] == "1000:1000"
-        assert config["AttachStdout"] is True
-        assert config["AttachStderr"] is True
-        assert config["HostConfig"]["ReadonlyRootfs"] is True
-        assert config["HostConfig"]["PidsLimit"] == 256
-        assert config["HostConfig"]["NetworkMode"] == "none"  # deny -> none
-        assert "managed-by" in config["Labels"]
-        assert config["Labels"]["run_id"] == "run-123"
-        assert config["HostConfig"]["Tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=256m"}
-        assert "StorageOpt" not in config["HostConfig"]
+        assert self._created_container_kwargs(mock_containers) == {
+            "name": "qap-run-run-123",
+            "config": {
+                "Image": "python:3.12",
+                "Cmd": ["pytest"],
+                "Env": ["PYTHONDONTWRITEBYTECODE=1"],
+                "User": "1000:1000",
+                "AttachStdout": True,
+                "AttachStderr": True,
+                "HostConfig": {
+                    "Memory": 512 * 1024 * 1024,
+                    "MemorySwap": 512 * 1024 * 1024,
+                    "NanoCpus": 1_000_000_000,
+                    "ReadonlyRootfs": True,
+                    "SecurityOpt": ["no-new-privileges"],
+                    "CapDrop": ["ALL"],
+                    "CapAdd": [],
+                    "PidsLimit": 256,
+                    "Devices": [],
+                    "NetworkMode": "none",
+                    "Init": True,
+                    "Binds": [],
+                    "Tmpfs": {"/tmp": "rw,noexec,nosuid,size=256m"},
+                },
+                "Labels": {
+                    "managed-by": "qaplatform",
+                    "run_id": "run-123",
+                },
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_create_execution_sets_storage_opt_when_disk_limit_present(self):
@@ -142,7 +166,9 @@ class TestDockerBackend:
 
         await self.backend.create_execution(spec)
 
-        config = mock_containers.create_or_replace.call_args.kwargs["config"]
+        create_kwargs = self._created_container_kwargs(mock_containers)
+        assert create_kwargs["name"] == "qap-run-r"
+        config = create_kwargs["config"]
         assert config["HostConfig"]["StorageOpt"] == {"size": "64M"}
 
     @pytest.mark.asyncio
@@ -167,7 +193,7 @@ class TestDockerBackend:
         )
 
         await self.backend.create_execution(spec)
-        config = mock_containers.create_or_replace.call_args.kwargs["config"]
+        config = self._created_container_kwargs(mock_containers)["config"]
         memory = config["HostConfig"]["Memory"]
         memory_swap = config["HostConfig"]["MemorySwap"]
         assert memory == 128 * 1024 * 1024
@@ -196,7 +222,7 @@ class TestDockerBackend:
         )
 
         await self.backend.create_execution(spec)
-        config = mock_containers.create_or_replace.call_args.kwargs["config"]
+        config = self._created_container_kwargs(mock_containers)["config"]
         assert config["HostConfig"]["Init"] is True
 
     # -- start ---------------------------------------------------------------
@@ -208,7 +234,8 @@ class TestDockerBackend:
         self.docker_client.containers.container = MagicMock(return_value=mock_container)
 
         await self.backend.start("container-id")
-        mock_container.start.assert_awaited_once()
+        self.docker_client.containers.container.assert_called_once_with("container-id")
+        mock_container.start.assert_awaited_once_with()
 
     # -- wait -----------------------------------------------------------------
 
@@ -226,7 +253,9 @@ class TestDockerBackend:
 
         assert result.oom_killed is True
         assert result.exit_code == 137
-        mock_container.show.assert_awaited_once()
+        self.docker_client.containers.container.assert_called_once_with("container-id")
+        mock_container.wait.assert_awaited_once_with(timeout=10)
+        mock_container.show.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_wait_retries_oom_inspect_after_sigkill_exit(self):
@@ -238,13 +267,20 @@ class TestDockerBackend:
                 {"State": {"OOMKilled": True, "ExitCode": 137}},
             ]
         )
+        sleep = AsyncMock()
         self.docker_client.containers.container = MagicMock(return_value=mock_container)
 
-        result = await self.backend.wait("container-id", timeout=10)
+        with patch("qaplatform.engine.docker_backend.asyncio.sleep", new=sleep):
+            result = await self.backend.wait("container-id", timeout=10)
 
         assert result.oom_killed is True
         assert result.exit_code == 137
-        assert mock_container.show.await_count == 2
+        mock_container.wait.assert_awaited_once_with(timeout=10)
+        assert [show_call.args for show_call in mock_container.show.await_args_list] == [
+            (),
+            (),
+        ]
+        sleep.assert_awaited_once_with(0.25)
 
     @pytest.mark.asyncio
     async def test_wait_oom_killed_false_on_normal_exit(self):
@@ -309,6 +345,34 @@ class TestDockerBackend:
         self.docker_client.containers.container = MagicMock(return_value=mock_container)
 
         await self.backend.cancel("container-id")
+        self.docker_client.containers.container.assert_called_once_with("container-id")
+        mock_container.kill.assert_awaited_once_with(signal="SIGTERM")
+
+    @pytest.mark.asyncio
+    async def test_cancel_ignores_already_stopped_conflict(self):
+        mock_container = MagicMock()
+        mock_container.kill = AsyncMock(
+            side_effect=aiodocker.DockerError(409, "already stopped")
+        )
+        self.docker_client.containers.container = MagicMock(return_value=mock_container)
+
+        await self.backend.cancel("container-id")
+
+        self.docker_client.containers.container.assert_called_once_with("container-id")
+        mock_container.kill.assert_awaited_once_with(signal="SIGTERM")
+
+    @pytest.mark.asyncio
+    async def test_cancel_reraises_unexpected_docker_error(self):
+        docker_error = aiodocker.DockerError(500, "daemon exploded")
+        mock_container = MagicMock()
+        mock_container.kill = AsyncMock(side_effect=docker_error)
+        self.docker_client.containers.container = MagicMock(return_value=mock_container)
+
+        with pytest.raises(aiodocker.DockerError) as exc_info:
+            await self.backend.cancel("container-id")
+
+        assert exc_info.value is docker_error
+        self.docker_client.containers.container.assert_called_once_with("container-id")
         mock_container.kill.assert_awaited_once_with(signal="SIGTERM")
 
     # -- force_kill ----------------------------------------------------------
@@ -320,6 +384,20 @@ class TestDockerBackend:
         self.docker_client.containers.container = MagicMock(return_value=mock_container)
 
         await self.backend.force_kill("container-id")
+        self.docker_client.containers.container.assert_called_once_with("container-id")
+        mock_container.kill.assert_awaited_once_with(signal="SIGKILL")
+
+    @pytest.mark.asyncio
+    async def test_force_kill_ignores_already_stopped_conflict(self):
+        mock_container = MagicMock()
+        mock_container.kill = AsyncMock(
+            side_effect=aiodocker.DockerError(409, "already stopped")
+        )
+        self.docker_client.containers.container = MagicMock(return_value=mock_container)
+
+        await self.backend.force_kill("container-id")
+
+        self.docker_client.containers.container.assert_called_once_with("container-id")
         mock_container.kill.assert_awaited_once_with(signal="SIGKILL")
 
     # -- cleanup -------------------------------------------------------------
@@ -331,6 +409,34 @@ class TestDockerBackend:
         self.docker_client.containers.container = MagicMock(return_value=mock_container)
 
         await self.backend.cleanup("container-id")
+        self.docker_client.containers.container.assert_called_once_with("container-id")
+        mock_container.delete.assert_awaited_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_ignores_already_removed_container(self):
+        mock_container = MagicMock()
+        mock_container.delete = AsyncMock(
+            side_effect=aiodocker.DockerError(404, "not found")
+        )
+        self.docker_client.containers.container = MagicMock(return_value=mock_container)
+
+        await self.backend.cleanup("container-id")
+
+        self.docker_client.containers.container.assert_called_once_with("container-id")
+        mock_container.delete.assert_awaited_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_reraises_unexpected_docker_error(self):
+        docker_error = aiodocker.DockerError(500, "daemon exploded")
+        mock_container = MagicMock()
+        mock_container.delete = AsyncMock(side_effect=docker_error)
+        self.docker_client.containers.container = MagicMock(return_value=mock_container)
+
+        with pytest.raises(aiodocker.DockerError) as exc_info:
+            await self.backend.cleanup("container-id")
+
+        assert exc_info.value is docker_error
+        self.docker_client.containers.container.assert_called_once_with("container-id")
         mock_container.delete.assert_awaited_once_with(force=True)
 
     # -- resource limits -----------------------------------------------------

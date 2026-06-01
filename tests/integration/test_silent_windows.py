@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from sqlalchemy import func, select
@@ -70,6 +71,43 @@ def _ctx(integration_db_engine, *, arq_pool=None):
     }
 
 
+def _json_datetime(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _expected_trigger_run_response(
+    body: dict,
+    seed_run: dict,
+    *,
+    run_id: UUID,
+    trigger_type: str,
+    git_ref: str,
+    git_sha: str | None,
+) -> dict:
+    return {
+        "id": str(run_id),
+        "tenant_id": str(seed_run["tenant"].id),
+        "project_id": str(seed_run["project"].id),
+        "pipeline_id": str(seed_run["pipeline"].id),
+        "pipeline_name": seed_run["pipeline"].name,
+        "environment_id": str(seed_run["environment"].id),
+        "status": "queued",
+        "trigger_type": trigger_type,
+        "priority": 1,
+        "triggered_by": str(seed_run["user"].id),
+        "git_ref": git_ref,
+        "git_sha": git_sha,
+        "attempt": 1,
+        "started_at": None,
+        "finished_at": None,
+        "duration_ms": None,
+        "summary": None,
+        "error_message": None,
+        "created_at": body["created_at"],
+        "updated_at": body["updated_at"],
+    }
+
+
 async def _run_count(session, project_id, *, trigger_type: str) -> int:
     from qaplatform.infra.database.models import Run
 
@@ -104,6 +142,143 @@ async def _schedule_runs(session, project_id, schedule_id):
     ]
 
 
+def _expected_schedule_metadata(project, schedule) -> dict:
+    metadata = {
+        "schedule_id": str(schedule.id),
+        "git_url": project.git_url,
+    }
+    if project.git_auth_method != "none" and project.credential_id:
+        metadata["git_auth_method"] = project.git_auth_method
+        metadata["credential_id"] = str(project.credential_id)
+    if project.shallow_clone:
+        metadata["shallow_clone"] = True
+    if project.default_branch:
+        metadata["default_branch"] = project.default_branch
+    return metadata
+
+
+async def _run_by_id(session, run_id: UUID):
+    from qaplatform.infra.database.models import Run
+
+    return await session.get(Run, run_id)
+
+
+async def _audit_event(session, *, action: str, resource_id: UUID):
+    from qaplatform.infra.database.models import AuditEvent
+
+    return (
+        (
+            await session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == action,
+                    AuditEvent.resource_id == resource_id,
+                )
+            )
+        )
+        .scalars()
+        .one_or_none()
+    )
+
+
+@pytest.mark.asyncio
+async def test_project_update_api_persists_silent_windows_in_settings(
+    seed_run,
+    integration_client_as,
+    integration_db_session,
+):
+    from qaplatform.infra.database.models import AuditEvent
+
+    project = seed_run["project"]
+    user = seed_run["user"]
+    tenant = seed_run["tenant"]
+    project.settings = {
+        "allowed_branches": ["main"],
+        "webhook_secret": "existing-webhook-secret",
+    }
+    await integration_db_session.commit()
+    await integration_db_session.refresh(project)
+    before_updated_at = _json_datetime(project.updated_at)
+
+    window = {
+        "start_at": "2026-06-01T09:00:00+08:00",
+        "end_at": "2026-06-01T11:00:00+08:00",
+        "reason": "Release freeze",
+    }
+    expected_settings = {
+        "allowed_branches": ["main"],
+        "webhook_secret": "existing-webhook-secret",
+        "silent_windows": [window],
+    }
+
+    async with integration_client_as(user.id, tenant.id, role="owner") as client:
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}",
+            json={"silent_windows": [window]},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {
+        "id": str(project.id),
+        "tenant_id": str(tenant.id),
+        "name": project.name,
+        "slug": project.slug,
+        "description": project.description,
+        "git_url": project.git_url,
+        "git_auth_method": project.git_auth_method,
+        "credential_id": None,
+        "default_branch": project.default_branch,
+        "root_path": project.root_path,
+        "shallow_clone": project.shallow_clone,
+        "default_env_id": None,
+        "settings": expected_settings,
+        "silent_windows": [window],
+        "status": project.status,
+        "created_by": str(user.id),
+        "created_at": _json_datetime(project.created_at),
+        "updated_at": body["updated_at"],
+    }
+    start_at = datetime.fromisoformat(body["silent_windows"][0]["start_at"])
+    end_at = datetime.fromisoformat(body["silent_windows"][0]["end_at"])
+    assert start_at == datetime(2026, 6, 1, 9, 0, tzinfo=timezone(timedelta(hours=8)))
+    assert end_at == datetime(2026, 6, 1, 11, 0, tzinfo=timezone(timedelta(hours=8)))
+
+    await integration_db_session.refresh(project)
+    assert project.settings == expected_settings
+    assert _json_datetime(project.updated_at) == body["updated_at"]
+
+    result = await integration_db_session.execute(
+        select(AuditEvent).where(
+            AuditEvent.action == "project.update",
+            AuditEvent.resource_id == project.id,
+        )
+    )
+    event = result.scalars().one()
+    assert event.tenant_id == tenant.id
+    assert event.user_id == user.id
+    assert event.resource_type == "project"
+    assert event.before_state == {
+        **body,
+        "settings": {
+            "allowed_branches": ["main"],
+            "webhook_secret": {"redacted": True},
+        },
+        "silent_windows": [],
+        "updated_at": before_updated_at,
+    }
+    assert event.after_state == {
+        **body,
+        "settings": {
+            "allowed_branches": ["main"],
+            "webhook_secret": {"redacted": True},
+            "silent_windows": [window],
+        },
+    }
+    assert "existing-webhook-secret" not in repr(
+        [event.before_state, event.after_state]
+    )
+
+
 @pytest.mark.asyncio
 async def test_cron_tick_in_silent_window_skips_run_writes_audit_and_preserves_last_run_at(
     seed_run,
@@ -114,16 +289,19 @@ async def test_cron_tick_in_silent_window_skips_run_writes_audit_and_preserves_l
 
     now = datetime.now(timezone.utc)
     project = seed_run["project"]
+    due_at = now - timedelta(minutes=1)
     schedule = await _create_due_schedule(
         integration_db_session,
         seed_run,
-        next_run_at=now - timedelta(minutes=1),
+        next_run_at=due_at,
     )
+    window_start = now - timedelta(minutes=5)
+    window_end = now + timedelta(minutes=5)
     await _save_silent_window(
         integration_db_session,
         project,
-        start_at=now - timedelta(minutes=5),
-        end_at=now + timedelta(minutes=5),
+        start_at=window_start,
+        end_at=window_end,
     )
     before_runs = await _run_count(
         integration_db_session, project.id, trigger_type="schedule"
@@ -135,11 +313,14 @@ async def test_cron_tick_in_silent_window_skips_run_writes_audit_and_preserves_l
         await _run_count(integration_db_session, project.id, trigger_type="schedule")
         == before_runs
     )
+    assert await _schedule_runs(integration_db_session, project.id, schedule.id) == []
 
     refreshed = await integration_db_session.get(Schedule, schedule.id)
     assert refreshed is not None
     await integration_db_session.refresh(refreshed)
     assert refreshed.last_run_at is None
+    assert refreshed.last_error is None
+    assert _json_datetime(refreshed.next_run_at) == _json_datetime(due_at)
 
     result = await integration_db_session.execute(
         select(AuditEvent).where(
@@ -148,8 +329,19 @@ async def test_cron_tick_in_silent_window_skips_run_writes_audit_and_preserves_l
         )
     )
     event = result.scalars().one()
-    assert event.after_state["schedule_id"] == str(schedule.id)
-    assert event.after_state["window"]["reason"] == "Release freeze"
+    assert event.tenant_id == project.tenant_id
+    assert event.user_id is None
+    assert event.resource_type == "schedule"
+    assert event.resource_id == schedule.id
+    assert event.before_state is None
+    assert event.after_state == {
+        "schedule_id": str(schedule.id),
+        "window": {
+            "start_at": _json_datetime(window_start),
+            "end_at": _json_datetime(window_end),
+            "reason": "Release freeze",
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -158,7 +350,7 @@ async def test_cron_tick_outside_silent_window_creates_run(
     integration_db_engine,
     integration_db_session,
 ):
-    from qaplatform.infra.database.models import AuditEvent, Schedule
+    from qaplatform.infra.database.models import AuditEvent, RunStatusEnum, Schedule
 
     now = datetime.now(timezone.utc)
     project = seed_run["project"]
@@ -188,9 +380,25 @@ async def test_cron_tick_outside_silent_window_creates_run(
     await integration_db_session.refresh(refreshed)
     assert refreshed.last_run_at is not None
 
+    expected_metadata = _expected_schedule_metadata(project, schedule)
     runs = await _schedule_runs(integration_db_session, project.id, schedule.id)
-    assert len(runs) == 1
+    assert [run.metadata_ for run in runs] == [expected_metadata]
     run = runs[0]
+    assert run.tenant_id == project.tenant_id
+    assert run.project_id == project.id
+    assert run.pipeline_id == seed_run["pipeline"].id
+    assert run.environment_id == seed_run["environment"].id
+    assert run.status == RunStatusEnum.QUEUED
+    assert run.trigger_type == "schedule"
+    assert run.triggered_by is None
+    assert run.git_ref == project.default_branch
+    assert run.git_sha is None
+    assert run.retry_group_id == run.id
+    assert run.attempt == 1
+    assert run.queue_name == "queue:low"
+    assert run.arq_job_id == f"run:{run.id}"
+    assert run.enqueued_at is not None
+
     audit = (
         (
             await integration_db_session.execute(
@@ -206,15 +414,23 @@ async def test_cron_tick_outside_silent_window_creates_run(
     assert audit.tenant_id == project.tenant_id
     assert audit.user_id is None
     assert audit.resource_type == "run"
-    assert audit.after_state["trigger_type"] == "schedule"
-    assert audit.after_state["schedule_id"] == str(schedule.id)
-    assert audit.after_state["metadata"]["schedule_id"] == str(schedule.id)
-    assert audit.after_state["project_id"] == str(project.id)
-    assert audit.after_state["pipeline_id"] == str(seed_run["pipeline"].id)
-    assert audit.after_state["environment_id"] == str(seed_run["environment"].id)
-    assert audit.after_state["git_ref"] == project.default_branch
-    assert audit.after_state["triggered_by"] is None
-    assert audit.after_state["enqueued"] is True
+    assert audit.after_state == {
+        "id": str(run.id),
+        "tenant_id": str(project.tenant_id),
+        "project_id": str(project.id),
+        "pipeline_id": str(seed_run["pipeline"].id),
+        "environment_id": str(seed_run["environment"].id),
+        "status": "queued",
+        "trigger_type": "schedule",
+        "triggered_by": None,
+        "git_ref": project.default_branch,
+        "git_sha": None,
+        "priority": run.priority,
+        "attempt": 1,
+        "metadata": expected_metadata,
+        "schedule_id": str(schedule.id),
+        "enqueued": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -248,18 +464,31 @@ async def test_cron_tick_enqueue_conflict_records_last_error_and_waiting_run(
     assert refreshed.last_run_at is not None
     assert refreshed.last_error == "enqueue failed"
 
+    expected_metadata = _expected_schedule_metadata(project, schedule)
     created = await _schedule_runs(integration_db_session, project.id, schedule.id)
-    assert len(created) == 1
-    assert created[0].status == RunStatusEnum.QUEUED
-    assert created[0].enqueued_at is None
-    assert created[0].arq_job_id is None
+    assert [run.metadata_ for run in created] == [expected_metadata]
+    waiting_run = created[0]
+    assert waiting_run.tenant_id == project.tenant_id
+    assert waiting_run.project_id == project.id
+    assert waiting_run.pipeline_id == seed_run["pipeline"].id
+    assert waiting_run.environment_id == seed_run["environment"].id
+    assert waiting_run.status == RunStatusEnum.QUEUED
+    assert waiting_run.trigger_type == "schedule"
+    assert waiting_run.triggered_by is None
+    assert waiting_run.git_ref == project.default_branch
+    assert waiting_run.git_sha is None
+    assert waiting_run.retry_group_id == waiting_run.id
+    assert waiting_run.attempt == 1
+    assert waiting_run.enqueued_at is None
+    assert waiting_run.queue_name is None
+    assert waiting_run.arq_job_id is None
 
     audit = (
         (
             await integration_db_session.execute(
                 select(AuditEvent).where(
                     AuditEvent.action == "run.trigger",
-                    AuditEvent.resource_id == created[0].id,
+                    AuditEvent.resource_id == waiting_run.id,
                 )
             )
         )
@@ -267,9 +496,23 @@ async def test_cron_tick_enqueue_conflict_records_last_error_and_waiting_run(
         .one()
     )
     assert audit.user_id is None
-    assert audit.after_state["trigger_type"] == "schedule"
-    assert audit.after_state["schedule_id"] == str(schedule.id)
-    assert audit.after_state["enqueued"] is False
+    assert audit.after_state == {
+        "id": str(waiting_run.id),
+        "tenant_id": str(project.tenant_id),
+        "project_id": str(project.id),
+        "pipeline_id": str(seed_run["pipeline"].id),
+        "environment_id": str(seed_run["environment"].id),
+        "status": "queued",
+        "trigger_type": "schedule",
+        "triggered_by": None,
+        "git_ref": project.default_branch,
+        "git_sha": None,
+        "priority": waiting_run.priority,
+        "attempt": 1,
+        "metadata": expected_metadata,
+        "schedule_id": str(schedule.id),
+        "enqueued": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -362,10 +605,44 @@ async def test_manual_trigger_ignores_silent_windows(
         )
 
     assert resp.status_code == 201, resp.text
+    body = resp.json()
+    run_id = UUID(body["id"])
+    assert body == _expected_trigger_run_response(
+        body,
+        seed_run,
+        run_id=run_id,
+        trigger_type="manual",
+        git_ref="main",
+        git_sha=None,
+    )
     assert (
         await _run_count(integration_db_session, project.id, trigger_type="manual")
         == before_runs + 1
     )
+
+    created = await _run_by_id(integration_db_session, run_id)
+    assert created is not None
+    assert created.trigger_type == "manual"
+    assert created.triggered_by == user.id
+    assert created.pipeline_id == seed_run["pipeline"].id
+    assert created.environment_id == seed_run["environment"].id
+    assert created.git_ref == "main"
+    assert created.git_sha is None
+    assert created.retry_group_id == created.id
+    assert created.enqueued_at is None
+    assert created.arq_job_id is None
+    assert created.metadata_["git_url"] == project.git_url
+    assert created.metadata_["default_branch"] == project.default_branch
+
+    audit = await _audit_event(
+        integration_db_session, action="run.trigger", resource_id=run_id
+    )
+    assert audit is not None
+    assert audit.tenant_id == tenant.id
+    assert audit.user_id == user.id
+    assert audit.resource_type == "run"
+    assert audit.before_state is None
+    assert audit.after_state == body
 
 
 @pytest.mark.asyncio
@@ -397,7 +674,42 @@ async def test_webhook_trigger_ignores_silent_windows(
         )
 
     assert resp.status_code == 201, resp.text
+    body = resp.json()
+    run_id = UUID(body["id"])
+    assert body == _expected_trigger_run_response(
+        body,
+        seed_run,
+        run_id=run_id,
+        trigger_type="webhook",
+        git_ref="refs/heads/main",
+        git_sha="silent-window-webhook",
+    )
     assert (
         await _run_count(integration_db_session, project.id, trigger_type="webhook")
         == before_runs + 1
     )
+
+    created = await _run_by_id(integration_db_session, run_id)
+    assert created is not None
+    assert created.trigger_type == "webhook"
+    assert created.triggered_by == user.id
+    assert created.pipeline_id == seed_run["pipeline"].id
+    assert created.environment_id == seed_run["environment"].id
+    assert created.git_ref == "refs/heads/main"
+    assert created.git_sha == "silent-window-webhook"
+    assert created.dedup_key == f"webhook:{project.git_url}:silent-window-webhook:main"
+    assert created.retry_group_id == created.id
+    assert created.enqueued_at is None
+    assert created.arq_job_id is None
+    assert created.metadata_["git_url"] == project.git_url
+    assert created.metadata_["default_branch"] == project.default_branch
+
+    audit = await _audit_event(
+        integration_db_session, action="run.trigger", resource_id=run_id
+    )
+    assert audit is not None
+    assert audit.tenant_id == tenant.id
+    assert audit.user_id == user.id
+    assert audit.resource_type == "run"
+    assert audit.before_state is None
+    assert audit.after_state == body

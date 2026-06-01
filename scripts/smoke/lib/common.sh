@@ -8,6 +8,9 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:80}"
 BROWSER_SESSION="${BROWSER_SESSION:-smoke}"
+SMOKE_ALLOW_SKIPS="${SMOKE_ALLOW_SKIPS:-0}"
+SMOKE_ADMIN_USERNAME="${SMOKE_ADMIN_USERNAME:-admin}"
+SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-${E2E_ADMIN_PASSWORD:-admin123}}"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 RESULTS_DIR="${RESULTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/tests/smoke-results/${TIMESTAMP}}"
 LOG_FILE="${RESULTS_DIR}/steps.log"
@@ -19,14 +22,23 @@ _STEP_PASSED=0
 _STEP_FAILED=0
 _STEP_SKIPPED=0
 
+is_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|y|Y) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ── 初始化 ────────────────────────────────────────────────
 
 init_results_dir() {
   mkdir -p "${RESULTS_DIR}"
   : > "${LOG_FILE}"
-  echo "[$(date '+%H:%M:%S')] Smoke test run started" >> "${LOG_FILE}"
-  echo "[$(date '+%H:%M:%S')] BASE_URL=${BASE_URL}" >> "${LOG_FILE}"
-  echo "[$(date '+%H:%M:%S')] RESULTS_DIR=${RESULTS_DIR}" >> "${LOG_FILE}"
+  {
+    echo "[$(date '+%H:%M:%S')] Smoke test run started"
+    echo "[$(date '+%H:%M:%S')] BASE_URL=${BASE_URL}"
+    echo "[$(date '+%H:%M:%S')] RESULTS_DIR=${RESULTS_DIR}"
+  } >> "${LOG_FILE}"
 }
 
 # ── 截图 ──────────────────────────────────────────────────
@@ -71,7 +83,8 @@ log_step() {
   esac
   ((_STEP_TOTAL++)) || true
 
-  local line="[$(date '+%H:%M:%S')] [${icon}] ${step_name}"
+  local line
+  line="[$(date '+%H:%M:%S')] [${icon}] ${step_name}"
   [[ -n "${detail}" ]] && line+=" — ${detail}"
   echo "${line}" >> "${LOG_FILE}"
   echo "${line}"
@@ -99,6 +112,7 @@ generate_report() {
     echo ""
     echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "BASE_URL: ${BASE_URL}"
+    echo "SMOKE_ALLOW_SKIPS: ${SMOKE_ALLOW_SKIPS}"
     echo ""
     echo "--- 汇总 ---"
     echo "总计: ${_STEP_TOTAL}"
@@ -108,6 +122,11 @@ generate_report() {
     echo ""
     if (( _STEP_FAILED > 0 )); then
       echo "结果: FAIL"
+    elif (( _STEP_SKIPPED > 0 )) && ! is_truthy "${SMOKE_ALLOW_SKIPS}"; then
+      echo "结果: FAIL"
+      echo "原因: 存在跳过步骤；如需探索性运行，请设置 SMOKE_ALLOW_SKIPS=1"
+    elif (( _STEP_SKIPPED > 0 )); then
+      echo "结果: PASS_WITH_SKIPS"
     else
       echo "结果: PASS"
     fi
@@ -123,6 +142,13 @@ generate_report() {
   echo "测试报告已生成: ${REPORT_FILE}"
   echo "产物目录: ${RESULTS_DIR}"
 
-  # 返回总体结果供调用方判断
-  (( _STEP_FAILED == 0 ))
+  # 返回总体结果供调用方判断。默认把 skip 当成失败，避免冒烟测试
+  # 在缺少关键页面数据或元素时给出假绿。
+  if (( _STEP_FAILED > 0 )); then
+    return 1
+  fi
+  if (( _STEP_SKIPPED > 0 )) && ! is_truthy "${SMOKE_ALLOW_SKIPS}"; then
+    return 1
+  fi
+  return 0
 }

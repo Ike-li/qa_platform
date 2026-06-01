@@ -116,6 +116,38 @@ async def _timed(awaitable) -> tuple[float, object]:
     return (perf_counter() - started) * 1000, result
 
 
+def _json_datetime(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _audit_event_response(event) -> dict:
+    return {
+        "id": str(event.id),
+        "tenant_id": str(event.tenant_id) if event.tenant_id is not None else None,
+        "user_id": str(event.user_id) if event.user_id is not None else None,
+        "action": event.action,
+        "resource_type": event.resource_type,
+        "resource_id": str(event.resource_id) if event.resource_id is not None else None,
+        "before_state": event.before_state,
+        "after_state": event.after_state,
+        "ip_address": str(event.ip_address) if event.ip_address is not None else None,
+        "user_agent": event.user_agent,
+        "created_at": _json_datetime(event.created_at),
+    }
+
+
+def _project_run_metadata(project) -> dict:
+    metadata = {"git_url": project.git_url}
+    if project.git_auth_method != "none" and project.credential_id:
+        metadata["git_auth_method"] = project.git_auth_method
+        metadata["credential_id"] = str(project.credential_id)
+    if project.shallow_clone:
+        metadata["shallow_clone"] = True
+    if project.default_branch:
+        metadata["default_branch"] = project.default_branch
+    return metadata
+
+
 @asynccontextmanager
 async def _real_auth_perf_client(test_settings):
     from qaplatform.api import create_app
@@ -343,6 +375,17 @@ class _FakeArq:
         return SimpleNamespace(job_id=kwargs["_job_id"])
 
 
+def _expected_execute_run_call(run_id: UUID, queue_name: str) -> dict:
+    return {
+        "args": ("execute_run", str(run_id)),
+        "kwargs": {
+            "_queue_name": queue_name,
+            "_job_id": f"run:{run_id}",
+            "_defer_by": 0,
+        },
+    }
+
+
 class _SummaryRunner:
     def build_command(self, _config):
         return "pytest --junitxml=results/junit.xml"
@@ -440,41 +483,151 @@ def _write_junit_xml(path: Path, counts: dict[str, int]) -> None:
 @pytest.mark.asyncio
 async def test_read_run_api_p99_smoke(integration_client, seed_run):
     run_id = seed_run["run"].id
+    tenant_id = seed_run["tenant"].id
+    project_id = seed_run["project"].id
+    pipeline_id = seed_run["pipeline"].id
+    environment_id = seed_run["environment"].id
+    user_id = seed_run["user"].id
     samples: list[float] = []
+    expected_body = {
+        "id": str(run_id),
+        "tenant_id": str(tenant_id),
+        "project_id": str(project_id),
+        "pipeline_id": str(pipeline_id),
+        "environment_id": str(environment_id),
+        "status": "queued",
+        "trigger_type": "manual",
+        "triggered_by": str(user_id),
+        "git_ref": "main",
+        "priority": 1,
+    }
 
     for _ in range(3):
         response = await integration_client.get(f"/api/v1/runs/{run_id}")
         assert response.status_code == 200, response.text
+        body = response.json()
+        for field, expected in expected_body.items():
+            assert body[field] == expected
 
     for _ in range(30):
         elapsed_ms, response = await _timed(
             integration_client.get(f"/api/v1/runs/{run_id}")
         )
         assert response.status_code == 200, response.text
+        body = response.json()
+        for field, expected in expected_body.items():
+            assert body[field] == expected
         samples.append(elapsed_ms)
 
     _assert_p99_under("read run API", samples, _threshold("PERF_READ_P99_MS", 750))
 
 
 @pytest.mark.asyncio
-async def test_write_run_api_p99_smoke(integration_app, integration_client, seed_run):
+async def test_write_run_api_p99_smoke(
+    integration_app, integration_client, integration_db_session, seed_run
+):
+    from qaplatform.infra.database.models import AuditEvent, Run, RunStatusEnum
+
     integration_app.state.container.arq_pool = None
     pipeline_id = seed_run["pipeline"].id
+    project_id = seed_run["project"].id
+    environment_id = seed_run["environment"].id
+    tenant_id = seed_run["tenant"].id
+    user_id = seed_run["user"].id
     samples: list[float] = []
+    created_runs: dict[UUID, dict] = {}
 
     for _ in range(20):
+        git_ref = f"perf/{uuid4().hex}"
         elapsed_ms, response = await _timed(
             integration_client.post(
                 "/api/v1/runs",
                 json={
                     "pipeline_id": str(pipeline_id),
-                    "git_ref": f"perf/{uuid4().hex}",
+                    "git_ref": git_ref,
                     "priority": 1,
                 },
             )
         )
         assert response.status_code == 201, response.text
+        body = response.json()
+        run_id = UUID(body["id"])
+        assert body["tenant_id"] == str(tenant_id)
+        assert body["project_id"] == str(project_id)
+        assert body["pipeline_id"] == str(pipeline_id)
+        assert body["environment_id"] == str(environment_id)
+        assert body["status"] == "queued"
+        assert body["trigger_type"] == "manual"
+        assert body["triggered_by"] == str(user_id)
+        assert body["git_ref"] == git_ref
+        assert body["priority"] == 1
+        created_runs[run_id] = body
         samples.append(elapsed_ms)
+
+    integration_db_session.expire_all()
+    rows_result = await integration_db_session.execute(
+        select(Run).where(Run.id.in_(list(created_runs)))
+    )
+    row_projection_by_id = {
+        row.id: {
+            "tenant_id": row.tenant_id,
+            "project_id": row.project_id,
+            "pipeline_id": row.pipeline_id,
+            "environment_id": row.environment_id,
+            "status": row.status,
+            "trigger_type": row.trigger_type,
+            "triggered_by": row.triggered_by,
+            "git_ref": row.git_ref,
+            "priority": row.priority,
+            "retry_group_id": row.retry_group_id,
+            "enqueued_at": row.enqueued_at,
+            "arq_job_id": row.arq_job_id,
+            "queue_name": row.queue_name,
+        }
+        for row in rows_result.scalars()
+    }
+    assert row_projection_by_id == {
+        run_id: {
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "pipeline_id": pipeline_id,
+            "environment_id": environment_id,
+            "status": RunStatusEnum.QUEUED,
+            "trigger_type": "manual",
+            "triggered_by": user_id,
+            "git_ref": body["git_ref"],
+            "priority": 1,
+            "retry_group_id": run_id,
+            "enqueued_at": None,
+            "arq_job_id": None,
+            "queue_name": None,
+        }
+        for run_id, body in created_runs.items()
+    }
+
+    audit_result = await integration_db_session.execute(
+        select(AuditEvent).where(
+            AuditEvent.tenant_id == tenant_id,
+            AuditEvent.user_id == user_id,
+            AuditEvent.action == "run.trigger",
+            AuditEvent.resource_type == "run",
+            AuditEvent.resource_id.in_(list(created_runs)),
+        )
+    )
+    audit_projection_by_run_id = {
+        event.resource_id: {
+            "before_state": event.before_state,
+            "after_state": event.after_state,
+        }
+        for event in audit_result.scalars()
+    }
+    assert audit_projection_by_run_id == {
+        run_id: {
+            "before_state": None,
+            "after_state": body,
+        }
+        for run_id, body in created_runs.items()
+    }
 
     _assert_p99_under("write run API", samples, _threshold("PERF_WRITE_P99_MS", 1500))
 
@@ -486,7 +639,7 @@ async def test_trigger_run_enqueue_slo_smoke(
     integration_db_session,
     seed_run,
 ):
-    from qaplatform.infra.database.models import AuditEvent, Run
+    from qaplatform.infra.database.models import AuditEvent, Run, RunStatusEnum
 
     arq = _FakeArq()
     settings = integration_app.state.container.settings
@@ -498,6 +651,8 @@ async def test_trigger_run_enqueue_slo_smoke(
     settings.max_concurrent_per_project = 100
 
     pipeline_id = seed_run["pipeline"].id
+    project_id = seed_run["project"].id
+    environment_id = seed_run["environment"].id
     tenant_id = seed_run["tenant"].id
     user_id = seed_run["user"].id
     samples: list[float] = []
@@ -526,12 +681,53 @@ async def test_trigger_run_enqueue_slo_smoke(
                 )
             ).scalar_one()
             assert row.enqueued_at is not None, "triggered run was not enqueued"
-            assert row.queue_name == "queue:medium"
             samples.append((row.enqueued_at - started_at).total_seconds() * 1000)
     finally:
         settings.max_concurrent_runs = old_total
         settings.max_concurrent_per_project = old_per_project
         integration_app.state.container.arq_pool = old_arq_pool
+
+    row_result = await integration_db_session.execute(
+        select(Run).where(Run.id.in_(list(triggered_refs)))
+    )
+    row_projection_by_id = {
+        row.id: {
+            "tenant_id": row.tenant_id,
+            "project_id": row.project_id,
+            "pipeline_id": row.pipeline_id,
+            "environment_id": row.environment_id,
+            "status": row.status,
+            "trigger_type": row.trigger_type,
+            "triggered_by": row.triggered_by,
+            "git_ref": row.git_ref,
+            "git_sha": row.git_sha,
+            "priority": row.priority,
+            "retry_group_id": row.retry_group_id,
+            "enqueued": row.enqueued_at is not None,
+            "arq_job_id": row.arq_job_id,
+            "queue_name": row.queue_name,
+        }
+        for row in row_result.scalars()
+    }
+    assert row_projection_by_id == {
+        run_id: {
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "pipeline_id": pipeline_id,
+            "environment_id": environment_id,
+            "status": RunStatusEnum.QUEUED,
+            "trigger_type": "manual",
+            "triggered_by": user_id,
+            "git_ref": body["git_ref"],
+            "git_sha": body["git_sha"],
+            "priority": body["priority"],
+            "retry_group_id": run_id,
+            "enqueued": True,
+            "arq_job_id": f"run:{run_id}",
+            "queue_name": "queue:medium",
+        }
+        for run_id, body in triggered_refs.items()
+    }
 
     audit_result = await integration_db_session.execute(
         select(AuditEvent).where(
@@ -542,21 +738,33 @@ async def test_trigger_run_enqueue_slo_smoke(
             AuditEvent.resource_id.in_(list(triggered_refs)),
         )
     )
-    audits_by_run_id = {event.resource_id: event for event in audit_result.scalars()}
-    assert set(audits_by_run_id) == set(triggered_refs)
-    for run_id, body in triggered_refs.items():
-        event = audits_by_run_id[run_id]
-        assert event.before_state is None
-        assert event.after_state is not None
-        assert event.after_state == body
-        assert event.after_state["id"] == str(run_id)
-        assert event.after_state["status"] == "queued"
-        assert event.after_state["trigger_type"] == "manual"
-        assert event.after_state["git_ref"] == body["git_ref"]
-        assert event.after_state["priority"] == 1
-        assert event.after_state["pipeline_id"] == str(pipeline_id)
+    audit_projection_by_run_id = {
+        event.resource_id: {
+            "tenant_id": event.tenant_id,
+            "user_id": event.user_id,
+            "action": event.action,
+            "resource_type": event.resource_type,
+            "before_state": event.before_state,
+            "after_state": event.after_state,
+        }
+        for event in audit_result.scalars()
+    }
+    assert audit_projection_by_run_id == {
+        run_id: {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "action": "run.trigger",
+            "resource_type": "run",
+            "before_state": None,
+            "after_state": body,
+        }
+        for run_id, body in triggered_refs.items()
+    }
 
-    assert len(arq.calls) == 10
+    assert arq.calls == [
+        _expected_execute_run_call(run_id, "queue:medium")
+        for run_id in triggered_refs
+    ]
     _assert_p99_under(
         "trigger enqueue SLO",
         samples,
@@ -571,7 +779,7 @@ async def test_webhook_trigger_enqueue_slo_smoke(
     integration_db_session,
     seed_run,
 ):
-    from qaplatform.infra.database.models import AuditEvent, Run
+    from qaplatform.infra.database.models import AuditEvent, Run, RunStatusEnum
 
     arq = _FakeArq()
     settings = integration_app.state.container.settings
@@ -583,6 +791,7 @@ async def test_webhook_trigger_enqueue_slo_smoke(
     settings.max_concurrent_per_project = 100
 
     project = seed_run["project"]
+    project_id = project.id
     pipeline_id = seed_run["pipeline"].id
     environment_id = seed_run["environment"].id
     tenant_id = seed_run["tenant"].id
@@ -590,7 +799,7 @@ async def test_webhook_trigger_enqueue_slo_smoke(
     leaked_url = "https://attacker.example/secret.git"
     leaked_credential = str(uuid4())
     samples: list[float] = []
-    triggered_payloads: dict[UUID, dict[str, str]] = {}
+    triggered_payloads: dict[UUID, dict] = {}
     try:
         for _ in range(10):
             delivery_id = f"perf-webhook-{uuid4().hex}"
@@ -611,10 +820,12 @@ async def test_webhook_trigger_enqueue_slo_smoke(
                 },
             )
             assert response.status_code == 201, response.text
-            run_id = UUID(response.json()["id"])
+            body = response.json()
+            run_id = UUID(body["id"])
             triggered_payloads[run_id] = {
                 "delivery_id": delivery_id,
                 "git_sha": git_sha,
+                "body": body,
             }
 
             integration_db_session.expire_all()
@@ -624,21 +835,63 @@ async def test_webhook_trigger_enqueue_slo_smoke(
                 )
             ).scalar_one()
             assert row.enqueued_at is not None, "webhook run was not enqueued"
-            assert row.queue_name == "queue:medium"
-            assert row.trigger_type == "webhook"
-            assert row.pipeline_id == pipeline_id
-            assert row.environment_id == environment_id
-            assert row.metadata_["git_url"] == project.git_url
-            assert row.metadata_["delivery_id"] == delivery_id
-            serialized_metadata = repr(row.metadata_)
-            assert leaked_url not in serialized_metadata
-            assert leaked_credential not in serialized_metadata
-            assert "evil" not in serialized_metadata
             samples.append((row.enqueued_at - started_at).total_seconds() * 1000)
     finally:
         settings.max_concurrent_runs = old_total
         settings.max_concurrent_per_project = old_per_project
         integration_app.state.container.arq_pool = old_arq_pool
+
+    row_result = await integration_db_session.execute(
+        select(Run).where(Run.id.in_(list(triggered_payloads)))
+    )
+    row_projection_by_id = {
+        row.id: {
+            "tenant_id": row.tenant_id,
+            "project_id": row.project_id,
+            "pipeline_id": row.pipeline_id,
+            "environment_id": row.environment_id,
+            "status": row.status,
+            "trigger_type": row.trigger_type,
+            "triggered_by": row.triggered_by,
+            "git_ref": row.git_ref,
+            "git_sha": row.git_sha,
+            "priority": row.priority,
+            "retry_group_id": row.retry_group_id,
+            "enqueued": row.enqueued_at is not None,
+            "arq_job_id": row.arq_job_id,
+            "queue_name": row.queue_name,
+            "metadata": row.metadata_,
+        }
+        for row in row_result.scalars()
+    }
+    assert row_projection_by_id == {
+        run_id: {
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "pipeline_id": pipeline_id,
+            "environment_id": environment_id,
+            "status": RunStatusEnum.QUEUED,
+            "trigger_type": "webhook",
+            "triggered_by": user_id,
+            "git_ref": "refs/heads/main",
+            "git_sha": payload["git_sha"],
+            "priority": payload["body"]["priority"],
+            "retry_group_id": run_id,
+            "enqueued": True,
+            "arq_job_id": f"run:{run_id}",
+            "queue_name": "queue:medium",
+            "metadata": {
+                **_project_run_metadata(project),
+                "provider": "github",
+                "delivery_id": payload["delivery_id"],
+            },
+        }
+        for run_id, payload in triggered_payloads.items()
+    }
+    serialized_rows = repr(row_projection_by_id)
+    assert leaked_url not in serialized_rows
+    assert leaked_credential not in serialized_rows
+    assert "evil" not in serialized_rows
 
     audit_result = await integration_db_session.execute(
         select(AuditEvent).where(
@@ -649,25 +902,38 @@ async def test_webhook_trigger_enqueue_slo_smoke(
             AuditEvent.resource_id.in_(list(triggered_payloads)),
         )
     )
-    audits_by_run_id = {event.resource_id: event for event in audit_result.scalars()}
-    assert set(audits_by_run_id) == set(triggered_payloads)
-    for run_id, payload in triggered_payloads.items():
-        event = audits_by_run_id[run_id]
-        assert event.before_state is None
-        assert event.after_state is not None
-        assert event.after_state["id"] == str(run_id)
-        assert event.after_state["status"] == "queued"
-        assert event.after_state["trigger_type"] == "webhook"
-        assert event.after_state["git_ref"] == "refs/heads/main"
-        assert event.after_state["git_sha"] == payload["git_sha"]
-        assert event.after_state["pipeline_id"] == str(pipeline_id)
-        assert event.after_state["environment_id"] == str(environment_id)
-        serialized_audit = repr(event.after_state)
-        assert leaked_url not in serialized_audit
-        assert leaked_credential not in serialized_audit
-        assert payload["delivery_id"] not in serialized_audit
+    audit_projection_by_run_id = {
+        event.resource_id: {
+            "tenant_id": event.tenant_id,
+            "user_id": event.user_id,
+            "action": event.action,
+            "resource_type": event.resource_type,
+            "before_state": event.before_state,
+            "after_state": event.after_state,
+        }
+        for event in audit_result.scalars()
+    }
+    assert audit_projection_by_run_id == {
+        run_id: {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "action": "run.trigger",
+            "resource_type": "run",
+            "before_state": None,
+            "after_state": payload["body"],
+        }
+        for run_id, payload in triggered_payloads.items()
+    }
+    serialized_audits = repr(audit_projection_by_run_id)
+    assert leaked_url not in serialized_audits
+    assert leaked_credential not in serialized_audits
+    for payload in triggered_payloads.values():
+        assert payload["delivery_id"] not in serialized_audits
 
-    assert len(arq.calls) == 10
+    assert arq.calls == [
+        _expected_execute_run_call(run_id, "queue:medium")
+        for run_id in triggered_payloads
+    ]
     _assert_p99_under(
         "webhook trigger enqueue SLO",
         samples,
@@ -683,7 +949,7 @@ async def test_schedule_tick_enqueue_slo_smoke(
 ):
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    from qaplatform.infra.database.models import AuditEvent, Run, Schedule
+    from qaplatform.infra.database.models import AuditEvent, Run, RunStatusEnum, Schedule
     from qaplatform.worker.settings import check_schedules
 
     arq = _FakeArq()
@@ -744,8 +1010,7 @@ async def test_schedule_tick_enqueue_slo_smoke(
             for run in run_result.scalars()
             if (run.metadata_ or {}).get("schedule_id") == str(schedule_id)
         ]
-        assert len(schedule_runs) == 1
-        run = schedule_runs[0]
+        (run,) = schedule_runs
         assert run.enqueued_at is not None, "schedule run was not enqueued"
         assert run.queue_name == "queue:low"
         assert run.arq_job_id == f"run:{run.id}"
@@ -765,26 +1030,99 @@ async def test_schedule_tick_enqueue_slo_smoke(
             AuditEvent.resource_id.in_(list(run_schedule_ids)),
         )
     )
-    audits_by_run_id = {event.resource_id: event for event in audit_result.scalars()}
-    assert set(audits_by_run_id) == set(run_schedule_ids)
-    for run_id, schedule_id in run_schedule_ids.items():
-        event = audits_by_run_id[run_id]
-        assert event.before_state is None
-        assert event.after_state is not None
-        assert event.after_state["id"] == str(run_id)
-        assert event.after_state["status"] == "queued"
-        assert event.after_state["trigger_type"] == "schedule"
-        assert event.after_state["triggered_by"] is None
-        assert event.after_state["git_ref"] == project_default_branch
-        assert event.after_state["project_id"] == str(project_id)
-        assert event.after_state["pipeline_id"] == str(pipeline_id)
-        assert event.after_state["environment_id"] == str(environment_id)
-        assert event.after_state["schedule_id"] == str(schedule_id)
-        assert event.after_state["metadata"]["schedule_id"] == str(schedule_id)
-        assert event.after_state["enqueued"] is True
+    row_result = await integration_db_session.execute(
+        select(Run).where(Run.id.in_(list(run_schedule_ids)))
+    )
+    row_projection_by_id = {
+        row.id: {
+            "tenant_id": row.tenant_id,
+            "project_id": row.project_id,
+            "pipeline_id": row.pipeline_id,
+            "environment_id": row.environment_id,
+            "status": row.status,
+            "trigger_type": row.trigger_type,
+            "triggered_by": row.triggered_by,
+            "git_ref": row.git_ref,
+            "git_sha": row.git_sha,
+            "priority": row.priority,
+            "retry_group_id": row.retry_group_id,
+            "enqueued": row.enqueued_at is not None,
+            "arq_job_id": row.arq_job_id,
+            "queue_name": row.queue_name,
+            "metadata": row.metadata_,
+        }
+        for row in row_result.scalars()
+    }
+    assert row_projection_by_id == {
+        run_id: {
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "pipeline_id": pipeline_id,
+            "environment_id": environment_id,
+            "status": RunStatusEnum.QUEUED,
+            "trigger_type": "schedule",
+            "triggered_by": None,
+            "git_ref": project_default_branch,
+            "git_sha": None,
+            "priority": 1,
+            "retry_group_id": run_id,
+            "enqueued": True,
+            "arq_job_id": f"run:{run_id}",
+            "queue_name": "queue:low",
+            "metadata": {
+                **_project_run_metadata(project),
+                "schedule_id": str(schedule_id),
+            },
+        }
+        for run_id, schedule_id in run_schedule_ids.items()
+    }
 
-    assert len(arq.calls) == 10
-    assert {call["kwargs"]["_queue_name"] for call in arq.calls} == {"queue:low"}
+    audit_projection_by_run_id = {
+        event.resource_id: {
+            "tenant_id": event.tenant_id,
+            "user_id": event.user_id,
+            "action": event.action,
+            "resource_type": event.resource_type,
+            "before_state": event.before_state,
+            "after_state": event.after_state,
+        }
+        for event in audit_result.scalars()
+    }
+    assert audit_projection_by_run_id == {
+        run_id: {
+            "tenant_id": tenant_id,
+            "user_id": None,
+            "action": "run.trigger",
+            "resource_type": "run",
+            "before_state": None,
+            "after_state": {
+                "id": str(run_id),
+                "tenant_id": str(tenant_id),
+                "project_id": str(project_id),
+                "pipeline_id": str(pipeline_id),
+                "environment_id": str(environment_id),
+                "status": "queued",
+                "trigger_type": "schedule",
+                "triggered_by": None,
+                "git_ref": project_default_branch,
+                "git_sha": None,
+                "priority": 1,
+                "attempt": 1,
+                "metadata": {
+                    **_project_run_metadata(project),
+                    "schedule_id": str(schedule_id),
+                },
+                "schedule_id": str(schedule_id),
+                "enqueued": True,
+            },
+        }
+        for run_id, schedule_id in run_schedule_ids.items()
+    }
+
+    assert arq.calls == [
+        _expected_execute_run_call(run_id, "queue:low")
+        for run_id in run_schedule_ids
+    ]
     _assert_p99_under(
         "schedule tick enqueue SLO",
         samples,
@@ -875,29 +1213,44 @@ async def test_dequeue_waiting_runs_slo_smoke(
         ]
         pytest.fail(f"waiting runs were not dequeued: {missing}")
 
-    assert set(rows_by_id) == set(waiting_runs)
-    samples: list[float] = []
-    for run_id, (priority, expected_queue) in waiting_runs.items():
-        row = rows_by_id[run_id]
-        assert row.status == RunStatusEnum.QUEUED
-        assert row.priority == priority
-        assert row.queue_name == expected_queue
-        assert row.arq_job_id == f"run:{run_id}"
-        assert row.enqueued_at is not None, "waiting run was not dequeued"
-        assert row.metadata_ == {"perf_dequeue": True, "priority": priority}
-        samples.append((row.enqueued_at - started_at).total_seconds() * 1000)
+    row_projection_by_id = {
+        run_id: {
+            "status": row.status,
+            "priority": row.priority,
+            "queue_name": row.queue_name,
+            "arq_job_id": row.arq_job_id,
+            "enqueued": row.enqueued_at is not None,
+            "metadata": row.metadata_,
+        }
+        for run_id, row in rows_by_id.items()
+    }
+    assert row_projection_by_id == {
+        run_id: {
+            "status": RunStatusEnum.QUEUED,
+            "priority": priority,
+            "queue_name": expected_queue,
+            "arq_job_id": f"run:{run_id}",
+            "enqueued": True,
+            "metadata": {"perf_dequeue": True, "priority": priority},
+        }
+        for run_id, (priority, expected_queue) in waiting_runs.items()
+    }
+    samples = [
+        (rows_by_id[run_id].enqueued_at - started_at).total_seconds() * 1000
+        for run_id in waiting_runs
+    ]
 
     expected_job_ids = {f"run:{run_id}" for run_id in waiting_runs}
     our_calls = [
         call for call in arq.calls if call["kwargs"]["_job_id"] in expected_job_ids
     ]
-    assert len(our_calls) == len(waiting_runs)
-    assert {call["kwargs"]["_queue_name"] for call in our_calls} == {
-        "queue:high",
-        "queue:medium",
-        "queue:low",
-    }
-    assert {call["kwargs"]["_job_id"] for call in our_calls} == expected_job_ids
+    assert our_calls == [
+        _expected_execute_run_call(run_id, expected_queue)
+        for run_id, (_priority, expected_queue) in sorted(
+            waiting_runs.items(),
+            key=lambda item: (item[1][0], rows_by_id[item[0]].created_at),
+        )
+    ]
     _assert_p99_under(
         "dequeue waiting runs SLO",
         samples,
@@ -982,15 +1335,28 @@ async def test_dequeue_waiting_prioritizes_newer_high_runs_over_older_low_backlo
             select(Run).where(Run.id.in_(list(all_run_ids)))
         )
         created_rows = {run.id: run for run in created_result.scalars()}
-        assert set(created_rows) == all_run_ids
-        for run_id, row in created_rows.items():
-            body = triggered_refs[run_id]
-            assert row.status == RunStatusEnum.QUEUED
-            assert row.priority == body["priority"]
-            assert row.git_ref == body["git_ref"]
-            assert row.queue_name is None
-            assert row.arq_job_id is None
-            assert row.enqueued_at is None
+        created_row_projection_by_id = {
+            run_id: {
+                "status": row.status,
+                "priority": row.priority,
+                "git_ref": row.git_ref,
+                "queue_name": row.queue_name,
+                "arq_job_id": row.arq_job_id,
+                "enqueued": row.enqueued_at is not None,
+            }
+            for run_id, row in created_rows.items()
+        }
+        assert created_row_projection_by_id == {
+            run_id: {
+                "status": RunStatusEnum.QUEUED,
+                "priority": body["priority"],
+                "git_ref": body["git_ref"],
+                "queue_name": None,
+                "arq_job_id": None,
+                "enqueued": False,
+            }
+            for run_id, body in triggered_refs.items()
+        }
 
         audit_result = await integration_db_session.execute(
             select(AuditEvent).where(
@@ -999,23 +1365,24 @@ async def test_dequeue_waiting_prioritizes_newer_high_runs_over_older_low_backlo
                 AuditEvent.resource_id.in_(list(all_run_ids)),
             )
         )
-        audits = list(audit_result.scalars())
-        assert len(audits) == len(all_run_ids)
-        audits_by_run_id = {event.resource_id: event for event in audits}
-        assert set(audits_by_run_id) == all_run_ids
-        for run_id, body in triggered_refs.items():
-            event = audits_by_run_id[run_id]
-            assert event.action == "run.trigger"
-            assert event.resource_type == "run"
-            assert event.before_state is None
-            assert event.after_state is not None
-            assert event.after_state == body
-            assert event.after_state["id"] == str(run_id)
-            assert event.after_state["status"] == "queued"
-            assert event.after_state["trigger_type"] == "manual"
-            assert event.after_state["priority"] == body["priority"]
-            assert event.after_state["git_ref"] == body["git_ref"]
-            assert event.after_state["pipeline_id"] == str(pipeline_id)
+        audit_projection_by_run_id = {
+            event.resource_id: {
+                "action": event.action,
+                "resource_type": event.resource_type,
+                "before_state": event.before_state,
+                "after_state": event.after_state,
+            }
+            for event in audit_result.scalars()
+        }
+        assert audit_projection_by_run_id == {
+            run_id: {
+                "action": "run.trigger",
+                "resource_type": "run",
+                "before_state": None,
+                "after_state": body,
+            }
+            for run_id, body in triggered_refs.items()
+        }
 
         active_count = (
             await integration_db_session.execute(
@@ -1079,45 +1446,93 @@ async def test_dequeue_waiting_prioritizes_newer_high_runs_over_older_low_backlo
             ]
             pytest.fail(f"high-priority backlog runs were not dequeued: {missing}")
 
+        high_run_id_set = set(high_run_ids)
+        low_run_id_set = set(low_run_ids)
         high_calls = [
-            call for call in arq.calls if UUID(call["args"][1]) in set(high_run_ids)
+            call for call in arq.calls if UUID(call["args"][1]) in high_run_id_set
         ]
         low_calls = [
-            call for call in arq.calls if UUID(call["args"][1]) in set(low_run_ids)
+            call for call in arq.calls if UUID(call["args"][1]) in low_run_id_set
         ]
-        assert {UUID(call["args"][1]) for call in high_calls} == set(high_run_ids)
+        assert high_calls == [
+            _expected_execute_run_call(run_id, "queue:high")
+            for run_id in sorted(
+                high_run_ids,
+                key=lambda run_id: rows_by_id[run_id].created_at,
+            )
+        ]
         assert low_calls == []
-        assert {call["kwargs"]["_job_id"] for call in high_calls} == {
-            f"run:{run_id}" for run_id in high_run_ids
+
+        post_dequeue_projection_by_id = {
+            run_id: {
+                "status": row.status,
+                "priority": row.priority,
+                "git_ref": row.git_ref,
+                "queue_name": row.queue_name,
+                "arq_job_id": row.arq_job_id,
+                "enqueued": row.enqueued_at is not None,
+            }
+            for run_id, row in rows_by_id.items()
         }
-        assert {call["kwargs"]["_queue_name"] for call in high_calls} == {
-            "queue:high"
+        expected_post_dequeue_projection_by_id = {
+            run_id: {
+                "status": RunStatusEnum.QUEUED,
+                "priority": 0,
+                "git_ref": triggered_refs[run_id]["git_ref"],
+                "queue_name": "queue:high",
+                "arq_job_id": f"run:{run_id}",
+                "enqueued": True,
+            }
+            for run_id in high_run_ids
         }
+        expected_post_dequeue_projection_by_id.update(
+            {
+                run_id: {
+                    "status": RunStatusEnum.QUEUED,
+                    "priority": 2,
+                    "git_ref": triggered_refs[run_id]["git_ref"],
+                    "queue_name": None,
+                    "arq_job_id": None,
+                    "enqueued": False,
+                }
+                for run_id in low_run_ids
+            }
+        )
+        assert post_dequeue_projection_by_id == expected_post_dequeue_projection_by_id
 
         samples: list[float] = []
         for run_id in high_run_ids:
-            row = rows_by_id[run_id]
-            assert row.status == RunStatusEnum.QUEUED
-            assert row.priority == 0
-            assert row.queue_name == "queue:high"
-            assert row.arq_job_id == f"run:{run_id}"
-            assert row.enqueued_at is not None
-            samples.append((row.enqueued_at - started_at).total_seconds() * 1000)
-        for run_id in low_run_ids:
-            row = rows_by_id[run_id]
-            assert row.status == RunStatusEnum.QUEUED
-            assert row.priority == 2
-            assert row.queue_name is None
-            assert row.arq_job_id is None
-            assert row.enqueued_at is None
+            enqueued_at = rows_by_id[run_id].enqueued_at
+            assert enqueued_at is not None
+            samples.append((enqueued_at - started_at).total_seconds() * 1000)
 
         audit_after_dequeue = await integration_db_session.execute(
             select(AuditEvent).where(AuditEvent.resource_id.in_(list(all_run_ids)))
         )
-        assert {
-            (event.resource_id, event.action)
-            for event in audit_after_dequeue.scalars()
-        } == {(run_id, "run.trigger") for run_id in all_run_ids}
+        audit_after_dequeue_projection = sorted(
+            [
+                {
+                    "resource_id": event.resource_id,
+                    "action": event.action,
+                    "resource_type": event.resource_type,
+                    "after_state": event.after_state,
+                }
+                for event in audit_after_dequeue.scalars()
+            ],
+            key=lambda item: str(item["resource_id"]),
+        )
+        assert audit_after_dequeue_projection == sorted(
+            [
+                {
+                    "resource_id": run_id,
+                    "action": "run.trigger",
+                    "resource_type": "run",
+                    "after_state": triggered_refs[run_id],
+                }
+                for run_id in all_run_ids
+            ],
+            key=lambda item: str(item["resource_id"]),
+        )
 
         _assert_p99_under(
             "dequeue waiting priority preemption SLO",
@@ -1217,8 +1632,11 @@ async def test_log_stream_round_trip_smoke(integration_app):
         samples.append(elapsed_ms)
 
     entries = await stream.read_logs(run_id, count=20)
-    assert len(entries) == 20
-    assert entries[-1]["line"] == "line-19"
+    entry_ids = [entry["id"] for entry in entries]
+    assert entries == [
+        {"id": entry_ids[index], "stream": "stdout", "line": f"line-{index}"}
+        for index in range(20)
+    ]
     _assert_p99_under("log stream write", samples, _threshold("PERF_LOG_WRITE_P99_MS", 2000))
 
 
@@ -1311,28 +1729,34 @@ async def test_sse_ticket_create_api_p99_smoke(test_settings, integration_db_ses
                 .limit(len(tickets))
             )
             audits = result.scalars().all()
-        assert len(audits) == len(tickets)
-        serialized_audits = json.dumps(
-            [
-                {
-                    "before_state": audit.before_state,
-                    "after_state": audit.after_state,
-                    "resource_type": audit.resource_type,
-                    "resource_id": str(audit.resource_id)
-                    if audit.resource_id is not None
-                    else None,
-                }
-                for audit in audits
-            ],
-            sort_keys=True,
-        )
-        for audit in audits:
-            assert audit.before_state is None
-            assert audit.after_state == {
+        audit_projections = [
+            {
+                "before_state": audit.before_state,
+                "after_state": audit.after_state,
+                "resource_type": audit.resource_type,
+                "resource_id": str(audit.resource_id)
+                if audit.resource_id is not None
+                else None,
+            }
+            for audit in audits
+        ]
+        assert audit_projections == [
+            {
+                "before_state": None,
+                "after_state": {
+                    "ttl_seconds": SSE_TICKET_TTL,
+                    "single_use": True,
+                },
+                "resource_type": "auth",
+                "resource_id": None,
+            }
+        ] * len(tickets)
+        serialized_audits = json.dumps(audit_projections, sort_keys=True)
+        for audit in audit_projections:
+            assert audit["after_state"] == {
                 "ttl_seconds": SSE_TICKET_TTL,
                 "single_use": True,
             }
-            assert audit.resource_id is None
         for secret in (*tickets, access_token, read_token):
             assert secret not in serialized_audits
 
@@ -1364,7 +1788,7 @@ async def test_realtime_log_sse_delivery_latency_smoke(
 
     timeout = httpx.Timeout(5.0, connect=5.0, read=5.0)
     async with _live_asgi_server(integration_app) as base_url:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             for index in range(5):
                 run = Run(
                     tenant_id=tenant_id,
@@ -1451,7 +1875,7 @@ async def test_realtime_status_event_sse_delivery_latency_smoke(
 
     timeout = httpx.Timeout(5.0, connect=5.0, read=5.0)
     async with _live_asgi_server(integration_app) as base_url:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             for index in range(5):
                 run = Run(
                     tenant_id=tenant_id,
@@ -1611,6 +2035,7 @@ async def test_archived_log_replay_large_page_p99_smoke(
         )
 
         params = {"page": 15, "per_page": 100}
+        expected_window = entries[1400:1500]
         for _ in range(3):
             response = await integration_client.get(
                 f"/api/v1/runs/{run_id}/logs/archive",
@@ -1618,8 +2043,12 @@ async def test_archived_log_replay_large_page_p99_smoke(
             )
             assert response.status_code == 200, response.text
             body = response.json()
-            assert body["total"] == 1500
-            assert body["data"][0]["line"] == "archived-large-line-1400"
+            assert body == {
+                "data": expected_window,
+                "page": 15,
+                "per_page": 100,
+                "total": 1500,
+            }
 
         samples: list[float] = []
         for _ in range(20):
@@ -1631,17 +2060,11 @@ async def test_archived_log_replay_large_page_p99_smoke(
             )
             assert response.status_code == 200, response.text
             body = response.json()
-            assert body["total"] == 1500
-            assert body["page"] == 15
-            assert body["per_page"] == 100
-            assert len(body["data"]) == 100
-            assert body["data"][0] == {
-                "stream": "stdout",
-                "line": "archived-large-line-1400",
-            }
-            assert body["data"][-1] == {
-                "stream": "stdout",
-                "line": "archived-large-line-1499",
+            assert body == {
+                "data": expected_window,
+                "page": 15,
+                "per_page": 100,
+                "total": 1500,
             }
             samples.append(elapsed_ms)
     finally:
@@ -1671,15 +2094,21 @@ async def test_archived_log_missing_object_p99_smoke(
     s3 = _MemoryS3()
     old_s3 = integration_app.state.container.s3_client
     integration_app.state.container.s3_client = s3
+    expected_404 = {
+        "error": {
+            "code": "NOT_FOUND",
+            "message": "Archived logs not found",
+            "details": [],
+        }
+    }
     try:
         for _ in range(3):
             response = await integration_client.get(
                 f"/api/v1/runs/{run_id}/logs/archive"
             )
             assert response.status_code == 404, response.text
-            error = response.json()["error"]
-            assert error["code"] == "NOT_FOUND"
-            assert error["message"] == "Archived logs not found"
+            assert response.json() == expected_404
+            assert str(run_id) not in response.text
 
         samples: list[float] = []
         for _ in range(20):
@@ -1687,9 +2116,8 @@ async def test_archived_log_missing_object_p99_smoke(
                 integration_client.get(f"/api/v1/runs/{run_id}/logs/archive")
             )
             assert response.status_code == 404, response.text
-            error = response.json()["error"]
-            assert error["code"] == "NOT_FOUND"
-            assert error["message"] == "Archived logs not found"
+            assert response.json() == expected_404
+            assert str(run_id) not in response.text
             samples.append(elapsed_ms)
     finally:
         integration_app.state.container.s3_client = old_s3
@@ -1724,7 +2152,7 @@ async def test_archived_log_storage_unavailable_p99_smoke(
                 headers=headers,
             )
             assert response.status_code == 503, response.text
-            assert response.json()["detail"] == "Archived logs are not available"
+            assert response.json() == {"detail": "Archived logs are not available"}
 
         samples: list[float] = []
         for _ in range(20):
@@ -1735,7 +2163,7 @@ async def test_archived_log_storage_unavailable_p99_smoke(
                 )
             )
             assert response.status_code == 503, response.text
-            assert response.json()["detail"] == "Archived logs are not available"
+            assert response.json() == {"detail": "Archived logs are not available"}
             samples.append(elapsed_ms)
     finally:
         integration_app.state.container.s3_client = old_s3
@@ -1768,7 +2196,14 @@ async def test_archived_log_denied_no_s3_read_p99_smoke(
                 f"/api/v1/runs/{uuid4()}/logs/archive"
             )
             assert random_response.status_code == 404, random_response.text
-            expected_404 = random_response.json()
+            expected_404 = {
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": "Run not found",
+                    "details": [],
+                }
+            }
+            assert random_response.json() == expected_404
 
             for _ in range(3):
                 response = await client.get(
@@ -1808,19 +2243,48 @@ async def test_artifact_list_api_p99_smoke(
     run_id = seed_run["run"].id
     repo = ArtifactRepository(integration_db_session)
     marker = f"perf-list-{uuid4().hex}"
-    expected_names: set[str] = set()
+    created_artifacts = []
+    artifact_created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     for index in range(80):
         name = f"{marker}-{index:03}.html"
-        expected_names.add(name)
-        await repo.create(
-            run_id=run_id,
-            type="report",
-            name=name,
-            storage_path=f"reports/{run_id}/{name}",
-            size_bytes=1024 + index,
-            mime_type="text/html",
+        created_artifacts.append(
+            await repo.create(
+                run_id=run_id,
+                type="report",
+                name=name,
+                storage_path=f"reports/{run_id}/{name}",
+                size_bytes=1024 + index,
+                mime_type="text/html",
+                created_at=artifact_created_at + timedelta(seconds=index),
+            )
         )
     await integration_db_session.commit()
+    expected_body = {
+        "data": [
+            {
+                "id": str(artifact.id),
+                "run_id": str(run_id),
+                "type": "report",
+                "name": artifact.name,
+                "storage_path": artifact.storage_path,
+                "size_bytes": artifact.size_bytes,
+                "mime_type": "text/html",
+                "expires_at": None,
+                "created_at": _json_datetime(artifact.created_at),
+            }
+            for artifact in sorted(
+                created_artifacts,
+                key=lambda item: item.created_at,
+                reverse=True,
+            )
+        ],
+        "page": 1,
+        "per_page": 100,
+        "total": 80,
+    }
+
+    def assert_artifact_list_body(body: dict) -> None:
+        assert body == expected_body
 
     old_s3 = integration_app.state.container.s3_client
     s3 = _MemoryS3()
@@ -1834,9 +2298,7 @@ async def test_artifact_list_api_p99_smoke(
             )
             assert response.status_code == 200, response.text
             body = response.json()
-            assert body["total"] >= 80
-            returned_names = {item["name"] for item in body["data"]}
-            assert expected_names <= returned_names
+            assert_artifact_list_body(body)
 
         samples: list[float] = []
         for _ in range(20):
@@ -1848,16 +2310,7 @@ async def test_artifact_list_api_p99_smoke(
             )
             assert response.status_code == 200, response.text
             body = response.json()
-            assert body["page"] == 1
-            assert body["per_page"] == 100
-            assert body["total"] >= 80
-            returned = {item["name"]: item for item in body["data"]}
-            assert expected_names <= set(returned)
-            for name in expected_names:
-                item = returned[name]
-                assert item["run_id"] == str(run_id)
-                assert item["storage_path"] == f"reports/{run_id}/{name}"
-                assert item["size_bytes"] >= 1024
+            assert_artifact_list_body(body)
             samples.append(elapsed_ms)
     finally:
         integration_app.state.container.s3_client = old_s3
@@ -1921,11 +2374,17 @@ async def test_artifact_list_large_collection_page_p99_smoke(
 
         expected_window = [
             {
+                "id": str(artifacts[index].id),
+                "run_id": str(run_id),
+                "type": "report",
                 "name": f"{marker}-{index:04}.html",
                 "storage_path": (
                     f"reports/{run_id}/{marker}-{index:04}.html"
                 ),
                 "size_bytes": 2048 + index,
+                "mime_type": "text/html",
+                "expires_at": None,
+                "created_at": _json_datetime(artifacts[index].created_at),
             }
             for index in range(99, -1, -1)
         ]
@@ -1950,12 +2409,12 @@ async def test_artifact_list_large_collection_page_p99_smoke(
                 )
                 assert response.status_code == 200, response.text
                 body = response.json()
-                assert body["total"] == created_count
-                assert body["page"] == page
-                assert body["per_page"] == per_page
-                assert [item["name"] for item in body["data"]] == [
-                    expected["name"] for expected in expected_window
-                ]
+                assert body == {
+                    "data": expected_window,
+                    "page": page,
+                    "per_page": per_page,
+                    "total": created_count,
+                }
 
             samples: list[float] = []
             for _ in range(20):
@@ -1968,19 +2427,12 @@ async def test_artifact_list_large_collection_page_p99_smoke(
                 )
                 assert response.status_code == 200, response.text
                 body = response.json()
-                assert body["total"] == created_count
-                assert body["page"] == page
-                assert body["per_page"] == per_page
-                assert len(body["data"]) == per_page
-                assert [
-                    {
-                        "name": item["name"],
-                        "storage_path": item["storage_path"],
-                        "size_bytes": item["size_bytes"],
-                    }
-                    for item in body["data"]
-                ] == expected_window
-                assert {item["run_id"] for item in body["data"]} == {str(run_id)}
+                assert body == {
+                    "data": expected_window,
+                    "page": page,
+                    "per_page": per_page,
+                    "total": created_count,
+                }
                 samples.append(elapsed_ms)
         finally:
             app.state.container.s3_client = old_s3
@@ -2052,6 +2504,7 @@ async def test_artifact_list_denied_no_metadata_p99_smoke(
                     )
                 )
                 assert response.status_code == 403, response.text
+                assert response.json() == {"detail": "Insufficient permissions"}
                 assert_no_artifact_metadata(response.text)
                 samples.append(elapsed_ms)
 
@@ -2064,6 +2517,13 @@ async def test_artifact_list_denied_no_metadata_p99_smoke(
                 )
             )
             assert response.status_code == 404, response.text
+            assert response.json() == {
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": "Run not found",
+                    "details": [],
+                }
+            }
             assert_no_artifact_metadata(response.text)
             samples.append(elapsed_ms)
 
@@ -2122,21 +2582,15 @@ async def test_artifact_download_url_api_p99_smoke(
         integration_app.state.container.s3_client = old_s3
 
     assert s3.get_calls == []
-    assert len(s3.presign_calls) == 23
-    assert all(call["method"] == "get_object" for call in s3.presign_calls)
-    assert all(
-        call["params"]
-        == {
+    expected_presign_call = {
+        "method": "get_object",
+        "params": {
             "Bucket": integration_app.state.container.settings.s3_bucket,
             "Key": artifact.storage_path,
-        }
-        for call in s3.presign_calls
-    )
-    assert all(
-        call["expires_in"]
-        == integration_app.state.container.settings.s3_presigned_url_ttl
-        for call in s3.presign_calls
-    )
+        },
+        "expires_in": integration_app.state.container.settings.s3_presigned_url_ttl,
+    }
+    assert s3.presign_calls == [expected_presign_call] * 23
     _assert_p99_under(
         "artifact download URL API",
         samples,
@@ -2175,7 +2629,7 @@ async def test_artifact_download_storage_unavailable_p99_smoke(
                 headers=headers,
             )
             assert response.status_code == 503, response.text
-            assert response.json()["detail"] == "Artifact download is not available"
+            assert response.json() == {"detail": "Artifact download is not available"}
 
         samples: list[float] = []
         for _ in range(20):
@@ -2186,7 +2640,7 @@ async def test_artifact_download_storage_unavailable_p99_smoke(
                 )
             )
             assert response.status_code == 503, response.text
-            assert response.json()["detail"] == "Artifact download is not available"
+            assert response.json() == {"detail": "Artifact download is not available"}
             samples.append(elapsed_ms)
     finally:
         integration_app.state.container.s3_client = old_s3
@@ -2294,7 +2748,14 @@ async def test_artifact_download_denied_no_presign_p99_smoke(
                 f"/api/v1/artifacts/{uuid4()}/download"
             )
             assert random_response.status_code == 404, random_response.text
-            expected_404 = random_response.json()
+            expected_404 = {
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": "Artifact not found",
+                    "details": [],
+                }
+            }
+            assert random_response.json() == expected_404
 
             for _ in range(3):
                 response = await client.get(
@@ -2337,18 +2798,19 @@ async def test_audit_events_list_api_p99_smoke(
     action = "audit.performance_probe"
     now = datetime.now(timezone.utc)
 
-    for index in range(120):
-        integration_db_session.add(
-            AuditEvent(
-                tenant_id=tenant_id,
-                user_id=user_id,
-                action=action,
-                resource_type="project",
-                resource_id=project_id,
-                after_state={"index": index},
-                created_at=now - timedelta(seconds=index),
-            )
+    target_events = [
+        AuditEvent(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action=action,
+            resource_type="project",
+            resource_id=project_id,
+            after_state={"index": index},
+            created_at=now - timedelta(seconds=index),
         )
+        for index in range(120)
+    ]
+    integration_db_session.add_all(target_events)
     await integration_db_session.commit()
 
     async def count_self_audits() -> int:
@@ -2370,12 +2832,16 @@ async def test_audit_events_list_api_p99_smoke(
         "resource_type": "project",
         "per_page": 50,
     }
+    expected_body = {
+        "data": [_audit_event_response(event) for event in target_events[:50]],
+        "page": 1,
+        "per_page": 50,
+        "total": 120,
+    }
     for _ in range(3):
         response = await integration_client.get("/api/v1/audit-events", params=params)
         assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["total"] == 120
-        assert len(body["data"]) == 50
+        assert response.json() == expected_body
 
     samples: list[float] = []
     for _ in range(20):
@@ -2383,9 +2849,7 @@ async def test_audit_events_list_api_p99_smoke(
             integration_client.get("/api/v1/audit-events", params=params)
         )
         assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["total"] == 120
-        assert {item["action"] for item in body["data"]} == {action}
+        assert response.json() == expected_body
         samples.append(elapsed_ms)
 
     assert await count_self_audits() == before_self_audits + 23
@@ -2494,7 +2958,15 @@ async def test_audit_events_large_filtered_page_api_token_p99_smoke(
             "page": 5,
             "per_page": 100,
         }
-        expected_indices = list(range(199, 99, -1))
+        expected_body = {
+            "data": [
+                _audit_event_response(target_events[index])
+                for index in range(199, 99, -1)
+            ],
+            "page": 5,
+            "per_page": 100,
+            "total": target_count,
+        }
         before_self_audits = await count_self_audits()
 
         for _ in range(3):
@@ -2504,13 +2976,7 @@ async def test_audit_events_large_filtered_page_api_token_p99_smoke(
                 headers=headers,
             )
             assert response.status_code == 200, response.text
-            body = response.json()
-            assert body["total"] == target_count
-            assert body["page"] == 5
-            assert body["per_page"] == 100
-            assert [
-                item["after_state"]["index"] for item in body["data"]
-            ] == expected_indices
+            assert response.json() == expected_body
 
         samples: list[float] = []
         for _ in range(20):
@@ -2522,49 +2988,60 @@ async def test_audit_events_large_filtered_page_api_token_p99_smoke(
                 )
             )
             assert response.status_code == 200, response.text
-            body = response.json()
-            assert body["total"] == target_count
-            assert body["page"] == 5
-            assert body["per_page"] == 100
-            assert len(body["data"]) == 100
-            assert {item["tenant_id"] for item in body["data"]} == {str(tenant_id)}
-            assert {item["user_id"] for item in body["data"]} == {str(user_id)}
-            assert {item["action"] for item in body["data"]} == {action}
-            assert {item["resource_type"] for item in body["data"]} == {"project"}
-            assert [
-                item["after_state"]["index"] for item in body["data"]
-            ] == expected_indices
+            assert response.json() == expected_body
             samples.append(elapsed_ms)
 
-        assert await count_self_audits() == before_self_audits + 23
-        latest_self_audit = (
-            (
-                await integration_db_session.execute(
-                    select(AuditEvent)
-                    .where(
-                        AuditEvent.tenant_id == tenant_id,
-                        AuditEvent.user_id == user_id,
-                        AuditEvent.action == "audit_events.list",
-                        AuditEvent.resource_type == "audit_event",
-                    )
-                    .order_by(AuditEvent.created_at.desc())
-                    .limit(1)
-                )
-            )
-            .scalars()
-            .one()
+        expected_self_audit_count = 23
+        assert await count_self_audits() == (
+            before_self_audits + expected_self_audit_count
         )
-        assert latest_self_audit.after_state == {
-            "actor_id": str(user_id),
-            "action": action,
-            "resource_type": "project",
+        self_audit_result = await integration_db_session.execute(
+            select(AuditEvent)
+            .where(
+                AuditEvent.tenant_id == tenant_id,
+                AuditEvent.user_id == user_id,
+                AuditEvent.action == "audit_events.list",
+                AuditEvent.resource_type == "audit_event",
+            )
+            .order_by(AuditEvent.created_at.desc())
+            .limit(expected_self_audit_count)
+        )
+        self_audit_projections = [
+            {
+                "tenant_id": str(self_audit.tenant_id),
+                "user_id": str(self_audit.user_id),
+                "action": self_audit.action,
+                "resource_type": self_audit.resource_type,
+                "resource_id": str(self_audit.resource_id)
+                if self_audit.resource_id is not None
+                else None,
+                "before_state": self_audit.before_state,
+                "after_state": self_audit.after_state,
+            }
+            for self_audit in self_audit_result.scalars()
+        ]
+        expected_self_audit_projection = {
+            "tenant_id": str(tenant_id),
+            "user_id": str(user_id),
+            "action": "audit_events.list",
+            "resource_type": "audit_event",
             "resource_id": None,
-            "start_at": params["start_at"],
-            "end_at": params["end_at"],
-            "page": 5,
-            "per_page": 100,
-            "total": target_count,
+            "before_state": None,
+            "after_state": {
+                "actor_id": str(user_id),
+                "action": action,
+                "resource_type": "project",
+                "resource_id": None,
+                "start_at": params["start_at"],
+                "end_at": params["end_at"],
+                "page": 5,
+                "per_page": 100,
+                "total": target_count,
+            },
         }
+        assert self_audit_projections == [
+            expected_self_audit_projection
+        ] * expected_self_audit_count
 
         _assert_p99_under(
             "audit events large filtered page API token",
@@ -2620,12 +3097,14 @@ async def test_audit_events_denied_queries_no_self_audit_p99_smoke(
         for _ in range(7):
             elapsed_ms, response = await _timed(client.get("/api/v1/audit-events"))
             assert response.status_code == 403, response.text
+            assert response.json() == {"detail": "Insufficient permissions"}
             samples.append(elapsed_ms)
 
     async with integration_client_as(user_a.id, tenant_a.id, role="viewer") as client:
         for _ in range(7):
             elapsed_ms, response = await _timed(client.get("/api/v1/audit-events"))
             assert response.status_code == 403, response.text
+            assert response.json() == {"detail": "Insufficient permissions"}
             samples.append(elapsed_ms)
 
     async with integration_client_as(user_a.id, tenant_a.id, role="owner") as client:
@@ -2640,6 +3119,13 @@ async def test_audit_events_denied_queries_no_self_audit_p99_smoke(
                 )
             )
             assert response.status_code == 404, response.text
+            assert response.json() == {
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": "Audit event not found",
+                    "details": [],
+                }
+            }
             samples.append(elapsed_ms)
 
     assert await count_self_audits() == before_count
@@ -2738,6 +3224,7 @@ async def test_audit_events_api_token_denied_no_self_audit_p99_smoke(
                     )
                 )
                 assert response.status_code == 403, response.text
+                assert response.json() == {"detail": "Insufficient permissions"}
                 assert action not in response.text
                 assert str(project_id) not in response.text
                 samples.append(elapsed_ms)
@@ -2827,6 +3314,7 @@ async def test_run_read_empty_scope_denied_logs_and_artifacts_no_s3_p99_smoke(
                 client.get(endpoint, params=params, headers=headers)
             )
             assert response.status_code == 403, response.text
+            assert response.json() == {"detail": "Insufficient permissions"}
             assert_no_sensitive_metadata(response.text)
             assert s3.get_calls == []
             assert s3.presign_calls == []
@@ -2917,6 +3405,7 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
         ).encode("utf-8")
 
         artifact_repo = ArtifactRepository(integration_db_session)
+        artifact_created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
         artifacts = [
             await artifact_repo.create(
                 run_id=run_id,
@@ -2925,6 +3414,7 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
                 storage_path=f"reports/{run_id}/{marker}-{artifact_name}",
                 size_bytes=4096 + index,
                 mime_type=mime_type,
+                created_at=artifact_created_at + timedelta(seconds=index),
             )
             for index, (artifact_type, artifact_name, mime_type) in enumerate(
                 (
@@ -2938,18 +3428,19 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
 
         audit_action = f"audit.concurrent_probe.{marker}"
         now = datetime.now(timezone.utc)
-        for index in range(90):
-            integration_db_session.add(
-                AuditEvent(
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    action=audit_action,
-                    resource_type="project",
-                    resource_id=project_id,
-                    after_state={"index": index, "marker": marker},
-                    created_at=now - timedelta(seconds=index),
-                )
+        audit_events = [
+            AuditEvent(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                action=audit_action,
+                resource_type="project",
+                resource_id=project_id,
+                after_state={"index": index, "marker": marker},
+                created_at=now - timedelta(seconds=index),
             )
+            for index in range(90)
+        ]
+        integration_db_session.add_all(audit_events)
         await integration_db_session.commit()
 
         async def count_self_audits() -> int:
@@ -2989,6 +3480,38 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
             "resource_type": "project",
             "per_page": 30,
         }
+        expected_archive_window = archive_entries[80:120]
+        expected_artifact_body = {
+            "data": [
+                {
+                    "id": str(item.id),
+                    "run_id": str(run_id),
+                    "type": item.type,
+                    "name": item.name,
+                    "storage_path": item.storage_path,
+                    "size_bytes": item.size_bytes,
+                    "mime_type": item.mime_type,
+                    "expires_at": (
+                        _json_datetime(item.expires_at) if item.expires_at else None
+                    ),
+                    "created_at": _json_datetime(item.created_at),
+                }
+                for item in sorted(
+                    artifacts,
+                    key=lambda artifact_item: artifact_item.created_at,
+                    reverse=True,
+                )
+            ],
+            "page": 1,
+            "per_page": 20,
+            "total": 3,
+        }
+        expected_audit_body = {
+            "data": [_audit_event_response(event) for event in audit_events[:30]],
+            "page": 1,
+            "per_page": 30,
+            "total": 90,
+        }
 
         async def read_run_detail() -> float:
             elapsed_ms, response = await _timed(
@@ -3016,11 +3539,12 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
             )
             assert response.status_code == 200, response.text
             body = response.json()
-            assert body["total"] == 240
-            assert body["page"] == 3
-            assert body["per_page"] == 40
-            assert body["data"][0]["line"] == f"{marker}-archived-line-080"
-            assert body["data"][-1]["line"] == f"{marker}-archived-line-119"
+            assert body == {
+                "data": expected_archive_window,
+                "page": 3,
+                "per_page": 40,
+                "total": 240,
+            }
             return elapsed_ms
 
         async def list_artifacts() -> float:
@@ -3032,16 +3556,7 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
             )
             assert response.status_code == 200, response.text
             body = response.json()
-            assert body["total"] == len(artifacts)
-            artifacts_by_id = {item["id"]: item for item in body["data"]}
-            assert set(artifacts_by_id) == {str(item.id) for item in artifacts}
-            for item in artifacts:
-                response_item = artifacts_by_id[str(item.id)]
-                assert response_item["run_id"] == str(run_id)
-                assert response_item["name"] == item.name
-                assert response_item["storage_path"] == item.storage_path
-                assert response_item["type"] == item.type
-                assert response_item["size_bytes"] == item.size_bytes
+            assert body == expected_artifact_body
             return elapsed_ms
 
         async def download_artifact() -> float:
@@ -3066,22 +3581,18 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
                 )
             )
             assert response.status_code == 200, response.text
-            body = response.json()
-            assert body["total"] == 90
-            assert len(body["data"]) == 30
-            assert {item["action"] for item in body["data"]} == {audit_action}
+            assert response.json() == expected_audit_body
             return elapsed_ms
 
         before_self_audits = await count_self_audits()
         try:
-            warmup_samples = await asyncio.gather(
+            await asyncio.gather(
                 read_run_detail(),
                 read_archived_logs(),
                 list_artifacts(),
                 download_artifact(),
                 list_audit_events(),
             )
-            assert len(warmup_samples) == 5
 
             samples: list[float] = []
             for _ in range(6):
@@ -3099,16 +3610,12 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
 
         expected_log_get_call = {"bucket": bucket, "key": f"logs/{run_id}.jsonl"}
         assert s3.get_calls == [expected_log_get_call] * 7
-        assert len(s3.presign_calls) == 7
-        assert all(call["method"] == "get_object" for call in s3.presign_calls)
-        assert all(
-            call["params"] == {"Bucket": bucket, "Key": artifact.storage_path}
-            for call in s3.presign_calls
-        )
-        assert all(
-            call["expires_in"] == app.state.container.settings.s3_presigned_url_ttl
-            for call in s3.presign_calls
-        )
+        expected_presign_call = {
+            "method": "get_object",
+            "params": {"Bucket": bucket, "Key": artifact.storage_path},
+            "expires_in": app.state.container.settings.s3_presigned_url_ttl,
+        }
+        assert s3.presign_calls == [expected_presign_call] * 7
         assert await count_self_audits() == before_self_audits + 7
 
         self_audit_result = await integration_db_session.execute(
@@ -3123,7 +3630,6 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
             .limit(7)
         )
         self_audits = list(self_audit_result.scalars())
-        assert len(self_audits) == 7
         expected_self_audit_after_state = {
             "actor_id": None,
             "action": audit_action,
@@ -3135,6 +3641,18 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
             "per_page": 30,
             "total": 90,
         }
+        assert [
+            {
+                "before_state": self_audit.before_state,
+                "after_state": self_audit.after_state,
+            }
+            for self_audit in self_audits
+        ] == [
+            {
+                "before_state": None,
+                "after_state": expected_self_audit_after_state,
+            }
+        ] * 7
         forbidden_self_audit_fragments = (
             "data",
             f"logs/{run_id}.jsonl",
@@ -3143,8 +3661,6 @@ async def test_real_api_token_concurrent_read_paths_p99_smoke(
             *(item.storage_path for item in artifacts),
         )
         for self_audit in self_audits:
-            assert self_audit.before_state is None
-            assert self_audit.after_state == expected_self_audit_after_state
             serialized_self_audit = json.dumps(
                 self_audit.after_state,
                 ensure_ascii=False,
@@ -3178,6 +3694,15 @@ async def test_execution_summary_generation_slo_smoke(
         "total": total,
         **counts,
         "pass_rate": counts["passed"] / total,
+        "failed_tests": [
+            {
+                "suite": "perf.summary",
+                "name": f"test_fail_{index}",
+                "status": "failed",
+            }
+            for index in range(counts["passed"], counts["passed"] + 20)
+        ],
+        "failed_tests_omitted": counts["failed"] + counts["error"] - 20,
     }
     tenant_id = seed_run["tenant"].id
     project_id = seed_run["project"].id

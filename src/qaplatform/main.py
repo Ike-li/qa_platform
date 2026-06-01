@@ -13,15 +13,13 @@ from sqlalchemy import text
 from qaplatform.api.schemas import ErrorDetail, ErrorResponse
 from qaplatform.config import Settings
 from qaplatform.logging import configure_logging
+from qaplatform.observability.metrics import http_request_duration
 from qaplatform.observability.tracing import instrument_fastapi, instrument_infra, setup_tracing
 from qaplatform.api.middleware.request_id import RequestIdMiddleware
 from qaplatform.api.middleware.rate_limit import RateLimitMiddleware
 from qaplatform.api.middleware.security_headers import SecurityHeadersMiddleware
 from qaplatform.api.middleware.cors import setup_cors
-from qaplatform.api.metrics import (
-    http_request_duration,
-    metrics_route,
-)
+from qaplatform.api.metrics import metrics_route
 
 logger = structlog.get_logger(__name__)
 
@@ -141,18 +139,18 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
             status_code=str(response.status_code),
         ).observe(duration)
         return response
-    
+
     # Rate limiting middleware needs redis_client from container
     # Since container might not be fully initialized here (it is in lifespan),
     # we might need to access it lazily if possible, or ensure it's available.
-    # In create_app, if container is passed, we use it. 
-    # Otherwise it's initialized in lifespan. 
+    # In create_app, if container is passed, we use it.
+    # Otherwise it's initialized in lifespan.
     # For BaseHTTPMiddleware, it's added during app creation.
-    
+
     if container and container.redis_client:
         app.add_middleware(RateLimitMiddleware, settings=_settings_obj, redis_client=container.redis_client)
     else:
-        # If container is not yet available, we can't easily add RateLimitMiddleware here 
+        # If container is not yet available, we can't easily add RateLimitMiddleware here
         # if it strictly requires redis_client at init time.
         # However, we can make RateLimitMiddleware fetch it from app.state.container at request time.
         # Let's adjust RateLimitMiddleware to be more flexible.
@@ -284,14 +282,20 @@ def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(422)
     async def validation_error_handler(request: Request, exc):
         details: list[str] = []
-        if hasattr(exc, "detail"):
-            for err in exc.detail if isinstance(exc.detail, list) else []:
+        detail = getattr(exc, "detail", None)
+        if isinstance(detail, list):
+            for err in detail:
                 loc = " -> ".join(str(part) for part in err.get("loc", []))
                 details.append(f"{loc}: {err.get('msg', '')}")
+            message = "Request validation failed"
+        elif detail:
+            message = str(detail)
+        else:
+            message = "Request validation failed"
         body = ErrorResponse(
             error=ErrorDetail(
                 code="VALIDATION_ERROR",
-                message="Request validation failed",
+                message=message,
                 details=details,
             )
         )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from qaplatform.api.auth.permissions import (
@@ -27,9 +29,16 @@ class TestTenantRolePermissions:
         assert ROLE_PERMISSIONS is TENANT_ROLE_PERMISSIONS
 
     def test_viewer_has_read_only_actions(self):
-        viewer_perms = TENANT_ROLE_PERMISSIONS[Role.VIEWER]
-        for action in viewer_perms:
-            assert "read" in action.value or action == Action.CREDENTIAL_READ
+        assert TENANT_ROLE_PERMISSIONS[Role.VIEWER] == {
+            Action.PROJECT_READ,
+            Action.RUN_READ,
+            Action.PIPELINE_READ,
+            Action.CONFIG_READ,
+            Action.CREDENTIAL_READ,
+            Action.MEMBER_READ,
+            Action.SCHEDULE_READ,
+            Action.NOTIFICATION_READ,
+        }
 
     def test_viewer_cannot_trigger_runs(self):
         assert Action.RUN_TRIGGER not in TENANT_ROLE_PERMISSIONS[Role.VIEWER]
@@ -80,8 +89,15 @@ class TestProjectRolePermissions:
         assert Action.RUN_CANCEL_OWN in dev
 
     def test_viewer_is_read_only(self):
-        viewer = PROJECT_ROLE_PERMISSIONS[ProjectRole.VIEWER]
-        assert all("read" in a.value for a in viewer)
+        assert PROJECT_ROLE_PERMISSIONS[ProjectRole.VIEWER] == {
+            Action.RUN_READ,
+            Action.PIPELINE_READ,
+            Action.CONFIG_READ,
+            Action.CREDENTIAL_READ,
+            Action.SCHEDULE_READ,
+            Action.NOTIFICATION_READ,
+            Action.MEMBER_READ,
+        }
 
 
 class TestNormalizeTenantRole:
@@ -244,8 +260,13 @@ class TestCheckPermission:
 class TestPermissionContext:
     def test_frozen(self):
         ctx = PermissionContext(user_id="u1", role="viewer", tenant_id="t1")
-        with pytest.raises(AttributeError):
+        with pytest.raises(FrozenInstanceError) as exc_info:
             ctx.user_id = "u2"  # type: ignore[misc]
+
+        assert exc_info.value.args == ("cannot assign to field 'user_id'",)
+        assert ctx.user_id == "u1"
+        assert ctx.role == "viewer"
+        assert ctx.tenant_id == "t1"
 
     def test_optional_project_fields_default_none(self):
         ctx = PermissionContext(user_id="u1", role="member", tenant_id="t1")

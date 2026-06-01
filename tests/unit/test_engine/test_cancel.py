@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+import logging
+from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import uuid4
 
 import pytest
@@ -23,7 +24,7 @@ class TestPublishCancel:
 
         await publish_cancel(redis, run_id)
 
-        redis.publish.assert_called_once_with(
+        redis.publish.assert_awaited_once_with(
             f"{CANCEL_CHANNEL_PREFIX}{run_id}",
             "cancel",
         )
@@ -35,7 +36,7 @@ class TestPublishCancel:
 
         await publish_cancel(redis, str(run_id))
 
-        redis.publish.assert_called_once_with(
+        redis.publish.assert_awaited_once_with(
             f"{CANCEL_CHANNEL_PREFIX}{run_id}",
             "cancel",
         )
@@ -119,7 +120,7 @@ class TestWatchForCancel:
         pubsub.feed(None)
         await asyncio.wait_for(task, timeout=1.0)
 
-        on_cancel.assert_awaited_once()
+        on_cancel.assert_awaited_once_with()
         assert pubsub.unsubscribed == [f"{CANCEL_CHANNEL_PREFIX}{run_id}"]
         assert pubsub.closed_with == "aclose"
 
@@ -131,18 +132,41 @@ class TestWatchForCancel:
         first message and silently dropped subsequent ones."""
         pubsub = _FakePubSub()
         redis = _FakeRedis(pubsub)
-        on_cancel = AsyncMock()
+        deliveries: list[int] = []
+        first_seen = asyncio.Event()
+        second_seen = asyncio.Event()
+
+        async def _record_cancel():
+            deliveries.append(len(deliveries) + 1)
+            if len(deliveries) == 1:
+                first_seen.set()
+            elif len(deliveries) == 2:
+                second_seen.set()
+
+        on_cancel = AsyncMock(side_effect=_record_cancel)
         stop = asyncio.Event()
 
         task = asyncio.create_task(watch_for_cancel(redis, "r", on_cancel, stop))
         await asyncio.sleep(0)
 
         pubsub.feed({"type": "message", "data": b"cancel"})
+        await asyncio.wait_for(first_seen.wait(), timeout=1.0)
+        assert deliveries == [1]
+        assert not task.done()
+        assert pubsub.unsubscribed == []
+        assert pubsub.closed_with is None
+
         pubsub.feed({"type": "message", "data": b"cancel"})
+        await asyncio.wait_for(second_seen.wait(), timeout=1.0)
+        assert deliveries == [1, 2]
+        assert not task.done()
+
         pubsub.feed(None)
         await asyncio.wait_for(task, timeout=1.0)
 
-        assert on_cancel.await_count == 2
+        assert on_cancel.await_args_list == [call(), call()]
+        assert pubsub.unsubscribed == [f"{CANCEL_CHANNEL_PREFIX}r"]
+        assert pubsub.closed_with == "aclose"
 
     @pytest.mark.asyncio
     async def test_ignores_non_message_envelopes(self):
@@ -161,7 +185,7 @@ class TestWatchForCancel:
         pubsub.feed(None)
 
         await asyncio.wait_for(task, timeout=1.0)
-        on_cancel.assert_awaited_once()
+        on_cancel.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_returns_silently_when_redis_is_none(self):
@@ -171,21 +195,52 @@ class TestWatchForCancel:
         on_cancel.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_swallows_handler_exceptions(self):
+    async def test_swallows_handler_exceptions(self, caplog):
         """A buggy on_cancel must not propagate and abort the executor's
         finally block."""
         pubsub = _FakePubSub()
         redis = _FakeRedis(pubsub)
-
-        async def bad_handler():
-            raise RuntimeError("boom")
-
+        on_cancel = AsyncMock(side_effect=[RuntimeError("boom"), None])
         stop = asyncio.Event()
-        task = asyncio.create_task(watch_for_cancel(redis, "r", bad_handler, stop))
+        task = asyncio.create_task(watch_for_cancel(redis, "r", on_cancel, stop))
         await asyncio.sleep(0)
-        pubsub.feed({"type": "message", "data": b"cancel"})
-        pubsub.feed(None)
-        await asyncio.wait_for(task, timeout=1.0)
+
+        with caplog.at_level(logging.ERROR, logger="qaplatform.engine.cancel"):
+            pubsub.feed({"type": "message", "data": b"cancel"})
+            await asyncio.sleep(0)
+            assert not task.done()
+            pubsub.feed({"type": "message", "data": b"cancel"})
+            pubsub.feed(None)
+            await asyncio.wait_for(task, timeout=1.0)
+
+        assert on_cancel.await_args_list == [call(), call()]
+        error_records = [
+            {
+                "levelno": record.levelno,
+                "message": record.getMessage(),
+                "exc_type": (
+                    type(record.exc_info[1]).__name__
+                    if record.exc_info is not None
+                    else None
+                ),
+                "exc_message": (
+                    str(record.exc_info[1]) if record.exc_info is not None else None
+                ),
+            }
+            for record in caplog.records
+            if record.name == "qaplatform.engine.cancel"
+            and record.levelno == logging.ERROR
+        ]
+        assert error_records == [
+            {
+                "levelno": logging.ERROR,
+                "message": "cancel handler raised for run r",
+                "exc_type": "RuntimeError",
+                "exc_message": "boom",
+            }
+        ]
+        assert pubsub.unsubscribed == [f"{CANCEL_CHANNEL_PREFIX}r"]
+        assert pubsub.closed_with == "aclose"
 
 
 # --------------------------------------------------------------------------- #
@@ -215,8 +270,8 @@ class TestExecutorCancelHandler:
     async def test_no_active_container_is_a_noop(self, executor):
         executor._active_execution_id = None
         await executor._handle_cancel_signal("r")
-        executor.backend.cancel.assert_not_called()
-        executor.backend.force_kill.assert_not_called()
+        executor.backend.cancel.assert_not_awaited()
+        executor.backend.force_kill.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_graceful_stop_returns_early_when_container_exits_on_sigterm(
@@ -235,7 +290,7 @@ class TestExecutorCancelHandler:
             await executor._handle_cancel_signal("run-id")
 
         executor.backend.cancel.assert_awaited_once_with("container-xyz")
-        executor.backend.force_kill.assert_not_called()
+        executor.backend.force_kill.assert_not_awaited()
         # The old implementation slept 30 s unconditionally; the new one
         # must not call asyncio.sleep at all on the happy path.
         sleep_mock.assert_not_awaited()
@@ -247,32 +302,64 @@ class TestExecutorCancelHandler:
         """F-PL-03: the 30 s grace window is the upper bound. If the
         container ignores SIGTERM for the full window we must escalate
         to SIGKILL."""
+        from qaplatform.engine.executor import GRACE_PERIOD_SECONDS
+
+        call_log: list[object] = []
         executor._active_execution_id = "container-xyz"
+
+        async def _cancel(execution_id):
+            call_log.append(("cancel", execution_id))
+
+        async def _wait(execution_id, timeout):
+            call_log.append(("wait", execution_id, timeout))
+            raise asyncio.TimeoutError
+
+        async def _force_kill(execution_id):
+            call_log.append(("force_kill", execution_id))
+
+        executor.backend.cancel = AsyncMock(side_effect=_cancel)
         # backend.wait blocks past the grace window — container ignored SIGTERM.
-        executor.backend.wait = AsyncMock(side_effect=asyncio.TimeoutError())
+        executor.backend.wait = AsyncMock(side_effect=_wait)
+        executor.backend.force_kill = AsyncMock(side_effect=_force_kill)
 
         await executor._handle_cancel_signal("run-id")
 
         executor.backend.cancel.assert_awaited_once_with("container-xyz")
         executor.backend.force_kill.assert_awaited_once_with("container-xyz")
-        # cancel must precede force_kill — the order is part of the contract.
-        cancel_call = executor.backend.cancel.await_args_list[0]
-        force_call = executor.backend.force_kill.await_args_list[0]
-        assert cancel_call is not None and force_call is not None
+        assert call_log == [
+            ("cancel", "container-xyz"),
+            ("wait", "container-xyz", GRACE_PERIOD_SECONDS),
+            ("force_kill", "container-xyz"),
+        ]
 
     @pytest.mark.asyncio
     async def test_sigterm_failure_still_force_kills(self, executor):
         """If SIGTERM fails (e.g. container already gone) we still want to
         attempt force_kill — otherwise an aiodocker hiccup mid-cancel
         would leave the run in a half-cancelled state."""
+        call_log: list[object] = []
         executor._active_execution_id = "c"
-        executor.backend.cancel.side_effect = RuntimeError("boom")
+
+        async def _cancel(execution_id):
+            call_log.append(("cancel", execution_id))
+            raise RuntimeError("boom")
+
+        async def _wait(execution_id, timeout):
+            call_log.append(("wait", execution_id, timeout))
+            raise asyncio.TimeoutError
+
+        async def _force_kill(execution_id):
+            call_log.append(("force_kill", execution_id))
+
+        executor.backend.cancel = AsyncMock(side_effect=_cancel)
         # wait raises -> falls through to force_kill path
-        executor.backend.wait = AsyncMock(side_effect=asyncio.TimeoutError())
+        executor.backend.wait = AsyncMock(side_effect=_wait)
+        executor.backend.force_kill = AsyncMock(side_effect=_force_kill)
 
         await executor._handle_cancel_signal("r")
 
         executor.backend.force_kill.assert_awaited_once_with("c")
+        assert [entry[0] for entry in call_log] == ["cancel", "wait", "force_kill"]
 
 
 # --------------------------------------------------------------------------- #

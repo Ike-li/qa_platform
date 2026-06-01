@@ -36,7 +36,7 @@ class TestS3Storage:
             url = await storage.generate_presigned_url("artifacts/test.html")
 
         assert "X-Amz-Signature" in url
-        mock_client.generate_presigned_url.assert_called_once_with(
+        mock_client.generate_presigned_url.assert_awaited_once_with(
             "get_object",
             Params={"Bucket": "qa-platform", "Key": "artifacts/test.html"},
             ExpiresIn=3600,
@@ -52,9 +52,12 @@ class TestS3Storage:
             mock_ctx.__aexit__ = AsyncMock(return_value=False)
             mock_client_ctx.return_value = mock_ctx
 
-            await storage.generate_presigned_url("path/file.zip", expires_in=7200)
+            url = await storage.generate_presigned_url("path/file.zip", expires_in=7200)
 
-        mock_client.generate_presigned_url.assert_called_once_with(
+        assert url == "http://example.com/signed"
+        mock_ctx.__aenter__.assert_awaited_once_with()
+        mock_ctx.__aexit__.assert_awaited_once_with(None, None, None)
+        mock_client.generate_presigned_url.assert_awaited_once_with(
             "get_object",
             Params={"Bucket": "qa-platform", "Key": "path/file.zip"},
             ExpiresIn=7200,
@@ -74,7 +77,7 @@ class TestArtifactDownloadHelpers:
         url = await _generate_download_url(mock_s3, "qa-platform", "artifacts/abc/report.html", 3600)
 
         assert url == "http://s3/signed-url"
-        mock_s3.generate_presigned_url.assert_called_once_with(
+        mock_s3.generate_presigned_url.assert_awaited_once_with(
             "get_object",
             Params={"Bucket": "qa-platform", "Key": "artifacts/abc/report.html"},
             ExpiresIn=3600,
@@ -89,11 +92,16 @@ class TestArtifactDownloadHelpers:
         mock_repos = MagicMock()
         mock_repos.artifact = AsyncMock()
         mock_repos.artifact.get_by_id.return_value = None
+        mock_repos.run = AsyncMock()
+        artifact_id = uuid4()
 
         with pytest.raises(HTTPException) as exc_info:
-            await _get_artifact_or_404(mock_repos, uuid4(), uuid4())
+            await _get_artifact_or_404(mock_repos, artifact_id, uuid4())
 
         assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Artifact not found"
+        mock_repos.artifact.get_by_id.assert_awaited_once_with(artifact_id)
+        mock_repos.run.get_for_tenant.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_artifact_or_404_wrong_tenant(self):
@@ -113,11 +121,15 @@ class TestArtifactDownloadHelpers:
         # surfaces as None, identical to a missing run.
         mock_repos.run = AsyncMock()
         mock_repos.run.get_for_tenant.return_value = None
+        artifact_id = uuid4()
 
         with pytest.raises(HTTPException) as exc_info:
-            await _get_artifact_or_404(mock_repos, uuid4(), tenant_id)
+            await _get_artifact_or_404(mock_repos, artifact_id, tenant_id)
 
         assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Artifact not found"
+        mock_repos.artifact.get_by_id.assert_awaited_once_with(artifact_id)
+        mock_repos.run.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
 
     @pytest.mark.asyncio
     async def test_get_artifact_or_404_run_not_found(self):
@@ -132,11 +144,19 @@ class TestArtifactDownloadHelpers:
 
         mock_repos.run = AsyncMock()
         mock_repos.run.get_for_tenant.return_value = None
+        artifact_id = uuid4()
+        tenant_id = uuid4()
 
         with pytest.raises(HTTPException) as exc_info:
-            await _get_artifact_or_404(mock_repos, uuid4(), uuid4())
+            await _get_artifact_or_404(mock_repos, artifact_id, tenant_id)
 
         assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Artifact not found"
+        mock_repos.artifact.get_by_id.assert_awaited_once_with(artifact_id)
+        mock_repos.run.get_for_tenant.assert_awaited_once_with(
+            artifact.run_id,
+            tenant_id,
+        )
 
     @pytest.mark.asyncio
     async def test_get_artifact_or_404_success(self):
@@ -153,13 +173,16 @@ class TestArtifactDownloadHelpers:
         mock_repos.run = AsyncMock()
         run = MagicMock(tenant_id=tenant_id)
         mock_repos.run.get_for_tenant.return_value = run
+        artifact_id = uuid4()
 
         result_artifact, result_run = await _get_artifact_or_404(
-            mock_repos, uuid4(), tenant_id
+            mock_repos, artifact_id, tenant_id
         )
 
         assert result_artifact is artifact
         assert result_run is run
+        mock_repos.artifact.get_by_id.assert_awaited_once_with(artifact_id)
+        mock_repos.run.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
 
 
 class TestDownloadArtifactRBAC:
@@ -167,6 +190,68 @@ class TestDownloadArtifactRBAC:
     not just tenant. A user lacking RUN_READ on the project owning the
     run should hit 403, even if the artifact is in their tenant.
     """
+
+    @pytest.mark.asyncio
+    async def test_download_artifact_404_short_circuits_before_rbac_or_storage(self):
+        from fastapi import HTTPException
+
+        from qaplatform.api.v1.artifacts import download_artifact
+
+        tenant_id = uuid4()
+        run_id = uuid4()
+        missing_artifact_id = uuid4()
+        cross_tenant_artifact_id = uuid4()
+
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+        cross_tenant_artifact = MagicMock(
+            run_id=run_id,
+            storage_path="reports/other-tenant/secret-report.html",
+        )
+        mock_repos.artifact.get_by_id.side_effect = [
+            None,
+            cross_tenant_artifact,
+        ]
+        mock_repos.run = AsyncMock()
+        mock_repos.run.get_for_tenant.return_value = None
+
+        user = MagicMock(tenant_id=tenant_id, user_id=uuid4(), role="reader")
+        s3_client = AsyncMock()
+        request = MagicMock()
+        request.app.state.container.s3_client = s3_client
+        session = MagicMock()
+
+        with patch(
+            "qaplatform.api.v1.artifacts.enforce_project_action",
+            new=AsyncMock(),
+        ) as enforce_project_action:
+            responses = []
+            for artifact_id in [missing_artifact_id, cross_tenant_artifact_id]:
+                with pytest.raises(HTTPException) as exc_info:
+                    await download_artifact(
+                        artifact_id=artifact_id,
+                        request=request,
+                        repos=mock_repos,
+                        user=user,
+                        session=session,
+                    )
+                responses.append(exc_info.value)
+
+        assert [(exc.status_code, exc.detail) for exc in responses] == [
+            (404, "Artifact not found"),
+            (404, "Artifact not found"),
+        ]
+        assert [args.args for args in mock_repos.artifact.get_by_id.await_args_list] == [
+            (missing_artifact_id,),
+            (cross_tenant_artifact_id,),
+        ]
+        mock_repos.run.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+        enforce_project_action.assert_not_awaited()
+        s3_client.generate_presigned_url.assert_not_awaited()
+        serialized_errors = repr([(exc.status_code, exc.detail) for exc in responses])
+        assert str(cross_tenant_artifact_id) not in serialized_errors
+        assert str(run_id) not in serialized_errors
+        assert "secret-report.html" not in serialized_errors
 
     @pytest.mark.asyncio
     async def test_download_artifact_403_when_project_action_denied(self):
@@ -177,6 +262,7 @@ class TestDownloadArtifactRBAC:
         tenant_id = uuid4()
         project_id = uuid4()
         run_id = uuid4()
+        artifact_id = uuid4()
 
         mock_repos = MagicMock()
         mock_repos.artifact = AsyncMock()
@@ -189,10 +275,17 @@ class TestDownloadArtifactRBAC:
         mock_repos.run.get_for_tenant.return_value = run
 
         user = MagicMock(tenant_id=tenant_id, user_id=uuid4(), role="reader")
+        s3_client = AsyncMock()
         request = MagicMock()
+        request.app.state.container.s3_client = s3_client
         session = MagicMock()
+        captured = {}
 
         async def _deny(_session, _user, _project_id, _action, **_kw):
+            captured["session"] = _session
+            captured["user"] = _user
+            captured["project_id"] = _project_id
+            captured["action"] = _action
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
         with patch(
@@ -200,14 +293,24 @@ class TestDownloadArtifactRBAC:
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await download_artifact(
-                    artifact_id=uuid4(),
+                    artifact_id=artifact_id,
                     request=request,
                     repos=mock_repos,
                     user=user,
                     session=session,
                 )
 
+        from qaplatform.api.auth.permissions import Action
+
         assert exc_info.value.status_code == 403
+        assert exc_info.value.detail == "Insufficient permissions"
+        assert captured["project_id"] == project_id
+        assert captured["action"] == Action.RUN_READ
+        assert captured["user"] is user
+        assert captured["session"] is session
+        mock_repos.artifact.get_by_id.assert_awaited_once_with(artifact_id)
+        mock_repos.run.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+        s3_client.generate_presigned_url.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_download_artifact_passes_project_id_to_rbac(self):
@@ -249,8 +352,9 @@ class TestDownloadArtifactRBAC:
         with patch(
             "qaplatform.api.v1.artifacts.enforce_project_action", new=_capture
         ):
+            artifact_id = uuid4()
             result = await download_artifact(
-                artifact_id=uuid4(),
+                artifact_id=artifact_id,
                 request=request,
                 repos=mock_repos,
                 user=user,
@@ -263,7 +367,87 @@ class TestDownloadArtifactRBAC:
         assert captured["action"] == Action.RUN_READ
         assert captured["user"] is user
         assert captured["session"] is session
+        mock_repos.artifact.get_by_id.assert_awaited_once_with(artifact_id)
+        mock_repos.run.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+        request.app.state.container.s3_client.generate_presigned_url.assert_awaited_once_with(
+            "get_object",
+            Params={"Bucket": "qa-platform", "Key": "artifacts/abc/report.html"},
+            ExpiresIn=3600,
+        )
         assert result == {
             "download_url": "http://s3/signed",
             "expires_in": 3600,
+        }
+
+    @pytest.mark.asyncio
+    async def test_download_artifact_503_when_storage_unavailable_after_rbac(self):
+        from fastapi import HTTPException
+
+        from qaplatform.api.v1.artifacts import download_artifact
+
+        tenant_id = uuid4()
+        project_id = uuid4()
+        run_id = uuid4()
+        artifact_id = uuid4()
+
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+        artifact = MagicMock(
+            run_id=run_id, storage_path="artifacts/abc/report.html"
+        )
+        mock_repos.artifact.get_by_id.return_value = artifact
+        mock_repos.run = AsyncMock()
+        run = MagicMock(tenant_id=tenant_id, project_id=project_id)
+        mock_repos.run.get_for_tenant.return_value = run
+
+        user = MagicMock(tenant_id=tenant_id, user_id=uuid4(), role="reader")
+
+        request = MagicMock()
+        request.app.state.container.s3_client = None
+        session = MagicMock()
+        captured = {}
+
+        async def _capture(_session, _user, _project_id, _action, **_kw):
+            captured["session"] = _session
+            captured["user"] = _user
+            captured["project_id"] = _project_id
+            captured["action"] = _action
+
+        with patch(
+            "qaplatform.api.v1.artifacts.enforce_project_action", new=_capture
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await download_artifact(
+                    artifact_id=artifact_id,
+                    request=request,
+                    repos=mock_repos,
+                    user=user,
+                    session=session,
+                )
+
+        from qaplatform.api.auth.permissions import Action
+
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "Artifact download is not available"
+        assert captured["project_id"] == project_id
+        assert captured["action"] == Action.RUN_READ
+        assert captured["user"] is user
+        assert captured["session"] is session
+        mock_repos.artifact.get_by_id.assert_awaited_once_with(artifact_id)
+        mock_repos.run.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+
+    def test_download_artifact_documents_storage_unavailable_response(self):
+        from fastapi import FastAPI
+
+        from qaplatform.api.v1.artifacts import router
+
+        app = FastAPI()
+        app.include_router(router, prefix="/api/v1")
+
+        responses = app.openapi()["paths"][
+            "/api/v1/artifacts/{artifact_id}/download"
+        ]["get"]["responses"]
+
+        assert responses["503"]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ErrorResponse"
         }

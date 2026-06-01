@@ -29,6 +29,9 @@ class CryptoService:
         invalid = [v for v in keys if v < 0 or v > 15]
         if invalid:
             raise ValueError(f"Key version must be 0-15, got: {invalid}")
+        for version, key in keys.items():
+            if len(key) != 32:
+                raise ValueError(f"Encryption key {version} must be 32 bytes")
         self._keys = keys
         self._current_key_version: int = max(keys.keys())
 
@@ -45,6 +48,9 @@ class CryptoService:
     def decrypt(self, data: bytes, context_id: str = "") -> str:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+        # header(1) + nonce(12) + AES-GCM tag(16); anything shorter cannot be valid.
+        if len(data) < 29:
+            raise ValueError("Ciphertext envelope is too short")
         header = data[0]
         format_version = (header >> 4) & 0x0F
         key_version = header & 0x0F

@@ -58,12 +58,28 @@ class FairScheduler:
         self.max_total = settings.max_concurrent_runs
         self.max_per_project = settings.max_concurrent_per_project
 
-    async def enqueue(self, run: Any, _defer_by: float = 0) -> bool:
+    async def enqueue(
+        self,
+        run: Any,
+        _defer_by: float = 0,
+        *,
+        trigger_type: str | None = None,
+    ) -> bool:
         """Try to enqueue a run. Returns True if enqueued immediately, False if queued waiting."""
         async with self.run_repo.scheduler_lock():
-            return await self._enqueue_if_capacity(run, _defer_by=_defer_by)
+            return await self._enqueue_if_capacity(
+                run,
+                _defer_by=_defer_by,
+                trigger_type=trigger_type,
+            )
 
-    async def _enqueue_if_capacity(self, run: Any, _defer_by: float = 0) -> bool:
+    async def _enqueue_if_capacity(
+        self,
+        run: Any,
+        _defer_by: float = 0,
+        *,
+        trigger_type: str | None = None,
+    ) -> bool:
         """Check quotas under the scheduler lock, then enqueue or mark waiting."""
         if await self._active_or_enqueued_count() >= self.max_total:
             await self.run_repo.mark_waiting(run.id)
@@ -73,19 +89,30 @@ class FairScheduler:
             await self.run_repo.mark_waiting(run.id)
             return False
 
-        return await self._enqueue_run(run, _defer_by=_defer_by)
+        return await self._enqueue_run(
+            run,
+            _defer_by=_defer_by,
+            trigger_type=trigger_type,
+        )
 
-    async def _enqueue_run(self, run: Any, _defer_by: float = 0) -> bool:
+    async def _enqueue_run(
+        self,
+        run: Any,
+        _defer_by: float = 0,
+        *,
+        trigger_type: str | None = None,
+    ) -> bool:
         """Perform the actual arq enqueue and persist queue metadata."""
+        effective_trigger_type = trigger_type or run.trigger_type
         # Manual/API triggers: honor user-set priority directly.
         # Other triggers (schedule, webhook, event): use trigger-type default.
-        if run.trigger_type in ("manual", "api"):
+        if effective_trigger_type in ("manual", "api"):
             try:
                 priority = Priority(getattr(run, "priority", 1))
             except ValueError:
                 priority = Priority.MEDIUM
         else:
-            priority = TRIGGER_PRIORITY.get(run.trigger_type, Priority.MEDIUM)
+            priority = TRIGGER_PRIORITY.get(effective_trigger_type, Priority.MEDIUM)
         queue = PRIORITY_QUEUES[priority]
         job_id = f"run:{run.id}"
 
@@ -155,4 +182,4 @@ async def enqueue_run(
 ) -> bool:
     """Convenience function to enqueue a run through the FairScheduler."""
     scheduler = FairScheduler(arq, run_repo, settings)
-    return await scheduler.enqueue(run)
+    return await scheduler.enqueue(run, trigger_type=trigger_type)

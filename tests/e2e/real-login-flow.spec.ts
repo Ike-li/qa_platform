@@ -1,6 +1,17 @@
 import { expect, test } from "@playwright/test";
+import { createProject, loginViaApi, uniqueSuffix } from "./helpers";
 
-test("login against the real backend, open a project if present, then logout", async ({ page }) => {
+test("login against the real backend, open a seeded project, then logout", async ({
+  page,
+  request,
+}) => {
+  const suffix = uniqueSuffix();
+  const { token } = await loginViaApi(request);
+  const project = await createProject(request, token, {
+    name: `E2E Login ${suffix}`,
+    slug: `e2e-login-${suffix}`,
+  });
+
   const adminPassword = process.env.E2E_ADMIN_PASSWORD || "admin123";
   await page.goto("/login");
   await page.getByLabel("Username").fill("admin");
@@ -10,15 +21,13 @@ test("login against the real backend, open a project if present, then logout", a
   await expect(page).toHaveURL(/\/projects$/);
   await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
 
-  const firstProject = page.locator('a[href^="/projects/"]').first();
-  if (await firstProject.isVisible().catch(() => false)) {
-    const projectName = (await firstProject.locator("h3").textContent())?.trim();
-    await firstProject.click();
-    await expect(page).toHaveURL(/\/projects\/[^/]+$/);
-    if (projectName) {
-      await expect(page.getByRole("heading", { name: projectName })).toBeVisible();
-    }
-  }
+  await page.getByRole("textbox", { name: "Search projects..." }).fill(project.name);
+  const projectLink = page.locator(`a[href="/projects/${project.id}"]`);
+  await expect(projectLink).toBeVisible();
+  await expect(projectLink.getByRole("heading", { name: project.name })).toBeVisible();
+  await projectLink.click();
+  await expect(page).toHaveURL(new RegExp(`/projects/${project.id}$`));
+  await expect(page.getByRole("heading", { name: project.name })).toBeVisible();
 
   await page.getByRole("button", { name: /Log out/i }).click();
   await expect(page).toHaveURL(/\/login$/);

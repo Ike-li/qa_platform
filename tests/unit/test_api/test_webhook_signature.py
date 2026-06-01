@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac as _hmac
-
+import re
+from unittest.mock import patch
 
 from qaplatform.infra.webhook_signature import (
     generate_webhook_signature,
@@ -33,12 +34,7 @@ class TestGenerateAndVerify:
 
     def test_signature_format_is_sha256_equals_hex(self):
         sig = generate_webhook_signature("s", b"data")
-        assert sig.startswith("sha256=")
-        hex_part = sig[len("sha256="):]
-        # All hex characters
-        assert all(c in "0123456789abcdef" for c in hex_part)
-        # SHA-256 produces 32 bytes = 64 hex chars
-        assert len(hex_part) == 64
+        assert re.fullmatch(r"sha256=[0-9a-f]{64}", sig)
 
 
 # ------------------------------------------------------------------
@@ -66,18 +62,17 @@ class TestInvalidSignature:
 
 
 # ------------------------------------------------------------------
-# Empty / missing secret -- skip verification
+# Empty / missing secret -- caller policy must decide, helper rejects
 # ------------------------------------------------------------------
 
 class TestEmptySecret:
-    """When no secret is configured, verification is skipped."""
+    """Empty secrets must not make arbitrary signatures valid."""
 
-    def test_empty_secret_skips_verification(self):
-        assert verify_webhook_signature("", b"payload", "sha256=garbage") is True
+    def test_empty_secret_rejects_signature_header(self):
+        assert verify_webhook_signature("", b"payload", "sha256=garbage") is False
 
-    def test_none_like_empty_secret(self):
-        # Caller passes empty string when project has no webhook_secret
-        assert verify_webhook_signature("", b"", "") is True
+    def test_empty_secret_rejects_missing_signature_header(self):
+        assert verify_webhook_signature("", b"", "") is False
 
 
 # ------------------------------------------------------------------
@@ -113,20 +108,30 @@ class TestTimingSafety:
     """Ensure :func:`hmac.compare_digest` is used (no short-circuit)."""
 
     def test_uses_constant_time_compare(self):
-        """Verify the implementation uses hmac.compare_digest.
+        """Verify the implementation delegates comparison to hmac.compare_digest."""
+        secret = "secret"
+        payload = b"payload"
+        expected = generate_webhook_signature(secret, payload)
+        supplied = "sha256=" + "f" * 64
 
-        We inspect the source rather than measure timing, since CI
-        environments make wall-clock assertions unreliable.
-        """
-        import inspect
-        src = inspect.getsource(verify_webhook_signature)
-        assert "compare_digest" in src
+        with patch(
+            "qaplatform.infra.webhook_signature.hmac.compare_digest",
+            return_value=False,
+        ) as compare_digest:
+            result = verify_webhook_signature(secret, payload, supplied)
 
-    def test_early_return_for_empty_secret(self):
-        """Empty secret returns True immediately (no comparison)."""
-        # This also ensures we don't accidentally compare with empty string
-        result = verify_webhook_signature("", b"anything", "sha256=invalid")
-        assert result is True
+        assert result is False
+        compare_digest.assert_called_once_with(expected, supplied)
+
+    def test_early_reject_for_empty_secret(self):
+        """Empty secret is rejected before comparison."""
+        with patch(
+            "qaplatform.infra.webhook_signature.hmac.compare_digest",
+        ) as compare_digest:
+            result = verify_webhook_signature("", b"anything", "sha256=invalid")
+
+        assert result is False
+        compare_digest.assert_not_called()
 
 
 # ------------------------------------------------------------------

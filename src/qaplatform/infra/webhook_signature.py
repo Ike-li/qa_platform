@@ -46,8 +46,7 @@ def verify_webhook_signature(
         attacks.
     """
     if not secret:
-        # No secret configured -- nothing to verify.
-        return True
+        return False
 
     if not signature_header:
         return False

@@ -10,6 +10,8 @@ cd "$PROJECT_ROOT"
 
 BASE_URL="${BASE_URL:-http://localhost:80}"
 PYTHON="${PYTHON:-.venv/bin/python}"
+SMOKE_ADMIN_USERNAME="${SMOKE_ADMIN_USERNAME:-admin}"
+SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-${E2E_ADMIN_PASSWORD:-admin123}}"
 
 # ── Helpers ──────────────────────────────────────────────────────────
 log()  { printf "\033[1;34m[setup]\033[0m %s\n" "$*"; }
@@ -91,9 +93,9 @@ else
 fi
 
 # ── 5. Seed admin user ─────────────────────────────────────────────
-log "Seeding admin user (admin/admin123)..."
-ADMIN_USERNAME=admin \
-ADMIN_PASSWORD=admin123 \
+log "Seeding admin user (${SMOKE_ADMIN_USERNAME}/password from SMOKE_ADMIN_PASSWORD or E2E_ADMIN_PASSWORD)..."
+ADMIN_USERNAME="$SMOKE_ADMIN_USERNAME" \
+ADMIN_PASSWORD="$SMOKE_ADMIN_PASSWORD" \
 ADMIN_EMAIL=admin@qaplatform.local \
 "$PYTHON" scripts/seed_admin.py
 
@@ -114,7 +116,7 @@ log "Frontend accessible at $BASE_URL."
 
 # ── 7. Create test artifact directory ──────────────────────────────
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-RESULTS_DIR="tests/smoke-results/$TIMESTAMP"
+RESULTS_DIR="${RESULTS_DIR:-tests/smoke-results/$TIMESTAMP}"
 mkdir -p "$RESULTS_DIR"
 log "Test artifacts will be stored in $RESULTS_DIR"
 

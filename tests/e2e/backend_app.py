@@ -19,7 +19,7 @@ from qaplatform.main import create_app
 
 class E2EContainer:
     def __init__(self) -> None:
-        self.settings = Settings()
+        self.settings = Settings(_env_file=None)
 
     async def close(self) -> None:
         return None

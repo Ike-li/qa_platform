@@ -8,12 +8,15 @@ import {
   createTenantUserViaDb,
   ensureEnvironment,
   ensurePipeline,
+  expectApiOk,
   loginViaApi,
   loginViaUi,
   uniqueSuffix,
   updateProject,
   type Paginated,
 } from "./helpers";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 test.describe("special regression coverage against the real app", () => {
   test.describe.configure({ mode: "serial" });
@@ -45,12 +48,18 @@ test.describe("special regression coverage against the real app", () => {
     const response = await request.get(`/api/v1/projects/${project.id}`, {
       headers: authHeaders(token),
     });
-    expect(response.ok()).toBeTruthy();
+    await expectApiOk(response, "Read project after saving silent windows");
     const refreshed = await response.json();
-    expect(refreshed.silent_windows).toHaveLength(1);
-    expect(refreshed.silent_windows[0].reason).toBe(`Release freeze ${suffix}`);
-    expect(refreshed.silent_windows[0].start_at).toMatch(/(Z|[+-]\d\d:\d\d)$/);
-    expect(refreshed.silent_windows[0].end_at).toMatch(/(Z|[+-]\d\d:\d\d)$/);
+    const savedWindow = refreshed.silent_windows[0];
+    expect(savedWindow.start_at).toMatch(/(Z|[+-]\d\d:\d\d)$/);
+    expect(savedWindow.end_at).toMatch(/(Z|[+-]\d\d:\d\d)$/);
+    expect(refreshed.silent_windows).toEqual([
+      {
+        start_at: savedWindow.start_at,
+        end_at: savedWindow.end_at,
+        reason: `Release freeze ${suffix}`,
+      },
+    ]);
   });
 
   test("environment variable values are masked in the project environment UI", async ({ page, request }) => {
@@ -65,19 +74,28 @@ test.describe("special regression coverage against the real app", () => {
       name: `Masked Env ${suffix}`,
       env_vars: { API_TOKEN: secret },
     });
+    await ensureEnvironment(request, token, project.id, {
+      name: `Decoy Env ${suffix}`,
+      env_vars: { DECOY_TOKEN: `decoy-secret-${suffix}` },
+    });
 
     await loginViaUi(page);
     await page.goto(`/projects/${project.id}`);
     await expect(page.getByRole("heading", { level: 1, name: project.name })).toBeVisible();
     await page.getByRole("tab", { name: /Environments/ }).click();
 
-    await expect(page.getByText(`Masked Env ${suffix}`)).toBeVisible();
-    await expect(page.locator('input[placeholder="KEY"]').first()).toHaveValue("API_TOKEN");
-    await expect(page.getByText(secret)).toHaveCount(0);
+    await expect(page.getByRole("region", { name: `Decoy Env ${suffix} environment` })).toBeVisible();
+    const environmentCard = page.getByRole("region", { name: `Masked Env ${suffix} environment` });
+    await expect(environmentCard).toBeVisible();
+    await expect(environmentCard.getByRole("heading", { name: `Masked Env ${suffix}` })).toBeVisible();
+    await expect(environmentCard.locator('input[placeholder="KEY"]')).toHaveCount(1);
+    await expect(environmentCard.locator('input[placeholder="KEY"]')).toHaveValue("API_TOKEN");
+    await expect(environmentCard.getByText(secret)).toHaveCount(0);
 
-    const valueInput = page.locator('input[placeholder="VALUE"]').first();
+    const valueInput = environmentCard.locator('input[placeholder="VALUE"]');
+    await expect(valueInput).toHaveCount(1);
     await expect(valueInput).toHaveAttribute("type", "password");
-    await page.getByRole("button", { name: "Show value" }).click();
+    await environmentCard.getByRole("button", { name: "Show value" }).click();
     await expect(valueInput).toHaveAttribute("type", "text");
     await expect(valueInput).toHaveValue(secret);
   });
@@ -112,7 +130,7 @@ test.describe("special regression coverage against the real app", () => {
         template: "Run {{run_id}} finished with {{status}}",
       },
     });
-    expect(createRule.ok()).toBeTruthy();
+    await expectApiOk(createRule, "Create secret-channel notification rule");
 
     await loginViaUi(page);
     await page.goto(`/projects/${project.id}`);
@@ -154,13 +172,13 @@ test.describe("special regression coverage against the real app", () => {
       },
     });
     expect(filtered.status()).toBe(200);
-    expect(await filtered.json()).toMatchObject({
+    expect(await filtered.json()).toEqual({
       status: "filtered",
       reason: "branch_not_allowed",
     });
 
     const dedupKey = `playwright-e2e:${project.git_url}:${gitSha}:${allowedBranch}`;
-    createActiveWebhookRunViaDb({
+    const activeRun = createActiveWebhookRunViaDb({
       tenantId: project.tenant_id,
       userId: login.user.id,
       projectId: project.id,
@@ -185,10 +203,54 @@ test.describe("special regression coverage against the real app", () => {
     const runsResponse = await request.get(`/api/v1/runs?project_id=${project.id}&per_page=100`, {
       headers: authHeaders(login.token),
     });
-    expect(runsResponse.ok()).toBeTruthy();
-    const runs = (await runsResponse.json()) as Paginated<{ git_sha: string | null; git_ref: string }>;
-    expect(runs.data.filter((run) => run.git_sha === gitSha)).toHaveLength(1);
-    expect(runs.data.some((run) => run.git_ref === `refs/heads/${filteredBranch}`)).toBe(false);
+    await expectApiOk(runsResponse, "List runs after webhook deduplication");
+    const runs = (await runsResponse.json()) as Paginated<{
+      id: string;
+      project_id: string;
+      pipeline_id: string;
+      pipeline_name: string;
+      environment_id: string;
+      status: string;
+      trigger_type: string;
+      git_sha: string | null;
+      git_ref: string;
+      attempt: number;
+    }> & { page: number; per_page: number };
+    expect({
+      page: runs.page,
+      per_page: runs.per_page,
+      total: runs.total,
+      data: runs.data.map((run) => ({
+        id: run.id,
+        project_id: run.project_id,
+        pipeline_id: run.pipeline_id,
+        pipeline_name: run.pipeline_name,
+        environment_id: run.environment_id,
+        status: run.status,
+        trigger_type: run.trigger_type,
+        git_sha: run.git_sha,
+        git_ref: run.git_ref,
+        attempt: run.attempt,
+      })),
+    }).toEqual({
+      page: 1,
+      per_page: 100,
+      total: 1,
+      data: [
+        {
+          id: activeRun.id,
+          project_id: project.id,
+          pipeline_id: pipeline.id,
+          pipeline_name: pipeline.name,
+          environment_id: environment.id,
+          status: "queued",
+          trigger_type: "webhook",
+          git_sha: gitSha,
+          git_ref: `refs/heads/${allowedBranch}`,
+          attempt: 1,
+        },
+      ],
+    });
 
     await loginViaUi(page);
     await page.goto("/runs");
@@ -204,17 +266,84 @@ test.describe("special regression coverage against the real app", () => {
       slug: `e2e-audit-${suffix}`,
     });
 
-    const ownerAudit = await request.get("/api/v1/audit-events?per_page=50", {
-      headers: authHeaders(ownerLogin.token),
-    });
+    const ownerAudit = await request.get(
+      `/api/v1/audit-events?action=project.create&resource_type=project&resource_id=${project.id}&per_page=10`,
+      { headers: authHeaders(ownerLogin.token) },
+    );
     expect(ownerAudit.status()).toBe(200);
-    const ownerAuditBody = await ownerAudit.json();
-    expect(
-      ownerAuditBody.data.some(
-        (event: { action: string; resource_id: string }) =>
-          event.action === "project.create" && event.resource_id === project.id,
-      ),
-    ).toBe(true);
+    const ownerAuditBody = (await ownerAudit.json()) as Paginated<{
+      id: string;
+      tenant_id: string;
+      user_id: string;
+      action: string;
+      resource_type: string;
+      resource_id: string;
+      before_state: Record<string, unknown> | null;
+      after_state: Record<string, unknown>;
+      ip_address: string | null;
+      user_agent: string | null;
+      created_at: string;
+    }> & { page: number; per_page: number };
+    const projectCreateAudit = ownerAuditBody.data[0];
+    expect(projectCreateAudit.id).toMatch(UUID_PATTERN);
+    expect(projectCreateAudit.created_at).toMatch(/(Z|[+-]\d\d:\d\d)$/);
+    expect(projectCreateAudit.after_state.created_at).toMatch(/(Z|[+-]\d\d:\d\d)$/);
+    expect(projectCreateAudit.after_state.updated_at).toMatch(/(Z|[+-]\d\d:\d\d)$/);
+    expect({
+      page: ownerAuditBody.page,
+      per_page: ownerAuditBody.per_page,
+      total: ownerAuditBody.total,
+      data: [
+        {
+          ...projectCreateAudit,
+          id: "<uuid>",
+          created_at: "<timestamp>",
+          after_state: {
+            ...projectCreateAudit.after_state,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+          },
+        },
+      ],
+    }).toEqual({
+      page: 1,
+      per_page: 10,
+      total: 1,
+      data: [
+        {
+          id: "<uuid>",
+          tenant_id: ownerLogin.user.tenant_id,
+          user_id: ownerLogin.user.id,
+          action: "project.create",
+          resource_type: "project",
+          resource_id: project.id,
+          before_state: null,
+          after_state: {
+            id: project.id,
+            tenant_id: ownerLogin.user.tenant_id,
+            name: project.name,
+            slug: project.slug,
+            description: project.description,
+            git_url: project.git_url,
+            git_auth_method: "none",
+            credential_id: null,
+            default_branch: "main",
+            root_path: ".",
+            shallow_clone: true,
+            default_env_id: null,
+            settings: {},
+            silent_windows: [],
+            status: "active",
+            created_by: ownerLogin.user.id,
+            created_at: "<timestamp>",
+            updated_at: "<timestamp>",
+          },
+          ip_address: null,
+          user_agent: null,
+          created_at: "<timestamp>",
+        },
+      ],
+    });
 
     const memberPassword = `member-pass-${suffix}`;
     const member = createTenantUserViaDb({
@@ -224,7 +353,7 @@ test.describe("special regression coverage against the real app", () => {
       password: memberPassword,
       role: "member",
     });
-    expect(member.id).toBeTruthy();
+    expect(member.id).toMatch(UUID_PATTERN);
 
     const memberLogin = await loginViaApi(request, {
       username: `member_${suffix.replace(/-/g, "_")}`,
@@ -235,6 +364,7 @@ test.describe("special regression coverage against the real app", () => {
       headers: authHeaders(memberLogin.token),
     });
     expect(memberAudit.status()).toBe(403);
+    await expect(memberAudit.json()).resolves.toEqual({ detail: "Insufficient permissions" });
   });
 
   test("run result API filters remain consistent with run detail data", async ({ page, request }) => {
@@ -270,25 +400,82 @@ test.describe("special regression coverage against the real app", () => {
       headers: authHeaders(ownerLogin.token),
     });
     expect(failedResponse.status()).toBe(200);
-    const failedBody = await failedResponse.json();
-    expect(failedBody.total).toBe(1);
-    expect(failedBody.data[0].name).toBe(`test_checkout_timeout_${suffix}`);
+    type TestResultPage = Paginated<{
+      id: string;
+      run_id: string;
+      suite: string;
+      name: string;
+      status: string;
+      duration_ms: number;
+      error_message: string | null;
+      stack_trace: string | null;
+      tags: string[];
+      metadata: Record<string, unknown>;
+    }> & { page: number; per_page: number };
+    const normalizeResultPage = (body: TestResultPage) => ({
+      ...body,
+      data: body.data.map((result) => {
+        expect(result.id).toMatch(UUID_PATTERN);
+        return { ...result, id: "<uuid>" };
+      }),
+    });
+
+    const failedBody = (await failedResponse.json()) as TestResultPage;
+    const expectedFailedResult = {
+      id: "<uuid>",
+      run_id: run.id,
+      suite: "checkout",
+      name: `test_checkout_timeout_${suffix}`,
+      status: "failed",
+      duration_ms: 1,
+      error_message: `timeout-${suffix}`,
+      stack_trace: null,
+      tags: [],
+      metadata: {},
+    };
+    expect(normalizeResultPage(failedBody)).toEqual({
+      data: [expectedFailedResult],
+      page: 1,
+      per_page: 20,
+      total: 1,
+    });
 
     const suiteResponse = await request.get(`/api/v1/runs/${run.id}/results?suite=billing`, {
       headers: authHeaders(ownerLogin.token),
     });
     expect(suiteResponse.status()).toBe(200);
-    const suiteBody = await suiteResponse.json();
-    expect(suiteBody.total).toBe(1);
-    expect(suiteBody.data[0].name).toBe(`test_billing_skipped_${suffix}`);
+    const suiteBody = (await suiteResponse.json()) as TestResultPage;
+    expect(normalizeResultPage(suiteBody)).toEqual({
+      data: [
+        {
+          id: "<uuid>",
+          run_id: run.id,
+          suite: "billing",
+          name: `test_billing_skipped_${suffix}`,
+          status: "skipped",
+          duration_ms: 1,
+          error_message: null,
+          stack_trace: null,
+          tags: [],
+          metadata: {},
+        },
+      ],
+      page: 1,
+      per_page: 20,
+      total: 1,
+    });
 
     const queryResponse = await request.get(`/api/v1/runs/${run.id}/results?q=timeout-${suffix}`, {
       headers: authHeaders(ownerLogin.token),
     });
     expect(queryResponse.status()).toBe(200);
-    const queryBody = await queryResponse.json();
-    expect(queryBody.total).toBe(1);
-    expect(queryBody.data[0].status).toBe("failed");
+    const queryBody = (await queryResponse.json()) as TestResultPage;
+    expect(normalizeResultPage(queryBody)).toEqual({
+      data: [expectedFailedResult],
+      page: 1,
+      per_page: 20,
+      total: 1,
+    });
 
     await loginViaUi(page);
     await page.goto(`/runs/${run.id}`);

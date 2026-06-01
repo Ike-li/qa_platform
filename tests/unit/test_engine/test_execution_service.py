@@ -77,15 +77,45 @@ class TestExecutionService:
         self.svc = ExecutionService()
 
     def test_create_run_returns_queued(self):
+        tenant_id = uuid4()
+        project_id = uuid4()
+        pipeline_id = uuid4()
+        environment_id = uuid4()
+        triggered_by = uuid4()
+        source_run_id = uuid4()
+
         run = self.svc.create_run(
-            tenant_id=uuid4(),
-            project_id=uuid4(),
-            pipeline_id=uuid4(),
-            environment_id=uuid4(),
+            tenant_id=tenant_id,
+            project_id=project_id,
+            pipeline_id=pipeline_id,
+            environment_id=environment_id,
             trigger_type="manual",
             git_ref="main",
+            triggered_by=triggered_by,
+            git_sha="abc123",
+            source_run_id=source_run_id,
+            chain_depth=2,
+            dedup_key="manual:abc123",
         )
+        assert run.id.int == 0
+        assert run.tenant_id == tenant_id
+        assert run.project_id == project_id
+        assert run.pipeline_id == pipeline_id
+        assert run.environment_id == environment_id
         assert run.status == RunStatus.QUEUED
+        assert run.trigger_type == "manual"
+        assert run.git_ref == "main"
+        assert run.git_sha == "abc123"
+        assert run.triggered_by == triggered_by
+        assert run.source_run_id == source_run_id
+        assert run.chain_depth == 2
+        assert run.dedup_key == "manual:abc123"
+        assert run.priority == 1
+        assert run.attempt == 1
+        assert run.retry_group_id is None
+        assert run.created_at == run.updated_at == run.status_updated_at
+        assert run.created_at.tzinfo is not None
+        assert run.created_at.utcoffset() is not None
 
     def test_transition_status_valid(self):
         run = MagicMock()
@@ -135,51 +165,104 @@ class TestConditionalTransitions:
         self.repo.update_status.return_value = True
         fake_run = _FakeRun(RunStatus.PREPARING)
         self.repo.get.return_value = fake_run
+        run_id = fake_run.id
 
-        result = await claim_for_worker(self.repo, fake_run.id, "worker-1")
-        assert result is not None
-        self.repo.update_status.assert_awaited_once()
+        result = await claim_for_worker(self.repo, run_id, "worker-1")
+
+        assert result is fake_run
+        self.repo.update_status.assert_awaited_once_with(
+            run_id,
+            RunStatus.PREPARING,
+            worker_id="worker-1",
+        )
+        self.repo.get.assert_awaited_once_with(run_id)
 
     @pytest.mark.asyncio
     async def test_claim_for_worker_already_claimed(self):
         self.repo.update_status.return_value = False
+        run_id = uuid4()
 
-        result = await claim_for_worker(self.repo, uuid4(), "worker-1")
+        result = await claim_for_worker(self.repo, run_id, "worker-1")
+
         assert result is None
+        self.repo.update_status.assert_awaited_once_with(
+            run_id,
+            RunStatus.PREPARING,
+            worker_id="worker-1",
+        )
+        self.repo.get.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_start_execution(self):
         self.repo.update_status.return_value = True
-        result = await start_execution(self.repo, uuid4())
+        run_id = uuid4()
+
+        result = await start_execution(self.repo, run_id)
+
         assert result is True
+        self.repo.update_status.assert_awaited_once_with(run_id, RunStatus.RUNNING)
 
     @pytest.mark.asyncio
     async def test_finish_if_current_success(self):
         self.repo.update_status.return_value = True
         summary = {"total": 5, "passed": 5, "failed": 0}
-        result = await finish_if_current(self.repo, uuid4(), summary=summary)
+        run_id = uuid4()
+
+        result = await finish_if_current(self.repo, run_id, summary=summary)
+
         assert result is True
+        self.repo.update_status.assert_awaited_once_with(
+            run_id,
+            RunStatus.DONE,
+            summary=summary,
+        )
 
     @pytest.mark.asyncio
     async def test_finish_if_current_already_terminated(self):
         self.repo.update_status.return_value = False
-        result = await finish_if_current(self.repo, uuid4())
+        run_id = uuid4()
+
+        result = await finish_if_current(self.repo, run_id)
+
         assert result is False
+        self.repo.update_status.assert_awaited_once_with(run_id, RunStatus.DONE)
 
     @pytest.mark.asyncio
     async def test_fail_if_current_with_message(self):
         self.repo.update_status.return_value = True
-        result = await fail_if_current(self.repo, uuid4(), message="container OOM")
+        run_id = uuid4()
+
+        result = await fail_if_current(
+            self.repo,
+            run_id,
+            expected=RunStatus.RUNNING,
+            message="container OOM",
+        )
+
         assert result is True
+        self.repo.update_status.assert_awaited_once_with(
+            run_id,
+            RunStatus.FAILED,
+            error_message="container OOM",
+            expected=RunStatus.RUNNING,
+        )
 
     @pytest.mark.asyncio
     async def test_cancel_if_current(self):
         self.repo.update_status.return_value = True
-        result = await cancel_if_current(self.repo, uuid4())
+        run_id = uuid4()
+
+        result = await cancel_if_current(self.repo, run_id)
+
         assert result is True
+        self.repo.update_status.assert_awaited_once_with(run_id, RunStatus.CANCELLED)
 
     @pytest.mark.asyncio
     async def test_timeout_if_current(self):
         self.repo.update_status.return_value = True
-        result = await timeout_if_current(self.repo, uuid4())
+        run_id = uuid4()
+
+        result = await timeout_if_current(self.repo, run_id)
+
         assert result is True
+        self.repo.update_status.assert_awaited_once_with(run_id, RunStatus.TIMEOUT)

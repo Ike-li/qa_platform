@@ -1,14 +1,15 @@
 # T05: F-EX-02 静默窗口
 
 > **来源**：feature-catalog.md §4.1（F-EX-02；设计见 feature-catalog.md §4.3）
-> **必要性**：P1（未达 PRD §3.3 验收）
+> **必要性**：P1（PRD §3.3 验收项，当前已完成）
 > **预计**：M（后端 + 前端）
+> **当前状态**：已落地到 API、worker、前端、unit、required integration 与 E2E 证据；保留本文作为实现口径档案。
 
 ## 背景
 
-PRD §3.3 F-EX-02 验收"支持时区；支持静默窗口（如发布冻结期不触发）"。timezone 已实现，**静默窗口未实现**。
+PRD §3.3 F-EX-02 验收"支持时区；支持静默窗口（如发布冻结期不触发）"。timezone 与项目级静默窗口均已实现：项目设置写入 `Project.settings.silent_windows`，cron 命中时不触发 Run，手动触发与 webhook 不受影响。
 
-设计已锁定（见 catalog §4.3），按规格实施即可，不要再做架构决策。
+实现口径见 catalog §4.3。本文不再是未完成任务包，而是防止后续把 `quiet_windows` 与 `silent_windows` 混用的维护说明。
 
 ## Schema（关键 — 注意嵌入既有 settings JSONB）
 
@@ -41,30 +42,16 @@ class SilentWindow(BaseModel):
 ## 判定函数
 
 ```python
-# 放在 src/qaplatform/domain/services/scheduling.py
-# 和 should_fire 保持同一调度领域服务
-from datetime import datetime, timezone
+# src/qaplatform/domain/services/schedule.py
+from datetime import datetime
 
 
 def is_in_silent_window(windows: list[SilentWindow], now: datetime) -> SilentWindow | None:
     """Returns the matching window, or None."""
-    if not windows:
-        return None
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
-    now_utc = now.astimezone(timezone.utc)
-    # start_at / end_at 必须都是 tz-aware；比较前统一到 UTC。
     # 判定为闭区间：start_at <= now <= end_at。
-    return next(
-        (
-            w
-            for w in windows
-            if w.start_at.astimezone(timezone.utc)
-            <= now_utc
-            <= w.end_at.astimezone(timezone.utc)
-        ),
-        None,
-    )
+    return next((w for w in windows if w.start_at <= now <= w.end_at), None)
 ```
 
 ## 既有 quiet_windows 注意事项
@@ -75,7 +62,7 @@ def is_in_silent_window(windows: list[SilentWindow], now: datetime) -> SilentWin
 - `src/qaplatform/api/schemas.py` 的 `ScheduleCreate/Update/Response.quiet_windows`
 - `src/qaplatform/domain/services/scheduling.py::should_fire`
 
-本任务新增的是 project 级 `Project.settings.silent_windows`，用于发布冻结期等绝对时间窗口。实现时不要把两者混为一谈：`silent_windows` 命中时必须写 audit，且不更新 `schedule.last_run_at`；既有 `quiet_windows` 目前只是 schedule 级跳过逻辑。
+当前已新增 project 级 `Project.settings.silent_windows`，用于发布冻结期等绝对时间窗口。实现时不要把两者混为一谈：`silent_windows` 命中时必须写 audit，且不更新 `schedule.last_run_at`；既有 `quiet_windows` 目前只是 schedule 级跳过逻辑。
 
 ## 调度行为（修改 `worker/settings.py::check_schedules`）
 
@@ -98,8 +85,7 @@ async def trigger_schedule(schedule, now):
             resource_id=schedule.id,
             after_state={
                 "schedule_id": str(schedule.id),
-                "reason": w.reason,
-                "window_end": w.end_at.isoformat(),
+                "window": w.model_dump(mode="json"),
             },
         )
         return  # 不创建 Run，不更新 last_run_at
@@ -108,15 +94,15 @@ async def trigger_schedule(schedule, now):
 
 ## 验收标准
 
-- [ ] `PUT /api/v1/projects/{project_id}` 接受 silent_windows，校验 `end_at > start_at`、单项目 ≤ 20 条窗口
-- [ ] cron tick 命中窗口 → 不创建 Run + 写 audit `schedule_skipped_silent_window`
-- [ ] audit 的 `after_state` 包含 `schedule_id`、`reason`、`window_end`（当前 `AuditEvent` 无 `metadata` 列，不为 T05 新增 audit schema migration）
-- [ ] cron tick 命中窗口 → schedule 的 `last_run_at` 不更新
-- [ ] **手动触发 / Webhook 触发 完全忽略 silent_windows**
-- [ ] 时区敏感：start_at/end_at 必须 tz-aware，不接受 naive datetime
-- [ ] 前端项目设置页可添加/删除/编辑窗口
-- [ ] 单元测试：is_in_silent_window 边界（窗口起止时刻、跨夜、不同时区）
-- [ ] 集成测试：window 内 cron tick + window 外 cron tick + 手动触发不受影响
+- [x] `PUT /api/v1/projects/{project_id}` 接受 silent_windows，校验 `end_at > start_at`、单项目 ≤ 20 条窗口
+- [x] cron tick 命中窗口 → 不创建 Run + 写 audit `schedule_skipped_silent_window`
+- [x] audit 的 `after_state` 包含 `schedule_id` 与命中的 `window`（当前 `AuditEvent` 无 `metadata` 列，不为 T05 新增 audit schema migration）
+- [x] cron tick 命中窗口 → schedule 的 `last_run_at` 不更新
+- [x] **手动触发 / Webhook 触发 完全忽略 silent_windows**
+- [x] 时区敏感：start_at/end_at 必须 tz-aware，不接受 naive datetime
+- [x] 前端项目设置页可添加/删除/编辑窗口
+- [x] 单元测试：is_in_silent_window 边界（窗口起止时刻、跨夜、不同时区）
+- [x] 集成测试：真实 API/DB 保存、window 内 cron tick、window 外 cron tick、手动触发与 webhook 不受影响
 
 ## 约束
 

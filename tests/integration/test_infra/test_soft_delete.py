@@ -99,7 +99,7 @@ async def test_list_excludes_soft_deleted(integration_db_session, seed_run):
         offset=0,
         limit=10,
     )
-    assert len(items) == 0
+    assert items == []
     assert total == 0
 
 

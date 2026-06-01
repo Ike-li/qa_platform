@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import shlex
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -23,35 +25,88 @@ class TestPytestRunnerProtocol:
 class TestPytestBuildCommand:
     """Test build_command output (public string API)."""
 
+    @staticmethod
+    def _assert_command(command: str, expected_argv: list[str]) -> None:
+        expected_command = "cd /workspace && " + " ".join(
+            shlex.quote(part) for part in expected_argv
+        )
+        assert command == expected_command
+        assert shlex.split(command.removeprefix("cd /workspace && ")) == expected_argv
+
     def test_default_command(self):
         runner = PytestRunner()
         cmd = runner.build_command({})
-        assert "python -m pytest" in cmd
-        assert "--junitxml=results/junit.xml" in cmd
-        assert "tests/" in cmd
+        self._assert_command(cmd, [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "tests",
+        ])
 
     def test_with_extra_args(self):
         runner = PytestRunner()
         cmd = runner.build_command({"args": ["-v", "--tb=short"]})
-        assert "-v" in cmd
-        assert "--tb=short" in cmd
+        self._assert_command(cmd, [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "-v",
+            "--tb=short",
+            "tests",
+        ])
 
     def test_with_custom_test_path(self):
         runner = PytestRunner()
         cmd = runner.build_command({"test_path": "tests/unit/"})
-        assert "tests/unit/" in cmd
+        self._assert_command(cmd, [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "tests/unit/",
+        ])
 
     def test_with_markers(self):
         runner = PytestRunner()
         cmd = runner.build_command({"args": ["-m", "slow"]})
-        assert "-m" in cmd
-        assert "slow" in cmd
+        self._assert_command(cmd, [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "-m",
+            "slow",
+            "tests",
+        ])
 
     def test_with_k_expression(self):
         runner = PytestRunner()
-        cmd = runner.build_command({"args": ["-k", "test_login"]})
-        assert "-k" in cmd
-        assert "test_login" in cmd
+        cmd = runner.build_command({"args": ["-k", "not slow"], "test_path": "tests/unit/"})
+        self._assert_command(cmd, [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "-k",
+            "not slow",
+            "tests/unit/",
+        ])
+
+    def test_extra_args_as_string_is_split_before_shell_quoting(self):
+        runner = PytestRunner()
+        cmd = runner.build_command({"args": "-k 'not slow' --tb=short"})
+        self._assert_command(cmd, [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "-k",
+            "not slow",
+            "--tb=short",
+            "tests",
+        ])
 
 
 class TestPytestBuildCommandInternal:
@@ -60,76 +115,146 @@ class TestPytestBuildCommandInternal:
     def test_default_command(self):
         runner = PytestRunner()
         cmd = runner._build_command({})
-        assert cmd[0] == "python"
-        assert "-m" in cmd
-        assert "pytest" in cmd
-        assert "--junitxml=results/junit.xml" in cmd
-        assert "tests" in cmd
+        assert cmd == [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "tests",
+        ]
 
     def test_custom_executable(self):
         runner = PytestRunner()
         cmd = runner._build_command({"executable": "python3.11"})
-        assert cmd[0] == "python3.11"
+        assert cmd == [
+            "python3.11",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "tests",
+        ]
 
     def test_custom_junit_xml(self):
         runner = PytestRunner()
         cmd = runner._build_command({"junit_xml": "output/report.xml"})
-        assert "--junitxml=output/report.xml" in cmd
+        assert cmd == [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=output/report.xml",
+            "tests",
+        ]
+
+    @pytest.mark.parametrize(
+        "junit_xml",
+        ["/tmp/report.xml", "../report.xml", "reports/../report.xml", r"C:\tmp\report.xml"],
+    )
+    def test_rejects_junit_xml_outside_workspace(self, junit_xml):
+        runner = PytestRunner()
+        with pytest.raises(ValueError) as exc_info:
+            runner._build_command({"junit_xml": junit_xml})
+
+        assert str(exc_info.value) == "junit_xml must be a relative path inside the workspace"
+        assert junit_xml not in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        ("config", "field", "unsafe_path"),
+        [
+            ({"test_path": "/tmp/tests"}, "test_path", "/tmp/tests"),
+            ({"test_path": ""}, "test_path", ""),
+            ({"test_path": "   "}, "test_path", "   "),
+            ({"test_paths": ["tests/unit", "../secret"]}, "test_paths", "../secret"),
+            ({"test_paths": ["tests/../secret"]}, "test_paths", "tests/../secret"),
+            ({"test_paths": [r"C:\tmp\tests"]}, "test_paths", r"C:\tmp\tests"),
+            ({"test_paths": ["tests/unit", ""]}, "test_paths", ""),
+            ({"test_paths": ["tests/unit", "   "]}, "test_paths", "   "),
+        ],
+    )
+    def test_rejects_test_paths_outside_workspace(self, config, field, unsafe_path):
+        runner = PytestRunner()
+        with pytest.raises(ValueError) as exc_info:
+            runner._build_command(config)
+
+        assert str(exc_info.value) == f"{field} must be a relative path inside the workspace"
+        if unsafe_path:
+            assert unsafe_path not in str(exc_info.value)
 
     def test_extra_args_as_list(self):
         runner = PytestRunner()
         cmd = runner._build_command({"args": ["-x", "--strict-markers"]})
-        assert "-x" in cmd
-        assert "--strict-markers" in cmd
+        assert cmd == [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "-x",
+            "--strict-markers",
+            "tests",
+        ]
 
     def test_extra_args_as_string(self):
         runner = PytestRunner()
         cmd = runner._build_command({"args": "-x --strict-markers"})
-        assert "-x" in cmd
-        assert "--strict-markers" in cmd
+        assert cmd == [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "-x",
+            "--strict-markers",
+            "tests",
+        ]
 
     def test_custom_test_paths(self):
         runner = PytestRunner()
         cmd = runner._build_command({"test_paths": ["tests/unit", "tests/integration"]})
-        assert "tests/unit" in cmd
-        assert "tests/integration" in cmd
+        assert cmd == [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "tests/unit",
+            "tests/integration",
+        ]
 
     def test_test_paths_as_string(self):
         runner = PytestRunner()
         cmd = runner._build_command({"test_paths": "tests/unit"})
-        assert "tests/unit" in cmd
+        assert cmd == [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "tests/unit",
+        ]
 
 
 class TestPytestParseSummary:
     """Test _parse_summary static method.
 
-    Note: the parser splits by comma then space.  The first token always starts
-    with "=====" so int() fails on it — the first keyword (typically "passed")
-    is never counted.  Subsequent tokens parse correctly.
+    These assertions intentionally cover the first summary token and single-result
+    summaries because those shapes previously parsed as all zero counts.
     """
 
     def test_mixed_results(self):
         result = PytestRunner._parse_summary(
             "===== 3 passed, 2 failed, 1 skipped in 2.5s ====="
         )
-        # "3 passed" is the first token — skipped because it starts with "====="
-        assert result == {"passed": 0, "failed": 2, "skipped": 1, "error": 0}
+        assert result == {"passed": 3, "failed": 2, "skipped": 1, "error": 0}
 
     def test_with_errors(self):
         result = PytestRunner._parse_summary(
             "===== 1 passed, 1 error in 0.5s ====="
         )
-        assert result == {"passed": 0, "failed": 0, "skipped": 0, "error": 1}
+        assert result == {"passed": 1, "failed": 0, "skipped": 0, "error": 1}
 
     def test_passed_after_comma_is_parsed(self):
         """When 'passed' appears after a comma, it IS parsed."""
         result = PytestRunner._parse_summary(
             "===== 2 failed, 5 passed in 1.0s ====="
         )
-        # "2 failed" is first token (starts with =====) so it's skipped
-        # "5 passed" is after comma → parsed
         assert result["passed"] == 5
-        assert result["failed"] == 0
+        assert result["failed"] == 2
 
     def test_no_summary_returns_zeros(self):
         result = PytestRunner._parse_summary("no summary here")
@@ -139,13 +264,24 @@ class TestPytestParseSummary:
         result = PytestRunner._parse_summary("")
         assert result == {"passed": 0, "failed": 0, "skipped": 0, "error": 0}
 
-    def test_single_result_no_comma_returns_zeros(self):
-        """When there's only one result (no comma), the entire line is one token
-        starting with '=====' so int() fails and all counts are 0."""
+    def test_single_result_no_comma_is_parsed(self):
+        """Single-result summaries must still count the terminal state."""
         result = PytestRunner._parse_summary(
             "===== 4 failed in 0.8s ====="
         )
-        assert result == {"passed": 0, "failed": 0, "skipped": 0, "error": 0}
+        assert result == {"passed": 0, "failed": 4, "skipped": 0, "error": 0}
+
+    def test_xfailed_counts_as_skipped(self):
+        result = PytestRunner._parse_summary(
+            "===== 1 passed, 1 skipped, 2 xfailed, 3 warnings in 0.8s ====="
+        )
+        assert result == {"passed": 1, "failed": 0, "skipped": 3, "error": 0}
+
+    def test_xpassed_counts_as_failed(self):
+        result = PytestRunner._parse_summary(
+            "===== 1 passed, 2 xpassed in 0.8s ====="
+        )
+        assert result == {"passed": 1, "failed": 2, "skipped": 0, "error": 0}
 
     def test_uses_last_summary_line(self):
         stdout = (
@@ -154,9 +290,7 @@ class TestPytestParseSummary:
             "===== 3 failed, 7 passed in 2.0s =====\n"
         )
         result = PytestRunner._parse_summary(stdout)
-        # last line: first token "3 failed" is skipped (starts with =====)
-        # "7 passed" is after comma → parsed
-        assert result == {"passed": 7, "failed": 0, "skipped": 0, "error": 0}
+        assert result == {"passed": 7, "failed": 3, "skipped": 0, "error": 0}
 
 
 class TestPytestRunTests:
@@ -166,9 +300,25 @@ class TestPytestRunTests:
     def runner(self):
         return PytestRunner()
 
+    def _assert_spawn_call(self, call_args, tmp_path):
+        assert call_args.args == (
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "tests",
+        )
+        env = call_args.kwargs["env"]
+        assert call_args.kwargs == {
+            "cwd": str(tmp_path),
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+            "env": env,
+        }
+        return env
+
     @pytest.mark.asyncio
     async def test_run_all_passed(self, runner, tmp_path):
-        # "5 passed" is first token (starts with =====) so parser skips it
         stdout = "===== 5 passed, 0 failed in 1.23s ====="
         with patch("asyncio.create_subprocess_exec") as mock_exec:
             process = AsyncMock()
@@ -180,7 +330,7 @@ class TestPytestRunTests:
 
         assert isinstance(result, TestRunResult)
         assert result.exit_code == 0
-        assert result.passed == 0
+        assert result.passed == 5
         assert result.failed == 0
         assert result.skipped == 0
         assert result.error == 0
@@ -197,13 +347,12 @@ class TestPytestRunTests:
             result = await runner.run_tests(tmp_path, {})
 
         assert result.exit_code == 1
-        assert result.passed == 0
+        assert result.passed == 3
         assert result.failed == 2
         assert result.skipped == 1
 
     @pytest.mark.asyncio
     async def test_run_all_failed(self, runner, tmp_path):
-        # Single result with no comma → parser skips the only token → all zeros
         stdout = "===== 4 failed in 0.8s ====="
         with patch("asyncio.create_subprocess_exec") as mock_exec:
             process = AsyncMock()
@@ -215,7 +364,7 @@ class TestPytestRunTests:
 
         assert result.exit_code == 1
         assert result.passed == 0
-        assert result.failed == 0
+        assert result.failed == 4
 
     @pytest.mark.asyncio
     async def test_empty_output_returns_zeros(self, runner, tmp_path):
@@ -235,7 +384,6 @@ class TestPytestRunTests:
 
     @pytest.mark.asyncio
     async def test_subprocess_returns_stderr(self, runner, tmp_path):
-        # "1 passed" is first token (starts with =====) so parser skips it
         stdout = "===== 1 passed, 0 failed in 0.1s ====="
         stderr = "WARNING: some warning"
         with patch("asyncio.create_subprocess_exec") as mock_exec:
@@ -246,7 +394,7 @@ class TestPytestRunTests:
 
             result = await runner.run_tests(tmp_path, {})
 
-        assert result.passed == 0
+        assert result.passed == 1
         assert "WARNING" in result.stderr
 
     @pytest.mark.asyncio
@@ -263,7 +411,8 @@ class TestPytestRunTests:
 
     @pytest.mark.asyncio
     async def test_env_vars_passed_through(self, runner, tmp_path):
-        with patch("asyncio.create_subprocess_exec") as mock_exec:
+        with patch.dict("os.environ", {"QAP_EXISTING_ENV": "kept"}, clear=False), \
+             patch("asyncio.create_subprocess_exec") as mock_exec:
             process = AsyncMock()
             process.returncode = 0
             process.communicate.return_value = (b"", b"")
@@ -271,8 +420,12 @@ class TestPytestRunTests:
 
             await runner.run_tests(tmp_path, {}, env_vars={"PYTHONDONTWRITEBYTECODE": "1"})
 
-        _, kwargs = mock_exec.call_args
-        assert kwargs["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+        mock_exec.assert_awaited_once()
+        call_args = mock_exec.await_args
+        env = self._assert_spawn_call(call_args, tmp_path)
+        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert env["QAP_EXISTING_ENV"] == "kept"
+        process.communicate.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_working_dir_passed_through(self, runner, tmp_path):
@@ -284,8 +437,11 @@ class TestPytestRunTests:
 
             await runner.run_tests(tmp_path, {})
 
-        _, kwargs = mock_exec.call_args
-        assert kwargs["cwd"] == str(tmp_path)
+        mock_exec.assert_awaited_once()
+        call_args = mock_exec.await_args
+        env = self._assert_spawn_call(call_args, tmp_path)
+        assert env is None
+        process.communicate.assert_awaited_once_with()
 
 
 class TestPytestRegistration:

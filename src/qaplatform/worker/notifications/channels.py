@@ -15,6 +15,8 @@ from email.mime.text import MIMEText
 
 import httpx
 
+from qaplatform.engine.redact import redact_sensitive_text
+
 log = logging.getLogger(__name__)
 
 # -- Channel result ---------------------------------------------------------- #
@@ -69,7 +71,11 @@ class EmailChannel:
         except smtplib.SMTPAuthenticationError:
             return ChannelResult(success=False, error="SMTP authentication failed")
         except (smtplib.SMTPException, OSError) as exc:
-            return ChannelResult(success=False, error=f"SMTP error: {exc}")
+            safe_error = redact_sensitive_text(
+                str(exc),
+                {"smtp_password": password},
+            )
+            return ChannelResult(success=False, error=f"SMTP error: {safe_error}")
 
         return ChannelResult(success=True)
 
@@ -125,22 +131,15 @@ class WebhookChannel:
             return f"webhook URL must use http/https protocol, got: {parsed.scheme}://"
         if not parsed.hostname:
             return "webhook URL has no hostname"
+        if parsed.username is not None or parsed.password is not None:
+            return "webhook URL must not include credentials"
 
-        private_cidrs = [
-            ipaddress.ip_network("10.0.0.0/8"),
-            ipaddress.ip_network("172.16.0.0/12"),
-            ipaddress.ip_network("192.168.0.0/16"),
-            ipaddress.ip_network("169.254.0.0/16"),
-            ipaddress.ip_network("127.0.0.0/8"),
-            ipaddress.ip_network("::1/128"),
-        ]
         try:
             infos = socket.getaddrinfo(parsed.hostname, None)
-            for family, _, _, _, sockaddr in infos:
+            for _, _, _, _, sockaddr in infos:
                 ip = ipaddress.ip_address(sockaddr[0])
-                for cidr in private_cidrs:
-                    if ip in cidr:
-                        return f"webhook URL resolves to private IP: {ip}"
+                if not ip.is_global:
+                    return f"webhook URL resolves to non-public IP: {ip}"
         except socket.gaierror:
             return f"cannot resolve webhook hostname: {parsed.hostname}"
         return None
@@ -164,12 +163,15 @@ class WebhookChannel:
                 if response.status_code >= 400:
                     return ChannelResult(
                         success=False,
-                        error=f"webhook returned {response.status_code}: {response.text[:200]}",
+                        error=f"webhook returned HTTP {response.status_code}",
                     )
         except httpx.TimeoutException:
             return ChannelResult(success=False, error=f"webhook timeout after {self.TIMEOUT}s")
         except httpx.HTTPError as exc:
-            return ChannelResult(success=False, error=f"webhook network error: {exc}")
+            return ChannelResult(
+                success=False,
+                error=f"webhook network error: {exc.__class__.__name__}",
+            )
 
         return ChannelResult(success=True)
 
@@ -247,6 +249,8 @@ class DingtalkChannel:
             body = response.json()
         except ValueError:
             return ChannelResult(success=False, error="dingtalk returned invalid JSON")
+        if not isinstance(body, dict):
+            return ChannelResult(success=False, error="dingtalk returned invalid JSON object")
 
         errcode = body.get("errcode")
         if errcode != 0:
@@ -305,6 +309,8 @@ class WecomChannel:
             body = response.json()
         except ValueError:
             return ChannelResult(success=False, error="wecom returned invalid JSON")
+        if not isinstance(body, dict):
+            return ChannelResult(success=False, error="wecom returned invalid JSON object")
 
         errcode = body.get("errcode")
         if errcode != 0:

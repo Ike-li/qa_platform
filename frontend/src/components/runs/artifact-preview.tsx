@@ -4,10 +4,17 @@ import { Button } from "../ui/button";
 
 interface ArtifactPreviewProps {
   url: string;
+  title?: string;
+  iframeTitle?: string;
   onClose: () => void;
 }
 
-export function ArtifactPreview({ url, onClose }: ArtifactPreviewProps) {
+export function ArtifactPreview({
+  url,
+  title = "Allure Report",
+  iframeTitle = "Allure Report Preview",
+  onClose,
+}: ArtifactPreviewProps) {
   const [loading, setLoading] = useState(true);
 
   const handleKeyDown = useCallback(
@@ -31,7 +38,7 @@ export function ArtifactPreview({ url, onClose }: ArtifactPreviewProps) {
       <div className="relative flex h-[90vh] w-[90vw] flex-col rounded-xl border border-hairline bg-surface-1 shadow-2xl">
         {/* Toolbar */}
         <div className="flex items-center justify-between border-b border-hairline px-4 py-2">
-          <span className="text-sm font-medium text-ink">Allure Report</span>
+          <span className="text-sm font-medium text-ink">{title}</span>
           <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close preview">
             <X className="h-4 w-4" />
           </Button>
@@ -46,7 +53,7 @@ export function ArtifactPreview({ url, onClose }: ArtifactPreviewProps) {
           )}
           <iframe
             src={url}
-            title="Allure Report Preview"
+            title={iframeTitle}
             className="h-full w-full border-0"
             sandbox="allow-scripts"
             referrerPolicy="no-referrer"

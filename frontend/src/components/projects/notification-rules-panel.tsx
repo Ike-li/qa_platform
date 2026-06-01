@@ -8,6 +8,8 @@ import {
   Bell,
   BellOff,
   Mail,
+  MessageSquare,
+  Send,
   Webhook,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -21,6 +23,9 @@ import {
 import type {
   NotificationRule,
   NotificationCondition,
+  NotificationConditionGroup,
+  NotificationConditionInputExpression,
+  NotificationConditionExpression,
   NotificationChannel,
 } from "../../types/api";
 import { Button } from "../ui/button";
@@ -55,6 +60,7 @@ const CONDITION_FIELDS: NotificationCondition["field"][] = [
   "status",
   "pass_rate",
   "failed",
+  "consecutive_failures",
 ];
 
 const CONDITION_OPS: NotificationCondition["operator"][] = [
@@ -66,7 +72,22 @@ const CONDITION_OPS: NotificationCondition["operator"][] = [
   "gte",
 ];
 
-const CHANNEL_TYPES: NotificationChannel["type"][] = ["email", "webhook"];
+const CHANNEL_TYPES: NotificationChannel["type"][] = [
+  "email",
+  "webhook",
+  "dingtalk",
+  "wecom",
+];
+const CHANNEL_MSGTYPES = ["text", "markdown"];
+const CONDITION_MODES = ["all", "any"] as const;
+type ConditionMode = (typeof CONDITION_MODES)[number];
+
+const CHANNEL_LABELS: Record<NotificationChannel["type"], string> = {
+  dingtalk: "DingTalk",
+  email: "Email",
+  webhook: "Webhook",
+  wecom: "WeCom",
+};
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -76,8 +97,328 @@ function emptyCondition(): NotificationCondition {
   return { field: "status", operator: "eq", value: "" };
 }
 
-function emptyChannel(): NotificationChannel {
-  return { type: "email", config: {} };
+function isConditionLeaf(
+  condition: NotificationConditionExpression
+): condition is NotificationCondition {
+  return "field" in condition && "operator" in condition && "value" in condition;
+}
+
+function isConditionGroup(
+  condition: NotificationConditionExpression
+): condition is NotificationConditionGroup {
+  return "all" in condition || "any" in condition;
+}
+
+function conditionModeFromRule(
+  conditions: NotificationRule["conditions"] | undefined
+): ConditionMode {
+  const group = conditions?.find(isConditionGroup);
+  return group && "any" in group ? "any" : "all";
+}
+
+function conditionRowsFromRule(
+  conditions: NotificationRule["conditions"] | undefined
+): NotificationCondition[] {
+  if (!conditions || conditions.length === 0) return [emptyCondition()];
+  const group = conditions.find(isConditionGroup);
+  if (group) {
+    const rows = "any" in group ? group.any : group.all;
+    const leafRows = rows?.filter(isConditionLeaf) ?? [];
+    return leafRows.length > 0 ? leafRows : [emptyCondition()];
+  }
+  const rows = conditions.filter(isConditionLeaf);
+  return rows.length > 0 ? rows : [emptyCondition()];
+}
+
+function serializeConditionsForSave(
+  mode: ConditionMode,
+  conditions: NotificationCondition[]
+): NotificationConditionInputExpression[] {
+  if (conditions.length === 0) return [];
+  return mode === "any" ? [{ any: conditions }] : conditions;
+}
+
+function defaultChannelConfig(type: NotificationChannel["type"]): NotificationChannel["config"] {
+  switch (type) {
+    case "email":
+      return { smtp_port: "587", to_addresses: [] as string[] };
+    case "webhook":
+      return { method: "POST" };
+    case "dingtalk":
+    case "wecom":
+      return { msgtype: "text" };
+  }
+}
+
+function emptyChannel(type: NotificationChannel["type"] = "email"): NotificationChannel {
+  return { type, config: defaultChannelConfig(type), template: null };
+}
+
+function channelTypeOptions(
+  channels: NotificationChannel[],
+  index: number
+): NotificationChannel["type"][] {
+  const usedByOtherChannels = new Set(
+    channels
+      .filter((_, channelIndex) => channelIndex !== index)
+      .map((channel) => channel.type)
+  );
+  return CHANNEL_TYPES.filter(
+    (type) => type === channels[index]?.type || !usedByOtherChannels.has(type)
+  );
+}
+
+function nextAvailableChannelType(
+  channels: NotificationChannel[]
+): NotificationChannel["type"] | null {
+  return CHANNEL_TYPES.find(
+    (type) => !channels.some((channel) => channel.type === type)
+  ) ?? null;
+}
+
+function channelConfigText(channel: NotificationChannel, key: string): string {
+  const value = channel.config[key];
+  if (Array.isArray(value)) {
+    return value.join(", ");
+  }
+  return value ?? "";
+}
+
+function parseList(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function compactConfig(config: NotificationChannel["config"]) {
+  return Object.fromEntries(
+    Object.entries(config).filter(([, value]) => {
+      if (Array.isArray(value)) {
+        return value.length > 0;
+      }
+      return value.trim() !== "";
+    })
+  );
+}
+
+function normalizeChannelForSave(channel: NotificationChannel): NotificationChannel {
+  const config = { ...channel.config };
+  if (channel.type === "email") {
+    const recipients = parseList(
+      channelConfigText(channel, "to_addresses") || channelConfigText(channel, "to")
+    );
+    delete config.to;
+    config.to_addresses = recipients;
+    config.smtp_port = config.smtp_port || "587";
+  }
+  if (channel.type === "webhook") {
+    config.method = config.method || "POST";
+  }
+  if (channel.type === "dingtalk" || channel.type === "wecom") {
+    config.msgtype = config.msgtype || "text";
+  }
+
+  const normalized: NotificationChannel = {
+    type: channel.type,
+    config: compactConfig(config),
+  };
+  const template = channel.template?.trim();
+  if (template) {
+    normalized.template = template;
+  }
+  return normalized;
+}
+
+function ChannelIcon({ type, className = "h-3 w-3" }: { type: NotificationChannel["type"]; className?: string }) {
+  if (type === "email") return <Mail className={className} />;
+  if (type === "webhook") return <Webhook className={className} />;
+  if (type === "dingtalk") return <Send className={className} />;
+  return <MessageSquare className={className} />;
+}
+
+function ChannelConfigEditor({
+  channel,
+  index,
+  updateChannelConfig,
+}: {
+  channel: NotificationChannel;
+  index: number;
+  updateChannelConfig: (
+    index: number,
+    key: string,
+    value: NotificationChannel["config"][string]
+  ) => void;
+}) {
+  const { t } = useTranslation();
+  const update = (key: string, value: NotificationChannel["config"][string]) =>
+    updateChannelConfig(index, key, value);
+
+  if (channel.type === "email") {
+    return (
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.smtpHost")}</Label>
+          <Input
+            value={channelConfigText(channel, "smtp_host")}
+            onChange={(e) => update("smtp_host", e.target.value)}
+            placeholder="smtp.example.com"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.smtpPort")}</Label>
+          <Input
+            value={channelConfigText(channel, "smtp_port")}
+            onChange={(e) => update("smtp_port", e.target.value)}
+            placeholder="587"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.fromAddress")}</Label>
+          <Input
+            value={channelConfigText(channel, "from_address")}
+            onChange={(e) => update("from_address", e.target.value)}
+            placeholder="qa@example.com"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.toAddresses")}</Label>
+          <Input
+            value={channelConfigText(channel, "to_addresses") || channelConfigText(channel, "to")}
+            onChange={(e) => update("to_addresses", parseList(e.target.value))}
+            placeholder="owner@example.com, qa@example.com"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.smtpUser")}</Label>
+          <Input
+            value={channelConfigText(channel, "smtp_user")}
+            onChange={(e) => update("smtp_user", e.target.value)}
+            placeholder="smtp-user"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.smtpPassword")}</Label>
+          <Input
+            type="password"
+            value={channelConfigText(channel, "smtp_password")}
+            onChange={(e) => update("smtp_password", e.target.value)}
+          />
+        </div>
+        <div className="space-y-2 md:col-span-2">
+          <Label>{t("notifications.channel.subject")}</Label>
+          <Input
+            value={channelConfigText(channel, "subject")}
+            onChange={(e) => update("subject", e.target.value)}
+            placeholder="QA Platform Notification"
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (channel.type === "webhook") {
+    return (
+      <div className="grid gap-3 md:grid-cols-[1fr_8rem]">
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.webhookUrl")}</Label>
+          <Input
+            value={channelConfigText(channel, "url")}
+            onChange={(e) => update("url", e.target.value)}
+            placeholder="https://hooks.example.com/..."
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.method")}</Label>
+          <Input
+            value={channelConfigText(channel, "method")}
+            onChange={(e) => update("method", e.target.value.toUpperCase())}
+            placeholder="POST"
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (channel.type === "dingtalk") {
+    return (
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.accessToken")}</Label>
+          <Input
+            type="password"
+            value={channelConfigText(channel, "access_token")}
+            onChange={(e) => update("access_token", e.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.secret")}</Label>
+          <Input
+            type="password"
+            value={channelConfigText(channel, "secret")}
+            onChange={(e) => update("secret", e.target.value)}
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.msgtype")}</Label>
+          <Select
+            value={channelConfigText(channel, "msgtype") || "text"}
+            onValueChange={(value) => update("msgtype", value)}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CHANNEL_MSGTYPES.map((msgtype) => (
+                <SelectItem key={msgtype} value={msgtype}>
+                  {msgtype}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-2">
+          <Label>{t("notifications.channel.title")}</Label>
+          <Input
+            value={channelConfigText(channel, "title")}
+            onChange={(e) => update("title", e.target.value)}
+            placeholder="QA Platform Notification"
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      <div className="space-y-2">
+        <Label>{t("notifications.channel.webhookKey")}</Label>
+        <Input
+          type="password"
+          value={channelConfigText(channel, "webhook_key")}
+          onChange={(e) => update("webhook_key", e.target.value)}
+        />
+      </div>
+      <div className="space-y-2">
+        <Label>{t("notifications.channel.msgtype")}</Label>
+        <Select
+          value={channelConfigText(channel, "msgtype") || "text"}
+          onValueChange={(value) => update("msgtype", value)}
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CHANNEL_MSGTYPES.map((msgtype) => (
+              <SelectItem key={msgtype} value={msgtype}>
+                {msgtype}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -260,12 +601,8 @@ function RuleCard({
                 key={i}
                 className="inline-flex items-center gap-1 rounded-full border border-hairline px-2 py-0.5 text-xs text-ink-muted"
               >
-                {ch.type === "email" ? (
-                  <Mail className="h-3 w-3" />
-                ) : (
-                  <Webhook className="h-3 w-3" />
-                )}
-                {ch.type}
+                <ChannelIcon type={ch.type} />
+                {CHANNEL_LABELS[ch.type]}
               </span>
             ))}
           </div>
@@ -301,8 +638,11 @@ function RuleForm({
 
   const [name, setName] = useState(rule?.name ?? "");
   const [enabled, setEnabled] = useState(rule?.enabled ?? true);
+  const [conditionMode, setConditionMode] = useState<ConditionMode>(
+    conditionModeFromRule(rule?.conditions)
+  );
   const [conditions, setConditions] = useState<NotificationCondition[]>(
-    rule?.conditions ?? [emptyCondition()]
+    conditionRowsFromRule(rule?.conditions)
   );
   const [channels, setChannels] = useState<NotificationChannel[]>(
     rule?.channels ?? [emptyChannel()]
@@ -315,6 +655,9 @@ function RuleForm({
     useUpdateNotificationRule(projectId, rule?.id ?? "");
 
   const isPending = isCreating || isUpdating;
+  const hasDuplicateChannelTypes =
+    new Set(channels.map((channel) => channel.type)).size !== channels.length;
+  const nextChannelType = nextAvailableChannelType(channels);
 
   /* ---- condition helpers ---- */
   const updateCondition = (
@@ -340,7 +683,7 @@ function RuleForm({
   const updateChannelConfig = (
     index: number,
     key: string,
-    value: string
+    value: NotificationChannel["config"][string]
   ) => {
     setChannels((prev) =>
       prev.map((c, i) =>
@@ -350,10 +693,19 @@ function RuleForm({
       )
     );
   };
+  const updateChannelTemplate = (index: number, value: string) => {
+    updateChannel(index, { template: value });
+  };
   const removeChannel = (index: number) =>
     setChannels((prev) => (
       prev.length <= 1 ? prev : prev.filter((_, i) => i !== index)
     ));
+  const addChannel = () => {
+    setChannels((prev) => {
+      const type = nextAvailableChannelType(prev);
+      return type ? [...prev, emptyChannel(type)] : prev;
+    });
+  };
 
   /* ---- submit ---- */
   const handleSave = async () => {
@@ -362,12 +714,16 @@ function RuleForm({
       toast.error(t("notifications.channelsRequired"));
       return;
     }
+    if (hasDuplicateChannelTypes) {
+      toast.error(t("notifications.duplicateChannels"));
+      return;
+    }
     try {
       const payload = {
         name: name.trim(),
         enabled,
-        conditions,
-        channels,
+        conditions: serializeConditionsForSave(conditionMode, conditions),
+        channels: channels.map(normalizeChannelForSave),
         template: template.trim() || null,
       };
       if (isEditing) {
@@ -415,7 +771,24 @@ function RuleForm({
 
       {/* Conditions */}
       <div className="space-y-3">
-        <Label>{t("notifications.conditions")}</Label>
+        <div className="flex items-center justify-between gap-3">
+          <Label>{t("notifications.conditions")}</Label>
+          <Select
+            value={conditionMode}
+            onValueChange={(value) => setConditionMode(value as ConditionMode)}
+          >
+            <SelectTrigger className="w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CONDITION_MODES.map((mode) => (
+                <SelectItem key={mode} value={mode}>
+                  {t(`notifications.conditionMode.${mode}`)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
         {conditions.map((cond, idx) => (
           <div key={idx} className="flex items-center gap-2">
             <Select
@@ -432,7 +805,7 @@ function RuleForm({
               <SelectContent>
                 {CONDITION_FIELDS.map((f) => (
                   <SelectItem key={f} value={f}>
-                    {f}
+                    {t(`notifications.condition.field.${f}`)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -491,64 +864,70 @@ function RuleForm({
       <div className="space-y-3">
         <Label>{t("notifications.channels")}</Label>
         {channels.map((ch, idx) => (
-          <div key={idx} className="flex items-start gap-2">
-            <Select
-              value={ch.type}
-              onValueChange={(v) =>
-                updateChannel(idx, {
-                  type: v as NotificationChannel["type"],
-                  config: {},
-                })
-              }
-            >
-              <SelectTrigger className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {CHANNEL_TYPES.map((ct) => (
-                  <SelectItem key={ct} value={ct}>
-                    {ct}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            {ch.type === "email" ? (
-              <Input
-                className="flex-1"
-                placeholder="recipient@example.com"
-                value={ch.config["to"] ?? ""}
-                onChange={(e) =>
-                  updateChannelConfig(idx, "to", e.target.value)
+          <div
+            key={idx}
+            className="space-y-3 border-t border-hairline pt-3 first:border-t-0 first:pt-0"
+          >
+            <div className="flex items-center gap-2">
+              <Select
+                value={ch.type}
+                onValueChange={(v) =>
+                  updateChannel(idx, {
+                    type: v as NotificationChannel["type"],
+                    config: defaultChannelConfig(v as NotificationChannel["type"]),
+                    template: null,
+                  })
                 }
-              />
-            ) : (
-              <Input
-                className="flex-1"
-                placeholder="https://hooks.example.com/..."
-                value={ch.config["url"] ?? ""}
-                onChange={(e) =>
-                  updateChannelConfig(idx, "url", e.target.value)
-                }
-              />
-            )}
+              >
+                <SelectTrigger className="w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {channelTypeOptions(channels, idx).map((ct) => (
+                    <SelectItem key={ct} value={ct}>
+                      {CHANNEL_LABELS[ct]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => removeChannel(idx)}
-              className="text-ink-tertiary"
-            >
-              <X className="h-4 w-4" />
-            </Button>
+              <span className="inline-flex items-center gap-1 text-sm text-ink-muted">
+                <ChannelIcon type={ch.type} className="h-4 w-4" />
+                {CHANNEL_LABELS[ch.type]}
+              </span>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => removeChannel(idx)}
+                className="ml-auto text-ink-tertiary"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <ChannelConfigEditor
+              channel={ch}
+              index={idx}
+              updateChannelConfig={updateChannelConfig}
+            />
+
+            <div className="space-y-2">
+              <Label>{t("notifications.channelTemplate")}</Label>
+              <Textarea
+                rows={2}
+                value={ch.template ?? ""}
+                onChange={(e) => updateChannelTemplate(idx, e.target.value)}
+                placeholder="Run {{run_id}} finished with status {{status}}"
+              />
+            </div>
           </div>
         ))}
         <Button
           variant="ghost"
           size="sm"
-          onClick={() =>
-            setChannels((prev) => [...prev, emptyChannel()])
-          }
+          onClick={addChannel}
+          disabled={!nextChannelType}
           className="text-ink-subtle hover:text-ink"
         >
           <Plus className="mr-2 h-4 w-4" /> {t("notifications.addChannel")}
@@ -571,7 +950,16 @@ function RuleForm({
         <Button variant="outline" size="sm" onClick={onCancel}>
           {t("common.cancel")}
         </Button>
-        <Button size="sm" onClick={handleSave} disabled={isPending || !name.trim() || channels.length === 0}>
+        <Button
+          size="sm"
+          onClick={handleSave}
+          disabled={
+            isPending ||
+            !name.trim() ||
+            channels.length === 0 ||
+            hasDuplicateChannelTypes
+          }
+        >
           <Save className="mr-2 h-4 w-4" />
           {isPending ? t("common.loading") : t("common.save")}
         </Button>

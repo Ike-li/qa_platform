@@ -19,6 +19,7 @@ type BackendRun = {
     failed?: number;
     skipped?: number;
     error?: number;
+    pass_rate?: number;
   } | null;
   error_message: string | null;
 };
@@ -52,6 +53,8 @@ test.describe.configure({ mode: "serial" });
 test.setTimeout(360_000);
 
 function workerSetupScript(testCaseName: string): string {
+  // Runner simulator: this keeps the browser-to-platform E2E deterministic
+  // while backend integration tests retain real pytest package coverage.
   const pytestSource = [
     "from pathlib import Path",
     "import sys",
@@ -78,7 +81,11 @@ function workerSetupScript(testCaseName: string): string {
     "workspace = Path('/workspace')",
     "(workspace / 'tests').mkdir(exist_ok=True)",
     "(workspace / 'tests' / 'test_playwright_real_worker.py').write_text(" +
-      JSON.stringify("def test_playwright_real_worker():\n    assert True\n") +
+      JSON.stringify(
+        "from pathlib import Path\n\n" +
+          "def test_playwright_real_worker():\n" +
+          "    assert Path('pytest.py').exists()\n",
+      ) +
       ", encoding='utf-8')",
     `(workspace / 'pytest.py').write_text(${JSON.stringify(pytestSource)}, encoding='utf-8')`,
     "PY",
@@ -91,6 +98,18 @@ function runIdFromPage(page: Page): string {
     throw new Error(`Could not extract run id from ${page.url()}`);
   }
   return runId;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function expectPassedResultRow(page: Page, testCaseName: string, timeout = 5_000) {
+  const row = page.getByRole("row", { name: new RegExp(escapeRegExp(testCaseName)) });
+  await expect(row).toBeVisible({ timeout });
+  const cells = row.locator("td");
+  await expect(cells.nth(1)).toHaveText(testCaseName);
+  await expect(cells.nth(3)).toHaveText("Passed");
 }
 
 async function sleep(ms: number) {
@@ -259,21 +278,23 @@ test("trigger a run through the UI and verify the real worker evidence", async (
 
   const terminalRun = await waitForRunTerminal(request, login.token, runId);
   expect(terminalRun.status).toBe("done");
-  expect(terminalRun.summary).toMatchObject({
+  expect(terminalRun.summary).toEqual({
     total: 1,
     passed: 1,
     failed: 0,
+    skipped: 0,
     error: 0,
+    pass_rate: 1,
   });
 
   const results = await waitForRunResults(request, login.token, runId);
-  expect(results).toEqual(
-    expect.arrayContaining([expect.objectContaining({ name: testCaseName, status: "passed" })]),
-  );
+  expect(results.map((result) => ({ name: result.name, status: result.status }))).toEqual([
+    { name: testCaseName, status: "passed" },
+  ]);
   const artifacts = await waitForArtifacts(request, login.token, runId);
-  expect(artifacts).toEqual(
-    expect.arrayContaining([expect.objectContaining({ name: "junit.xml" })]),
-  );
+  expect(artifacts.map((artifact) => ({ name: artifact.name, type: artifact.type }))).toEqual([
+    { name: "junit.xml", type: "junit" },
+  ]);
   await waitForArchivedLogsContaining(request, login.token, runId, [
     "Repository cloned successfully",
     "Starting stage: pytest",
@@ -286,12 +307,13 @@ test("trigger a run through the UI and verify the real worker evidence", async (
   await expect(page.getByRole("heading", { level: 1, name: pipeline.name })).toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByText("Passed").first()).toBeVisible({ timeout: 60_000 });
+  await expectPassedResultRow(page, testCaseName, 60_000);
   await page.getByRole("tab", { name: /Logs/ }).click();
   await expect(page.getByText("Run completed: done")).toBeVisible({ timeout: 60_000 });
   await page.getByRole("tab", { name: /Test Results/ }).click();
-  await expect(page.getByText(testCaseName)).toBeVisible();
-  await expect(page.getByText("Passed").first()).toBeVisible();
+  await expectPassedResultRow(page, testCaseName);
   await page.getByRole("tab", { name: /Artifacts/ }).click();
-  await expect(page.getByText("junit.xml")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "junit.xml" })).toBeVisible();
+  await expect(page.getByText(/^\d+\.\d{2} MB • junit$/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download junit.xml" })).toBeVisible();
 });

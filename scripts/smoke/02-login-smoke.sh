@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/smoke/lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 init_results_dir
 
@@ -63,7 +64,7 @@ screenshot "04-no-password-submit"
 # 6. Form validation — 只填密码
 opencli browser "${BROWSER_SESSION}" open "${BASE_URL}/login"
 sleep 2
-opencli browser "${BROWSER_SESSION}" fill "#password" "admin123"
+opencli browser "${BROWSER_SESSION}" fill "#password" "${SMOKE_ADMIN_PASSWORD}"
 opencli browser "${BROWSER_SESSION}" click "button[type=\"submit\"]"
 sleep 1
 ERROR_MSG="$(opencli browser "${BROWSER_SESSION}" find --css '[role="alert"], .error, .error-message, [class*="error"], [class*="Error"], [class*="invalid"], [class*="Invalid"]' 2>&1 || echo "")"
@@ -94,8 +95,8 @@ opencli browser "${BROWSER_SESSION}" open "${BASE_URL}/login"
 sleep 2
 
 # 8. Fill credentials
-opencli browser "${BROWSER_SESSION}" fill "#username" "admin"
-opencli browser "${BROWSER_SESSION}" fill "#password" "admin123"
+opencli browser "${BROWSER_SESSION}" fill "#username" "${SMOKE_ADMIN_USERNAME}"
+opencli browser "${BROWSER_SESSION}" fill "#password" "${SMOKE_ADMIN_PASSWORD}"
 log_step "fill-credentials" "pass"
 
 # 9. Submit login

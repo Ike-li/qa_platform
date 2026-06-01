@@ -44,10 +44,20 @@ def test_is_in_silent_window_compares_different_timezones():
 
 
 def test_is_in_silent_window_rejects_naive_now():
+    class WindowsThatFailOnIteration(list[SilentWindow]):
+        def __iter__(self):
+            raise AssertionError("windows must not be inspected for naive now")
+
     window = _window(
         datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc),
         datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
     )
 
-    with pytest.raises(ValueError, match="timezone-aware"):
-        is_in_silent_window([window], datetime(2026, 6, 1, 9, 30))
+    with pytest.raises(ValueError) as exc_info:
+        is_in_silent_window(
+            WindowsThatFailOnIteration([window]),
+            datetime(2026, 6, 1, 9, 30),
+        )
+
+    assert str(exc_info.value) == "now must be timezone-aware"
+    assert exc_info.value.__cause__ is None

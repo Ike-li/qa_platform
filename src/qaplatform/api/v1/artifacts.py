@@ -41,6 +41,7 @@ async def _generate_download_url(s3_client, bucket: str, storage_path: str, expi
     responses={
         403: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
     },
     summary="获取产物下载链接",
 )

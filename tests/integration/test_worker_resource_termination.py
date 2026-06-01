@@ -113,6 +113,12 @@ def _decode_redis_mapping(mapping: dict) -> dict[str, str]:
     }
 
 
+def _resource_termination_log_fields(line: str) -> dict[str, str]:
+    prefix = "Resource termination: "
+    assert line.startswith(prefix)
+    return dict(part.split("=", 1) for part in line.removeprefix(prefix).split())
+
+
 @pytest.mark.asyncio
 async def test_executor_resource_termination_persists_timeout_status_and_redis_event(
     integration_app,
@@ -208,13 +214,24 @@ async def test_executor_resource_termination_persists_timeout_status_and_redis_e
 
         logs = await executor.log_stream.read_logs(run_id, count=100)
         lines = [entry["line"] for entry in logs]
-        assert any(f"Starting stage: {scenario}" in line for line in lines)
-        assert any(
-            f"Pipeline failed with code {backend.exit_code}" in line
+        assert [line for line in lines if line == f"Starting stage: {scenario}"] == [
+            f"Starting stage: {scenario}"
+        ]
+        failed_log = f"Pipeline failed with code {backend.exit_code}"
+        assert [line for line in lines if line == failed_log] == [failed_log]
+        assert [
+            _resource_termination_log_fields(line)
             for line in lines
-        )
-        assert any(
-            f"Resource termination: reason={expected_reason}" in line
-            for line in lines
-        )
-        assert any("Run completed: timeout" in line for line in lines)
+            if line.startswith("Resource termination: ")
+        ] == [
+            {
+                "reason": expected_reason,
+                "exit_code": str(backend.exit_code),
+                "duration_ms": str(resource_termination["duration_ms"]),
+                "oom_killed": str(backend.oom_killed),
+                "timed_out": str(backend.timed_out),
+            }
+        ]
+        assert [line for line in lines if line == "Run completed: timeout"] == [
+            "Run completed: timeout"
+        ]

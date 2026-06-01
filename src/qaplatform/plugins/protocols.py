@@ -64,7 +64,12 @@ class RunnerProtocol(Protocol):
     name: str
 
     def build_command(self, config: dict[str, Any]) -> str:
-        """Return the shell command to execute this runner inside a container."""
+        """Return the shell command to execute this runner inside a container.
+
+        The executor passes this string to ``sh -c`` with the repository mounted
+        at ``/workspace``. Runner implementations should quote individual argv
+        parts and run from that workspace root.
+        """
         raise NotImplementedError
 
     async def run_tests(

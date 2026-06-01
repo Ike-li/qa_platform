@@ -28,6 +28,18 @@ async def _count_rows(session, model, *filters) -> int:
     return int((await session.execute(stmt)).scalar_one())
 
 
+def _assert_integrity_constraint(error: IntegrityError, constraint: str) -> None:
+    haystack = " ".join(
+        str(part)
+        for part in (
+            error,
+            getattr(error, "orig", ""),
+            repr(getattr(error, "orig", "")),
+        )
+    )
+    assert constraint in haystack
+
+
 async def _create_run_for_state(session, seed_run, *, status, git_ref: str):
     from qaplatform.infra.database.models import Run
 
@@ -195,6 +207,7 @@ async def test_audit_retention_hard_deletes_only_events_older_than_cutoff(
     tenant_id = seed_run["tenant"].id
     user_id = seed_run["user"].id
     project_id = seed_run["project"].id
+    cutoff = datetime.now(timezone.utc) - timedelta(days=365)
 
     old_event = await repo.create(
         tenant_id=tenant_id,
@@ -204,7 +217,7 @@ async def test_audit_retention_hard_deletes_only_events_older_than_cutoff(
         resource_id=project_id,
         after_state={"age": "old"},
     )
-    old_event.created_at = datetime.now(timezone.utc) - timedelta(days=400)
+    old_event.created_at = cutoff - timedelta(days=35)
     old_system_event = await repo.create(
         tenant_id=None,
         user_id=None,
@@ -212,7 +225,7 @@ async def test_audit_retention_hard_deletes_only_events_older_than_cutoff(
         resource_type="system",
         after_state={"age": "old"},
     )
-    old_system_event.created_at = datetime.now(timezone.utc) - timedelta(days=400)
+    old_system_event.created_at = cutoff - timedelta(days=35)
     recent_event = await repo.create(
         tenant_id=tenant_id,
         user_id=user_id,
@@ -221,21 +234,43 @@ async def test_audit_retention_hard_deletes_only_events_older_than_cutoff(
         resource_id=project_id,
         after_state={"age": "recent"},
     )
-    recent_event.created_at = datetime.now(timezone.utc) - timedelta(days=1)
+    recent_event.created_at = cutoff + timedelta(days=364)
     await integration_db_session.commit()
 
-    deleted = await repo.delete_older_than(
-        cutoff=datetime.now(timezone.utc) - timedelta(days=365)
+    eligible_before = await _count_rows(
+        integration_db_session,
+        AuditEvent,
+        AuditEvent.created_at < cutoff,
     )
+    deleted = await repo.delete_older_than(cutoff=cutoff)
     await integration_db_session.commit()
 
-    assert deleted >= 2
-    assert await _count_rows(integration_db_session, AuditEvent, AuditEvent.id == old_event.id) == 0
+    assert eligible_before == 2
+    assert deleted == eligible_before
     assert (
-        await _count_rows(integration_db_session, AuditEvent, AuditEvent.id == old_system_event.id)
+        await _count_rows(
+            integration_db_session,
+            AuditEvent,
+            AuditEvent.id == old_event.id,
+        )
         == 0
     )
-    assert await _count_rows(integration_db_session, AuditEvent, AuditEvent.id == recent_event.id) == 1
+    assert (
+        await _count_rows(
+            integration_db_session,
+            AuditEvent,
+            AuditEvent.id == old_system_event.id,
+        )
+        == 0
+    )
+    assert (
+        await _count_rows(
+            integration_db_session,
+            AuditEvent,
+            AuditEvent.id == recent_event.id,
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -280,9 +315,23 @@ async def test_user_repository_scopes_soft_delete_and_recovers_from_unique_viola
     assert (await repo.get_by_email(tenant_a, email_a)).id == user_a.id
 
     users, total = await repo.list_by_tenant(tenant_a, offset=0, limit=1)
-    assert total >= 2
-    assert len(users) == 1
-    assert {user.tenant_id for user in users} == {tenant_a}
+    assert total == 2
+    assert [
+        {
+            "id": user.id,
+            "tenant_id": user.tenant_id,
+            "username": user.username,
+            "email": user.email,
+        }
+        for user in users
+    ] == [
+        {
+            "id": user_a.id,
+            "tenant_id": tenant_a,
+            "username": shared_username,
+            "email": email_a,
+        }
+    ]
 
     await repo.delete(user_a)
     await integration_db_session.commit()
@@ -300,10 +349,20 @@ async def test_user_repository_scopes_soft_delete_and_recovers_from_unique_viola
             is_active=True,
         )
     )
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError) as exc_info:
         await integration_db_session.commit()
+    _assert_integrity_constraint(exc_info.value, "uq_app_user_tenant_username")
 
     await integration_db_session.rollback()
+    assert (
+        await _count_rows(
+            integration_db_session,
+            AppUser,
+            AppUser.tenant_id == tenant_b,
+            AppUser.username == shared_username,
+        )
+        == 1
+    )
     recovered = await repo.create(
         tenant_id=tenant_a,
         username=f"recovered_{suffix}",
@@ -346,15 +405,30 @@ async def test_run_retention_hard_delete_cascades_results_artifacts_and_events(
         offset=0,
         limit=1,
     )
-    assert project_total >= 1
-    assert len(project_runs) == 1
+    assert project_total == 1
+    assert [
+        {
+            "id": item.id,
+            "tenant_id": item.tenant_id,
+            "project_id": item.project_id,
+            "pipeline_id": item.pipeline_id,
+        }
+        for item in project_runs
+    ] == [
+        {
+            "id": run.id,
+            "tenant_id": run.tenant_id,
+            "project_id": run.project_id,
+            "pipeline_id": run.pipeline_id,
+        }
+    ]
     pipeline_runs, pipeline_total = await run_repo.list_by_pipeline(
         run.pipeline_id,
         offset=0,
         limit=10,
     )
-    assert pipeline_total >= 1
-    assert run.id in {item.id for item in pipeline_runs}
+    assert pipeline_total == 1
+    assert [item.id for item in pipeline_runs] == [run.id]
 
     await result_repo.bulk_create(
         [
@@ -380,7 +454,8 @@ async def test_run_retention_hard_delete_cascades_results_artifacts_and_events(
     event = RunEvent(run_id=run.id, type="log", payload={"message": "done"})
     integration_db_session.add(event)
 
-    old_finished_at = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+    old_finished_at = cutoff - timedelta(days=29)
     await run_repo.update(run, status=RunStatusEnum.DONE, finished_at=old_finished_at)
     await run_repo.delete(run)
 
@@ -411,7 +486,7 @@ async def test_run_retention_hard_delete_cascades_results_artifacts_and_events(
         status=RunStatusEnum.DONE,
         git_ref=f"recent-done-{uuid4().hex}",
     )
-    recent_done.finished_at = datetime.now(timezone.utc)
+    recent_done.finished_at = cutoff + timedelta(hours=12)
     active_queued = await _create_run_for_state(
         integration_db_session,
         seed_run,
@@ -422,6 +497,19 @@ async def test_run_retention_hard_delete_cascades_results_artifacts_and_events(
 
     eligible_run_ids = {run.id, old_failed.id, old_cancelled.id, old_timeout.id}
     retained_run_ids = {recent_done.id, active_queued.id}
+    terminal_statuses = [
+        RunStatusEnum.DONE,
+        RunStatusEnum.FAILED,
+        RunStatusEnum.CANCELLED,
+        RunStatusEnum.TIMEOUT,
+    ]
+    eligible_before = await _count_rows(
+        integration_db_session,
+        Run,
+        Run.status.in_(terminal_statuses),
+        Run.finished_at < cutoff,
+    )
+    assert eligible_before == len(eligible_run_ids)
 
     assert await _count_rows(integration_db_session, Run, Run.id == run.id) == 1
     assert await _count_rows(
@@ -440,12 +528,10 @@ async def test_run_retention_hard_delete_cascades_results_artifacts_and_events(
         RunEvent.run_id == run.id,
     ) == 1
 
-    deleted = await run_repo.delete_terminal_older_than(
-        cutoff=datetime.now(timezone.utc) - timedelta(days=1)
-    )
+    deleted = await run_repo.delete_terminal_older_than(cutoff=cutoff)
     await integration_db_session.commit()
 
-    assert deleted >= len(eligible_run_ids)
+    assert deleted == eligible_before
     for deleted_run_id in eligible_run_ids:
         assert await _count_rows(integration_db_session, Run, Run.id == deleted_run_id) == 0
     for retained_run_id in retained_run_ids:
@@ -546,6 +632,192 @@ async def test_run_repository_state_machine_persists_all_terminal_paths(
 
 
 @pytest.mark.asyncio
+async def test_run_repository_state_writes_ignore_soft_deleted_runs(
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import RunStatusEnum
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
+
+    repo = RunRepository(integration_db_session)
+    now = datetime.now(timezone.utc)
+
+    queued = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.QUEUED,
+        git_ref="soft-deleted-queued",
+    )
+    preparing = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.PREPARING,
+        git_ref="soft-deleted-preparing",
+    )
+    running = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.RUNNING,
+        git_ref="soft-deleted-running",
+    )
+    collecting = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.COLLECTING,
+        git_ref="soft-deleted-collecting",
+    )
+    failed_candidate = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.QUEUED,
+        git_ref="soft-deleted-fail",
+    )
+    cancelled_candidate = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.QUEUED,
+        git_ref="soft-deleted-cancel",
+    )
+    timeout_candidate = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.RUNNING,
+        git_ref="soft-deleted-timeout",
+    )
+    worker_lost = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.RUNNING,
+        git_ref="soft-deleted-worker-lost",
+    )
+    worker_lost.worker_id = "worker-lost"
+    metadata_candidate = await _create_run_for_state(
+        integration_db_session,
+        seed_run,
+        status=RunStatusEnum.QUEUED,
+        git_ref="soft-deleted-metadata",
+    )
+    metadata_candidate.worker_id = "worker-release"
+
+    for run in [
+        queued,
+        preparing,
+        running,
+        collecting,
+        failed_candidate,
+        cancelled_candidate,
+        timeout_candidate,
+        worker_lost,
+        metadata_candidate,
+    ]:
+        run.deleted_at = now
+    await integration_db_session.commit()
+    await integration_db_session.refresh(metadata_candidate)
+    original_metadata_updated_at = metadata_candidate.updated_at
+
+    assert await repo.claim_for_worker(queued.id, worker_id="worker-claim") is None
+    assert await repo.mark_running(preparing.id) is False
+    assert await repo.mark_collecting(running.id) is False
+    assert await repo.finish_if_current(collecting.id, status=RunStatusEnum.DONE) is False
+    assert await repo.fail_if_current(failed_candidate.id, message="should not persist") is False
+    assert await repo.cancel_if_current(cancelled_candidate.id) is False
+    assert await repo.timeout_if_current(
+        timeout_candidate.id,
+        expected_in={RunStatusEnum.RUNNING},
+    ) is False
+    assert await repo.mark_worker_lost(
+        worker_lost.id,
+        worker_id="worker-lost",
+        message="lost heartbeat",
+    ) is False
+
+    await repo.set_retry_group_id(metadata_candidate.id, queued.id)
+    await repo.mark_enqueued(
+        metadata_candidate.id,
+        queue_name="queue:high",
+        arq_job_id="job-soft-deleted",
+        enqueued_at=now,
+    )
+    await repo.mark_waiting(metadata_candidate.id)
+    await repo.update_git_sha(metadata_candidate.id, "f" * 40)
+    await repo.update_execution_id(metadata_candidate.id, "exec-soft-deleted")
+    await repo.release_worker(metadata_candidate.id, worker_id="worker-release")
+
+    for run, expected_status in [
+        (queued, RunStatusEnum.QUEUED),
+        (preparing, RunStatusEnum.PREPARING),
+        (running, RunStatusEnum.RUNNING),
+        (collecting, RunStatusEnum.COLLECTING),
+        (failed_candidate, RunStatusEnum.QUEUED),
+        (cancelled_candidate, RunStatusEnum.QUEUED),
+        (timeout_candidate, RunStatusEnum.RUNNING),
+        (worker_lost, RunStatusEnum.RUNNING),
+    ]:
+        await integration_db_session.refresh(run)
+        assert run.status == expected_status
+        assert run.finished_at is None
+
+    await integration_db_session.refresh(metadata_candidate)
+    assert metadata_candidate.retry_group_id is None
+    assert metadata_candidate.queue_name is None
+    assert metadata_candidate.arq_job_id is None
+    assert metadata_candidate.enqueued_at is None
+    assert metadata_candidate.git_sha is None
+    assert metadata_candidate.execution_id is None
+    assert metadata_candidate.worker_id == "worker-release"
+    assert metadata_candidate.updated_at == original_metadata_updated_at
+
+
+@pytest.mark.asyncio
+async def test_schedule_repository_due_query_ignores_soft_deleted_schedules(
+    integration_db_session,
+    seed_run,
+):
+    from qaplatform.infra.database.models import Schedule
+    from qaplatform.infra.database.repositories.project_repo import ScheduleRepository
+
+    now = datetime.now(timezone.utc)
+
+    visible_due = Schedule(
+        project_id=seed_run["project"].id,
+        pipeline_id=seed_run["pipeline"].id,
+        cron_expr="*/5 * * * *",
+        timezone="UTC",
+        missed_fire_policy="run_once",
+        quiet_windows=[],
+        enabled=True,
+        next_run_at=now - timedelta(minutes=1),
+    )
+    deleted_due = Schedule(
+        project_id=seed_run["project"].id,
+        pipeline_id=seed_run["pipeline"].id,
+        cron_expr="*/5 * * * *",
+        timezone="UTC",
+        missed_fire_policy="run_once",
+        quiet_windows=[],
+        enabled=True,
+        next_run_at=now - timedelta(minutes=2),
+        deleted_at=now,
+    )
+    future = Schedule(
+        project_id=seed_run["project"].id,
+        pipeline_id=seed_run["pipeline"].id,
+        cron_expr="*/5 * * * *",
+        timezone="UTC",
+        missed_fire_policy="run_once",
+        quiet_windows=[],
+        enabled=True,
+        next_run_at=now + timedelta(minutes=5),
+    )
+    integration_db_session.add_all([visible_due, deleted_due, future])
+    await integration_db_session.commit()
+
+    due = await ScheduleRepository(integration_db_session).find_due_schedules(now, limit=50)
+
+    assert [schedule.id for schedule in due] == [visible_due.id]
+
+
+@pytest.mark.asyncio
 async def test_result_and_artifact_repositories_query_paginate_and_recover(
     integration_db_session,
     seed_run,
@@ -606,7 +878,7 @@ async def test_result_and_artifact_repositories_query_paginate_and_recover(
     )
     assert [item.name for item in failed] == ["test_beta"]
 
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError) as exc_info:
         await result_repo.bulk_create(
             [
                 {
@@ -621,7 +893,11 @@ async def test_result_and_artifact_repositories_query_paginate_and_recover(
             ]
         )
         await integration_db_session.commit()
+    _assert_integrity_constraint(exc_info.value, "uq_test_result_run_suite_name")
     await integration_db_session.rollback()
+    all_results, all_total = await result_repo.list_by_run(run_id, offset=0, limit=10)
+    assert all_total == 3
+    assert [item.name for item in all_results].count("test_beta") == 1
 
     first_artifact = await artifact_repo.create(
         run_id=run_id,
@@ -639,7 +915,7 @@ async def test_result_and_artifact_repositories_query_paginate_and_recover(
         size_bytes=20,
         mime_type="text/html",
     )
-    await artifact_repo.create(
+    trace_artifact = await artifact_repo.create(
         run_id=run_id,
         type="trace",
         name="trace.zip",
@@ -647,6 +923,10 @@ async def test_result_and_artifact_repositories_query_paginate_and_recover(
         size_bytes=30,
         mime_type="application/zip",
     )
+    artifact_order_base = datetime.now(timezone.utc)
+    first_artifact.created_at = artifact_order_base - timedelta(seconds=2)
+    visible_artifact.created_at = artifact_order_base - timedelta(seconds=1)
+    trace_artifact.created_at = artifact_order_base
     await artifact_repo.delete(first_artifact)
     await integration_db_session.commit()
 
@@ -656,8 +936,7 @@ async def test_result_and_artifact_repositories_query_paginate_and_recover(
         limit=1,
     )
     assert artifact_total == 2
-    assert len(artifact_page) == 1
-    assert first_artifact.id not in {item.id for item in artifact_page}
+    assert [item.id for item in artifact_page] == [trace_artifact.id]
     assert (
         await artifact_repo.get_by_id(visible_artifact.id)
     ).name == "report.html"

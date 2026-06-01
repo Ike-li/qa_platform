@@ -39,7 +39,23 @@ async def test_environment_env_vars_create_fetch_update_are_encrypted_at_rest(
     assert create_resp.status_code == 201, create_resp.text
     body = create_resp.json()
     env_id = body["id"]
-    assert body["env_vars"] == first_env
+    expected_response = {
+        "id": env_id,
+        "project_id": project_id,
+        "name": "encrypted-env",
+        "base_image": "python:3.12.1",
+        "setup_script": None,
+        "memory_mb": 512,
+        "cpu_cores": 1.0,
+        "disk_mb": None,
+        "max_artifact_size_mb": 100,
+        "max_artifacts_count": 50,
+        "network_policy": "deny",
+        "env_vars": first_env,
+        "cache_key": None,
+        "created_at": body["created_at"],
+    }
+    assert body == expected_response
 
     stored = await _db_env_vars(integration_db_session, env_id)
     assert "API_TOKEN" not in repr(stored)
@@ -49,7 +65,7 @@ async def test_environment_env_vars_create_fetch_update_are_encrypted_at_rest(
         f"/api/v1/projects/{project_id}/environments/{env_id}"
     )
     assert get_resp.status_code == 200, get_resp.text
-    assert get_resp.json()["env_vars"] == first_env
+    assert get_resp.json() == expected_response
 
     next_env = {"NEW_TOKEN": "rotated-secret"}
     update_resp = await integration_client.put(
@@ -57,7 +73,10 @@ async def test_environment_env_vars_create_fetch_update_are_encrypted_at_rest(
         json={"env_vars": next_env},
     )
     assert update_resp.status_code == 200, update_resp.text
-    assert update_resp.json()["env_vars"] == next_env
+    assert update_resp.json() == {
+        **expected_response,
+        "env_vars": next_env,
+    }
 
     stored_after_update = await _db_env_vars(integration_db_session, env_id)
     assert "NEW_TOKEN" not in repr(stored_after_update)
@@ -103,11 +122,21 @@ async def test_environment_env_vars_aad_mismatch_returns_500_and_audits(
         f"/api/v1/projects/{project_id}/environments/{target_id}"
     )
     assert mismatch_resp.status_code == 500, mismatch_resp.text
+    assert mismatch_resp.json() == {"detail": "Environment env vars decrypt failed"}
+    assert "TOKEN" not in mismatch_resp.text
+    assert "bound-to-source" not in mismatch_resp.text
 
     audit_result = await integration_db_session.execute(
         sa.text(
             """
-            SELECT action, after_state
+            SELECT
+                tenant_id::text AS tenant_id,
+                user_id::text AS user_id,
+                action,
+                resource_type,
+                resource_id::text AS resource_id,
+                before_state,
+                after_state
             FROM audit.event
             WHERE resource_id = :resource_id
             ORDER BY created_at DESC
@@ -117,6 +146,20 @@ async def test_environment_env_vars_aad_mismatch_returns_500_and_audits(
         {"resource_id": target_id},
     )
     audit = audit_result.mappings().one()
+    assert audit["tenant_id"] == str(seed_run["tenant"].id)
+    assert audit["user_id"] == str(seed_run["user"].id)
     assert audit["action"] == "environment.env_vars_decrypt_failed"
-    assert audit["after_state"]["operation"] == "decrypt"
-    assert "bound-to-source" not in repr(audit["after_state"])
+    assert audit["resource_type"] == "environment"
+    assert audit["resource_id"] == target_id
+    assert audit["before_state"] is None
+    assert audit["after_state"] == {
+        "operation": "decrypt",
+        "project_id": project_id,
+        "environment_id": target_id,
+        "error_type": "ValueError",
+    }
+    serialized_failure = repr(
+        [mismatch_resp.text, audit["before_state"], audit["after_state"]]
+    )
+    for forbidden in ["TOKEN", "bound-to-source", source_id]:
+        assert forbidden not in serialized_failure
