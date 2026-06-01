@@ -1,4 +1,4 @@
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import {
   Clock,
   User,
@@ -12,7 +12,7 @@ import {
   Eye
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useRun, useRunResults, useRunArtifacts, useCancelRun } from "../../hooks/use-runs";
+import { useRun, useRunResults, useRunArtifacts, useCancelRun, useTriggerRun } from "../../hooks/use-runs";
 import { RunStatusBadge } from "../../components/run-status-badge";
 import { BranchBadge } from "../../components/branch-badge";
 import { DurationDisplay } from "../../components/duration-display";
@@ -82,12 +82,14 @@ function isSafeArtifactUrl(url: string): boolean {
 export default function RunDetail() {
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
   const { data: run, isLoading: isRunLoading } = useRun(id!);
   const { data: results, isLoading: isResultsLoading } = useRunResults(id!, { per_page: 50 });
   const { data: artifacts, isLoading: isArtifactsLoading } = useRunArtifacts(id!);
 
   const { mutateAsync: cancelRun, isPending: isCancelling } = useCancelRun(id!);
+  const { mutateAsync: triggerRun, isPending: isReRunning } = useTriggerRun();
 
   usePageTitle(run ? `Run ${run.pipeline_name}` : t('runs.notFound'));
 
@@ -98,6 +100,25 @@ export default function RunDetail() {
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } };
       toast.error(axiosError.response?.data?.detail || t('runs.toast.cancelFailed'));
+    }
+  };
+
+  const onReRun = async () => {
+    if (!run) return;
+
+    try {
+      const nextRun = await triggerRun({
+        pipeline_id: run.pipeline_id,
+        branch: run.branch === "-" ? undefined : run.branch,
+        git_sha: run.git_sha ?? undefined,
+        environment_id: run.environment_id,
+        priority: run.priority,
+      });
+      toast.success(t('runs.toast.reRunStarted'));
+      void navigate(`/runs/${nextRun.id}`);
+    } catch (error: unknown) {
+      const axiosError = error as { response?: { data?: { detail?: string } } };
+      toast.error(axiosError.response?.data?.detail || t('runs.toast.reRunFailed'));
     }
   };
 
@@ -180,8 +201,8 @@ export default function RunDetail() {
               </AlertDialogContent>
             </AlertDialog>
           ) : (
-            <Button variant="outline" size="sm">
-              <RotateCcw className="mr-2 h-4 w-4" /> {t('runs.reRun')}
+            <Button variant="outline" size="sm" onClick={onReRun} disabled={isReRunning}>
+              <RotateCcw className="mr-2 h-4 w-4" /> {isReRunning ? t('runs.reRunning') : t('runs.reRun')}
             </Button>
           )}
         </div>

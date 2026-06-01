@@ -206,6 +206,7 @@
   "runs.yesCancel": "Yes, Cancel",
   "runs.cancelling": "Cancelling...",
   "runs.reRun": "Re-run",
+  "runs.reRunning": "Re-running...",
   "runs.tabs.logs": "Logs",
   "runs.tabs.results": "Test Results",
   "runs.tabs.artifacts": "Artifacts",
@@ -226,6 +227,8 @@
   "runs.artifacts.previewFailed": "Failed to load preview",
   "runs.toast.cancelSent": "Cancel request sent",
   "runs.toast.cancelFailed": "Failed to cancel run",
+  "runs.toast.reRunStarted": "Re-run started",
+  "runs.toast.reRunFailed": "Failed to re-run",
 
   "runStatus.queued": "Queued",
   "runStatus.preparing": "Preparing",

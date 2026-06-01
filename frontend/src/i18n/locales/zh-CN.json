@@ -206,6 +206,7 @@
   "runs.yesCancel": "是，取消",
   "runs.cancelling": "取消中...",
   "runs.reRun": "重新运行",
+  "runs.reRunning": "重新运行中...",
   "runs.tabs.logs": "日志",
   "runs.tabs.results": "测试结果",
   "runs.tabs.artifacts": "产物",
@@ -226,6 +227,8 @@
   "runs.artifacts.previewFailed": "加载预览失败",
   "runs.toast.cancelSent": "取消请求已发送",
   "runs.toast.cancelFailed": "取消运行失败",
+  "runs.toast.reRunStarted": "已开始重新运行",
+  "runs.toast.reRunFailed": "重新运行失败",
 
   "runStatus.queued": "排队中",
   "runStatus.preparing": "准备中",
