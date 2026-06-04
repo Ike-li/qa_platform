@@ -25,6 +25,7 @@ These explain why decisions were made or record verification history. They are n
 | [backend-test-audit.md](backend-test-audit.md) | Backend test coverage audit and strengthening notes. |
 | [release-quality-review-slices.md](release-quality-review-slices.md) | Release-quality evidence slices and sign-off checklist. |
 | [ui-test-checklist.md](ui-test-checklist.md) | UI verification checklist; release acceptance still requires linked commands, screenshots, or CI artifacts. |
+| [project-memory.md](project-memory.md) | Short handoff memory for the current repository state, latest commits, and verified commands. |
 
 ## Product And Historical Planning
 
