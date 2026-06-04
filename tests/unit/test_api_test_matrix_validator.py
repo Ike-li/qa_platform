@@ -48,9 +48,9 @@ def test_api_test_matrix_matches_current_openapi(openapi: dict[str, Any]) -> Non
 
     assert summary == {
         "operations": 69,
-        "covered": 56,
+        "covered": 64,
         "partial": 0,
-        "blocked": 13,
+        "blocked": 5,
     }
 
 

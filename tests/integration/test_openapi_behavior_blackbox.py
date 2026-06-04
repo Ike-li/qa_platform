@@ -24,6 +24,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient, Response
 
 from qaplatform.config import Settings
+from tests.support.api_data import ApiTestDataFactory
 
 
 pytestmark = pytest.mark.skipif(
@@ -32,6 +33,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 FULL_SHA = "a" * 40
+_API_DATA_FACTORIES: dict[int, ApiTestDataFactory] = {}
 
 
 @dataclass(frozen=True)
@@ -88,7 +90,25 @@ async def _api_client(app) -> AsyncIterator[AsyncClient]:
         transport=transport,
         base_url="http://localhost",
     ) as client:
-        yield client
+        factory = ApiTestDataFactory(client)
+        _API_DATA_FACTORIES[id(client)] = factory
+        cleanup_should_raise = True
+        try:
+            yield client
+        except BaseException:
+            cleanup_should_raise = False
+            raise
+        finally:
+            _API_DATA_FACTORIES.pop(id(client), None)
+            cleanup_errors = await factory.cleanup()
+            if cleanup_errors and cleanup_should_raise:
+                raise AssertionError(
+                    "API test data cleanup failed: " + "; ".join(cleanup_errors)
+                )
+
+
+def _test_data_factory(client: AsyncClient) -> ApiTestDataFactory | None:
+    return _API_DATA_FACTORIES.get(id(client))
 
 
 def _suffix(prefix: str) -> str:
@@ -230,6 +250,17 @@ async def _create_project_stack(
     git_url: str | None = None,
     settings: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    factory = _test_data_factory(client)
+    if factory is not None:
+        return (
+            await factory.create_project_stack(
+                headers=actor.headers,
+                prefix=prefix,
+                git_url=git_url,
+                settings=settings,
+            )
+        ).as_dict()
+
     slug = _suffix(prefix)
     project_response = await client.post(
         "/api/v1/projects",
@@ -267,6 +298,10 @@ async def _create_project(
     *,
     prefix: str = "project",
 ) -> dict[str, Any]:
+    factory = _test_data_factory(client)
+    if factory is not None:
+        return await factory.create_project(headers=actor.headers, prefix=prefix)
+
     slug = _suffix(prefix)
     response = await client.post(
         "/api/v1/projects",
@@ -285,36 +320,31 @@ async def _create_cross_tenant_resource_ids(
     pipeline_a = stack_a["pipeline"]
     environment_a = stack_a["environment"]
 
-    credential_response = await client.post(
-        f"/api/v1/projects/{project_a['id']}/credentials",
-        headers=actor_a.headers,
-        json={"name": _suffix("tenant-cred"), "type": "token", "value": "secret"},
+    credential_a = await _create_credential(client, actor_a, project_a["id"])
+    schedule_a = await _create_schedule(
+        client,
+        actor_a,
+        project_a["id"],
+        pipeline_a["id"],
     )
-    credential_a = _assert_status(credential_response, 201)
-
-    schedule_response = await client.post(
-        f"/api/v1/projects/{project_a['id']}/schedules",
-        headers=actor_a.headers,
-        json=_schedule_payload(pipeline_a["id"]),
-    )
-    schedule_a = _assert_status(schedule_response, 201)
-
-    rule_response = await client.post(
-        f"/api/v1/projects/{project_a['id']}/notification-rules",
-        headers=actor_a.headers,
-        json=_notification_rule_payload(_suffix("tenant-rule")),
-    )
-    rule_a = _assert_status(rule_response, 201)
-
-    run_response = await client.post(
-        "/api/v1/runs",
-        headers=actor_a.headers,
-        json={
-            "pipeline_id": pipeline_a["id"],
-            "environment_id": environment_a["id"],
-        },
-    )
-    run_a = _assert_status(run_response, 201)
+    rule_a = await _create_notification_rule(client, actor_a, project_a["id"])
+    factory = _test_data_factory(client)
+    if factory is not None:
+        run_a = await factory.trigger_run(
+            headers=actor_a.headers,
+            pipeline_id=pipeline_a["id"],
+            environment_id=environment_a["id"],
+        )
+    else:
+        run_response = await client.post(
+            "/api/v1/runs",
+            headers=actor_a.headers,
+            json={
+                "pipeline_id": pipeline_a["id"],
+                "environment_id": environment_a["id"],
+            },
+        )
+        run_a = _assert_status(run_response, 201)
 
     actor_b = await _register_actor(client, "tenant_b")
     ids = {
@@ -545,6 +575,13 @@ async def _create_credential(
     actor: Actor,
     project_id: str,
 ) -> dict[str, Any]:
+    factory = _test_data_factory(client)
+    if factory is not None:
+        return await factory.create_credential(
+            headers=actor.headers,
+            project_id=project_id,
+        )
+
     response = await client.post(
         f"/api/v1/projects/{project_id}/credentials",
         headers=actor.headers,
@@ -612,6 +649,13 @@ async def _create_environment(
     actor: Actor,
     project_id: str,
 ) -> dict[str, Any]:
+    factory = _test_data_factory(client)
+    if factory is not None:
+        return await factory.create_environment(
+            headers=actor.headers,
+            project_id=project_id,
+        )
+
     response = await client.post(
         f"/api/v1/projects/{project_id}/environments",
         headers=actor.headers,
@@ -694,6 +738,13 @@ async def _create_pipeline(
     actor: Actor,
     project_id: str,
 ) -> dict[str, Any]:
+    factory = _test_data_factory(client)
+    if factory is not None:
+        return await factory.create_pipeline(
+            headers=actor.headers,
+            project_id=project_id,
+        )
+
     response = await client.post(
         f"/api/v1/projects/{project_id}/pipelines",
         headers=actor.headers,
@@ -761,6 +812,14 @@ async def _create_schedule(
     project_id: str,
     pipeline_id: str,
 ) -> dict[str, Any]:
+    factory = _test_data_factory(client)
+    if factory is not None:
+        return await factory.create_schedule(
+            headers=actor.headers,
+            project_id=project_id,
+            pipeline_id=pipeline_id,
+        )
+
     response = await client.post(
         f"/api/v1/projects/{project_id}/schedules",
         headers=actor.headers,
@@ -852,6 +911,13 @@ async def _create_notification_rule(
     actor: Actor,
     project_id: str,
 ) -> dict[str, Any]:
+    factory = _test_data_factory(client)
+    if factory is not None:
+        return await factory.create_notification_rule(
+            headers=actor.headers,
+            project_id=project_id,
+        )
+
     response = await client.post(
         f"/api/v1/projects/{project_id}/notification-rules",
         headers=actor.headers,
@@ -920,17 +986,27 @@ async def _trigger_run(
     prefix: str,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     stack = await _create_project_stack(client, actor, prefix=prefix)
-    response = await client.post(
-        "/api/v1/runs",
-        headers=actor.headers,
-        json={
-            "pipeline_id": stack["pipeline"]["id"],
-            "environment_id": stack["environment"]["id"],
-            "git_ref": "main",
-            "git_sha": FULL_SHA,
-        },
-    )
-    return stack, _assert_status(response, 201)
+    factory = _test_data_factory(client)
+    if factory is not None:
+        run = await factory.trigger_run(
+            headers=actor.headers,
+            pipeline_id=stack["pipeline"]["id"],
+            environment_id=stack["environment"]["id"],
+            payload_overrides={"git_sha": FULL_SHA},
+        )
+    else:
+        response = await client.post(
+            "/api/v1/runs",
+            headers=actor.headers,
+            json={
+                "pipeline_id": stack["pipeline"]["id"],
+                "environment_id": stack["environment"]["id"],
+                "git_ref": "main",
+                "git_sha": FULL_SHA,
+            },
+        )
+        run = _assert_status(response, 201)
+    return stack, run
 
 
 async def _resource_success_run_trigger(client: AsyncClient) -> None:
@@ -2420,18 +2496,12 @@ async def test_runs_logs_and_artifacts_blackbox_paths(
         assert invalid_trigger_response.status_code == 422
         _assert_error_body(invalid_trigger_response)
 
-        no_env_project_response = await client.post(
-            "/api/v1/projects",
-            headers=actor.headers,
-            json=_project_payload(_suffix("run-no-env")),
+        no_env_project = await _create_project(client, actor, prefix="run-no-env")
+        no_env_pipeline = await _create_pipeline(
+            client,
+            actor,
+            no_env_project["id"],
         )
-        no_env_project = _assert_status(no_env_project_response, 201)
-        no_env_pipeline_response = await client.post(
-            f"/api/v1/projects/{no_env_project['id']}/pipelines",
-            headers=actor.headers,
-            json=_pipeline_payload(_suffix("run-no-env-pipeline")),
-        )
-        no_env_pipeline = _assert_status(no_env_pipeline_response, 201)
         no_environment_response = await client.post(
             "/api/v1/runs",
             headers=actor.headers,
