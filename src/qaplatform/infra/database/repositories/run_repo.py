@@ -26,6 +26,27 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _analytics_run_filters(
+    *,
+    project_id: UUID,
+    cutoff: datetime,
+    git_ref: str | None = None,
+) -> tuple[Any, ...]:
+    filters: list[Any] = [
+        Run.project_id == project_id,
+        Run.created_at >= cutoff,
+        Run.deleted_at.is_(None),
+        Run.status.in_([
+            RunStatusEnum.DONE,
+            RunStatusEnum.FAILED,
+            RunStatusEnum.TIMEOUT,
+        ]),
+    ]
+    if git_ref is not None:
+        filters.append(Run.git_ref == git_ref)
+    return tuple(filters)
+
+
 class RunRepository(BaseRepository[Run]):
     model = Run
     _FINISH_EXPECTED = frozenset({RunStatusEnum.RUNNING, RunStatusEnum.COLLECTING})
@@ -602,16 +623,12 @@ class RunRepository(BaseRepository[Run]):
         cutoff: datetime,
         offset: int,
         limit: int,
+        git_ref: str | None = None,
     ) -> tuple[list[Any], int]:
-        filters = (
-            Run.project_id == project_id,
-            Run.created_at >= cutoff,
-            Run.deleted_at.is_(None),
-            Run.status.in_([
-                RunStatusEnum.DONE,
-                RunStatusEnum.FAILED,
-                RunStatusEnum.TIMEOUT,
-            ]),
+        filters = _analytics_run_filters(
+            project_id=project_id,
+            cutoff=cutoff,
+            git_ref=git_ref,
         )
         count_stmt = select(func.count(func.distinct(func.date(Run.created_at)))).where(
             *filters
@@ -646,6 +663,121 @@ class RunRepository(BaseRepository[Run]):
         )
         result = await self.session.execute(stmt)
         return list(result.all()), total
+
+    async def get_release_summary(
+        self,
+        *,
+        project_id: UUID,
+        cutoff: datetime,
+        git_ref: str,
+        baseline_git_ref: str,
+        delta_limit: int = 20,
+    ) -> dict[str, Any]:
+        target_filters = _analytics_run_filters(
+            project_id=project_id,
+            cutoff=cutoff,
+            git_ref=git_ref,
+        )
+        baseline_filters = _analytics_run_filters(
+            project_id=project_id,
+            cutoff=cutoff,
+            git_ref=baseline_git_ref,
+        )
+        failed_run_filter = Run.status.in_([
+            RunStatusEnum.FAILED,
+            RunStatusEnum.TIMEOUT,
+        ])
+
+        stats_stmt = select(
+            func.count().label("total_runs"),
+            func.sum(case((Run.status == RunStatusEnum.DONE, 1), else_=0)).label(
+                "passed_runs"
+            ),
+            func.sum(case((failed_run_filter, 1), else_=0)).label("failed_runs"),
+        ).where(*target_filters)
+        stats = (await self.session.execute(stats_stmt)).one()
+        total_runs = int(stats.total_runs or 0)
+        passed_runs = int(stats.passed_runs or 0)
+        failed_runs = int(stats.failed_runs or 0)
+
+        async def grouped_results(filters: tuple[Any, ...]) -> list[Any]:
+            failed_result_filter = TestResult.status.in_([
+                TestResultStatusEnum.FAILED,
+                TestResultStatusEnum.ERROR,
+            ])
+            stmt = (
+                select(
+                    TestResult.suite,
+                    TestResult.name,
+                    func.count().label("total_count"),
+                    func.sum(
+                        case(
+                            (TestResult.status == TestResultStatusEnum.PASSED, 1),
+                            else_=0,
+                        )
+                    ).label("passed_count"),
+                    func.sum(case((failed_result_filter, 1), else_=0)).label(
+                        "failed_count"
+                    ),
+                )
+                .join(Run, Run.id == TestResult.run_id)
+                .where(*filters)
+                .group_by(TestResult.suite, TestResult.name)
+            )
+            result = await self.session.execute(stmt)
+            return list(result.all())
+
+        target_results = await grouped_results(target_filters)
+        baseline_results = await grouped_results(baseline_filters)
+        flaky_keys = {
+            (row.suite, row.name)
+            for row in target_results
+            if int(row.passed_count or 0) > 0 and int(row.failed_count or 0) > 0
+        }
+        stable_results = [
+            row for row in target_results if (row.suite, row.name) not in flaky_keys
+        ]
+        stable_total = sum(int(row.total_count or 0) for row in stable_results)
+        stable_passed = sum(int(row.passed_count or 0) for row in stable_results)
+        flaky_adjusted_pass_rate = (
+            round(stable_passed / stable_total, 4) if stable_total > 0 else None
+        )
+
+        target_failed = {
+            (row.suite, row.name): int(row.failed_count or 0)
+            for row in target_results
+            if int(row.failed_count or 0) > 0
+        }
+        baseline_failed = {
+            (row.suite, row.name): int(row.failed_count or 0)
+            for row in baseline_results
+            if int(row.failed_count or 0) > 0
+        }
+
+        def deltas(source: dict[tuple[str, str], int], other: dict[tuple[str, str], int]):
+            rows = [
+                {"suite": suite, "name": name, "failed_count": count}
+                for (suite, name), count in source.items()
+                if (suite, name) not in other
+            ]
+            return sorted(
+                rows,
+                key=lambda row: (-row["failed_count"], row["suite"], row["name"]),
+            )[:delta_limit]
+
+        return {
+            "git_ref": git_ref,
+            "baseline_git_ref": baseline_git_ref,
+            "total_runs": total_runs,
+            "passed_runs": passed_runs,
+            "failed_runs": failed_runs,
+            "raw_pass_rate": round(passed_runs / total_runs, 4)
+            if total_runs > 0
+            else 0.0,
+            "flaky_adjusted_pass_rate": flaky_adjusted_pass_rate,
+            "new_failing_tests": deltas(target_failed, baseline_failed),
+            "recovered_tests": deltas(baseline_failed, target_failed),
+        }
 
     @asynccontextmanager
     async def scheduler_lock(self) -> AsyncIterator[None]:
@@ -742,16 +874,12 @@ class TestResultRepository(BaseRepository[TestResult]):
         min_runs: int,
         offset: int,
         limit: int,
+        git_ref: str | None = None,
     ) -> tuple[list[Any], int]:
-        filters = (
-            Run.project_id == project_id,
-            Run.created_at >= cutoff,
-            Run.deleted_at.is_(None),
-            Run.status.in_([
-                RunStatusEnum.DONE,
-                RunStatusEnum.FAILED,
-                RunStatusEnum.TIMEOUT,
-            ]),
+        filters = _analytics_run_filters(
+            project_id=project_id,
+            cutoff=cutoff,
+            git_ref=git_ref,
         )
         failed_filter = TestResult.status.in_([
             TestResultStatusEnum.FAILED,

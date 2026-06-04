@@ -2,10 +2,10 @@ version: 1
 metadata:
   source: openapi_operation_matrix
   operation_matrix: tests/api_matrix/openapi_operation_matrix.yml
-  operation_count: 69
+  operation_count: 70
   dimension_count: 6
-  case_count: 414
-  covered_case_count: 414
+  case_count: 420
+  covered_case_count: 420
   blocked_case_count: 0
   missing_case_count: 0
 case_id_pattern: "{operation_id}::{dimension}"

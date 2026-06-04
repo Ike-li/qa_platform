@@ -1414,6 +1414,218 @@ class TestAnalytics:
             "pagination": {"offset": 0, "limit": 50, "total": 1},
         }
 
+    async def test_release_summary_and_git_ref_filtered_analytics(
+        self, integration_client, integration_db_session, seed_run
+    ):
+        """Release summary compares target ref to baseline without cross-ref bleed."""
+        project_id = str(seed_run["project"].id)
+        base_time = datetime.now(timezone.utc) - timedelta(days=1)
+        target_pass = Run(
+            tenant_id=seed_run["tenant"].id,
+            project_id=seed_run["project"].id,
+            pipeline_id=seed_run["pipeline"].id,
+            environment_id=seed_run["environment"].id,
+            status=RunStatusEnum.DONE,
+            trigger_type="manual",
+            priority=1,
+            triggered_by=seed_run["user"].id,
+            git_ref="release/2026.06",
+            attempt=1,
+            chain_depth=0,
+            metadata_={},
+            created_at=base_time,
+        )
+        target_fail = Run(
+            tenant_id=seed_run["tenant"].id,
+            project_id=seed_run["project"].id,
+            pipeline_id=seed_run["pipeline"].id,
+            environment_id=seed_run["environment"].id,
+            status=RunStatusEnum.FAILED,
+            trigger_type="manual",
+            priority=1,
+            triggered_by=seed_run["user"].id,
+            git_ref="release/2026.06",
+            attempt=1,
+            chain_depth=0,
+            metadata_={},
+            created_at=base_time + timedelta(minutes=5),
+        )
+        baseline_fail = Run(
+            tenant_id=seed_run["tenant"].id,
+            project_id=seed_run["project"].id,
+            pipeline_id=seed_run["pipeline"].id,
+            environment_id=seed_run["environment"].id,
+            status=RunStatusEnum.FAILED,
+            trigger_type="manual",
+            priority=1,
+            triggered_by=seed_run["user"].id,
+            git_ref="main",
+            attempt=1,
+            chain_depth=0,
+            metadata_={},
+            created_at=base_time + timedelta(minutes=10),
+        )
+        other_ref_fail = Run(
+            tenant_id=seed_run["tenant"].id,
+            project_id=seed_run["project"].id,
+            pipeline_id=seed_run["pipeline"].id,
+            environment_id=seed_run["environment"].id,
+            status=RunStatusEnum.FAILED,
+            trigger_type="manual",
+            priority=1,
+            triggered_by=seed_run["user"].id,
+            git_ref="feature/noise",
+            attempt=1,
+            chain_depth=0,
+            metadata_={},
+            created_at=base_time + timedelta(minutes=15),
+        )
+        integration_db_session.add_all([
+            target_pass,
+            target_fail,
+            baseline_fail,
+            other_ref_fail,
+        ])
+        await integration_db_session.flush()
+        integration_db_session.add_all(
+            [
+                DbTestResult(
+                    run_id=target_pass.id,
+                    suite="analytics",
+                    name="test_flaky_known",
+                    status=DbTestResultStatusEnum.PASSED,
+                    duration_ms=10,
+                    tags=[],
+                    metadata_={},
+                ),
+                DbTestResult(
+                    run_id=target_pass.id,
+                    suite="analytics",
+                    name="test_stable_pass",
+                    status=DbTestResultStatusEnum.PASSED,
+                    duration_ms=8,
+                    tags=[],
+                    metadata_={},
+                ),
+                DbTestResult(
+                    run_id=target_fail.id,
+                    suite="analytics",
+                    name="test_flaky_known",
+                    status=DbTestResultStatusEnum.FAILED,
+                    duration_ms=11,
+                    tags=[],
+                    metadata_={},
+                ),
+                DbTestResult(
+                    run_id=target_fail.id,
+                    suite="analytics",
+                    name="test_new_failure",
+                    status=DbTestResultStatusEnum.FAILED,
+                    duration_ms=12,
+                    tags=[],
+                    metadata_={},
+                ),
+                DbTestResult(
+                    run_id=baseline_fail.id,
+                    suite="analytics",
+                    name="test_flaky_known",
+                    status=DbTestResultStatusEnum.FAILED,
+                    duration_ms=9,
+                    tags=[],
+                    metadata_={},
+                ),
+                DbTestResult(
+                    run_id=baseline_fail.id,
+                    suite="analytics",
+                    name="test_recovered",
+                    status=DbTestResultStatusEnum.FAILED,
+                    duration_ms=13,
+                    tags=[],
+                    metadata_={},
+                ),
+                DbTestResult(
+                    run_id=other_ref_fail.id,
+                    suite="analytics",
+                    name="test_noise",
+                    status=DbTestResultStatusEnum.FAILED,
+                    duration_ms=14,
+                    tags=[],
+                    metadata_={},
+                ),
+            ]
+        )
+        await integration_db_session.commit()
+
+        trends_resp = await integration_client.get(
+            f"/api/v1/projects/{project_id}/analytics/trends",
+            params={"days": 30, "git_ref": "release/2026.06"},
+        )
+        assert trends_resp.status_code == 200, trends_resp.text
+        assert trends_resp.json() == {
+            "data": [
+                {
+                    "date": str(base_time.date()),
+                    "total_runs": 2,
+                    "passed_runs": 1,
+                    "failed_runs": 1,
+                    "pass_rate": 0.5,
+                }
+            ],
+            "pagination": {"offset": 0, "limit": 365, "total": 1},
+        }
+
+        flaky_resp = await integration_client.get(
+            f"/api/v1/projects/{project_id}/analytics/flaky",
+            params={"days": 30, "min_runs": 2, "git_ref": "release/2026.06"},
+        )
+        assert flaky_resp.status_code == 200, flaky_resp.text
+        assert flaky_resp.json() == {
+            "data": [
+                {
+                    "suite": "analytics",
+                    "name": "test_flaky_known",
+                    "total_runs": 2,
+                    "passed_count": 1,
+                    "failed_count": 1,
+                    "flaky_rate": 0.5,
+                }
+            ],
+            "pagination": {"offset": 0, "limit": 50, "total": 1},
+        }
+
+        summary_resp = await integration_client.get(
+            f"/api/v1/projects/{project_id}/analytics/release-summary",
+            params={
+                "days": 30,
+                "git_ref": "release/2026.06",
+                "baseline_git_ref": "main",
+            },
+        )
+        assert summary_resp.status_code == 200, summary_resp.text
+        assert summary_resp.json() == {
+            "git_ref": "release/2026.06",
+            "baseline_git_ref": "main",
+            "total_runs": 2,
+            "passed_runs": 1,
+            "failed_runs": 1,
+            "raw_pass_rate": 0.5,
+            "flaky_adjusted_pass_rate": 0.5,
+            "new_failing_tests": [
+                {
+                    "suite": "analytics",
+                    "name": "test_new_failure",
+                    "failed_count": 1,
+                }
+            ],
+            "recovered_tests": [
+                {
+                    "suite": "analytics",
+                    "name": "test_recovered",
+                    "failed_count": 1,
+                }
+            ],
+        }
+
     async def test_get_test_history(
         self, integration_client, integration_db_session, seed_run
     ):

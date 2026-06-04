@@ -416,3 +416,21 @@ export interface TestHistoryPoint {
   error_message: string | null;
   git_ref: string | null;
 }
+
+export interface ReleaseTestDelta {
+  suite: string;
+  name: string;
+  failed_count: number;
+}
+
+export interface ReleaseSummary {
+  git_ref: string;
+  baseline_git_ref: string;
+  total_runs: number;
+  passed_runs: number;
+  failed_runs: number;
+  raw_pass_rate: number;
+  flaky_adjusted_pass_rate: number | null;
+  new_failing_tests: ReleaseTestDelta[];
+  recovered_tests: ReleaseTestDelta[];
+}

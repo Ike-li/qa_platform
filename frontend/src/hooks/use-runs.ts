@@ -84,7 +84,15 @@ function normalizeRun(run: RunResponse): Run {
   };
 }
 
-export function useRuns(params?: { page?: number; per_page?: number; status?: string; sort?: string; enabled?: boolean }) {
+export function useRuns(params?: {
+  page?: number;
+  per_page?: number;
+  status?: string;
+  sort?: string;
+  project_id?: string;
+  git_ref?: string;
+  enabled?: boolean;
+}) {
   const { enabled, ...apiParams } = params ?? {};
   return useQuery({
     queryKey: ["runs", apiParams],

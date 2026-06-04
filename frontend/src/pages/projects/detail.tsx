@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import {
   GitBranch,
   Settings as SettingsIcon,
@@ -12,6 +12,8 @@ import {
   Bell,
   CalendarClock,
   Trash2,
+  CheckCircle2,
+  Circle,
 } from "lucide-react";
 import * as React from "react";
 import { useForm } from "react-hook-form";
@@ -22,11 +24,14 @@ import { useTranslation } from "react-i18next";
 import i18n from "../../i18n";
 import {
   useProject,
+  useProjectEnvironments,
   useProjectPipelines,
   useUpdateProject,
   useDeleteProject
 } from "../../hooks/use-projects";
-import type { Pipeline, SilentWindow } from "../../types/api";
+import { useRuns } from "../../hooks/use-runs";
+import { useNotificationRules } from "../../hooks/use-notifications";
+import type { Environment, NotificationRule, Pipeline, Project, Run, SilentWindow } from "../../types/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -51,6 +56,8 @@ import { NotificationRulesPanel } from "../../components/projects/notification-r
 import { cn } from "../../lib/utils";
 import { isGitUrl } from "../../lib/contracts";
 import { usePageTitle } from "../../hooks/use-page-title";
+import { RunStatusBadge } from "../../components/run-status-badge";
+import { RelativeTime } from "../../components/relative-time";
 
 type SilentWindowFormValue = {
   start_at: string;
@@ -114,17 +121,189 @@ function toSilentWindowFormValues(windows: SilentWindow[] | undefined): SilentWi
   }));
 }
 
+type SetupChecklistProps = {
+  project: Project;
+  pipelines: Pipeline[] | undefined;
+  environments: Environment[] | undefined;
+  runs: Run[] | undefined;
+  notificationRules: NotificationRule[] | undefined;
+  isLoading: boolean;
+  onOpenSettings: () => void;
+  onOpenPipelines: () => void;
+  onOpenEnvironments: () => void;
+  onOpenNotifications: () => void;
+  onTriggerRun: () => void;
+};
+
+function SetupChecklist({
+  project,
+  pipelines,
+  environments,
+  runs,
+  notificationRules,
+  isLoading,
+  onOpenSettings,
+  onOpenPipelines,
+  onOpenEnvironments,
+  onOpenNotifications,
+  onTriggerRun,
+}: SetupChecklistProps) {
+  const { t } = useTranslation();
+  const pipelineCount = pipelines?.length ?? 0;
+  const environmentCount = environments?.length ?? 0;
+  const runCount = runs?.length ?? 0;
+  const notificationCount = notificationRules?.filter((rule) => rule.enabled).length ?? 0;
+  const credentialReady = project.git_auth_method === "none" || Boolean(project.credential_id);
+
+  const steps = [
+    {
+      key: "git",
+      title: t("projects.setup.git.title"),
+      detail: project.git_url || t("projects.setup.git.pending"),
+      complete: Boolean(project.git_url && project.default_branch),
+      action: onOpenSettings,
+    },
+    {
+      key: "credential",
+      title: t("projects.setup.credential.title"),
+      detail: credentialReady
+        ? t("projects.setup.credential.ready")
+        : t("projects.setup.credential.pending"),
+      complete: credentialReady,
+      action: onOpenSettings,
+    },
+    {
+      key: "pipeline",
+      title: t("projects.setup.pipeline.title"),
+      detail: pipelineCount > 0
+        ? t("projects.setup.pipeline.ready", { count: pipelineCount })
+        : t("projects.setup.pipeline.pending"),
+      complete: pipelineCount > 0,
+      action: onOpenPipelines,
+    },
+    {
+      key: "environment",
+      title: t("projects.setup.environment.title"),
+      detail: project.default_env_id || environmentCount > 0
+        ? t("projects.setup.environment.ready", { count: environmentCount })
+        : t("projects.setup.environment.pending"),
+      complete: Boolean(project.default_env_id || environmentCount > 0),
+      action: onOpenEnvironments,
+    },
+    {
+      key: "firstRun",
+      title: t("projects.setup.firstRun.title"),
+      detail: runCount > 0
+        ? t("projects.setup.firstRun.ready", { count: runCount })
+        : t("projects.setup.firstRun.pending"),
+      complete: runCount > 0,
+      action: onTriggerRun,
+    },
+    {
+      key: "notifications",
+      title: t("projects.setup.notifications.title"),
+      detail: notificationCount > 0
+        ? t("projects.setup.notifications.ready", { count: notificationCount })
+        : t("projects.setup.notifications.pending"),
+      complete: notificationCount > 0,
+      optional: true,
+      action: onOpenNotifications,
+    },
+  ];
+
+  const requiredSteps = steps.filter((step) => !step.optional);
+  const completedRequired = requiredSteps.filter((step) => step.complete).length;
+
+  return (
+    <section className="rounded-xl border border-hairline bg-surface-1 p-5">
+      <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-ink">{t("projects.setup.title")}</h2>
+          <p className="text-sm text-ink-muted">{t("projects.setup.description")}</p>
+        </div>
+        <div className="text-sm font-medium text-ink">
+          {t("projects.setup.progress", {
+            completed: completedRequired,
+            total: requiredSteps.length,
+          })}
+        </div>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {steps.map((step) => {
+          const StepIcon = step.complete ? CheckCircle2 : Circle;
+          return (
+            <div
+              key={step.key}
+              className={cn(
+                "flex min-h-[104px] flex-col justify-between rounded-lg border p-3",
+                step.complete
+                  ? "border-status-passed/25 bg-status-passed/5"
+                  : "border-hairline bg-canvas",
+              )}
+            >
+              <div className="flex items-start gap-3">
+                <StepIcon
+                  className={cn(
+                    "mt-0.5 h-4 w-4 shrink-0",
+                    step.complete ? "text-status-passed" : "text-ink-tertiary",
+                  )}
+                />
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium text-ink">{step.title}</p>
+                    {step.optional && (
+                      <span className="rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-muted">
+                        {t("projects.setup.optional")}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 line-clamp-2 break-words text-xs text-ink-muted">{step.detail}</p>
+                </div>
+              </div>
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <span className="text-xs text-ink-tertiary">
+                  {isLoading ? t("common.loading") : step.complete ? t("projects.setup.done") : t("projects.setup.todo")}
+                </span>
+                <Button type="button" variant="ghost" size="sm" onClick={step.action}>
+                  {step.complete ? t("projects.setup.review") : t("projects.setup.open")}
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export default function ProjectDetail() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const projectId = id ?? "";
+  const routeTab = searchParams.get("tab");
+  const initialTab = ["runs", "pipelines", "environments", "analytics", "notifications", "settings"].includes(routeTab ?? "")
+    ? routeTab!
+    : "runs";
+  const activeTab = initialTab;
   const [isPipelineModalOpen, setIsPipelineModalOpen] = React.useState(false);
   const [selectedPipeline, setSelectedPipeline] = React.useState<Pipeline | undefined>(undefined);
   const [isTriggerModalOpen, setIsTriggerModalOpen] = React.useState(false);
   const [silentWindowState, setSilentWindowState] = React.useState<SilentWindowState | null>(null);
   const [silentWindowErrorState, setSilentWindowErrorState] = React.useState<SilentWindowErrorState | null>(null);
 
-  const { data: project, isLoading: isProjectLoading } = useProject(id!);
+  const { data: project, isLoading: isProjectLoading } = useProject(projectId);
+  const { data: pipelines, isLoading: isPipelinesLoading } = useProjectPipelines(projectId);
+  const { data: environments, isLoading: isEnvironmentsLoading } = useProjectEnvironments(projectId);
+  const { data: notificationRules, isLoading: isNotificationsLoading } = useNotificationRules(projectId);
+  const { data: recentRuns, isLoading: isRunsLoading } = useRuns({
+    project_id: projectId,
+    per_page: 5,
+    sort: "-created_at",
+    enabled: Boolean(projectId),
+  });
+  const runs = recentRuns?.data ?? [];
   const projectKey = project ? `${project.id}:${project.updated_at}` : "";
   const projectSilentWindows = React.useMemo(
     () => toSilentWindowFormValues(project?.silent_windows),
@@ -147,6 +326,16 @@ export default function ProjectDetail() {
 
   usePageTitle(project ? project.name : t("projects.detailTitle"));
 
+  const selectTab = (value: string) => {
+    const nextParams = new URLSearchParams(searchParams);
+    if (value === "runs") {
+      nextParams.delete("tab");
+    } else {
+      nextParams.set("tab", value);
+    }
+    setSearchParams(nextParams, { replace: true });
+  };
+
   const openNewPipeline = () => {
     setSelectedPipeline(undefined);
     setIsPipelineModalOpen(true);
@@ -157,10 +346,8 @@ export default function ProjectDetail() {
     setIsPipelineModalOpen(true);
   };
 
-  const { data: pipelines, isLoading: isPipelinesLoading } = useProjectPipelines(id!);
-
-  const { mutateAsync: updateProject, isPending: isUpdating } = useUpdateProject(id!);
-  const { mutateAsync: deleteProject } = useDeleteProject(id!);
+  const { mutateAsync: updateProject, isPending: isUpdating } = useUpdateProject(projectId);
+  const { mutateAsync: deleteProject } = useDeleteProject(projectId);
 
   const projectSchema = createProjectSchema();
 
@@ -306,14 +493,31 @@ export default function ProjectDetail() {
       </div>
 
       <TriggerRunModal
-        projectId={id!}
+        projectId={projectId}
         open={isTriggerModalOpen}
         onOpenChange={setIsTriggerModalOpen}
         onCreatePipeline={openNewPipeline}
       />
 
+      <SetupChecklist
+        project={project}
+        pipelines={pipelines}
+        environments={environments}
+        runs={runs}
+        notificationRules={notificationRules}
+        isLoading={isPipelinesLoading || isEnvironmentsLoading || isRunsLoading || isNotificationsLoading}
+        onOpenSettings={() => selectTab("settings")}
+        onOpenPipelines={() => {
+          selectTab("pipelines");
+          if ((pipelines?.length ?? 0) === 0) openNewPipeline();
+        }}
+        onOpenEnvironments={() => selectTab("environments")}
+        onOpenNotifications={() => selectTab("notifications")}
+        onTriggerRun={() => setIsTriggerModalOpen(true)}
+      />
+
       {/* Tabs */}
-      <Tabs defaultValue="runs" className="w-full">
+      <Tabs value={activeTab} onValueChange={selectTab} className="w-full">
         <TabsList className="mb-6">
           <TabsTrigger value="runs">
             <Activity className="mr-2 h-4 w-4" /> {t('projects.tabs.runs')}
@@ -336,11 +540,63 @@ export default function ProjectDetail() {
         </TabsList>
 
         <TabsContent value="runs" className="space-y-4">
-          <div className="rounded-xl border border-hairline bg-surface-1 p-12 text-center">
-            <p className="text-sm text-ink-tertiary">{t('projects.noRuns')}</p>
-            <Button variant="outline" className="mt-4" onClick={() => setIsTriggerModalOpen(true)}>
-              {t('projects.triggerFirstRun')}
-            </Button>
+          <div className="rounded-xl border border-hairline bg-surface-1">
+            <div className="flex flex-col gap-3 border-b border-hairline p-4 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-ink">{t("projects.recentRuns.title")}</h2>
+                <p className="text-sm text-ink-muted">{t("projects.recentRuns.description")}</p>
+              </div>
+              <Button variant="outline" onClick={() => setIsTriggerModalOpen(true)}>
+                <Play className="mr-2 h-4 w-4" />
+                {t("projects.triggerRun")}
+              </Button>
+            </div>
+            <div className="divide-y divide-hairline">
+              {isRunsLoading ? (
+                [1, 2, 3].map((item) => (
+                  <div key={item} className="h-20 animate-pulse bg-surface-1" />
+                ))
+              ) : runs.length === 0 ? (
+                <div className="p-12 text-center">
+                  <p className="text-sm text-ink-tertiary">{t('projects.noRuns')}</p>
+                  <Button variant="outline" className="mt-4" onClick={() => setIsTriggerModalOpen(true)}>
+                    {t('projects.triggerFirstRun')}
+                  </Button>
+                </div>
+              ) : (
+                runs.map((run) => (
+                  <button
+                    key={run.id}
+                    type="button"
+                    className="flex w-full flex-col gap-3 p-4 text-left transition-colors hover:bg-canvas md:flex-row md:items-center md:justify-between"
+                    onClick={() => navigate(`/runs/${run.id}`)}
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <RunStatusBadge status={run.status} />
+                        <span className="truncate font-medium text-ink">{run.pipeline_name}</span>
+                        <span className="font-mono text-xs text-ink-tertiary">{run.git_sha?.slice(0, 8) ?? "-"}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-ink-muted">
+                        <span className="inline-flex items-center gap-1">
+                          <GitBranch className="h-3.5 w-3.5" />
+                          {run.branch}
+                        </span>
+                        <span>{t("runs.testsSummary", {
+                          total: run.total_tests,
+                          passed: run.passed_tests,
+                          failed: run.failed_tests,
+                        })}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 text-sm text-ink-muted md:justify-end">
+                      <RelativeTime date={run.created_at} />
+                      <ArrowRight className="h-4 w-4" />
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
           </div>
         </TabsContent>
 
@@ -351,7 +607,7 @@ export default function ProjectDetail() {
             </Button>
           </div>
           <PipelineModal
-            projectId={id!}
+            projectId={projectId}
             pipeline={selectedPipeline}
             open={isPipelineModalOpen}
             onOpenChange={setIsPipelineModalOpen}
@@ -393,15 +649,20 @@ export default function ProjectDetail() {
         </TabsContent>
 
         <TabsContent value="environments" className="space-y-4">
-          <EnvironmentEditor projectId={id!} />
+          <EnvironmentEditor projectId={projectId} />
         </TabsContent>
 
         <TabsContent value="analytics">
-          <AnalyticsPanel projectId={id!} />
+          <AnalyticsPanel
+            projectId={projectId}
+            defaultBranch={project.default_branch}
+            initialSuite={searchParams.get("suite") ?? undefined}
+            initialTest={searchParams.get("test") ?? undefined}
+          />
         </TabsContent>
 
         <TabsContent value="notifications">
-          <NotificationRulesPanel projectId={id!} />
+          <NotificationRulesPanel projectId={projectId} />
         </TabsContent>
 
         <TabsContent value="settings" className="space-y-6 max-w-2xl">

@@ -28,7 +28,7 @@ import { LogViewer } from "../../components/runs/log-viewer";
 import { TestResultsTable } from "../../components/test-results-table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Button } from "../../components/ui/button";
-import type { Artifact } from "../../types/api";
+import type { Artifact, TestResult } from "../../types/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -91,9 +91,17 @@ function isSafeArtifactUrl(url: string): boolean {
   }
 }
 
+function testResultSortPriority(result: TestResult): number {
+  if (result.status === "failed") return 0;
+  if (result.status === "error") return 1;
+  if (result.status === "passed") return 2;
+  return 3;
+}
+
 export default function RunDetail() {
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [allurePreview, setAllurePreview] = useState<AllurePreviewState | null>(null);
+  const [activeTab, setActiveTab] = useState("results");
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
@@ -113,6 +121,12 @@ export default function RunDetail() {
     allureReportArtifact && allurePreview?.artifactId !== allureReportArtifact.id,
   );
   const allureReportPreviewFailed = Boolean(matchingAllurePreview && !allureReportUrl);
+  const orderedResults = [...(results?.data ?? [])].sort((a, b) => (
+    testResultSortPriority(a) - testResultSortPriority(b)
+  ));
+  const failedResults = orderedResults.filter((result) => (
+    result.status === "failed" || result.status === "error"
+  ));
 
   usePageTitle(run ? `Run ${run.pipeline_name}` : t('runs.notFound'));
 
@@ -180,6 +194,9 @@ export default function RunDetail() {
 
   if (!run) return <div>{t('runs.notFound')}</div>;
   const archivedLogsEnabled = run.is_terminal;
+  const shouldShowTriage = run.status === "failed" || run.failed_tests > 0 || Boolean(run.error_message);
+  const firstFailure = failedResults[0];
+  const failureMessage = firstFailure?.error_message || run.error_message || t("runs.triage.noFailureMessage");
 
   return (
     <div className="space-y-6">
@@ -257,10 +274,51 @@ export default function RunDetail() {
         </div>
       </div>
 
+      {shouldShowTriage && (
+        <section className="rounded-xl border border-status-failed/20 bg-status-failed/5 p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0 space-y-2">
+              <h2 className="text-base font-semibold text-status-failed">{t("runs.triage.title")}</h2>
+              <p className="line-clamp-3 break-words text-sm text-ink">
+                {failureMessage}
+              </p>
+              <div className="flex flex-wrap gap-3 text-xs text-ink-muted">
+                <span>{t("runs.triage.failedTests", { count: failedResults.length || run.failed_tests })}</span>
+                <span>{t("runs.triage.totalTests", { count: run.total_tests })}</span>
+                <span>{run.branch}</span>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setActiveTab("results")}>
+                <FileText className="mr-2 h-4 w-4" />
+                {t("runs.triage.results")}
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => setActiveTab("logs")}>
+                <Terminal className="mr-2 h-4 w-4" />
+                {t("runs.triage.logs")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setActiveTab(hasAllureReport ? "report" : "artifacts")}
+              >
+                <Package className="mr-2 h-4 w-4" />
+                {hasAllureReport ? t("runs.triage.report") : t("runs.triage.artifacts")}
+              </Button>
+              <Button type="button" size="sm" onClick={onReRun} disabled={isReRunning}>
+                <RotateCcw className="mr-2 h-4 w-4" />
+                {isReRunning ? t("runs.reRunning") : t("runs.reRun")}
+              </Button>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Main Content Tabs */}
       <Tabs
-        key={`${id}-${hasAllureReport ? "allure" : "results"}`}
-        defaultValue={hasAllureReport ? "report" : "results"}
+        value={activeTab}
+        onValueChange={setActiveTab}
         className="w-full"
       >
         <TabsList>
@@ -315,7 +373,11 @@ export default function RunDetail() {
             <SummaryCard label={t('runs.results.skipped')} value={run.skipped_tests} color="tertiary" />
           </div>
 
-          <TestResultsTable results={results?.data ?? []} isLoading={isResultsLoading} />
+          <TestResultsTable
+            results={orderedResults}
+            isLoading={isResultsLoading}
+            projectId={run.project_id}
+          />
         </TabsContent>
 
         <TabsContent value="artifacts" className="mt-4">

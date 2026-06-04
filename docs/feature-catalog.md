@@ -1,8 +1,8 @@
 # 功能清单 · QA 自动化执行平台
 
 > **用途**：一页看全产品功能盘子。PRD 对照 / 发版门禁 / 新人 onboarding 都从这里出发。
-> **当前真源**：`docs/prd.md` 提供产品目标与功能 ID，`docs/architecture.md` 提供当前实现边界，`docs/TODO.md` 提供排期；`docs/archive/doc-conflict-audit.md` 仅作审计证据档案，不作为实时状态源。
-> **最后更新**：2026-05-30
+> **当前真源**：`docs/prd.md` 提供产品目标与功能 ID，`docs/architecture.md` 提供当前实现边界，`docs/product-status.md` 提供试点产品化边界，`docs/TODO.md` 提供排期；`docs/archive/doc-conflict-audit.md` 仅作审计证据档案，不作为实时状态源。
+> **最后更新**：2026-06-04
 > **路径约定**：未带仓库前缀的后端路径默认相对 `src/qaplatform/`；未带仓库前缀的前端路径默认相对 `frontend/src/`。
 
 ## 图例
@@ -60,9 +60,9 @@
 |---|---|---|---|---|
 | F-RE-01 | 结构化结果（JUnit） | P0 | ✅ | `plugins/builtin/junit_collector.py` |
 | F-RE-02 | 执行摘要 | P0 | ✅ | `engine/executor.py` · `passed` / `failed` / `skipped` / `error` / `pass_rate`；PRD 的 < 3s 生成目标已进入 nightly/manual performance smoke |
-| F-RE-03 | 失败详情 | P0 | ✅ | `api/v1/runs.py` · `/runs/{run_id}/results` 返回 `error_message` / `stack_trace`；前端测试结果表支持展开失败用例详情 |
+| F-RE-03 | 失败详情 | P0 | ✅ | `api/v1/runs.py` · `/runs/{run_id}/results` 返回 `error_message` / `stack_trace`；前端 Run 详情页提供失败排障摘要、日志/报告/产物/Re-run 连续入口，测试结果表默认优先展示 failed/error，用例展开后可进入单用例历史 |
 | F-RE-04 | 产物管理 | P0 | ⚠️ | `api/v1/artifacts.py` · 返回预签名 URL，required integration 已覆盖环境级 artifact limit 的 API 读回、真实 JWT/RBAC/API token scope/API/DB 行到 artifact 列表分页/越界页、DB-only 无 S3 副作用、同一 `run.read` token 下归档日志回看 + artifact 列表 + 下载 URL 联合路径、bucket/key/TTL、多 artifact 下载逐条 presign-only、软删除下载 404 no-presign 和存储未配置 503，`project.read` token 不能生成下载链接，跨租户真实 artifact ID 与随机 UUID 一致 404 且不 presign；nightly/manual performance smoke 还覆盖 artifact 列表成功路径 DB-only 不触发 S3 presign/get_object、artifact 下载成功路径每请求一次 presign 且不读取对象、artifact 下载存储未配置稳定 503、artifact 列表拒绝不返回名称/路径、拒绝下载 p99 且拒绝路径不触发 presign；nightly/manual external-stack 断言 worker 注入密钥不出现在平台产出的 artifact 元数据、Run detail 或下载内容，并用真实 `run.read` API token 读取 worker 产出的 run detail、artifact list 和 JUnit/HTML/log/Allure 四类 artifact download，空 scope token 不能读且不回显 artifact 名称、路径、内容片段或 worker secret；`engine/executor.py` 递归上传 `results/` 下文件并强制环境级产物数量/大小限制，Allure 目录文件会标记为 `allure-report`，S3 上传失败不会写孤儿 Artifact 行；前端 Allure HTML 预览主路径已有 E2E，普通 `html`/`text/html` artifact 预览由前端契约测试锁住，真实 Docker stats stream 黑盒已覆盖，release_candidate 会强制 OOMKilled 平台语义用例不被 skip/fail，剩余是多资源报告加载体验 |
-| F-RE-05 | 历史趋势 | P1 | ✅ | `api/v1/analytics.py` · 项目级每日 run 趋势、flaky 测试聚合和单用例历史趋势均已实现；`/analytics/test-history` 按 suite/name 精确查询最近 N 天 run_id、run_created_at、run_status、用例 status、duration_ms、error_message 与 git_ref，前端 Analytics 面板可从 flaky 行进入单用例历史表 |
+| F-RE-05 | 历史趋势 | P1 | ✅ | `api/v1/analytics.py` · 项目级每日 run 趋势、flaky 测试聚合和单用例历史趋势均已实现；trends/flaky 支持可选 `git_ref` 过滤，`/analytics/release-summary` 返回目标 ref 与 baseline 的 run 数、raw pass rate、flaky-adjusted pass rate、新增失败和恢复用例；`/analytics/test-history` 按 suite/name 精确查询最近 N 天 run_id、run_created_at、run_status、用例 status、duration_ms、error_message 与 git_ref，前端 Analytics 面板可从 flaky 行或失败 Run 进入单用例历史表 |
 
 ### 1.5 通知
 
@@ -96,7 +96,7 @@
 
 | 功能 | 必要性 | 状态 | 实现位置 |
 |---|---|---|---|
-| 项目质量仪表盘 | P1 | ✅ | `api/v1/analytics.py` + `pages/projects/detail.tsx` / `components/projects/analytics-panel.tsx` 已有项目趋势、flaky 聚合与单用例历史趋势入口；前端 TypeScript/build/lint gate 通过 |
+| 项目质量仪表盘 | P1 | ✅ | `api/v1/analytics.py` + `pages/projects/detail.tsx` / `components/projects/analytics-panel.tsx` 已有项目趋势、flaky 聚合、单用例历史趋势和轻量 release/ref 判断入口；前端 TypeScript/build/lint gate 通过 |
 | Flaky test 检测 | P1 | ✅ | `api/v1/analytics.py` · 同一 suite/name 在时间窗口内既有 passed 又有 failed/error 的聚合判定 |
 | 多 Runner 插件（Jest / Playwright / Go test） | P2 | ✅ | `plugins/builtin/jest_runner.py` · `plugins/builtin/playwright_runner.py` · `plugins/builtin/go_test_runner.py` |
 | 批量操作（批量取消/重试） | P1 | ✅ | `api/v1/runs.py` batch_cancel / batch_retry |
@@ -238,7 +238,7 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 
 | 项 | 决策理由 |
 |---|---|
-| 跨分支/跨环境对比专属视图 | PRD §2.3 测试经理诉求可由"按 branch 手动触发执行 + 仪表盘对比通过率"覆盖；专属视图工程量大、使用频次低。注：当前 `api/v1/analytics.py` **尚未支持 branch / git_ref 过滤**，若后续要做替代方案需先加这一参数 |
+| 完整跨分支/跨环境对比专属视图 | PRD §2.3 测试经理诉求先由"按 branch 手动触发执行 + Analytics 按 `git_ref` 过滤 + release summary"覆盖；完整 diff 视图工程量大、使用频次仍需试点验证 |
 | 历史日志全文搜索 | 实时关键字过滤已能解决主路径；历史全文搜索需 ES/PG GIN，ROI 低 |
 | 数据导出 CSV | PRD 提及但未绑定用户旅程；REST API 已可被外部脚本导出 |
 | Slack 通知（F-NT-02e） | 国内团队优先级低；Webhook 通用通道可走 Slack incoming webhook |
@@ -286,4 +286,4 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 
 ### 已知偏移
 
-- 详见 [`archive/doc-conflict-audit.md`](archive/doc-conflict-audit.md) 的审计证据。当前主要偏移包括：审计日志查询已实现但仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净、首批 8 个 `feature/T*` 分支已推送但未合入 `main`。
+- 详见 [`archive/doc-conflict-audit.md`](archive/doc-conflict-audit.md) 的审计证据。当前主要偏移包括：审计日志查询已实现但仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净；旧 `feature/T*` 分支合并状态仅作为历史快照保留，实时状态以现场 git 命令为准。

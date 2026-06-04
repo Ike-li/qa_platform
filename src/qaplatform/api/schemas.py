@@ -1001,6 +1001,28 @@ class TestHistoryPoint(BaseModel):
     git_ref: str | None = None
 
 
+class ReleaseTestDelta(BaseModel):
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    suite: str
+    name: str
+    failed_count: int
+
+
+class ReleaseSummaryResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    git_ref: str
+    baseline_git_ref: str
+    total_runs: int
+    passed_runs: int
+    failed_runs: int
+    raw_pass_rate: float
+    flaky_adjusted_pass_rate: float | None = None
+    new_failing_tests: list[ReleaseTestDelta] = Field(default_factory=list)
+    recovered_tests: list[ReleaseTestDelta] = Field(default_factory=list)
+
+
 # ── Analytics paginated wrappers ─────────────────────────────────────────────
 
 class AnalyticsPaginationMeta(BaseModel):

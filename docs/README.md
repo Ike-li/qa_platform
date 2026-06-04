@@ -10,6 +10,7 @@ Use these first when deciding current behavior or implementation scope:
 |---|---|
 | [architecture.md](architecture.md) | Runtime architecture, layer boundaries, execution lifecycle, storage, security, and operations contracts. |
 | [feature-catalog.md](feature-catalog.md) | Current feature status, PRD ID mapping, accepted gaps, and implementation notes. |
+| [product-status.md](product-status.md) | Current Beta/GA pilot boundary, target user, committed and non-committed product capabilities, and success metrics. |
 | [TODO.md](TODO.md) | Active backlog and remaining acceptance gaps. |
 | [development.md](development.md) | Local setup, service startup, and developer test commands. |
 | [runbook.md](runbook.md) | Operator procedures for incidents, key rotation, lifecycle policies, and production hardening. |
@@ -47,7 +48,7 @@ These files are retained as historical evidence. Do not use them as live impleme
 
 ## Maintenance Rules
 
-- Current truth lives in `architecture.md`, `feature-catalog.md`, `TODO.md`, `development.md`, `runbook.md`, and `testing-strategy.md`.
+- Current truth lives in `architecture.md`, `feature-catalog.md`, `product-status.md`, `TODO.md`, `development.md`, `runbook.md`, and `testing-strategy.md`.
 - Long evidence belongs in `testing-quality-ops.md`; do not duplicate the same evidence across multiple current-source documents.
 - Historical audit documents belong under `archive/`; they may explain old wording, but they must not be used as live status without checking the current sources.
 - New task packages go under `docs/tasks/` and must update [tasks/README.md](tasks/README.md).

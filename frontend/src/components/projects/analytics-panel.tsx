@@ -10,9 +10,10 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import { useTrends, useFlakyTests, useTestHistory } from "../../hooks/use-analytics";
-import type { TrendDataPoint, FlakyTest, TestHistoryPoint } from "../../types/api";
+import { useTrends, useFlakyTests, useTestHistory, useReleaseSummary } from "../../hooks/use-analytics";
+import type { TrendDataPoint, FlakyTest, TestHistoryPoint, ReleaseSummary, ReleaseTestDelta } from "../../types/api";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 
 const PERIOD_OPTIONS = [7, 14, 30, 90];
 
@@ -263,15 +264,134 @@ function TestHistoryTable({ data }: { data: TestHistoryPoint[] }) {
   );
 }
 
-export function AnalyticsPanel({ projectId }: { projectId: string }) {
+function formatPercent(value: number | null) {
+  if (value === null) return "-";
+  return `${Math.round(value * 100)}%`;
+}
+
+function DeltaList({ data }: { data: ReleaseTestDelta[] }) {
+  if (data.length === 0) {
+    return <span className="text-sm text-ink-tertiary">-</span>;
+  }
+  return (
+    <div className="space-y-2">
+      {data.slice(0, 5).map((test) => (
+        <div key={`${test.suite}:${test.name}`} className="min-w-0">
+          <div className="truncate text-sm font-medium text-ink" title={test.name}>
+            {test.name}
+          </div>
+          <div className="truncate text-xs text-ink-muted" title={test.suite}>
+            {test.suite} · {test.failed_count}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReleaseSummaryPanel({
+  summary,
+  isLoading,
+  isError,
+}: {
+  summary: ReleaseSummary | undefined;
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  const { t } = useTranslation();
+
+  if (isLoading) {
+    return <div className="h-40 animate-pulse rounded-xl border border-hairline bg-surface-1" />;
+  }
+
+  if (isError || !summary) {
+    return (
+      <div className="rounded-xl border border-hairline bg-surface-1 p-6 text-sm text-status-failed">
+        {t("analytics.release.loadError")}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-hairline bg-surface-1 p-6">
+      <div className="mb-4 flex flex-col gap-1">
+        <h3 className="text-lg font-medium text-ink">{t("analytics.release.title")}</h3>
+        <p className="text-sm text-ink-muted">
+          {summary.git_ref} {t("analytics.release.comparedWith")} {summary.baseline_git_ref}
+        </p>
+      </div>
+      <div className="grid gap-4 md:grid-cols-4">
+        <div className="rounded-lg border border-hairline bg-surface-2/40 p-4">
+          <div className="text-xs uppercase text-ink-tertiary">{t("analytics.totalRuns")}</div>
+          <div className="mt-1 text-2xl font-semibold text-ink">{summary.total_runs}</div>
+        </div>
+        <div className="rounded-lg border border-status-passed/20 bg-status-passed/5 p-4">
+          <div className="text-xs uppercase text-status-passed/80">{t("analytics.passRate")}</div>
+          <div className="mt-1 text-2xl font-semibold text-status-passed">
+            {formatPercent(summary.raw_pass_rate)}
+          </div>
+        </div>
+        <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+          <div className="text-xs uppercase text-primary/80">{t("analytics.release.adjustedPassRate")}</div>
+          <div className="mt-1 text-2xl font-semibold text-primary">
+            {formatPercent(summary.flaky_adjusted_pass_rate)}
+          </div>
+        </div>
+        <div className="rounded-lg border border-status-failed/20 bg-status-failed/5 p-4">
+          <div className="text-xs uppercase text-status-failed/80">{t("analytics.failed")}</div>
+          <div className="mt-1 text-2xl font-semibold text-status-failed">{summary.failed_runs}</div>
+        </div>
+      </div>
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
+        <div className="rounded-lg border border-hairline bg-surface-2/30 p-4">
+          <h4 className="mb-3 text-sm font-medium text-ink">{t("analytics.release.newFailures")}</h4>
+          <DeltaList data={summary.new_failing_tests} />
+        </div>
+        <div className="rounded-lg border border-hairline bg-surface-2/30 p-4">
+          <h4 className="mb-3 text-sm font-medium text-ink">{t("analytics.release.recovered")}</h4>
+          <DeltaList data={summary.recovered_tests} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function AnalyticsPanel({
+  projectId,
+  defaultBranch,
+  initialSuite,
+  initialTest,
+}: {
+  projectId: string;
+  defaultBranch: string;
+  initialSuite?: string;
+  initialTest?: string;
+}) {
   const { t } = useTranslation();
   const [days, setDays] = useState(30);
   const [selectedTestKey, setSelectedTestKey] = useState<string | null>(null);
+  const [gitRefInput, setGitRefInput] = useState("");
+  const [baselineRefInput, setBaselineRefInput] = useState("");
+  const selectedGitRef = gitRefInput.trim() || defaultBranch;
+  const baselineGitRef = baselineRefInput.trim() || defaultBranch;
+  const initialHistoryTest = initialSuite && initialTest
+    ? { suite: initialSuite, name: initialTest }
+    : null;
+  const initialHistoryKey = initialHistoryTest ? testKey(initialHistoryTest) : null;
 
-  const { data: trends, isLoading: trendsLoading, isError: trendsError } = useTrends(projectId, days);
-  const { data: flaky, isLoading: flakyLoading, isError: flakyError } = useFlakyTests(projectId, days);
+  const { data: trends, isLoading: trendsLoading, isError: trendsError } = useTrends(projectId, days, selectedGitRef);
+  const { data: flaky, isLoading: flakyLoading, isError: flakyError } = useFlakyTests(projectId, days, 3, selectedGitRef);
+  const {
+    data: releaseSummary,
+    isLoading: releaseLoading,
+    isError: releaseError,
+  } = useReleaseSummary(projectId, days, selectedGitRef, baselineGitRef);
+  const effectiveSelectedTestKey = selectedTestKey ?? initialHistoryKey;
   const selectedTest =
-    (selectedTestKey ? flaky?.find((test) => testKey(test) === selectedTestKey) : null) ?? flaky?.[0] ?? null;
+    (effectiveSelectedTestKey ? flaky?.find((test) => testKey(test) === effectiveSelectedTestKey) : null)
+    ?? (effectiveSelectedTestKey === initialHistoryKey ? initialHistoryTest : null)
+    ?? flaky?.[0]
+    ?? null;
   const { data: history, isLoading: historyLoading, isError: historyError } = useTestHistory(
     projectId,
     selectedTest?.suite,
@@ -282,20 +402,48 @@ export function AnalyticsPanel({ projectId }: { projectId: string }) {
   return (
     <div className="space-y-8">
       {/* Period selector */}
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-ink-muted">{t("analytics.daysPeriod")}:</span>
-        {PERIOD_OPTIONS.map((d) => (
-          <Button
-            key={d}
-            variant={d === days ? "default" : "outline"}
-            size="sm"
-            aria-pressed={d === days}
-            onClick={() => setDays(d)}
-          >
-            {d}d
-          </Button>
-        ))}
+      <div className="flex flex-col gap-3 rounded-xl border border-hairline bg-surface-1 p-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-ink-muted">{t("analytics.release.targetRef")}</label>
+            <Input
+              value={gitRefInput}
+              onChange={(event) => setGitRefInput(event.target.value)}
+              placeholder={defaultBranch}
+              className="w-full sm:w-64"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-ink-muted">{t("analytics.release.baselineRef")}</label>
+            <Input
+              value={baselineRefInput}
+              onChange={(event) => setBaselineRefInput(event.target.value)}
+              placeholder={defaultBranch}
+              className="w-full sm:w-64"
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-ink-muted">{t("analytics.daysPeriod")}:</span>
+          {PERIOD_OPTIONS.map((d) => (
+            <Button
+              key={d}
+              variant={d === days ? "default" : "outline"}
+              size="sm"
+              aria-pressed={d === days}
+              onClick={() => setDays(d)}
+            >
+              {d}d
+            </Button>
+          ))}
+        </div>
       </div>
+
+      <ReleaseSummaryPanel
+        summary={releaseSummary}
+        isLoading={releaseLoading}
+        isError={releaseError}
+      />
 
       {/* Trends chart */}
       <div className="rounded-xl border border-hairline bg-surface-1 p-6">

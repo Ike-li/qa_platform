@@ -1673,6 +1673,17 @@ SCHEMA_NEGATIVE_CASES: tuple[SchemaNegativeCase, ...] = (
         requires_stack=True,
     ),
     SchemaNegativeCase(
+        "get_api_v1_projects_project_id_analytics_release_summary::"
+        "schema_negative::days_low",
+        "GET",
+        "/api/v1/projects/{project_id}/analytics/release-summary",
+        lambda actor, _ids, _duplicate_run_id: {
+            "headers": actor.headers,
+            "params": {"days": 0},
+        },
+        requires_stack=True,
+    ),
+    SchemaNegativeCase(
         "get_api_v1_projects_project_id_analytics_test_history::"
         "schema_negative::blank_suite",
         "GET",
@@ -1856,6 +1867,19 @@ RBAC_TENANT_CASES: tuple[RbacTenantCase, ...] = (
         "/api/v1/projects/{project_id}/analytics/flaky",
         lambda _ids: {
             "params": {"days": 7, "min_runs": 2, "offset": 0, "limit": 5},
+        },
+    ),
+    RbacTenantCase(
+        "get_api_v1_projects_project_id_analytics_release_summary::"
+        "rbac_tenant::cross_tenant_read_denied",
+        "GET",
+        "/api/v1/projects/{project_id}/analytics/release-summary",
+        lambda _ids: {
+            "params": {
+                "days": 7,
+                "git_ref": "main",
+                "baseline_git_ref": "main",
+            },
         },
     ),
     RbacTenantCase(
@@ -2425,10 +2449,17 @@ async def test_resource_lifecycle_blackbox_crud_and_listing(
             (
                 f"/api/v1/projects/{project['id']}/analytics/trends",
                 {"days": 7, "offset": 0, "limit": 5},
+                "paginated",
             ),
             (
                 f"/api/v1/projects/{project['id']}/analytics/flaky",
                 {"days": 7, "min_runs": 2, "offset": 0, "limit": 5},
+                "paginated",
+            ),
+            (
+                f"/api/v1/projects/{project['id']}/analytics/release-summary",
+                {"days": 7, "git_ref": "main", "baseline_git_ref": "main"},
+                "summary",
             ),
             (
                 f"/api/v1/projects/{project['id']}/analytics/test-history",
@@ -2439,18 +2470,32 @@ async def test_resource_lifecycle_blackbox_crud_and_listing(
                     "offset": 0,
                     "limit": 5,
                 },
+                "paginated",
             ),
         )
-        for path, params in analytics_requests:
+        for path, params, response_kind in analytics_requests:
             analytics_response = await client.get(
                 path,
                 headers=actor.headers,
                 params=params,
             )
             analytics_body = _assert_status(analytics_response, 200)
-            assert analytics_body["data"] == []
-            assert analytics_body["pagination"]["offset"] == 0
-            assert analytics_body["pagination"]["limit"] == 5
+            if response_kind == "summary":
+                assert analytics_body == {
+                    "git_ref": "main",
+                    "baseline_git_ref": "main",
+                    "total_runs": 0,
+                    "passed_runs": 0,
+                    "failed_runs": 0,
+                    "raw_pass_rate": 0.0,
+                    "flaky_adjusted_pass_rate": None,
+                    "new_failing_tests": [],
+                    "recovered_tests": [],
+                }
+            else:
+                assert analytics_body["data"] == []
+                assert analytics_body["pagination"]["offset"] == 0
+                assert analytics_body["pagination"]["limit"] == 5
 
         for path in (
             f"/api/v1/projects/{project['id']}/notification-rules/{rule['id']}",
@@ -2769,8 +2814,9 @@ async def test_webhooks_blackbox_security_failures_and_duplicate_delivery(
             json={"zen": "keep it logically precise"},
             headers={"X-GitHub-Event": "ping"},
         )
-        assert ignored_event.status_code == 202
-        assert ignored_event.json()["detail"] == "Unsupported GitHub event: ping"
+        assert _assert_status(ignored_event, 202) == {
+            "detail": "Unsupported GitHub event: ping"
+        }
 
         signed_project_payload = {
             "git_ref": "refs/heads/main",

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -65,6 +67,18 @@ def _scalar_result(value: int):
 def _scalars_result(items: list | None = None):
     result = MagicMock()
     result.scalars.return_value.all.return_value = items or []
+    return result
+
+
+def _rows_result(items: list | None = None):
+    result = MagicMock()
+    result.all.return_value = items or []
+    return result
+
+
+def _one_result(item):
+    result = MagicMock()
+    result.one.return_value = item
     return result
 
 
@@ -153,3 +167,116 @@ async def test_waiting_capacity_count_excludes_already_enqueued_runs():
     assert "run.enqueued_at IS NULL" in sql
     status_param = _bound_param_name(sql, "run.status =")
     assert params == {status_param: RunStatusEnum.QUEUED}
+
+
+@pytest.mark.asyncio
+async def test_list_trend_points_adds_git_ref_filter_when_requested():
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[_scalar_result(0), _rows_result()])
+    repo = RunRepository(session)
+    project_id = uuid4()
+    cutoff = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    rows, total = await repo.list_trend_points(
+        project_id=project_id,
+        cutoff=cutoff,
+        offset=0,
+        limit=30,
+        git_ref="release/2026.06",
+    )
+
+    assert rows == []
+    assert total == 0
+    assert session.execute.await_count == 2
+    for call in session.execute.await_args_list:
+        statement = call.args[0]
+        sql = _postgres_sql(statement)
+        params = statement.compile(dialect=postgresql.dialect()).params
+        git_ref_param = _bound_param_name(sql, "run.git_ref =")
+        assert params[git_ref_param] == "release/2026.06"
+        assert "run.project_id = " in sql
+        assert "run.created_at >= " in sql
+        assert "run.deleted_at IS NULL" in sql
+
+
+@pytest.mark.asyncio
+async def test_release_summary_calculates_flaky_adjusted_and_test_deltas():
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            _one_result(
+                SimpleNamespace(total_runs=4, passed_runs=3, failed_runs=1),
+            ),
+            _rows_result([
+                SimpleNamespace(
+                    suite="checkout",
+                    name="test_new_failure",
+                    total_count=2,
+                    passed_count=0,
+                    failed_count=2,
+                ),
+                SimpleNamespace(
+                    suite="checkout",
+                    name="test_flaky_known",
+                    total_count=2,
+                    passed_count=1,
+                    failed_count=1,
+                ),
+                SimpleNamespace(
+                    suite="checkout",
+                    name="test_stable_pass",
+                    total_count=2,
+                    passed_count=2,
+                    failed_count=0,
+                ),
+            ]),
+            _rows_result([
+                SimpleNamespace(
+                    suite="checkout",
+                    name="test_recovered",
+                    total_count=1,
+                    passed_count=0,
+                    failed_count=1,
+                ),
+                SimpleNamespace(
+                    suite="checkout",
+                    name="test_flaky_known",
+                    total_count=1,
+                    passed_count=0,
+                    failed_count=1,
+                ),
+            ]),
+        ]
+    )
+    repo = RunRepository(session)
+
+    summary = await repo.get_release_summary(
+        project_id=uuid4(),
+        cutoff=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        git_ref="release/2026.06",
+        baseline_git_ref="main",
+    )
+
+    assert summary == {
+        "git_ref": "release/2026.06",
+        "baseline_git_ref": "main",
+        "total_runs": 4,
+        "passed_runs": 3,
+        "failed_runs": 1,
+        "raw_pass_rate": 0.75,
+        "flaky_adjusted_pass_rate": 0.5,
+        "new_failing_tests": [
+            {
+                "suite": "checkout",
+                "name": "test_new_failure",
+                "failed_count": 2,
+            }
+        ],
+        "recovered_tests": [
+            {
+                "suite": "checkout",
+                "name": "test_recovered",
+                "failed_count": 1,
+            }
+        ],
+    }

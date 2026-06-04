@@ -3,6 +3,7 @@ import ipaddress
 import re
 
 from typing import Callable, Union
+from uuid import uuid4
 
 import structlog
 from fastapi import Request, Response
@@ -182,7 +183,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
             pipe = redis.pipeline()
             pipe.zremrangebyscore(key, 0, now - window)
-            pipe.zadd(key, {str(now): now})
+            pipe.zadd(key, {f"{now}:{uuid4().hex}": now})
             pipe.zcard(key)
             pipe.expire(key, window)
 

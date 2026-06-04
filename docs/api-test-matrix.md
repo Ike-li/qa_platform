@@ -2,7 +2,7 @@
 
 ## 目标
 
-OpenAPI 是接口测试的唯一真源。当前目标范围为 `/api/v1/**`、`/health`、`/ready`、`/webhooks/{provider}`，共 69 个 operation。接口 operation 矩阵文件为 `tests/api_matrix/openapi_operation_matrix.yml`，由 `scripts/validate_api_test_matrix.py` 与运行时 OpenAPI 文档做一致性校验；原子测试点矩阵文件为 `tests/api_matrix/openapi_test_case_matrix.yml`，由 `scripts/validate_api_test_case_matrix.py` 从 operation 矩阵展开校验。
+OpenAPI 是接口测试的唯一真源。当前目标范围为 `/api/v1/**`、`/health`、`/ready`、`/webhooks/{provider}`，共 70 个 operation。接口 operation 矩阵文件为 `tests/api_matrix/openapi_operation_matrix.yml`，由 `scripts/validate_api_test_matrix.py` 与运行时 OpenAPI 文档做一致性校验；原子测试点矩阵文件为 `tests/api_matrix/openapi_test_case_matrix.yml`，由 `scripts/validate_api_test_case_matrix.py` 从 operation 矩阵展开校验。
 
 本计划分三层执行：
 
@@ -27,7 +27,7 @@ Operation 覆盖状态：
 
 | 状态 | 数量 | 含义 |
 | --- | ---: | --- |
-| `covered` | 69 | `/health`、`/ready`、Auth、Project CRUD、project members、project resources CRUD、audit-events、公开 API 可构造的 runs/SSE/webhook operation、real-stack 可构造的 artifact/archived logs/analytics 有数据成功态，以及 seed-assisted admin/branches/member 写操作成功态已有黑盒行为测试。 |
+| `covered` | 70 | `/health`、`/ready`、Auth、Project CRUD、project members、project resources CRUD、audit-events、公开 API 可构造的 runs/SSE/webhook operation、real-stack 可构造的 artifact/archived logs/analytics 有数据成功态，以及 seed-assisted admin/branches/member 写操作成功态已有黑盒行为测试。 |
 | `partial` | 0 | 不再保留未决 partial。 |
 | `blocked_by_missing_public_setup` | 0 | 当前无阻塞项；无法通过公开 API 创建的前置状态由测试环境 seed 工具显式覆盖。 |
 | `missing` | 0 | 不允许合入。新增 OpenAPI operation 未进入矩阵时校验失败。 |
@@ -36,8 +36,8 @@ Operation 覆盖状态：
 
 | 状态 | 数量 | 含义 |
 | --- | ---: | --- |
-| `total_cases` | 414 | 69 个 operation × `contract`、`auth`、`success`、`schema_negative`、`rbac_tenant`、`declared_responses` 6 个维度。 |
-| `covered` | 414 | 已由 contract smoke、黑盒行为测试、seed-assisted 黑盒行为测试、real-stack 行为测试或声明状态校验覆盖/守护的原子测试点。 |
+| `total_cases` | 420 | 70 个 operation × `contract`、`auth`、`success`、`schema_negative`、`rbac_tenant`、`declared_responses` 6 个维度。 |
+| `covered` | 420 | 已由 contract smoke、黑盒行为测试、seed-assisted 黑盒行为测试、real-stack 行为测试或声明状态校验覆盖/守护的原子测试点。 |
 | `blocked_by_missing_public_setup` | 0 | 当前无阻塞项。 |
 | `missing` | 0 | 不允许合入。新增 operation 或维度漂移会导致 case matrix validator 失败。 |
 
@@ -45,10 +45,10 @@ Operation 覆盖状态：
 
 | 测试文件 | pytest items | 说明 |
 | --- | ---: | --- |
-| `tests/integration/test_openapi_contract_smoke.py` | 210 | 3 个全局契约检查 + 69 个 `contract` + 69 个 `auth` + 69 个 `declared_responses` 原子用例。 |
-| `tests/integration/test_openapi_behavior_blackbox.py` | 131 | 4 个 workflow 聚合用例 + 1 个跨租户特殊流用例 + 1 个 seed-assisted 前置数据用例 + 8 个 Auth `success` 原子用例 + 53 个 Project/Resource/Run/Webhook/Audit/Admin `success` 原子用例 + 30 个 `schema_negative` 原子用例 + 39 个 `rbac_tenant` 原子用例。 |
+| `tests/integration/test_openapi_contract_smoke.py` | 213 | 3 个全局契约检查 + 70 个 `contract` + 70 个 `auth` + 70 个 `declared_responses` 原子用例。 |
+| `tests/integration/test_openapi_behavior_blackbox.py` | 133 | 4 个 workflow 聚合用例 + 1 个跨租户特殊流用例 + 1 个 seed-assisted 前置数据用例 + 8 个 Auth `success` 原子用例 + 53 个 Project/Resource/Run/Webhook/Audit/Admin `success` 原子用例 + 31 个 `schema_negative` 原子用例 + 40 个 `rbac_tenant` 原子用例。 |
 | `tests/integration/test_openapi_real_stack_behavior.py` | 1 | 1 个 compose worker/S3 黑盒 workflow，经公开 API 构造 passed/failed runs，覆盖 artifact download、preview-url、preview token、Allure 入口、archived logs、analytics trends/flaky/test-history 8 个 success 原子用例。 |
-| 合计 | 342 | `RUN_INTEGRATION_TESTS=1 ... --collect-only -q` 当前收集结果。 |
+| 合计 | 347 | `RUN_INTEGRATION_TESTS=1 ... --collect-only -q` 当前收集结果。 |
 
 Seed-assisted 成功态：
 

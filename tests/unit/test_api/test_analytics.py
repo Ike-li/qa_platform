@@ -66,6 +66,19 @@ def mock_repos():
     repos.project = AsyncMock()
     repos.run = AsyncMock()
     repos.run.list_trend_points = AsyncMock(return_value=([], 0))
+    repos.run.get_release_summary = AsyncMock(
+        return_value={
+            "git_ref": "main",
+            "baseline_git_ref": "main",
+            "total_runs": 0,
+            "passed_runs": 0,
+            "failed_runs": 0,
+            "raw_pass_rate": 0.0,
+            "flaky_adjusted_pass_rate": None,
+            "new_failing_tests": [],
+            "recovered_tests": [],
+        }
+    )
     repos.test_result = AsyncMock()
     repos.test_result.list_flaky_tests = AsyncMock(return_value=([], 0))
     repos.test_result.list_test_history = AsyncMock(return_value=([], 0))
@@ -173,6 +186,37 @@ async def test_trends_success_uses_project_rbac_and_repository_pagination(
 
 
 @pytest.mark.asyncio
+async def test_trends_accepts_git_ref_filter(
+    client,
+    mock_repos,
+    mock_user,
+    project_id,
+):
+    from qaplatform.api.v1 import analytics
+
+    project = SimpleNamespace(id=project_id)
+    mock_repos.project.get_for_tenant.return_value = project
+    enforce_project_action = AsyncMock()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            analytics,
+            "enforce_project_action",
+            enforce_project_action,
+        )
+        resp = await client.get(
+            f"/api/v1/projects/{project_id}/analytics/trends",
+            params={"git_ref": "release/2026.06"},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    trend_kwargs = dict(mock_repos.run.list_trend_points.await_args.kwargs)
+    assert trend_kwargs["git_ref"] == "release/2026.06"
+    mock_repos.test_result.list_flaky_tests.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_flaky_success_uses_project_rbac_and_repository_filters(
     client,
     mock_repos,
@@ -246,6 +290,145 @@ async def test_flaky_success_uses_project_rbac_and_repository_filters(
         started_at=request_started,
         finished_at=request_finished,
     )
+
+
+@pytest.mark.asyncio
+async def test_flaky_accepts_git_ref_filter(
+    client,
+    mock_repos,
+    mock_user,
+    project_id,
+):
+    from qaplatform.api.v1 import analytics
+
+    project = SimpleNamespace(id=project_id)
+    mock_repos.project.get_for_tenant.return_value = project
+    enforce_project_action = AsyncMock()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            analytics,
+            "enforce_project_action",
+            enforce_project_action,
+        )
+        resp = await client.get(
+            f"/api/v1/projects/{project_id}/analytics/flaky",
+            params={"git_ref": "release/2026.06"},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    flaky_kwargs = dict(mock_repos.test_result.list_flaky_tests.await_args.kwargs)
+    assert flaky_kwargs["git_ref"] == "release/2026.06"
+    mock_repos.run.list_trend_points.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_release_summary_success_uses_project_rbac_and_repository_filters(
+    client,
+    mock_repos,
+    mock_user,
+    project_id,
+):
+    from qaplatform.api.v1 import analytics
+
+    project = SimpleNamespace(id=project_id, default_branch="main")
+    mock_repos.project.get_for_tenant.return_value = project
+    mock_repos.run.get_release_summary.return_value = {
+        "git_ref": "release/2026.06",
+        "baseline_git_ref": "main",
+        "total_runs": 4,
+        "passed_runs": 3,
+        "failed_runs": 1,
+        "raw_pass_rate": 0.75,
+        "flaky_adjusted_pass_rate": 1.0,
+        "new_failing_tests": [
+            {"suite": "checkout", "name": "test_payment", "failed_count": 2}
+        ],
+        "recovered_tests": [
+            {"suite": "checkout", "name": "test_cart", "failed_count": 1}
+        ],
+    }
+    enforce_project_action = AsyncMock()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            analytics,
+            "enforce_project_action",
+            enforce_project_action,
+        )
+        request_started = datetime.now(timezone.utc)
+        resp = await client.get(
+            f"/api/v1/projects/{project_id}/analytics/release-summary",
+            params={
+                "days": "14",
+                "git_ref": "release/2026.06",
+                "baseline_git_ref": "main",
+            },
+            headers={"Authorization": "Bearer fake"},
+        )
+        request_finished = datetime.now(timezone.utc)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "git_ref": "release/2026.06",
+        "baseline_git_ref": "main",
+        "total_runs": 4,
+        "passed_runs": 3,
+        "failed_runs": 1,
+        "raw_pass_rate": 0.75,
+        "flaky_adjusted_pass_rate": 1.0,
+        "new_failing_tests": [
+            {"suite": "checkout", "name": "test_payment", "failed_count": 2}
+        ],
+        "recovered_tests": [
+            {"suite": "checkout", "name": "test_cart", "failed_count": 1}
+        ],
+    }
+    mock_repos.project.get_for_tenant.assert_awaited_once_with(
+        project_id,
+        mock_user.tenant_id,
+    )
+    _assert_run_read_enforced(
+        enforce_project_action,
+        user=mock_user,
+        project_id=project_id,
+    )
+    mock_repos.run.get_release_summary.assert_awaited_once()
+    assert mock_repos.run.get_release_summary.await_args.args == ()
+    summary_kwargs = dict(mock_repos.run.get_release_summary.await_args.kwargs)
+    summary_cutoff = summary_kwargs.pop("cutoff")
+    assert summary_kwargs == {
+        "project_id": project_id,
+        "git_ref": "release/2026.06",
+        "baseline_git_ref": "main",
+    }
+    _assert_cutoff_window(
+        summary_cutoff,
+        days=14,
+        started_at=request_started,
+        finished_at=request_finished,
+    )
+
+
+@pytest.mark.asyncio
+async def test_release_summary_defaults_refs_to_project_default_branch(
+    client,
+    mock_repos,
+    project_id,
+):
+    project = SimpleNamespace(id=project_id, default_branch="main")
+    mock_repos.project.get_for_tenant.return_value = project
+
+    resp = await client.get(
+        f"/api/v1/projects/{project_id}/analytics/release-summary",
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    summary_kwargs = dict(mock_repos.run.get_release_summary.await_args.kwargs)
+    assert summary_kwargs["git_ref"] == "main"
+    assert summary_kwargs["baseline_git_ref"] == "main"
 
 
 @pytest.mark.asyncio
@@ -366,6 +549,55 @@ async def test_test_history_rejects_blank_text_filters_without_repo_lookup(
     }
     mock_repos.project.get_for_tenant.assert_not_awaited()
     mock_repos.test_result.list_test_history.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("path", "params", "message"),
+    [
+        (
+            "trends",
+            {"git_ref": "   "},
+            "Invalid analytics git_ref: empty",
+        ),
+        (
+            "flaky",
+            {"git_ref": "   "},
+            "Invalid analytics git_ref: empty",
+        ),
+        (
+            "release-summary",
+            {"baseline_git_ref": "   "},
+            "Invalid analytics baseline_git_ref: empty",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_ref_filtered_analytics_reject_blank_refs_without_repo_lookup(
+    client,
+    mock_repos,
+    project_id,
+    path,
+    params,
+    message,
+):
+    resp = await client.get(
+        f"/api/v1/projects/{project_id}/analytics/{path}",
+        params=params,
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json() == {
+        "error": {
+            "code": "VALIDATION_ERROR",
+            "message": message,
+            "details": [],
+        }
+    }
+    mock_repos.project.get_for_tenant.assert_not_awaited()
+    mock_repos.run.list_trend_points.assert_not_awaited()
+    mock_repos.run.get_release_summary.assert_not_awaited()
+    mock_repos.test_result.list_flaky_tests.assert_not_awaited()
 
 
 def test_test_history_422_uses_error_response_schema(app):

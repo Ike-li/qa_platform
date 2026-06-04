@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,6 +19,7 @@ from qaplatform.api.schemas import (
     ErrorResponse,
     FlakyResponse,
     FlakyTest,
+    ReleaseSummaryResponse,
     TestHistoryPoint,
     TestHistoryResponse,
     TrendDataPoint,
@@ -32,6 +34,15 @@ def _validate_history_text_filter(name: str, value: str) -> None:
         raise HTTPException(status_code=422, detail=f"Invalid analytics {name}: empty")
 
 
+def _validate_optional_text_filter(name: str, value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if normalized == "":
+        raise HTTPException(status_code=422, detail=f"Invalid analytics {name}: empty")
+    return normalized
+
+
 @router.get(
     "/trends",
     response_model=TrendsResponse,
@@ -42,22 +53,27 @@ async def get_run_trends(
     repos: Repos,
     user: CurrentUser,
     days: int = Query(30, ge=1, le=365),
+    git_ref: str | None = Query(None, min_length=1, max_length=200),
     offset: int = Query(0, ge=0),
     limit: int = Query(365, ge=1, le=365),
     session: AsyncSession = Depends(_get_db_session),
 ):
+    git_ref = _validate_optional_text_filter("git_ref", git_ref)
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     await enforce_project_action(session, user, project.id, Action.RUN_READ)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    rows, total = await repos.run.list_trend_points(
-        project_id=project_id,
-        cutoff=cutoff,
-        offset=offset,
-        limit=limit,
-    )
+    trend_kwargs: dict[str, Any] = {
+        "project_id": project_id,
+        "cutoff": cutoff,
+        "offset": offset,
+        "limit": limit,
+    }
+    if git_ref is not None:
+        trend_kwargs["git_ref"] = git_ref
+    rows, total = await repos.run.list_trend_points(**trend_kwargs)
 
     return TrendsResponse(
         data=[
@@ -85,23 +101,28 @@ async def get_flaky_tests(
     user: CurrentUser,
     days: int = Query(30, ge=1, le=365),
     min_runs: int = Query(3, ge=2, le=100),
+    git_ref: str | None = Query(None, min_length=1, max_length=200),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(_get_db_session),
 ):
+    git_ref = _validate_optional_text_filter("git_ref", git_ref)
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     await enforce_project_action(session, user, project.id, Action.RUN_READ)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    rows, total = await repos.test_result.list_flaky_tests(
-        project_id=project_id,
-        cutoff=cutoff,
-        min_runs=min_runs,
-        offset=offset,
-        limit=limit,
-    )
+    flaky_kwargs: dict[str, Any] = {
+        "project_id": project_id,
+        "cutoff": cutoff,
+        "min_runs": min_runs,
+        "offset": offset,
+        "limit": limit,
+    }
+    if git_ref is not None:
+        flaky_kwargs["git_ref"] = git_ref
+    rows, total = await repos.test_result.list_flaky_tests(**flaky_kwargs)
 
     return FlakyResponse(
         data=[
@@ -117,6 +138,43 @@ async def get_flaky_tests(
         ],
         pagination=AnalyticsPaginationMeta(offset=offset, limit=limit, total=total),
     )
+
+
+@router.get(
+    "/release-summary",
+    response_model=ReleaseSummaryResponse,
+    responses={422: {"model": ErrorResponse}},
+    summary="轻量发布判断摘要",
+)
+async def get_release_summary(
+    project_id: UUID,
+    repos: Repos,
+    user: CurrentUser,
+    days: int = Query(30, ge=1, le=365),
+    git_ref: str | None = Query(None, min_length=1, max_length=200),
+    baseline_git_ref: str | None = Query(None, min_length=1, max_length=200),
+    session: AsyncSession = Depends(_get_db_session),
+):
+    git_ref = _validate_optional_text_filter("git_ref", git_ref)
+    baseline_git_ref = _validate_optional_text_filter(
+        "baseline_git_ref",
+        baseline_git_ref,
+    )
+    project = await repos.project.get_for_tenant(project_id, user.tenant_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await enforce_project_action(session, user, project.id, Action.RUN_READ)
+
+    target_ref = git_ref or project.default_branch
+    baseline_ref = baseline_git_ref or project.default_branch
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    summary = await repos.run.get_release_summary(
+        project_id=project_id,
+        cutoff=cutoff,
+        git_ref=target_ref,
+        baseline_git_ref=baseline_ref,
+    )
+    return ReleaseSummaryResponse(**summary)
 
 
 @router.get(

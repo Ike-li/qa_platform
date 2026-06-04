@@ -249,6 +249,8 @@ def _assert_frontend_type_matches_schema(field_name: str, schema: dict, ts_type:
         ("ArtifactResponse", "Artifact"),
         ("TestResultResponse", "TestResult"),
         ("TestHistoryPoint", "TestHistoryPoint"),
+        ("ReleaseTestDelta", "ReleaseTestDelta"),
+        ("ReleaseSummaryResponse", "ReleaseSummary"),
         ("NotificationRuleResponse", "NotificationRule"),
         ("ApiTokenResponse", "ApiTokenResponse"),
         ("ApiTokenListItem", "ApiTokenListItem"),
@@ -275,6 +277,8 @@ def test_frontend_response_models_include_backend_openapi_fields(
         ("ArtifactResponse", "Artifact"),
         ("TestResultResponse", "TestResult"),
         ("TestHistoryPoint", "TestHistoryPoint"),
+        ("ReleaseTestDelta", "ReleaseTestDelta"),
+        ("ReleaseSummaryResponse", "ReleaseSummary"),
         ("NotificationRuleResponse", "NotificationRule"),
         ("ApiTokenResponse", "ApiTokenResponse"),
         ("ApiTokenListItem", "ApiTokenListItem"),
@@ -481,6 +485,44 @@ def test_analytics_ui_exposes_single_test_history_contract(openapi_schemas: dict
     assert "TestHistoryTable" in panel_source
     assert "analytics.historyTitle" in panel_source
     assert "analytics.status.${point.status}" in panel_source
+
+
+def test_analytics_ui_exposes_release_summary_and_git_ref_contract(openapi_schemas: dict):
+    types_source = _frontend_source()
+    hook_source = ANALYTICS_HOOK.read_text(encoding="utf-8")
+    panel_source = ANALYTICS_PANEL.read_text(encoding="utf-8")
+
+    assert "ReleaseSummaryResponse" in openapi_schemas
+    assert "ReleaseTestDelta" in openapi_schemas
+    assert _schema_properties(openapi_schemas, "ReleaseSummaryResponse") == {
+        "git_ref",
+        "baseline_git_ref",
+        "total_runs",
+        "passed_runs",
+        "failed_runs",
+        "raw_pass_rate",
+        "flaky_adjusted_pass_rate",
+        "new_failing_tests",
+        "recovered_tests",
+    }
+    assert "export interface ReleaseSummary" in types_source
+    assert "flaky_adjusted_pass_rate: number | null" in types_source
+    assert "new_failing_tests: ReleaseTestDelta[]" in types_source
+    assert "recovered_tests: ReleaseTestDelta[]" in types_source
+
+    assert "useTrends(projectId: string, days: number = 30, gitRef?: string)" in hook_source
+    assert "useFlakyTests(projectId: string, days: number = 30, minRuns: number = 3, gitRef?: string)" in hook_source
+    assert "useReleaseSummary" in hook_source
+    assert "/analytics/release-summary" in hook_source
+    assert "git_ref: trimmedGitRef" in hook_source
+    assert "baseline_git_ref: trimmedBaselineGitRef" in hook_source
+
+    assert "defaultBranch" in panel_source
+    assert "ReleaseSummaryPanel" in panel_source
+    assert "analytics.release.targetRef" in panel_source
+    assert "analytics.release.adjustedPassRate" in panel_source
+    assert "initialSuite" in panel_source
+    assert "initialTest" in panel_source
 
 
 def test_analytics_history_status_colors_match_result_status_semantics():

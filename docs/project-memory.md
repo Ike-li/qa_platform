@@ -9,10 +9,10 @@ Last updated: 2026-06-04
   - `08b4c0e Cover seeded OpenAPI success paths`
   - `df2897f Expand OpenAPI black-box API coverage`
 - OpenAPI interface testing is at full matrix coverage:
-  - 69/69 OpenAPI operations covered.
-  - 414/414 atomic test cases covered.
+  - 70/70 OpenAPI operations covered.
+  - 420/420 atomic test cases covered.
   - 0 blocked, 0 missing, 0 partial.
-  - Pytest collection for the OpenAPI API-test slice is 342 items.
+  - Pytest collection for the OpenAPI API-test slice is 347 items.
 
 ## Important Files
 
@@ -55,13 +55,13 @@ git diff --check
 Verified results:
 
 - Ruff passed.
-- Matrix validators reported `operations=69 covered=69 partial=0 blocked=0`.
-- Case matrix validator reported `cases=414 covered=414 blocked=0 missing=0`.
+- Matrix validators reported `operations=70 covered=70 partial=0 blocked=0`.
+- Case matrix validator reported `cases=420 covered=420 blocked=0 missing=0`.
 - Related unit tests: 55 passed.
-- Behavior blackbox: 131 passed.
-- Contract smoke: 210 passed.
+- Behavior blackbox: 133 passed.
+- Contract smoke: 213 passed.
 - Real-stack behavior: 1 passed.
-- Collect-only: 342 tests collected.
+- Collect-only: 347 tests collected.
 
 ## Local Runtime Note
 

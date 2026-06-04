@@ -1,5 +1,6 @@
 import * as React from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ChevronDown, ChevronRight, History } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../lib/utils";
 import { TestStatusIcon } from "./test-status-icon";
@@ -8,9 +9,10 @@ import type { TestResult } from "../types/api";
 interface TestResultsTableProps {
   results: TestResult[];
   isLoading?: boolean;
+  projectId?: string;
 }
 
-export function TestResultsTable({ results, isLoading }: TestResultsTableProps) {
+export function TestResultsTable({ results, isLoading, projectId }: TestResultsTableProps) {
   const { t } = useTranslation();
 
   return (
@@ -42,7 +44,7 @@ export function TestResultsTable({ results, isLoading }: TestResultsTableProps) 
             </tr>
           ) : (
             results.map(result => (
-              <TestResultRow key={result.id} result={result} />
+              <TestResultRow key={result.id} result={result} projectId={projectId} />
             ))
           )}
         </tbody>
@@ -51,10 +53,15 @@ export function TestResultsTable({ results, isLoading }: TestResultsTableProps) 
   );
 }
 
-function TestResultRow({ result }: { result: TestResult }) {
+function TestResultRow({ result, projectId }: { result: TestResult; projectId?: string }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
   const isFailed = result.status === "failed" || result.status === "error";
+  const historySearch = new URLSearchParams({
+    tab: "analytics",
+    suite: result.suite,
+    test: result.name,
+  }).toString();
 
   return (
     <>
@@ -103,6 +110,15 @@ function TestResultRow({ result }: { result: TestResult }) {
                 <pre className="mt-2 overflow-x-auto font-mono text-xs text-ink-muted leading-relaxed whitespace-pre-wrap max-h-[300px]">
                   {result.stack_trace}
                 </pre>
+              )}
+              {projectId && (
+                <Link
+                  to={`/projects/${projectId}?${historySearch}`}
+                  className="inline-flex items-center gap-2 rounded-md border border-hairline bg-surface-1 px-3 py-2 text-xs font-medium text-ink transition-colors hover:border-primary/40 hover:text-primary"
+                >
+                  <History className="h-3.5 w-3.5" />
+                  {t("runs.results.viewHistory")}
+                </Link>
               )}
             </div>
           </td>

@@ -77,6 +77,13 @@ def _zadd_keys(redis) -> list[str]:
     return [call.args[0] for call in redis.pipeline.return_value.zadd.call_args_list]
 
 
+def _zadd_members(redis) -> list[str]:
+    return [
+        next(iter(call.args[1]))
+        for call in redis.pipeline.return_value.zadd.call_args_list
+    ]
+
+
 # ---------------------------------------------------------------------------
 # _resolve_client_ip
 # ---------------------------------------------------------------------------
@@ -330,6 +337,39 @@ class TestRateLimitMiddlewareDispatch:
         assert token_a not in rendered_keys
         assert token_b not in rendered_keys
         assert token_c not in rendered_keys
+
+    @pytest.mark.asyncio
+    async def test_identical_redis_time_uses_unique_zset_members(self):
+        """Concurrent requests that share Redis TIME must still count separately."""
+        expected_key = "rate_limit:ip:1.2.3.4:/api/v1/runs"
+        redis = self._make_redis_mock({expected_key: 1})
+        mw = self._make_middleware(redis)
+
+        downstream_responses = [MagicMock(status_code=200), MagicMock(status_code=200)]
+        call_next = AsyncMock(side_effect=downstream_responses)
+        req_a = _make_request()
+        req_b = _make_request()
+
+        resp_a = await mw.dispatch(req_a, call_next)
+        resp_b = await mw.dispatch(req_b, call_next)
+
+        assert resp_a is downstream_responses[0]
+        assert resp_b is downstream_responses[1]
+        call_next.assert_has_awaits([call(req_a), call(req_b)])
+        zadd_calls = redis.pipeline.return_value.zadd.call_args_list
+        assert [zadd_call.args[0] for zadd_call in zadd_calls] == [
+            expected_key,
+            expected_key,
+        ]
+        members = _zadd_members(redis)
+        assert len(members) == 2
+        assert members[0] != members[1]
+        for member in members:
+            assert member.startswith("1700000000.0:")
+        assert [next(iter(zadd_call.args[1].values())) for zadd_call in zadd_calls] == [
+            1_700_000_000.0,
+            1_700_000_000.0,
+        ]
 
     @pytest.mark.asyncio
     async def test_no_trusted_proxy_xff_ignored_in_key(self):
