@@ -48,8 +48,8 @@ def test_api_test_case_matrix_expands_operation_dimensions() -> None:
         "operations": 69,
         "dimensions": 6,
         "cases": 414,
-        "covered": 409,
-        "blocked": 5,
+        "covered": 414,
+        "blocked": 0,
         "missing": 0,
     }
 
@@ -61,8 +61,7 @@ def test_api_test_case_matrix_expands_operation_dimensions() -> None:
         if case.dimension == "success"
         and case.status == "blocked_by_missing_public_setup"
     ]
-    assert len(blocked_success_cases) == 5
-    assert all(case.blocked_reason for case in blocked_success_cases)
+    assert blocked_success_cases == []
 
 
 def test_api_test_case_matrix_rejects_stale_metadata(tmp_path: Path) -> None:

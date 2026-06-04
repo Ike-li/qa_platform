@@ -5,8 +5,8 @@ metadata:
   operation_count: 69
   dimension_count: 6
   case_count: 414
-  covered_case_count: 409
-  blocked_case_count: 5
+  covered_case_count: 414
+  blocked_case_count: 0
   missing_case_count: 0
 case_id_pattern: "{operation_id}::{dimension}"
 dimensions:

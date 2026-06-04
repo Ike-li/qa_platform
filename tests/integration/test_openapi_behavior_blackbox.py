@@ -25,6 +25,7 @@ from httpx import ASGITransport, AsyncClient, Response
 
 from qaplatform.config import Settings
 from tests.support.api_data import ApiTestDataFactory
+from tests.support.api_seed import LocalHttpsGitRepo, api_seed_state_factory
 
 
 pytestmark = pytest.mark.skipif(
@@ -2912,6 +2913,99 @@ async def test_multi_tenant_blackbox_special_flows_do_not_leak(
         )
         assert add_cross_tenant_member.status_code in {404, 422}
         _assert_error_body(add_cross_tenant_member)
+
+
+async def test_seeded_setup_covers_remaining_success_paths(
+    no_auth_integration_app,
+    monkeypatch,
+) -> None:
+    settings = no_auth_integration_app.state.container.settings
+    original_private_hosts = list(settings.git_allowed_private_hosts)
+    settings.git_allowed_private_hosts = ["127.0.0.1"]
+    monkeypatch.setenv("GIT_SSL_NO_VERIFY", "true")
+    try:
+        async with (
+            api_seed_state_factory(no_auth_integration_app) as seed,
+            _api_client(no_auth_integration_app) as client,
+        ):
+            actor = await _register_actor(client, "seeded_success")
+            await seed.promote_platform_admin(actor.user["id"])
+            admin_login_response = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "username": actor.username,
+                    "password": actor.password,
+                    "tenant_id": actor.user["tenant_id"],
+                },
+            )
+            admin_login = _assert_status(admin_login_response, 200)
+            admin_headers = {
+                "Authorization": f"Bearer {admin_login['access_token']}",
+            }
+
+            admin_status_response = await client.get(
+                "/api/v1/admin/status",
+                headers=admin_headers,
+            )
+            admin_status = _assert_status(admin_status_response, 200)
+            assert set(admin_status) == {
+                "queue_depth",
+                "in_flight",
+                "success_rate_1h",
+                "total_runs_1h",
+            }
+            assert admin_status["success_rate_1h"] >= 0
+
+            with LocalHttpsGitRepo() as git_repo:
+                branches_response = await client.post(
+                    "/api/v1/projects/branches",
+                    headers=actor.headers,
+                    json={"git_url": git_repo.url},
+                )
+            branches = _assert_status(branches_response, 200)
+            assert branches["default_branch"] == "main"
+            assert branches["branches"] == ["feature/seed", "main", "release/api"]
+
+            project = await _create_project(client, actor, prefix="seeded-members")
+            seeded_member = await seed.create_same_tenant_user(
+                tenant_id=actor.user["tenant_id"],
+            )
+            add_member_response = await client.post(
+                f"/api/v1/projects/{project['id']}/members",
+                headers=actor.headers,
+                json={"user_id": seeded_member.id, "role": "viewer"},
+            )
+            added_member = _assert_status(add_member_response, 201)
+            assert added_member["user_id"] == seeded_member.id
+            assert added_member["username"] == seeded_member.username
+            assert added_member["email"] == seeded_member.email
+            assert added_member["role"] == "viewer"
+
+            update_member_response = await client.put(
+                f"/api/v1/projects/{project['id']}/members/{seeded_member.id}",
+                headers=actor.headers,
+                json={"role": "developer"},
+            )
+            updated_member = _assert_status(update_member_response, 200)
+            assert updated_member["role"] == "developer"
+
+            delete_member_response = await client.delete(
+                f"/api/v1/projects/{project['id']}/members/{seeded_member.id}",
+                headers=actor.headers,
+            )
+            _assert_status(delete_member_response, 204)
+
+            list_members_response = await client.get(
+                f"/api/v1/projects/{project['id']}/members",
+                headers=actor.headers,
+            )
+            list_members = _assert_status(list_members_response, 200)
+            assert all(
+                item["user_id"] != seeded_member.id
+                for item in list_members["data"]
+            )
+    finally:
+        settings.git_allowed_private_hosts = original_private_hosts
 
 
 @pytest.mark.parametrize(

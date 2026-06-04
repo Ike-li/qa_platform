@@ -48,9 +48,9 @@ def test_api_test_matrix_matches_current_openapi(openapi: dict[str, Any]) -> Non
 
     assert summary == {
         "operations": 69,
-        "covered": 64,
+        "covered": 69,
         "partial": 0,
-        "blocked": 5,
+        "blocked": 0,
     }
 
 
@@ -112,7 +112,9 @@ def test_api_test_matrix_rejects_blocked_row_without_reason(
         if operation["method"] == "GET"
         and operation["path"] == "/api/v1/admin/status"
     )
-    row.pop("blocked_reason")
+    row["coverage_status"] = "blocked_by_missing_public_setup"
+    row["test_cases"].remove("success")
+    row.pop("gap_notes")
     matrix_path = tmp_path / "matrix.yml"
     _write_matrix(matrix_path, data)
 

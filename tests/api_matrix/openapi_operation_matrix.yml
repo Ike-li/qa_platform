@@ -25,9 +25,9 @@ operations:
     auth_type: HTTPBearer
     request_schema: none
     declared_responses: ["200", "403"]
-    coverage_status: blocked_by_missing_public_setup
-    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
-    blocked_reason: "No public API creates a platform admin identity for the 200 path; auth rejection and owner 403 paths are covered by existing guardrails."
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
   - operation_id: get_api_v1_artifacts_artifact_id_download
     method: GET
     path: "/api/v1/artifacts/{artifact_id}/download"
@@ -175,9 +175,9 @@ operations:
     auth_type: HTTPBearer
     request_schema: body
     declared_responses: ["200", "422"]
-    coverage_status: blocked_by_missing_public_setup
-    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
-    blocked_reason: "The 200 path requires a reachable public or SSH Git remote; local file repositories are rejected by the public schema and external network Git fixtures are not stable enough for this black-box lane."
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
   - operation_id: delete_api_v1_projects_project_id
     method: DELETE
     path: "/api/v1/projects/{project_id}"
@@ -355,9 +355,9 @@ operations:
     auth_type: HTTPBearer
     request_schema: body
     declared_responses: ["201", "404", "409", "422"]
-    coverage_status: blocked_by_missing_public_setup
-    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
-    blocked_reason: "A full success path needs a second same-tenant user identity; registration creates isolated tenants and there is no public tenant-invite/setup API."
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
   - operation_id: delete_api_v1_projects_project_id_members_user_id
     method: DELETE
     path: "/api/v1/projects/{project_id}/members/{user_id}"
@@ -365,9 +365,9 @@ operations:
     auth_type: HTTPBearer
     request_schema: none
     declared_responses: ["204", "404", "409", "422"]
-    coverage_status: blocked_by_missing_public_setup
-    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
-    blocked_reason: "A full success path needs an existing same-tenant member row; there is no public API to create a second same-tenant user fixture."
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
   - operation_id: put_api_v1_projects_project_id_members_user_id
     method: PUT
     path: "/api/v1/projects/{project_id}/members/{user_id}"
@@ -375,9 +375,9 @@ operations:
     auth_type: HTTPBearer
     request_schema: body
     declared_responses: ["200", "404", "422"]
-    coverage_status: blocked_by_missing_public_setup
-    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
-    blocked_reason: "A full success path needs an existing same-tenant member row; there is no public API to create a second same-tenant user fixture."
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
   - operation_id: get_api_v1_projects_project_id_notification_rules
     method: GET
     path: "/api/v1/projects/{project_id}/notification-rules"
