@@ -477,7 +477,9 @@ def test_quality_ops_capture_route_rejection_detail_exact_body_contract():
         missing_signature_block
     )
     assert "mock_repos.audit.create.assert_not_awaited()" in archived_webhook_block
-    assert "mock_project_repo.list.assert_not_awaited()" in unauth_projects_block
+    assert "mock_project_repo.list_filtered_by_tenant.assert_not_awaited()" in (
+        unauth_projects_block
+    )
 
 
 def test_quality_ops_capture_run_list_seeded_item_contract():
@@ -533,18 +535,18 @@ def test_quality_ops_capture_run_list_exact_response_default_sort_contract():
 
     for expected in [
         "run = _make_orm_run(tenant_id=tenant_id)",
-        "mock_run_repo.list.return_value = ([run], 1)",
+        "mock_run_repo.list_filtered_for_tenant.return_value = ([run], 1)",
         '"/api/v1/runs?status=queued&page=1&per_page=10"',
         '"data": [_expected_run_response(run)]',
         '"page": 1',
         '"per_page": 10',
         '"total": 1',
+        'assert list_kwargs["tenant_id"] == tenant_id',
         'assert list_kwargs["offset"] == 0',
         'assert list_kwargs["limit"] == 10',
-        'assert str(list_kwargs["order_by"]) == "run.created_at DESC"',
-        "assert _render_filters(list_kwargs[\"filters\"]) == [",
-        "f\"run.tenant_id = '{tenant_id.hex}'\"",
-        '"run.status = \'queued\'"',
+        'assert list_kwargs["statuses"] == ["queued"]',
+        'assert list_kwargs["project_ids"] is None',
+        'assert list_kwargs["sort"] == "-created_at"',
         "mock_repos.audit.create.assert_not_awaited()",
     ]:
         assert expected in block
@@ -591,7 +593,7 @@ def test_quality_ops_capture_run_results_exact_page_rbac_contract():
     for expected in [
         "from qaplatform.api.auth.permissions import Action",
         "result = _make_orm_test_result(run_id=run_id)",
-        "mock_result_repo.list.return_value = ([result], 42)",
+        "mock_result_repo.list_filtered_by_run.return_value = ([result], 42)",
         'f"/api/v1/runs/{run_id}/results?page=3&per_page=7"',
         '"data": [_expected_test_result_response(result)]',
         '"page": 3',
@@ -600,10 +602,12 @@ def test_quality_ops_capture_run_results_exact_page_rbac_contract():
         "mock_run_repo.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)",
         "enforce_project_action.assert_awaited_once()",
         "Action.RUN_READ",
+        'assert list_kwargs["run_id"] == run_id',
         'assert list_kwargs["offset"] == 14',
         'assert list_kwargs["limit"] == 7',
-        "assert _render_filters(list_kwargs[\"filters\"]) == [",
-        "f\"test_result.run_id = '{run_id.hex}'\"",
+        'assert list_kwargs["status"] is None',
+        'assert list_kwargs["suite"] is None',
+        'assert list_kwargs["query"] is None',
         "mock_repos.audit.create.assert_not_awaited()",
     ]:
         assert expected in block

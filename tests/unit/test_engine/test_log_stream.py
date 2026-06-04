@@ -131,6 +131,22 @@ class TestLogStream:
         )
 
     @pytest.mark.asyncio
+    async def test_read_logs_decodes_bytes_response(self):
+        self.redis.xread.return_value = [
+            (f"run:{self.run_id}:logs".encode(), [
+                (b"1234567890-0", {b"stream": b"stdout", b"line": b"line1"}),
+                (b"1234567891-0", {b"stream": b"stderr", b"line": b"line2"}),
+            ]),
+        ]
+
+        entries = await self.stream.read_logs(self.run_id, last_id="0", count=50)
+
+        assert entries == [
+            {"id": "1234567890-0", "stream": "stdout", "line": "line1"},
+            {"id": "1234567891-0", "stream": "stderr", "line": "line2"},
+        ]
+
+    @pytest.mark.asyncio
     async def test_read_logs_with_block(self):
         self.redis.xread.return_value = []
 

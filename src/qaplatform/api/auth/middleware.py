@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from qaplatform.api.auth.jwt_service import JWTService
@@ -48,6 +47,7 @@ def _validate_uuid_claim(value: str) -> UUID:
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> CurrentUser:
     if credentials is None:
@@ -57,7 +57,7 @@ async def get_current_user(
         )
 
     token = credentials.credentials
-    container = _get_container()
+    container = _get_container(request)
     if token.startswith("qap_"):
         return await _authenticate_api_token(token, container)
     return await _authenticate_jwt(token, container)
@@ -65,6 +65,8 @@ async def get_current_user(
 
 async def _authenticate_jwt(token: str, container: DependencyContainer) -> CurrentUser:
     settings = container.settings
+    import jwt
+
     try:
         payload = jwt.decode(
             token,
@@ -252,7 +254,5 @@ async def _authenticate_api_token(
     )
 
 
-def _get_container():
-    from qaplatform.dependencies import get_container
-
-    return get_container()
+def _get_container(request: Request):
+    return request.app.state.container

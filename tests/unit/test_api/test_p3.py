@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -662,6 +663,69 @@ class TestWebhookTrigger:
             app.state.container.settings,
         )
         assert enqueue_run.await_args.kwargs == {}
+
+    @pytest.mark.asyncio
+    async def test_webhook_trigger_queue_unavailable_returns_created_waiting_run(
+        self,
+        app,
+        mock_repos,
+        project_id,
+        mock_project,
+        mock_pipeline,
+        mock_user,
+    ):
+        run = _make_run(
+            tenant_id=mock_project.tenant_id,
+            project_id=project_id,
+            status="queued",
+            user_id=mock_user.user_id,
+        )
+        run.pipeline_id = mock_pipeline.id
+        run.trigger_type = "webhook"
+        mock_repos.run.create = AsyncMock(return_value=run)
+        mock_repos.run.count_active_or_enqueued = AsyncMock(return_value=0)
+        mock_repos.run.count_active_or_enqueued_by_project = AsyncMock(return_value=0)
+        mock_repos.run.mark_waiting = AsyncMock()
+        mock_repos.run.mark_enqueued = AsyncMock()
+
+        @asynccontextmanager
+        async def _fake_lock():
+            yield
+
+        mock_repos.run.scheduler_lock = _fake_lock
+        arq_pool = AsyncMock()
+        arq_pool.enqueue_job = AsyncMock(
+            side_effect=RuntimeError("redis://webhook-queue-secret@localhost/0")
+        )
+        app.state.container.arq_pool = arq_pool
+        app.state.container.settings = SimpleNamespace(
+            max_concurrent_runs=5,
+            max_concurrent_per_project=3,
+        )
+
+        async with await _make_client(app) as client:
+            resp = await client.post(
+                f"/api/v1/webhooks/{project_id}/trigger",
+                json={"git_ref": "refs/heads/main", "git_sha": "abc123"},
+            )
+
+        assert resp.status_code == 201, resp.text
+        assert "webhook-queue-secret" not in resp.text
+        assert resp.json() == _expected_run_response(run)
+        arq_pool.enqueue_job.assert_awaited_once_with(
+            "execute_run",
+            str(run.id),
+            _queue_name="queue:medium",
+            _job_id=f"run:{run.id}",
+            _defer_by=0,
+        )
+        mock_repos.run.mark_waiting.assert_awaited_once_with(
+            run.id,
+            reason="queue unavailable",
+        )
+        mock_repos.run.mark_enqueued.assert_not_awaited()
+        mock_repos.audit.create.assert_awaited_once()
+        assert mock_repos.audit.create.await_args.kwargs["after_state"] == resp.json()
 
     @pytest.mark.asyncio
     async def test_webhook_trigger_preserves_project_git_auth_metadata(

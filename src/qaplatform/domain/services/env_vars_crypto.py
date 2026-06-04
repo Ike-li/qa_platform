@@ -3,16 +3,19 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from cryptography.exceptions import InvalidTag
 
-from qaplatform.dependencies import CryptoService
-
 _ENVELOPE_MARKER = "qaplatform.env_vars.v1"
 _MARKER_KEY = "__encrypted__"
 _CIPHERTEXT_KEY = "ciphertext"
+
+
+class EnvVarsCrypto(Protocol):
+    def encrypt(self, plaintext: str, context_id: str = "") -> bytes: ...
+    def decrypt(self, data: bytes, context_id: str = "") -> str: ...
 
 
 def env_vars_aad(environment_id: UUID | str) -> str:
@@ -31,7 +34,7 @@ def encrypt_env_vars(
     env_vars: dict[str, str],
     *,
     environment_id: UUID | str,
-    crypto: CryptoService,
+    crypto: EnvVarsCrypto,
 ) -> dict[str, str]:
     plaintext = json.dumps(env_vars, sort_keys=True, separators=(",", ":"))
     ciphertext = crypto.encrypt(plaintext, context_id=env_vars_aad(environment_id))
@@ -45,7 +48,7 @@ def decrypt_env_vars(
     stored: Any,
     *,
     environment_id: UUID | str,
-    crypto: CryptoService,
+    crypto: EnvVarsCrypto,
 ) -> dict[str, str]:
     if stored in (None, {}):
         return {}

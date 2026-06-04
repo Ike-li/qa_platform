@@ -63,7 +63,7 @@ async def on_startup(ctx: dict) -> None:
     from qaplatform.dependencies import DependencyContainer
     from qaplatform.engine.docker_backend import DockerBackend
     from qaplatform.engine.executor import RunExecutor
-    from qaplatform.engine.log_stream import LogStream
+    from qaplatform.infra.log_stream import LogStream
     from qaplatform.logging import configure_logging
     from qaplatform.plugins.registry import PluginRegistry
 
@@ -217,7 +217,7 @@ async def reclaim_resources(ctx: dict) -> None:
 async def dequeue_waiting(ctx: dict) -> None:
     """Periodic task: enqueue waiting runs when capacity is available."""
     from qaplatform.infra.database.repositories.run_repo import RunRepository
-    from qaplatform.worker.scheduler import FairScheduler
+    from qaplatform.infra.queue.scheduler import FairScheduler
 
     session_factory = ctx.get("db_session_factory")
     if session_factory is None:
@@ -315,7 +315,7 @@ async def check_schedules(ctx: dict) -> None:
         ScheduleRepository,
     )
     from qaplatform.infra.database.repositories.run_repo import RunRepository
-    from qaplatform.worker.scheduler import enqueue_run
+    from qaplatform.infra.queue.scheduler import enqueue_run
 
     session_factory = ctx.get("db_session_factory")
     arq = ctx.get("arq_pool")

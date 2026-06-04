@@ -144,6 +144,33 @@ def test_api_entrypoints_with_repository_boundaries_do_not_execute_sqlalchemy_in
     assert _calls_session_execute(SRC / relative_path) is False
 
 
+def test_domain_services_do_not_import_runtime_dependency_container():
+    offenders = [
+        path.relative_to(ROOT)
+        for path in sorted((SRC / "domain").rglob("*.py"))
+        if "qaplatform.dependencies" in _imported_modules(path)
+    ]
+
+    assert offenders == []
+
+
+def test_api_layer_does_not_import_worker_scheduler():
+    offenders = [
+        path.relative_to(ROOT)
+        for path in sorted((SRC / "api").rglob("*.py"))
+        if "qaplatform.worker.scheduler" in _imported_modules(path)
+    ]
+
+    assert offenders == []
+
+
+def test_engine_log_stream_entrypoint_is_infra_shim():
+    imports = _imported_modules(SRC / "engine" / "log_stream.py")
+
+    assert "redis.asyncio" not in imports
+    assert "qaplatform.infra.log_stream" in imports
+
+
 def test_mutating_api_routes_keep_audit_write_contract():
     constructor_only = ast.parse(
         """

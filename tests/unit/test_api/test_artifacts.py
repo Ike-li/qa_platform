@@ -509,6 +509,56 @@ class TestArtifactPreview:
         }
 
     @pytest.mark.asyncio
+    async def test_preview_url_returns_503_when_storage_unavailable_after_rbac(self):
+        from fastapi import HTTPException
+
+        from qaplatform.api.v1.artifacts import get_artifact_preview_url
+
+        tenant_id = uuid4()
+        project_id = uuid4()
+        run_id = uuid4()
+        artifact_id = uuid4()
+
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+        artifact = MagicMock(
+            id=artifact_id,
+            run_id=run_id,
+            storage_path=f"reports/{run_id}/allure-report/index.html",
+        )
+        artifact.name = "allure-report/index.html"
+        artifact.type = "allure-report"
+        artifact.mime_type = "text/html"
+        mock_repos.artifact.get_by_id.return_value = artifact
+        mock_repos.run = AsyncMock()
+        mock_repos.run.get_for_tenant.return_value = MagicMock(project_id=project_id)
+
+        request = MagicMock()
+        request.app.state.container.s3_client = None
+        user = MagicMock(tenant_id=tenant_id)
+        session = MagicMock()
+
+        with patch(
+            "qaplatform.api.v1.artifacts.enforce_project_action",
+            new=AsyncMock(),
+        ) as enforce_project_action:
+            with pytest.raises(HTTPException) as exc_info:
+                await get_artifact_preview_url(
+                    artifact_id=artifact_id,
+                    request=request,
+                    repos=mock_repos,
+                    user=user,
+                    session=session,
+                )
+
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "Artifact preview is not available"
+        enforce_project_action.assert_awaited_once()
+        mock_repos.artifact.get_by_id.assert_awaited_once_with(artifact_id)
+        mock_repos.run.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+        request.url_for.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_preview_file_maps_relative_allure_asset_to_same_report_prefix(self):
         from qaplatform.api.v1.artifacts import (
             _create_preview_token,
@@ -566,6 +616,33 @@ class TestArtifactPreview:
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["referrer-policy"] == "no-referrer"
         assert response.headers["access-control-allow-origin"] == "*"
+
+    @pytest.mark.asyncio
+    async def test_preview_file_returns_503_when_storage_unavailable_before_lookup(self):
+        from fastapi import HTTPException
+
+        from qaplatform.api.v1.artifacts import preview_artifact_file
+
+        request = MagicMock()
+        request.app.state.container.s3_client = None
+        request.app.state.container.settings.jwt_secret = (
+            "test-secret-with-at-least-32-bytes"
+        )
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await preview_artifact_file(
+                artifact_id=uuid4(),
+                token="not-a-token",
+                artifact_path="index.html",
+                request=request,
+                repos=mock_repos,
+            )
+
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "Artifact preview is not available"
+        mock_repos.artifact.get_by_id.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_preview_file_rejects_relative_asset_without_allure_asset_scope(self):

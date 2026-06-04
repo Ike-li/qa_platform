@@ -8,7 +8,7 @@ from enum import Enum as PyEnum
 from typing import Any, AsyncIterator, Collection
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, select, text, update
+from sqlalchemy import and_, case, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.infra.database.models import (
@@ -24,6 +24,10 @@ from qaplatform.infra.database.repositories.base import BaseRepository
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _analytics_run_filters(
@@ -107,6 +111,56 @@ class RunRepository(BaseRepository[Run]):
             limit=limit,
             filters=[Run.pipeline_id == pipeline_id],
         )
+
+    async def list_filtered_for_tenant(
+        self,
+        *,
+        tenant_id: UUID,
+        offset: int = 0,
+        limit: int = 20,
+        statuses: Collection[RunStatusEnum | str | PyEnum] | None = None,
+        project_ids: Collection[UUID] | None = None,
+        pipeline_id: UUID | None = None,
+        git_ref: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        sort: str = "-created_at",
+    ) -> tuple[list[Run], int]:
+        filters: list[Any] = [Run.tenant_id == tenant_id]
+
+        if statuses:
+            coerced_statuses = [self._coerce_status(status) for status in statuses]
+            if len(coerced_statuses) == 1:
+                filters.append(Run.status == coerced_statuses[0])
+            else:
+                filters.append(Run.status.in_(coerced_statuses))
+
+        if project_ids is not None:
+            project_id_list = list(project_ids)
+            if not project_id_list:
+                return [], 0
+            if len(project_id_list) == 1:
+                filters.append(Run.project_id == project_id_list[0])
+            else:
+                filters.append(Run.project_id.in_(project_id_list))
+
+        if pipeline_id is not None:
+            filters.append(Run.pipeline_id == pipeline_id)
+        if git_ref is not None:
+            filters.append(Run.git_ref == git_ref)
+        if created_from is not None:
+            filters.append(Run.created_at >= created_from)
+        if created_to is not None:
+            filters.append(Run.created_at <= created_to)
+
+        order_by = Run.created_at.desc() if sort == "-created_at" else Run.created_at
+        items, total = await self.list(
+            offset=offset,
+            limit=limit,
+            order_by=order_by,
+            filters=filters,
+        )
+        return list(items), total
 
     async def get_by_arq_job_id(self, arq_job_id: str) -> Run | None:
         stmt = select(Run).where(
@@ -847,6 +901,33 @@ class TestResultRepository(BaseRepository[TestResult]):
             limit=limit,
             filters=[TestResult.run_id == run_id],
         )
+
+    async def list_filtered_by_run(
+        self,
+        *,
+        run_id: UUID,
+        offset: int = 0,
+        limit: int = 100,
+        status: str | TestResultStatusEnum | None = None,
+        suite: str | None = None,
+        query: str | None = None,
+    ) -> tuple[list[TestResult], int]:
+        filters: list[Any] = [TestResult.run_id == run_id]
+        if status:
+            filters.append(TestResult.status == status)
+        if suite:
+            filters.append(TestResult.suite == suite)
+        if query:
+            pattern = f"%{_escape_like(query)}%"
+            filters.append(
+                or_(
+                    TestResult.name.ilike(pattern, escape="\\"),
+                    TestResult.error_message.ilike(pattern, escape="\\"),
+                )
+            )
+
+        items, total = await self.list(offset=offset, limit=limit, filters=filters)
+        return list(items), total
 
     async def list_by_run_and_status(
         self, run_id: UUID, status: str

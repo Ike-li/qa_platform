@@ -6,7 +6,7 @@ from collections.abc import Collection
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,6 +21,10 @@ from qaplatform.infra.database.models import (
     Schedule,
 )
 from qaplatform.infra.database.repositories.base import BaseRepository
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class ProjectRepository(BaseRepository[Project]):
@@ -46,6 +50,38 @@ class ProjectRepository(BaseRepository[Project]):
             limit=limit,
             filters=[Project.tenant_id == tenant_id],
         )
+
+    async def list_filtered_by_tenant(
+        self,
+        tenant_id: UUID,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+        status: str | None = None,
+        query: str | None = None,
+    ) -> tuple[list[Project], int]:
+        filters = [Project.tenant_id == tenant_id]
+        if status is not None:
+            filters.append(Project.status == status)
+        if query is not None:
+            pattern = f"%{_escape_like(query)}%"
+            filters.append(
+                or_(
+                    Project.name.ilike(pattern, escape="\\"),
+                    Project.description.ilike(pattern, escape="\\"),
+                    Project.slug.ilike(pattern, escape="\\"),
+                    Project.git_url.ilike(pattern, escape="\\"),
+                )
+            )
+
+        order_by = Project.name.asc() if query is not None else Project.created_at.asc()
+        items, total = await self.list(
+            offset=offset,
+            limit=limit,
+            filters=filters,
+            order_by=order_by,
+        )
+        return list(items), total
 
     async def list_by_git_urls(self, git_urls: Collection[str]) -> list[Project]:
         candidates = {url for url in git_urls if url}

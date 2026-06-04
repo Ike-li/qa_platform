@@ -143,7 +143,7 @@ async def get_current_user_bearer_only(
 
 # ── Type aliases for route signatures ────────────────────────────────────────
 
-Container = Annotated[Any, Depends(lambda r: r.app.state.container)]
+Container = Annotated[Any, Depends(get_container)]
 Repos = Annotated[RepositoryBundle, Depends(_get_repos)]
 RedisClient = Annotated[object, Depends(get_redis)]
 CurrentUser = Annotated[UserIdentity, Depends(get_current_user)]

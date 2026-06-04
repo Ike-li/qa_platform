@@ -12,12 +12,14 @@ import subprocess
 import textwrap
 import urllib.parse
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 import pytest
+import pytest_asyncio
 
-from tests.support.api_data import ApiTestDataFactory, api_data_factory
+from tests.support.api_data import api_data_factory
 
 pytestmark = [
     pytest.mark.skipif(
@@ -41,6 +43,19 @@ EXTERNAL_STACK_S3_URL = os.environ.get(
 )
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TERMINAL_STATUSES = {"done", "failed", "cancelled", "timeout"}
+
+
+@dataclass(frozen=True)
+class RealStackRuns:
+    headers: dict[str, str]
+    project_id: str
+    pass_run_id: str
+    failed_run_id: str
+    suffix: str
+    test_suite: str
+    test_name: str
+    pass_run: dict
+    failed_run: dict
 
 
 def _external_stack_required() -> bool:
@@ -146,12 +161,6 @@ async def api_client(api_server_available):
         trust_env=False,
     ) as client:
         yield client
-
-
-@pytest.fixture
-async def api_data(api_client) -> AsyncIterator[ApiTestDataFactory]:
-    async with api_data_factory(api_client) as factory:
-        yield factory
 
 
 async def _wait_for_terminal(
@@ -291,104 +300,142 @@ raise SystemExit({1 if failed else 0})
     )
 
 
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def real_stack_runs(api_server_available) -> AsyncIterator[RealStackRuns]:
+    async with httpx.AsyncClient(
+        base_url=BASE_URL,
+        timeout=30.0,
+        trust_env=False,
+    ) as setup_client:
+        async with api_data_factory(setup_client) as api_data:
+            actor = await api_data.register_actor("real_stack")
+            headers = actor.headers
+            suffix = os.urandom(4).hex()
+            test_suite = "openapi_real_stack"
+            test_name = "test_flaky_checkout"
+
+            project = await api_data.create_project(
+                headers=headers,
+                prefix="openapi-real-stack",
+                git_url=EXTERNAL_STACK_GIT_URL,
+                payload_overrides={
+                    "name": f"OpenAPI Real Stack {suffix}",
+                    "slug": f"openapi-real-stack-{suffix}",
+                    "default_branch": EXTERNAL_STACK_GIT_REF,
+                },
+            )
+            project_id = project["id"]
+
+            pass_environment = await api_data.create_environment(
+                headers=headers,
+                project_id=project_id,
+                name="OpenAPI Real Stack Passed Env",
+                payload_overrides={
+                    "base_image": "python:3.12-alpine",
+                    "memory_mb": 512,
+                    "cpu_cores": 1.0,
+                    "network_policy": "allow",
+                    "setup_script": _pytest_setup_script(
+                        failed=False,
+                        marker=f"passed-{suffix}",
+                        with_preview_artifacts=True,
+                    ),
+                    "max_artifact_size_mb": 10,
+                    "max_artifacts_count": 8,
+                },
+            )
+            pass_env_id = pass_environment["id"]
+
+            fail_environment = await api_data.create_environment(
+                headers=headers,
+                project_id=project_id,
+                name="OpenAPI Real Stack Failed Env",
+                payload_overrides={
+                    "base_image": "python:3.12-alpine",
+                    "memory_mb": 512,
+                    "cpu_cores": 1.0,
+                    "network_policy": "allow",
+                    "setup_script": _pytest_setup_script(
+                        failed=True,
+                        marker=f"failed-{suffix}",
+                        with_preview_artifacts=False,
+                    ),
+                    "max_artifact_size_mb": 10,
+                    "max_artifacts_count": 2,
+                },
+            )
+            fail_env_id = fail_environment["id"]
+
+            pipeline = await api_data.create_pipeline(
+                headers=headers,
+                project_id=project_id,
+                name="OpenAPI Real Stack Pipeline",
+                payload_overrides={
+                    "stages": [
+                        {
+                            "name": "pytest",
+                            "plugin": "pytest",
+                            "phase": "execute",
+                            "config": {"test_path": "tests/"},
+                        }
+                    ],
+                    "collectors": [{"plugin": "junit", "config": {}, "enabled": True}],
+                    "timeout_seconds": 300,
+                    "selector": {"include_paths": ["tests"], "on_empty": "warn"},
+                    "trigger_config": {"type": "manual"},
+                    "enabled": True,
+                },
+            )
+            pipeline_id = pipeline["id"]
+
+            pass_trigger_resp = await setup_client.post(
+                "/api/v1/runs",
+                headers=headers,
+                json={
+                    "pipeline_id": pipeline_id,
+                    "environment_id": pass_env_id,
+                    "git_ref": EXTERNAL_STACK_GIT_REF,
+                    "priority": 1,
+                },
+            )
+            assert pass_trigger_resp.status_code == 201, pass_trigger_resp.text
+            pass_run_id = pass_trigger_resp.json()["id"]
+            pass_run = await _wait_for_terminal(setup_client, headers, pass_run_id)
+
+            fail_trigger_resp = await setup_client.post(
+                "/api/v1/runs",
+                headers=headers,
+                json={
+                    "pipeline_id": pipeline_id,
+                    "environment_id": fail_env_id,
+                    "git_ref": EXTERNAL_STACK_GIT_REF,
+                    "priority": 1,
+                },
+            )
+            assert fail_trigger_resp.status_code == 201, fail_trigger_resp.text
+            failed_run_id = fail_trigger_resp.json()["id"]
+            failed_run = await _wait_for_terminal(
+                setup_client,
+                headers,
+                failed_run_id,
+            )
+
+            yield RealStackRuns(
+                headers=headers,
+                project_id=project_id,
+                pass_run_id=pass_run_id,
+                failed_run_id=failed_run_id,
+                suffix=suffix,
+                test_suite=test_suite,
+                test_name=test_name,
+                pass_run=pass_run,
+                failed_run=failed_run,
+            )
+
+
 @pytest.mark.asyncio
-async def test_public_api_setup_covers_worker_artifact_log_and_analytics_success(
-    api_client,
-    api_data,
-):
-    actor = await api_data.register_actor("real_stack")
-    headers = actor.headers
-    suffix = os.urandom(4).hex()
-    test_suite = "openapi_real_stack"
-    test_name = "test_flaky_checkout"
-
-    project = await api_data.create_project(
-        headers=headers,
-        prefix="openapi-real-stack",
-        git_url=EXTERNAL_STACK_GIT_URL,
-        payload_overrides={
-            "name": f"OpenAPI Real Stack {suffix}",
-            "slug": f"openapi-real-stack-{suffix}",
-            "default_branch": EXTERNAL_STACK_GIT_REF,
-        },
-    )
-    project_id = project["id"]
-
-    pass_environment = await api_data.create_environment(
-        headers=headers,
-        project_id=project_id,
-        name="OpenAPI Real Stack Passed Env",
-        payload_overrides={
-            "base_image": "python:3.12-alpine",
-            "memory_mb": 512,
-            "cpu_cores": 1.0,
-            "network_policy": "allow",
-            "setup_script": _pytest_setup_script(
-                failed=False,
-                marker=f"passed-{suffix}",
-                with_preview_artifacts=True,
-            ),
-            "max_artifact_size_mb": 10,
-            "max_artifacts_count": 8,
-        },
-    )
-    pass_env_id = pass_environment["id"]
-
-    fail_environment = await api_data.create_environment(
-        headers=headers,
-        project_id=project_id,
-        name="OpenAPI Real Stack Failed Env",
-        payload_overrides={
-            "base_image": "python:3.12-alpine",
-            "memory_mb": 512,
-            "cpu_cores": 1.0,
-            "network_policy": "allow",
-            "setup_script": _pytest_setup_script(
-                failed=True,
-                marker=f"failed-{suffix}",
-                with_preview_artifacts=False,
-            ),
-            "max_artifact_size_mb": 10,
-            "max_artifacts_count": 2,
-        },
-    )
-    fail_env_id = fail_environment["id"]
-
-    pipeline = await api_data.create_pipeline(
-        headers=headers,
-        project_id=project_id,
-        name="OpenAPI Real Stack Pipeline",
-        payload_overrides={
-            "stages": [
-                {
-                    "name": "pytest",
-                    "plugin": "pytest",
-                    "phase": "execute",
-                    "config": {"test_path": "tests/"},
-                }
-            ],
-            "collectors": [{"plugin": "junit", "config": {}, "enabled": True}],
-            "timeout_seconds": 300,
-            "selector": {"include_paths": ["tests"], "on_empty": "warn"},
-            "trigger_config": {"type": "manual"},
-            "enabled": True,
-        },
-    )
-    pipeline_id = pipeline["id"]
-
-    pass_trigger_resp = await api_client.post(
-        "/api/v1/runs",
-        headers=headers,
-        json={
-            "pipeline_id": pipeline_id,
-            "environment_id": pass_env_id,
-            "git_ref": EXTERNAL_STACK_GIT_REF,
-            "priority": 1,
-        },
-    )
-    assert pass_trigger_resp.status_code == 201, pass_trigger_resp.text
-    pass_run_id = pass_trigger_resp.json()["id"]
-    pass_run = await _wait_for_terminal(api_client, headers, pass_run_id)
+async def test_real_stack_run_results_success(real_stack_runs: RealStackRuns):
+    pass_run = real_stack_runs.pass_run
     assert pass_run["status"] == "done"
     assert pass_run["summary"] == {
         "total": 1,
@@ -399,26 +446,26 @@ async def test_public_api_setup_covers_worker_artifact_log_and_analytics_success
         "pass_rate": 1.0,
     }
 
-    fail_trigger_resp = await api_client.post(
-        "/api/v1/runs",
-        headers=headers,
-        json={
-            "pipeline_id": pipeline_id,
-            "environment_id": fail_env_id,
-            "git_ref": EXTERNAL_STACK_GIT_REF,
-            "priority": 1,
-        },
-    )
-    assert fail_trigger_resp.status_code == 201, fail_trigger_resp.text
-    failed_run_id = fail_trigger_resp.json()["id"]
-    failed_run = await _wait_for_terminal(api_client, headers, failed_run_id)
+    failed_run = real_stack_runs.failed_run
     assert failed_run["status"] == "failed"
     assert failed_run["summary"]["total"] == 1
     assert failed_run["summary"]["failed"] == 1
     assert failed_run["summary"]["failed_tests"] == [
-        {"suite": test_suite, "name": test_name, "status": "failed"}
+        {
+            "suite": real_stack_runs.test_suite,
+            "name": real_stack_runs.test_name,
+            "status": "failed",
+        }
     ]
 
+
+@pytest.mark.asyncio
+async def test_real_stack_artifact_download_and_preview_success(
+    api_client,
+    real_stack_runs: RealStackRuns,
+):
+    pass_run_id = real_stack_runs.pass_run_id
+    headers = real_stack_runs.headers
     artifacts_body = await _poll_json(
         api_client,
         f"/api/v1/runs/{pass_run_id}/artifacts",
@@ -454,7 +501,9 @@ async def test_public_api_setup_covers_worker_artifact_log_and_analytics_success
     assert download_body["expires_in"] > 0
     assert download_body["download_url"].startswith(("http://", "https://"))
     downloaded_text = await _download_presigned_text(download_body["download_url"])
-    assert f"openapi-real-stack-allure-passed-{suffix}" in downloaded_text
+    assert f"openapi-real-stack-allure-passed-{real_stack_runs.suffix}" in (
+        downloaded_text
+    )
 
     preview_url_resp = await api_client.get(
         f"/api/v1/artifacts/{allure_artifact['id']}/preview-url",
@@ -474,20 +523,44 @@ async def test_public_api_setup_covers_worker_artifact_log_and_analytics_success
     assert "sandbox allow-scripts allow-downloads" in (
         preview_resp.headers["content-security-policy"]
     )
-    assert f"openapi-real-stack-allure-passed-{suffix}" in preview_resp.text
+    assert f"openapi-real-stack-allure-passed-{real_stack_runs.suffix}" in (
+        preview_resp.text
+    )
 
+
+@pytest.mark.asyncio
+async def test_real_stack_archived_logs_success(
+    api_client,
+    real_stack_runs: RealStackRuns,
+):
+    pass_run_id = real_stack_runs.pass_run_id
+    headers = real_stack_runs.headers
     archive_body = await _poll_json(
         api_client,
         f"/api/v1/runs/{pass_run_id}/logs/archive",
         headers,
         lambda body: any(
-            entry["line"] == f"openapi-real-stack-marker=passed-{suffix}"
+            entry["line"]
+            == f"openapi-real-stack-marker=passed-{real_stack_runs.suffix}"
             for entry in body.get("data", [])
         ),
     )
     assert archive_body["page"] == 1
     assert archive_body["per_page"] == 100
     assert archive_body["total"] >= len(archive_body["data"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_real_stack_analytics_success(
+    api_client,
+    real_stack_runs: RealStackRuns,
+):
+    headers = real_stack_runs.headers
+    project_id = real_stack_runs.project_id
+    pass_run_id = real_stack_runs.pass_run_id
+    failed_run_id = real_stack_runs.failed_run_id
+    test_suite = real_stack_runs.test_suite
+    test_name = real_stack_runs.test_name
 
     trends_resp = await api_client.get(
         f"/api/v1/projects/{project_id}/analytics/trends",
@@ -541,3 +614,25 @@ async def test_public_api_setup_covers_worker_artifact_log_and_analytics_success
         "expected checkout to pass"
     )
     assert history_by_run[failed_run_id]["git_ref"] == EXTERNAL_STACK_GIT_REF
+
+    summary_resp = await api_client.get(
+        f"/api/v1/projects/{project_id}/analytics/release-summary",
+        headers=headers,
+        params={
+            "days": 30,
+            "git_ref": EXTERNAL_STACK_GIT_REF,
+            "baseline_git_ref": EXTERNAL_STACK_GIT_REF,
+        },
+    )
+    assert summary_resp.status_code == 200, summary_resp.text
+    assert summary_resp.json() == {
+        "git_ref": EXTERNAL_STACK_GIT_REF,
+        "baseline_git_ref": EXTERNAL_STACK_GIT_REF,
+        "total_runs": 2,
+        "passed_runs": 1,
+        "failed_runs": 1,
+        "raw_pass_rate": 0.5,
+        "flaky_adjusted_pass_rate": None,
+        "new_failing_tests": [],
+        "recovered_tests": [],
+    }

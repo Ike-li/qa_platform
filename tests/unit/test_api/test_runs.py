@@ -557,6 +557,104 @@ async def test_trigger_run_stays_queued_and_audited_without_arq_pool(
 
 
 @pytest.mark.asyncio
+async def test_trigger_run_queue_unavailable_returns_created_waiting_run(
+    client,
+    mock_pipeline_repo,
+    mock_project_repo,
+    mock_environment_repo,
+    mock_run_repo,
+    mock_repos,
+    mock_user,
+    tenant_id,
+    app,
+):
+    """Queue outages should degrade to a waiting run instead of a 500."""
+    from qaplatform.api.auth.permissions import Action
+
+    project_id = uuid.uuid4()
+    pipeline_id = uuid.uuid4()
+    env_id = uuid.uuid4()
+    run = _make_orm_run(
+        project_id=project_id,
+        pipeline_id=pipeline_id,
+        environment_id=env_id,
+        tenant_id=tenant_id,
+    )
+
+    pl = MagicMock()
+    pl.id = pipeline_id
+    pl.project_id = project_id
+    mock_pipeline_repo.get_by_id.return_value = pl
+
+    proj = MagicMock()
+    proj.id = project_id
+    proj.tenant_id = tenant_id
+    proj.status = "active"
+    proj.git_url = "https://github.com/example/repo.git"
+    proj.git_auth_method = "none"
+    proj.credential_id = None
+    proj.shallow_clone = True
+    proj.default_branch = "main"
+    proj.default_env_id = env_id
+    mock_project_repo.get_for_tenant.return_value = proj
+    mock_run_repo.create.return_value = run
+
+    mock_arq = AsyncMock()
+    mock_arq.enqueue_job.side_effect = RuntimeError(
+        "redis://user:manual-trigger-secret@localhost/0"
+    )
+    app.state.container.arq_pool = mock_arq
+    app.state.container.settings = MagicMock(
+        max_concurrent_runs=5,
+        max_concurrent_per_project=3,
+    )
+    mock_run_repo.count_active_or_enqueued.return_value = 0
+    mock_run_repo.count_active_or_enqueued_by_project.return_value = 0
+
+    @asynccontextmanager
+    async def _fake_lock():
+        yield
+
+    mock_run_repo.scheduler_lock = _fake_lock
+
+    with patch(
+        "qaplatform.api.v1.runs.enforce_project_action",
+        new_callable=AsyncMock,
+    ) as enforce_project_action:
+        resp = await client.post(
+            "/api/v1/runs",
+            json={"pipeline_id": str(pipeline_id)},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 201, resp.text
+    assert "manual-trigger-secret" not in resp.text
+    body = resp.json()
+    assert body == _expected_run_response(run)
+    enforce_project_action.assert_awaited_once()
+    assert enforce_project_action.await_args.args[1:] == (
+        mock_user,
+        project_id,
+        Action.RUN_TRIGGER,
+    )
+    mock_run_repo.set_retry_group_id.assert_awaited_once_with(run.id, run.id)
+    mock_run_repo.commit.assert_awaited_once()
+    mock_arq.enqueue_job.assert_awaited_once_with(
+        "execute_run",
+        str(run.id),
+        _queue_name="queue:medium",
+        _job_id=f"run:{run.id}",
+        _defer_by=0,
+    )
+    mock_run_repo.mark_waiting.assert_awaited_once_with(
+        run.id,
+        reason="queue unavailable",
+    )
+    mock_run_repo.mark_enqueued.assert_not_awaited()
+    _assert_run_trigger_audit(mock_repos, mock_user, run, body)
+
+
+@pytest.mark.asyncio
 async def test_trigger_run_pipeline_not_found(
     client,
     mock_pipeline_repo,
@@ -718,7 +816,7 @@ async def test_trigger_run_hides_missing_or_other_project_environment_without_si
 @pytest.mark.asyncio
 async def test_list_runs(client, mock_run_repo, mock_repos, tenant_id):
     run = _make_orm_run(tenant_id=tenant_id)
-    mock_run_repo.list.return_value = ([run], 1)
+    mock_run_repo.list_filtered_for_tenant.return_value = ([run], 1)
 
     resp = await client.get(
         "/api/v1/runs?status=queued&page=1&per_page=10",
@@ -731,15 +829,14 @@ async def test_list_runs(client, mock_run_repo, mock_repos, tenant_id):
         "per_page": 10,
         "total": 1,
     }
-    mock_run_repo.list.assert_awaited_once()
-    list_kwargs = mock_run_repo.list.await_args.kwargs
+    mock_run_repo.list_filtered_for_tenant.assert_awaited_once()
+    list_kwargs = mock_run_repo.list_filtered_for_tenant.await_args.kwargs
+    assert list_kwargs["tenant_id"] == tenant_id
     assert list_kwargs["offset"] == 0
     assert list_kwargs["limit"] == 10
-    assert str(list_kwargs["order_by"]) == "run.created_at DESC"
-    assert _render_filters(list_kwargs["filters"]) == [
-        f"run.tenant_id = '{tenant_id.hex}'",
-        "run.status = 'queued'",
-    ]
+    assert list_kwargs["statuses"] == ["queued"]
+    assert list_kwargs["project_ids"] is None
+    assert list_kwargs["sort"] == "-created_at"
     mock_repos.audit.create.assert_not_awaited()
 
 
@@ -768,7 +865,7 @@ async def test_list_runs_member_user_uses_project_member_repository(
     mock_user.role = "viewer"
     mock_user.is_platform_admin = False
     mock_project_member_repo.list_project_ids_by_user.return_value = [project_id]
-    mock_run_repo.list.return_value = ([], 0)
+    mock_run_repo.list_filtered_for_tenant.return_value = ([], 0)
 
     resp = await client.get("/api/v1/runs", headers={"Authorization": "Bearer fake"})
 
@@ -777,11 +874,9 @@ async def test_list_runs_member_user_uses_project_member_repository(
         mock_user.user_id,
         tenant_id,
     )
-    filters = mock_run_repo.list.await_args.kwargs["filters"]
-    assert _render_filters(filters) == [
-        f"run.tenant_id = '{tenant_id.hex}'",
-        f"run.project_id IN ('{project_id.hex}')",
-    ]
+    list_kwargs = mock_run_repo.list_filtered_for_tenant.await_args.kwargs
+    assert list_kwargs["tenant_id"] == tenant_id
+    assert list_kwargs["project_ids"] == [project_id]
     session.execute.assert_not_awaited()
 
 
@@ -818,7 +913,7 @@ async def test_list_runs_member_user_with_no_projects_returns_empty_without_quer
         mock_user.user_id,
         tenant_id,
     )
-    mock_run_repo.list.assert_not_awaited()
+    mock_run_repo.list_filtered_for_tenant.assert_not_awaited()
     session.execute.assert_not_awaited()
 
 
@@ -921,7 +1016,7 @@ async def test_run_resource_routes_hide_missing_run_without_side_effects(
     ] * len(responses)
     enforce_project_action.assert_not_awaited()
     mock_run_repo.cancel_if_current.assert_not_awaited()
-    mock_result_repo.list.assert_not_awaited()
+    mock_result_repo.list_filtered_by_run.assert_not_awaited()
     mock_artifact_repo.list_by_run.assert_not_awaited()
     mock_repos.notification_log.list_by_run.assert_not_awaited()
     s3_client.get_object.assert_not_awaited()
@@ -1067,7 +1162,7 @@ async def test_get_run_results(
     run = _make_orm_run(id=run_id, tenant_id=tenant_id)
     result = _make_orm_test_result(run_id=run_id)
     mock_run_repo.get_for_tenant.return_value = run
-    mock_result_repo.list.return_value = ([result], 42)
+    mock_result_repo.list_filtered_by_run.return_value = ([result], 42)
 
     with patch(
         "qaplatform.api.v1.runs.enforce_project_action",
@@ -1092,13 +1187,14 @@ async def test_get_run_results(
         run.project_id,
         Action.RUN_READ,
     )
-    mock_result_repo.list.assert_awaited_once()
-    list_kwargs = mock_result_repo.list.await_args.kwargs
+    mock_result_repo.list_filtered_by_run.assert_awaited_once()
+    list_kwargs = mock_result_repo.list_filtered_by_run.await_args.kwargs
+    assert list_kwargs["run_id"] == run_id
     assert list_kwargs["offset"] == 14
     assert list_kwargs["limit"] == 7
-    assert _render_filters(list_kwargs["filters"]) == [
-        f"test_result.run_id = '{run_id.hex}'"
-    ]
+    assert list_kwargs["status"] is None
+    assert list_kwargs["suite"] is None
+    assert list_kwargs["query"] is None
     mock_repos.audit.create.assert_not_awaited()
 
 
@@ -1123,7 +1219,7 @@ async def test_get_run_results_rejects_unknown_status(
         }
     ]
     mock_run_repo.get_for_tenant.assert_not_awaited()
-    mock_result_repo.list.assert_not_awaited()
+    mock_result_repo.list_filtered_by_run.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1185,7 +1281,7 @@ async def test_get_run_results_rejects_invalid_text_filters_before_side_effects(
         expected_error
     ]
     mock_run_repo.get_for_tenant.assert_not_awaited()
-    mock_result_repo.list.assert_not_awaited()
+    mock_result_repo.list_filtered_by_run.assert_not_awaited()
 
 
 def test_get_run_results_status_filter_is_openapi_enum(app):
@@ -1203,7 +1299,7 @@ def test_get_run_results_status_filter_is_openapi_enum(app):
 async def test_get_run_results_filters_by_suite(client, mock_run_repo, mock_result_repo, tenant_id):
     run_id = uuid.uuid4()
     mock_run_repo.get_for_tenant.return_value = _make_orm_run(id=run_id, tenant_id=tenant_id)
-    mock_result_repo.list.return_value = ([], 0)
+    mock_result_repo.list_filtered_by_run.return_value = ([], 0)
 
     resp = await client.get(
         f"/api/v1/runs/{run_id}/results?suite=checkout",
@@ -1211,22 +1307,21 @@ async def test_get_run_results_filters_by_suite(client, mock_run_repo, mock_resu
     )
 
     _assert_empty_paginated_response(resp)
-    mock_result_repo.list.assert_awaited_once()
-    list_kwargs = mock_result_repo.list.await_args.kwargs
+    mock_result_repo.list_filtered_by_run.assert_awaited_once()
+    list_kwargs = mock_result_repo.list_filtered_by_run.await_args.kwargs
+    assert list_kwargs["run_id"] == run_id
     assert list_kwargs["offset"] == 0
     assert list_kwargs["limit"] == 20
-    filters = list_kwargs["filters"]
-    assert _render_filters(filters) == [
-        f"test_result.run_id = '{run_id.hex}'",
-        "test_result.suite = 'checkout'",
-    ]
+    assert list_kwargs["suite"] == "checkout"
+    assert list_kwargs["status"] is None
+    assert list_kwargs["query"] is None
 
 
 @pytest.mark.asyncio
 async def test_get_run_results_filters_by_keyword(client, mock_run_repo, mock_result_repo, tenant_id):
     run_id = uuid.uuid4()
     mock_run_repo.get_for_tenant.return_value = _make_orm_run(id=run_id, tenant_id=tenant_id)
-    mock_result_repo.list.return_value = ([], 0)
+    mock_result_repo.list_filtered_by_run.return_value = ([], 0)
 
     resp = await client.get(
         f"/api/v1/runs/{run_id}/results?q=timeout",
@@ -1234,23 +1329,21 @@ async def test_get_run_results_filters_by_keyword(client, mock_run_repo, mock_re
     )
 
     _assert_empty_paginated_response(resp)
-    mock_result_repo.list.assert_awaited_once()
-    list_kwargs = mock_result_repo.list.await_args.kwargs
+    mock_result_repo.list_filtered_by_run.assert_awaited_once()
+    list_kwargs = mock_result_repo.list_filtered_by_run.await_args.kwargs
+    assert list_kwargs["run_id"] == run_id
     assert list_kwargs["offset"] == 0
     assert list_kwargs["limit"] == 20
-    filters = list_kwargs["filters"]
-    assert _render_filters(filters) == [
-        f"test_result.run_id = '{run_id.hex}'",
-        "lower(test_result.name) LIKE lower('%timeout%') ESCAPE '\\' "
-        "OR lower(test_result.error_message) LIKE lower('%timeout%') ESCAPE '\\'",
-    ]
+    assert list_kwargs["query"] == "timeout"
+    assert list_kwargs["status"] is None
+    assert list_kwargs["suite"] is None
 
 
 @pytest.mark.asyncio
 async def test_get_run_results_combines_suite_and_keyword(client, mock_run_repo, mock_result_repo, tenant_id):
     run_id = uuid.uuid4()
     mock_run_repo.get_for_tenant.return_value = _make_orm_run(id=run_id, tenant_id=tenant_id)
-    mock_result_repo.list.return_value = ([], 0)
+    mock_result_repo.list_filtered_by_run.return_value = ([], 0)
 
     resp = await client.get(
         f"/api/v1/runs/{run_id}/results?status=failed&suite=checkout&q=timeout",
@@ -1258,25 +1351,21 @@ async def test_get_run_results_combines_suite_and_keyword(client, mock_run_repo,
     )
 
     _assert_empty_paginated_response(resp)
-    mock_result_repo.list.assert_awaited_once()
-    list_kwargs = mock_result_repo.list.await_args.kwargs
+    mock_result_repo.list_filtered_by_run.assert_awaited_once()
+    list_kwargs = mock_result_repo.list_filtered_by_run.await_args.kwargs
+    assert list_kwargs["run_id"] == run_id
     assert list_kwargs["offset"] == 0
     assert list_kwargs["limit"] == 20
-    filters = list_kwargs["filters"]
-    assert _render_filters(filters) == [
-        f"test_result.run_id = '{run_id.hex}'",
-        "test_result.status = 'failed'",
-        "test_result.suite = 'checkout'",
-        "lower(test_result.name) LIKE lower('%timeout%') ESCAPE '\\' "
-        "OR lower(test_result.error_message) LIKE lower('%timeout%') ESCAPE '\\'",
-    ]
+    assert list_kwargs["status"] == "failed"
+    assert list_kwargs["suite"] == "checkout"
+    assert list_kwargs["query"] == "timeout"
 
 
 @pytest.mark.asyncio
 async def test_get_run_results_escapes_keyword_like_wildcards(client, mock_run_repo, mock_result_repo, tenant_id):
     run_id = uuid.uuid4()
     mock_run_repo.get_for_tenant.return_value = _make_orm_run(id=run_id, tenant_id=tenant_id)
-    mock_result_repo.list.return_value = ([], 0)
+    mock_result_repo.list_filtered_by_run.return_value = ([], 0)
 
     resp = await client.get(
         f"/api/v1/runs/{run_id}/results?q=case%25_%5C",
@@ -1284,16 +1373,12 @@ async def test_get_run_results_escapes_keyword_like_wildcards(client, mock_run_r
     )
 
     _assert_empty_paginated_response(resp)
-    mock_result_repo.list.assert_awaited_once()
-    list_kwargs = mock_result_repo.list.await_args.kwargs
+    mock_result_repo.list_filtered_by_run.assert_awaited_once()
+    list_kwargs = mock_result_repo.list_filtered_by_run.await_args.kwargs
+    assert list_kwargs["run_id"] == run_id
     assert list_kwargs["offset"] == 0
     assert list_kwargs["limit"] == 20
-    filters = list_kwargs["filters"]
-    assert _render_filters(filters) == [
-        f"test_result.run_id = '{run_id.hex}'",
-        "lower(test_result.name) LIKE lower('%case\\%\\_\\\\%') ESCAPE '\\' "
-        "OR lower(test_result.error_message) LIKE lower('%case\\%\\_\\\\%') ESCAPE '\\'",
-    ]
+    assert list_kwargs["query"] == "case%_\\"
 
 
 @pytest.mark.asyncio
@@ -1643,7 +1728,7 @@ async def test_list_runs_multi_status_filter(client, mock_run_repo, tenant_id):
     so the caller can fetch e.g. 'queued,running' (in-flight) in one
     call instead of polling each status separately.
     """
-    mock_run_repo.list.return_value = ([], 0)
+    mock_run_repo.list_filtered_for_tenant.return_value = ([], 0)
 
     resp = await client.get(
         "/api/v1/runs?status=queued,running",
@@ -1651,12 +1736,10 @@ async def test_list_runs_multi_status_filter(client, mock_run_repo, tenant_id):
     )
     assert resp.status_code == 200
 
-    mock_run_repo.list.assert_awaited_once()
-    filters = mock_run_repo.list.await_args.kwargs["filters"]
-    assert _render_filters(filters) == [
-        f"run.tenant_id = '{tenant_id.hex}'",
-        "run.status IN ('queued', 'running')",
-    ]
+    mock_run_repo.list_filtered_for_tenant.assert_awaited_once()
+    list_kwargs = mock_run_repo.list_filtered_for_tenant.await_args.kwargs
+    assert list_kwargs["tenant_id"] == tenant_id
+    assert list_kwargs["statuses"] == ["queued", "running"]
 
 
 @pytest.mark.asyncio
@@ -1677,7 +1760,7 @@ async def test_list_runs_rejects_unknown_status_without_querying_runs(
             "details": [],
         }
     }
-    mock_run_repo.list.assert_not_awaited()
+    mock_run_repo.list_filtered_for_tenant.assert_not_awaited()
 
 
 @pytest.mark.parametrize("status", ["", ",", "queued,,running"])
@@ -1702,7 +1785,7 @@ async def test_list_runs_rejects_empty_status_segments_without_querying_runs(
         }
     }
     mock_project_member_repo.list_project_ids_by_user.assert_not_awaited()
-    mock_run_repo.list.assert_not_awaited()
+    mock_run_repo.list_filtered_for_tenant.assert_not_awaited()
 
 
 def test_list_runs_status_filter_422_uses_error_response_schema(app):
@@ -1734,7 +1817,7 @@ async def test_list_runs_rejects_invalid_sort_without_querying_runs(
         }
     }
     mock_project_member_repo.list_project_ids_by_user.assert_not_awaited()
-    mock_run_repo.list.assert_not_awaited()
+    mock_run_repo.list_filtered_for_tenant.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1768,7 +1851,7 @@ async def test_list_runs_rejects_invalid_git_ref_without_querying_runs(
         }
     }
     mock_project_member_repo.list_project_ids_by_user.assert_not_awaited()
-    mock_run_repo.list.assert_not_awaited()
+    mock_run_repo.list_filtered_for_tenant.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1795,13 +1878,13 @@ async def test_list_runs_rejects_reversed_created_range_without_querying_runs(
         }
     }
     mock_project_member_repo.list_project_ids_by_user.assert_not_awaited()
-    mock_run_repo.list.assert_not_awaited()
+    mock_run_repo.list_filtered_for_tenant.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_list_runs_single_status_uses_equality(client, mock_run_repo, tenant_id):
     """When the caller supplies one status, keep an equality predicate."""
-    mock_run_repo.list.return_value = ([], 0)
+    mock_run_repo.list_filtered_for_tenant.return_value = ([], 0)
 
     resp = await client.get(
         "/api/v1/runs?status=queued",
@@ -1809,12 +1892,10 @@ async def test_list_runs_single_status_uses_equality(client, mock_run_repo, tena
     )
     assert resp.status_code == 200
 
-    mock_run_repo.list.assert_awaited_once()
-    filters = mock_run_repo.list.await_args.kwargs["filters"]
-    assert _render_filters(filters) == [
-        f"run.tenant_id = '{tenant_id.hex}'",
-        "run.status = 'queued'",
-    ]
+    mock_run_repo.list_filtered_for_tenant.assert_awaited_once()
+    list_kwargs = mock_run_repo.list_filtered_for_tenant.await_args.kwargs
+    assert list_kwargs["tenant_id"] == tenant_id
+    assert list_kwargs["statuses"] == ["queued"]
 
 
 @pytest.mark.asyncio

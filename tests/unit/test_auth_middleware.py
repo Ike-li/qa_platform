@@ -144,7 +144,7 @@ async def test_authenticate_jwt_rejects_when_token_actually_revoked(
 @pytest.mark.asyncio
 async def test_get_current_user_rejects_missing_authorization_header():
     with pytest.raises(HTTPException) as exc_info:
-        await get_current_user(credentials=None)
+        await get_current_user(request=MagicMock(), credentials=None)
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.detail == 'Missing Authorization header'
@@ -168,7 +168,7 @@ async def test_get_current_user_routes_api_tokens_to_api_token_auth():
         ) as api_auth,
         patch('qaplatform.api.auth.middleware._authenticate_jwt', new_callable=AsyncMock) as jwt_auth,
     ):
-        result = await get_current_user(credentials=credentials)
+        result = await get_current_user(request=MagicMock(), credentials=credentials)
 
     assert result is user
     api_auth.assert_awaited_once_with(API_BEARER_TOKEN, container)
@@ -190,7 +190,7 @@ async def test_get_current_user_routes_non_api_tokens_to_jwt_auth():
             return_value=user,
         ) as jwt_auth,
     ):
-        result = await get_current_user(credentials=credentials)
+        result = await get_current_user(request=MagicMock(), credentials=credentials)
 
     assert result is user
     jwt_auth.assert_awaited_once_with('jwt-token', container)

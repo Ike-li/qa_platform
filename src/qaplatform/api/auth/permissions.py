@@ -227,7 +227,14 @@ def check_permission(
     """
     # API token scope enforcement: if scopes are set, check action is allowed
     if ctx.scopes is not None and "*" not in ctx.scopes:
-        if action.value not in ctx.scopes:
+        scoped_action_ok = action.value in ctx.scopes
+        if (
+            not scoped_action_ok
+            and action == Action.RUN_CANCEL
+            and Action.RUN_CANCEL_OWN.value in ctx.scopes
+        ):
+            scoped_action_ok = ctx.is_own_resource
+        if not scoped_action_ok:
             return False
 
     if ctx.is_platform_admin:

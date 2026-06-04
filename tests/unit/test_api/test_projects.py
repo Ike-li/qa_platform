@@ -131,13 +131,6 @@ def _assert_project_not_found_response(resp):
     }
 
 
-def _render_filters(filters) -> list[str]:
-    return [
-        str(filter_.compile(compile_kwargs={"literal_binds": True}))
-        for filter_ in filters
-    ]
-
-
 def _validation_error_projection(errors) -> list[dict]:
     return [
         {
@@ -225,7 +218,7 @@ async def test_list_projects(client, mock_project_repo, tenant_id):
         created_at=datetime(2026, 5, 31, 19, 20, 21, tzinfo=timezone.utc),
         updated_at=datetime(2026, 5, 31, 22, 23, 24, tzinfo=timezone.utc),
     )
-    mock_project_repo.list.return_value = ([project], 1)
+    mock_project_repo.list_filtered_by_tenant.return_value = ([project], 1)
 
     resp = await client.get("/api/v1/projects", headers={"Authorization": "Bearer fake"})
     assert resp.status_code == 200
@@ -257,19 +250,18 @@ async def test_list_projects(client, mock_project_repo, tenant_id):
         "per_page": 20,
         "total": 1,
     }
-    mock_project_repo.list.assert_awaited_once()
-    list_kwargs = mock_project_repo.list.await_args.kwargs
+    mock_project_repo.list_filtered_by_tenant.assert_awaited_once()
+    list_kwargs = mock_project_repo.list_filtered_by_tenant.await_args.kwargs
+    assert list_kwargs["tenant_id"] == tenant_id
     assert list_kwargs["offset"] == 0
     assert list_kwargs["limit"] == 20
-    assert str(list_kwargs["order_by"]) == "project.created_at DESC"
-    assert _render_filters(list_kwargs["filters"]) == [
-        f"project.tenant_id = '{tenant_id.hex}'",
-    ]
+    assert list_kwargs["status"] is None
+    assert list_kwargs["query"] is None
 
 
 @pytest.mark.asyncio
 async def test_list_projects_with_search(client, mock_project_repo, tenant_id):
-    mock_project_repo.list.return_value = ([], 0)
+    mock_project_repo.list_filtered_by_tenant.return_value = ([], 0)
 
     resp = await client.get(
         "/api/v1/projects?q=keyword&page=2&per_page=10",
@@ -278,18 +270,13 @@ async def test_list_projects_with_search(client, mock_project_repo, tenant_id):
     assert resp.status_code == 200
     body = resp.json()
     assert body == {"data": [], "page": 2, "per_page": 10, "total": 0}
-    mock_project_repo.list.assert_awaited_once()
-    list_kwargs = mock_project_repo.list.await_args.kwargs
+    mock_project_repo.list_filtered_by_tenant.assert_awaited_once()
+    list_kwargs = mock_project_repo.list_filtered_by_tenant.await_args.kwargs
+    assert list_kwargs["tenant_id"] == tenant_id
     assert list_kwargs["offset"] == 10
     assert list_kwargs["limit"] == 10
-    assert _render_filters(list_kwargs["filters"]) == [
-        f"project.tenant_id = '{tenant_id.hex}'",
-        "lower(project.name) LIKE lower('%keyword%') ESCAPE '\\' "
-        "OR lower(project.description) LIKE lower('%keyword%') ESCAPE '\\' "
-        "OR lower(project.slug) LIKE lower('%keyword%') ESCAPE '\\' "
-        "OR lower(project.git_url) LIKE lower('%keyword%') ESCAPE '\\'",
-    ]
-    assert "project.created_at DESC" in str(list_kwargs["order_by"])
+    assert list_kwargs["status"] is None
+    assert list_kwargs["query"] == "keyword"
 
 
 @pytest.mark.asyncio
@@ -303,7 +290,10 @@ async def test_discover_git_branches(client, app, monkeypatch, mock_repos, mock_
             return ["main", "release"], "main"
 
     app.state.container.settings.git_allowed_private_hosts = ["github.com"]
-    monkeypatch.setattr("qaplatform.api.v1.projects.GitSource", FakeGitSource)
+    monkeypatch.setattr(
+        "qaplatform.plugins.builtin.git_source.GitSource",
+        FakeGitSource,
+    )
 
     resp = await client.post(
         "/api/v1/projects/branches",
@@ -351,7 +341,7 @@ async def test_discover_git_branches_rejects_private_auth(client):
 
 @pytest.mark.asyncio
 async def test_list_projects_filters_by_status(client, mock_project_repo, tenant_id):
-    mock_project_repo.list.return_value = ([], 0)
+    mock_project_repo.list_filtered_by_tenant.return_value = ([], 0)
 
     resp = await client.get(
         "/api/v1/projects?status=archived",
@@ -359,12 +349,11 @@ async def test_list_projects_filters_by_status(client, mock_project_repo, tenant
     )
 
     assert resp.status_code == 200
-    mock_project_repo.list.assert_awaited_once()
-    filters = mock_project_repo.list.await_args.kwargs["filters"]
-    assert _render_filters(filters) == [
-        f"project.tenant_id = '{tenant_id.hex}'",
-        "project.status = 'archived'",
-    ]
+    mock_project_repo.list_filtered_by_tenant.assert_awaited_once()
+    list_kwargs = mock_project_repo.list_filtered_by_tenant.await_args.kwargs
+    assert list_kwargs["tenant_id"] == tenant_id
+    assert list_kwargs["status"] == "archived"
+    assert list_kwargs["query"] is None
 
 
 @pytest.mark.asyncio
@@ -385,7 +374,7 @@ async def test_list_projects_rejects_unknown_status_without_querying_projects(
             "details": [],
         }
     }
-    mock_project_repo.list.assert_not_awaited()
+    mock_project_repo.list_filtered_by_tenant.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -406,7 +395,7 @@ async def test_list_projects_rejects_empty_status_without_querying_projects(
             "details": [],
         }
     }
-    mock_project_repo.list.assert_not_awaited()
+    mock_project_repo.list_filtered_by_tenant.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -437,7 +426,7 @@ async def test_list_projects_rejects_invalid_search_without_querying_projects(
             "details": [],
         }
     }
-    mock_project_repo.list.assert_not_awaited()
+    mock_project_repo.list_filtered_by_tenant.assert_not_awaited()
 
 
 def test_list_projects_status_filter_422_uses_error_response_schema(app):
@@ -1314,4 +1303,4 @@ async def test_unauthenticated(app, mock_project_repo):
         resp = await ac.get("/api/v1/projects")
     assert resp.status_code == 401
     assert resp.json() == {"detail": "Missing Authorization header"}
-    mock_project_repo.list.assert_not_awaited()
+    mock_project_repo.list_filtered_by_tenant.assert_not_awaited()

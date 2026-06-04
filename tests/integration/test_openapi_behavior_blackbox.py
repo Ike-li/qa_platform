@@ -8,6 +8,7 @@ failure paths.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -23,9 +24,15 @@ import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient, Response
 
+from qaplatform.api.auth.permissions import Action
 from qaplatform.config import Settings
 from tests.support.api_data import ApiTestDataFactory
 from tests.support.api_seed import LocalHttpsGitRepo, api_seed_state_factory
+from tests.support.openapi_response_schema import (
+    assert_current_openapi_response,
+    reset_current_openapi,
+    set_current_openapi,
+)
 
 
 pytestmark = pytest.mark.skipif(
@@ -84,9 +91,20 @@ class RbacTenantCase:
         return self.path_template.format(**ids)
 
 
+@dataclass(frozen=True)
+class ApiTokenScopeCase:
+    scope: str
+    run: Callable[
+        [AsyncClient, dict[str, str], Actor, dict[str, Any]],
+        Awaitable[Response],
+    ]
+    expected_status: int
+
+
 @asynccontextmanager
 async def _api_client(app) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app)
+    openapi_token = set_current_openapi(app.openapi())
     async with AsyncClient(
         transport=transport,
         base_url="http://localhost",
@@ -100,8 +118,11 @@ async def _api_client(app) -> AsyncIterator[AsyncClient]:
             cleanup_should_raise = False
             raise
         finally:
-            _API_DATA_FACTORIES.pop(id(client), None)
-            cleanup_errors = await factory.cleanup()
+            try:
+                _API_DATA_FACTORIES.pop(id(client), None)
+                cleanup_errors = await factory.cleanup()
+            finally:
+                reset_current_openapi(openapi_token)
             if cleanup_errors and cleanup_should_raise:
                 raise AssertionError(
                     "API test data cleanup failed: " + "; ".join(cleanup_errors)
@@ -120,10 +141,13 @@ def _assert_status(response: Response, expected: int) -> dict[str, Any]:
     assert response.status_code == expected, response.text
     if expected == 204:
         assert response.content == b""
+        assert_current_openapi_response(response, expected)
         return {}
     content_type = response.headers.get("content-type", "")
     assert "application/json" in content_type
-    return response.json()
+    body = response.json()
+    assert_current_openapi_response(response, expected, body)
+    return body
 
 
 def _assert_error_body(response: Response) -> dict[str, Any]:
@@ -156,6 +180,24 @@ async def _register_actor(client: AsyncClient, prefix: str = "bb") -> Actor:
         access_token=body["access_token"],
         user=body["user"],
     )
+
+
+async def _create_api_token(
+    client: AsyncClient,
+    actor: Actor,
+    *,
+    name: str,
+    scopes: list[str],
+) -> str:
+    response = await client.post(
+        "/api/v1/auth/tokens",
+        headers=actor.headers,
+        json={"name": name, "scopes": scopes},
+    )
+    body = _assert_status(response, 201)
+    assert body["scopes"] == scopes
+    assert body["token"].startswith("qap_")
+    return body["token"]
 
 
 def _project_payload(
@@ -2240,6 +2282,370 @@ async def test_auth_blackbox_register_login_refresh_logout_and_token_rejections(
         _assert_error_body(revoked_jwt_response)
 
 
+async def test_api_token_scope_action_matrix_blackbox(
+    no_auth_integration_app,
+) -> None:
+    async with _api_client(no_auth_integration_app) as client:
+        actor = await _register_actor(client, "scope_matrix")
+        stack = await _create_project_stack(client, actor, prefix="scope-matrix")
+        project = stack["project"]
+        environment = stack["environment"]
+        pipeline = stack["pipeline"]
+        schedule = await _create_schedule(client, actor, project["id"], pipeline["id"])
+        credential = await _create_credential(client, actor, project["id"])
+        rule = await _create_notification_rule(client, actor, project["id"])
+
+        async def trigger_run(headers: dict[str, str]) -> dict[str, Any]:
+            response = await client.post(
+                "/api/v1/runs",
+                headers=headers,
+                json={
+                    "pipeline_id": pipeline["id"],
+                    "environment_id": environment["id"],
+                    "git_ref": "main",
+                    "git_sha": FULL_SHA,
+                },
+            )
+            return _assert_status(response, 201)
+
+        base_run = await trigger_run(actor.headers)
+        context: dict[str, Any] = {
+            "project": project,
+            "environment": environment,
+            "pipeline": pipeline,
+            "schedule": schedule,
+            "credential": credential,
+            "rule": rule,
+            "run": base_run,
+        }
+
+        async def project_read(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            _context: dict[str, Any],
+        ) -> Response:
+            return await client.get("/api/v1/projects", headers=headers)
+
+        async def project_create(
+            client: AsyncClient,
+            headers: dict[str, str],
+            actor: Actor,
+            _context: dict[str, Any],
+        ) -> Response:
+            slug = _suffix("scope-project-create")
+            response = await client.post(
+                "/api/v1/projects",
+                headers=headers,
+                json=_project_payload(slug),
+            )
+            if response.status_code == 201:
+                cleanup = await client.delete(
+                    f"/api/v1/projects/{response.json()['id']}",
+                    headers=actor.headers,
+                )
+                assert cleanup.status_code in {204, 404}, cleanup.text
+            return response
+
+        async def project_edit(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.put(
+                f"/api/v1/projects/{context['project']['id']}",
+                headers=headers,
+                json={"description": "scope matrix edit"},
+            )
+
+        async def project_delete(
+            client: AsyncClient,
+            headers: dict[str, str],
+            actor: Actor,
+            _context: dict[str, Any],
+        ) -> Response:
+            project = await _create_project(client, actor, prefix="scope-delete")
+            return await client.delete(
+                f"/api/v1/projects/{project['id']}",
+                headers=headers,
+            )
+
+        async def run_read(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.get(
+                f"/api/v1/runs/{context['run']['id']}",
+                headers=headers,
+            )
+
+        async def run_trigger(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            _context: dict[str, Any],
+        ) -> Response:
+            return await client.post(
+                "/api/v1/runs",
+                headers=headers,
+                json={
+                    "pipeline_id": pipeline["id"],
+                    "environment_id": environment["id"],
+                    "git_ref": "main",
+                    "git_sha": FULL_SHA,
+                },
+            )
+
+        async def run_cancel(
+            client: AsyncClient,
+            headers: dict[str, str],
+            actor: Actor,
+            _context: dict[str, Any],
+        ) -> Response:
+            run = await trigger_run(actor.headers)
+            return await client.post(
+                f"/api/v1/runs/{run['id']}/cancel",
+                headers=headers,
+                json={"reason": "scope matrix cancel"},
+            )
+
+        async def pipeline_read(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.get(
+                f"/api/v1/projects/{context['project']['id']}/pipelines",
+                headers=headers,
+            )
+
+        async def pipeline_edit(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.put(
+                f"/api/v1/projects/{context['project']['id']}/pipelines/"
+                f"{context['pipeline']['id']}",
+                headers=headers,
+                json={"name": f"{context['pipeline']['name']}-scope"},
+            )
+
+        async def config_read(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.get(
+                f"/api/v1/projects/{context['project']['id']}/environments",
+                headers=headers,
+            )
+
+        async def config_edit(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.put(
+                f"/api/v1/projects/{context['project']['id']}/environments/"
+                f"{context['environment']['id']}",
+                headers=headers,
+                json={"memory_mb": 512},
+            )
+
+        async def credential_read(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.get(
+                f"/api/v1/projects/{context['project']['id']}/credentials",
+                headers=headers,
+            )
+
+        async def credential_edit(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.put(
+                f"/api/v1/projects/{context['project']['id']}/credentials/"
+                f"{context['credential']['id']}",
+                headers=headers,
+                json={"value": "rotated-by-scope-matrix"},
+            )
+
+        async def member_read(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.get(
+                f"/api/v1/projects/{context['project']['id']}/members",
+                headers=headers,
+            )
+
+        async def member_edit(
+            client: AsyncClient,
+            headers: dict[str, str],
+            actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.put(
+                f"/api/v1/projects/{context['project']['id']}/members/"
+                f"{actor.user['id']}",
+                headers=headers,
+                json={"role": "admin"},
+            )
+
+        async def token_manage(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            _context: dict[str, Any],
+        ) -> Response:
+            return await client.get("/api/v1/auth/tokens", headers=headers)
+
+        async def schedule_read(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.get(
+                f"/api/v1/projects/{context['project']['id']}/schedules",
+                headers=headers,
+            )
+
+        async def schedule_edit(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.put(
+                f"/api/v1/projects/{context['project']['id']}/schedules/"
+                f"{context['schedule']['id']}",
+                headers=headers,
+                json={"enabled": False},
+            )
+
+        async def notification_read(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.get(
+                f"/api/v1/projects/{context['project']['id']}/notification-rules",
+                headers=headers,
+            )
+
+        async def notification_edit(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            context: dict[str, Any],
+        ) -> Response:
+            return await client.put(
+                f"/api/v1/projects/{context['project']['id']}/notification-rules/"
+                f"{context['rule']['id']}",
+                headers=headers,
+                json={"template": "Run {{ status }}"},
+            )
+
+        async def audit_read(
+            client: AsyncClient,
+            headers: dict[str, str],
+            _actor: Actor,
+            _context: dict[str, Any],
+        ) -> Response:
+            return await client.get(
+                "/api/v1/audit-events",
+                headers=headers,
+                params={"per_page": 5},
+            )
+
+        cases = (
+            ApiTokenScopeCase(Action.PROJECT_READ.value, project_read, 200),
+            ApiTokenScopeCase(Action.PROJECT_CREATE.value, project_create, 201),
+            ApiTokenScopeCase(Action.PROJECT_EDIT.value, project_edit, 200),
+            ApiTokenScopeCase(Action.PROJECT_DELETE.value, project_delete, 204),
+            ApiTokenScopeCase(Action.RUN_READ.value, run_read, 200),
+            ApiTokenScopeCase(Action.RUN_TRIGGER.value, run_trigger, 201),
+            ApiTokenScopeCase(Action.RUN_CANCEL.value, run_cancel, 200),
+            ApiTokenScopeCase(Action.RUN_CANCEL_OWN.value, run_cancel, 200),
+            ApiTokenScopeCase(Action.PIPELINE_READ.value, pipeline_read, 200),
+            ApiTokenScopeCase(Action.PIPELINE_EDIT.value, pipeline_edit, 200),
+            ApiTokenScopeCase(Action.CONFIG_READ.value, config_read, 200),
+            ApiTokenScopeCase(Action.CONFIG_EDIT.value, config_edit, 200),
+            ApiTokenScopeCase(Action.CREDENTIAL_READ.value, credential_read, 200),
+            ApiTokenScopeCase(Action.CREDENTIAL_EDIT.value, credential_edit, 200),
+            ApiTokenScopeCase(Action.MEMBER_READ.value, member_read, 200),
+            ApiTokenScopeCase(Action.MEMBER_EDIT.value, member_edit, 200),
+            ApiTokenScopeCase(Action.TOKEN_MANAGE.value, token_manage, 200),
+            ApiTokenScopeCase(Action.SCHEDULE_READ.value, schedule_read, 200),
+            ApiTokenScopeCase(Action.SCHEDULE_EDIT.value, schedule_edit, 200),
+            ApiTokenScopeCase(Action.NOTIFICATION_READ.value, notification_read, 200),
+            ApiTokenScopeCase(Action.NOTIFICATION_EDIT.value, notification_edit, 200),
+            ApiTokenScopeCase(Action.AUDIT_READ.value, audit_read, 200),
+        )
+        assert {case.scope for case in cases} == {action.value for action in Action}
+
+        async def assert_unlisted_action_denied(
+            scope: str,
+            headers: dict[str, str],
+        ) -> None:
+            if scope == Action.PROJECT_READ.value:
+                denied = await client.post(
+                    "/api/v1/runs",
+                    headers=headers,
+                    json={
+                        "pipeline_id": pipeline["id"],
+                        "environment_id": environment["id"],
+                    },
+                )
+            else:
+                denied = await client.get("/api/v1/projects", headers=headers)
+            assert denied.status_code == 403, denied.text
+            assert denied.json() == {"detail": "Insufficient permissions"}
+
+        for case in cases:
+            token = await _create_api_token(
+                client,
+                actor,
+                name=_suffix(f"scope-{case.scope.replace('.', '-')}"),
+                scopes=[case.scope],
+            )
+            token_headers = {"Authorization": f"Bearer {token}"}
+            response = await case.run(client, token_headers, actor, context)
+            _assert_status(response, case.expected_status)
+            await assert_unlisted_action_denied(case.scope, token_headers)
+
+        empty_scope_token = await _create_api_token(
+            client,
+            actor,
+            name=_suffix("scope-empty"),
+            scopes=[],
+        )
+        empty_scope_response = await client.get(
+            "/api/v1/projects",
+            headers={"Authorization": f"Bearer {empty_scope_token}"},
+        )
+        assert empty_scope_response.status_code == 403, empty_scope_response.text
+        assert empty_scope_response.json() == {"detail": "Insufficient permissions"}
+
+
 async def test_resource_lifecycle_blackbox_crud_and_listing(
     no_auth_integration_app,
 ) -> None:
@@ -2757,6 +3163,20 @@ async def test_webhooks_blackbox_security_failures_and_duplicate_delivery(
         assert wrong_signature.status_code == 401
         _assert_error_body(wrong_signature)
 
+        tampered_payload = {**github_payload, "after": "e" * 40}
+        tampered_raw_body = _canonical_json_bytes(tampered_payload)
+        tampered_signature = await client.post(
+            "/webhooks/github",
+            content=tampered_raw_body,
+            headers={
+                **provider_headers,
+                "X-GitHub-Delivery": _suffix("tampered-delivery"),
+                "X-Hub-Signature-256": _webhook_signature(secret, raw_body),
+            },
+        )
+        assert tampered_signature.status_code == 401
+        _assert_error_body(tampered_signature)
+
         signed_delivery = await client.post(
             "/webhooks/github",
             content=raw_body,
@@ -2880,6 +3300,53 @@ async def test_webhooks_blackbox_security_failures_and_duplicate_delivery(
         )
         duplicate_project_body = _assert_status(duplicate_project_webhook, 200)
         assert duplicate_project_body["status"] == "duplicate"
+
+
+async def test_project_webhook_concurrent_duplicate_delivery_is_idempotent(
+    no_auth_integration_app,
+) -> None:
+    async with _api_client(no_auth_integration_app) as client:
+        actor = await _register_actor(client, "hook_concurrent")
+        stack = await _create_project_stack(
+            client,
+            actor,
+            prefix="hook-concurrent",
+        )
+        payload = {
+            "git_ref": "refs/heads/main",
+            "git_sha": "f" * 40,
+            "metadata": {
+                "provider": "github",
+                "delivery_id": _suffix("concurrent-delivery"),
+            },
+        }
+
+        responses = await asyncio.gather(
+            client.post(
+                f"/api/v1/webhooks/{stack['project']['id']}/trigger",
+                headers=actor.headers,
+                json=payload,
+            ),
+            client.post(
+                f"/api/v1/webhooks/{stack['project']['id']}/trigger",
+                headers=actor.headers,
+                json=payload,
+            ),
+        )
+
+        response_by_status: dict[int, dict[str, Any]] = {}
+        for response in responses:
+            if response.status_code == 201:
+                response_by_status[201] = _assert_status(response, 201)
+            elif response.status_code == 200:
+                response_by_status[200] = _assert_status(response, 200)
+            else:
+                raise AssertionError(response.text)
+
+        assert sorted(response_by_status) == [200, 201]
+        assert response_by_status[201]["trigger_type"] == "webhook"
+        assert response_by_status[201]["git_sha"] == "f" * 40
+        assert response_by_status[200]["status"] == "duplicate"
 
 
 @pytest.mark.parametrize(

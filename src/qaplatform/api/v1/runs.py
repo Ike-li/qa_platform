@@ -5,7 +5,6 @@ from typing import get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import desc, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +16,6 @@ from qaplatform.api.deps import (
     _get_db_session,
     enforce_project_action,
 )
-from qaplatform.api.v1._filters import escape_like
 from qaplatform.api.schemas import (
     ArtifactResponse,
     BatchRunRequest,
@@ -33,7 +31,7 @@ from qaplatform.api.schemas import (
     TestResultResponse,
     TestResultStatusValue,
 )
-from qaplatform.engine.log_stream import ArchivedLogsNotFound, LogStream
+from qaplatform.infra.log_stream import ArchivedLogsNotFound, LogStream
 from qaplatform.infra.database.models import (
     Artifact as ArtifactORM,
     NotificationLog as NotificationLogORM,
@@ -177,7 +175,7 @@ async def trigger_run(
     arq_pool = getattr(container, "arq_pool", None)
     if arq_pool is not None:
         await repos.run.commit()
-        from qaplatform.worker.scheduler import enqueue_run
+        from qaplatform.infra.queue.scheduler import enqueue_run
 
         await enqueue_run(arq_pool, repos.run, run, "manual", container.settings)
 
@@ -229,7 +227,7 @@ async def list_runs(
             detail="Invalid run created range: created_from must be before created_to",
         )
 
-    filters = [RunORM.tenant_id == user.tenant_id]
+    statuses: list[str] | None = None
     if status is not None:
         # F-LS-01: support comma-separated multi-status filtering
         # (e.g. 'queued,running' to show in-flight runs).
@@ -242,15 +240,11 @@ async def list_runs(
                 status_code=422,
                 detail=f"Invalid run status: {', '.join(invalid_statuses)}",
             )
-        if len(statuses) == 1:
-            filters.append(RunORM.status == statuses[0])
-        elif statuses:
-            filters.append(RunORM.status.in_(statuses))
 
     if project_id is not None:
         # Single-project listing: enforce project-level read.
         await enforce_project_action(session, user, project_id, Action.RUN_READ)
-        filters.append(RunORM.project_id == project_id)
+        project_ids: list[UUID] | None = [project_id]
     else:
         # Cross-project listing: tenant Owner/Admin (and platform admin) see
         # all runs in the tenant; everyone else is restricted to projects
@@ -265,24 +259,21 @@ async def list_runs(
             )
             if not member_projects:
                 return PaginatedResponse(data=[], page=page, per_page=per_page, total=0)
-            filters.append(RunORM.project_id.in_(member_projects))
+            project_ids = list(member_projects)
+        else:
+            project_ids = None
 
-    if pipeline_id is not None:
-        filters.append(RunORM.pipeline_id == pipeline_id)
-    if git_ref is not None:
-        filters.append(RunORM.git_ref == git_ref)
-    if created_from is not None:
-        filters.append(RunORM.created_at >= created_from)
-    if created_to is not None:
-        filters.append(RunORM.created_at <= created_to)
-
-    order_by = desc(RunORM.created_at) if sort == "-created_at" else RunORM.created_at
-
-    items, total = await repos.run.list(
+    items, total = await repos.run.list_filtered_for_tenant(
+        tenant_id=user.tenant_id,
         offset=(page - 1) * per_page,
         limit=per_page,
-        order_by=order_by,
-        filters=filters,
+        statuses=statuses,
+        project_ids=project_ids,
+        pipeline_id=pipeline_id,
+        git_ref=git_ref,
+        created_from=created_from,
+        created_to=created_to,
+        sort=sort,
     )
     return PaginatedResponse(
         data=[_to_run_response(i) for i in items],
@@ -415,7 +406,7 @@ async def batch_retry_runs(
 
             if arq_pool is not None:
                 await repos.run.commit()
-                from qaplatform.worker.scheduler import enqueue_run
+                from qaplatform.infra.queue.scheduler import enqueue_run
 
                 await enqueue_run(arq_pool, repos.run, new_run, "manual", container.settings)
 
@@ -555,24 +546,13 @@ async def get_run_results(
         raise HTTPException(status_code=404, detail="Run not found")
     await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
 
-    filters = [TestResultORM.run_id == run_id]
-    if status:
-        filters.append(TestResultORM.status == status)
-    if suite:
-        filters.append(TestResultORM.suite == suite)
-    if q:
-        pattern = f"%{escape_like(q)}%"
-        filters.append(
-            or_(
-                TestResultORM.name.ilike(pattern, escape="\\"),
-                TestResultORM.error_message.ilike(pattern, escape="\\"),
-            )
-        )
-
-    items, total = await repos.test_result.list(
+    items, total = await repos.test_result.list_filtered_by_run(
+        run_id=run_id,
         offset=(page - 1) * per_page,
         limit=per_page,
-        filters=filters,
+        status=status,
+        suite=suite,
+        query=q,
     )
     return PaginatedResponse(
         data=[_to_result_response(i) for i in items],

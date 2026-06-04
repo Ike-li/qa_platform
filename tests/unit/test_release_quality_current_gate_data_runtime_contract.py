@@ -30,14 +30,14 @@ def test_quality_ops_records_current_gate_data_runtime_evidence():
     ready_health_probe_exact_row = _quality_ops_row(
         "| 2026-05-31 | N/A（Ready health probe SQL/response 精确契约）"
     )
-    project_list_filter_sql_exact_row = _quality_ops_row(
-        "| 2026-05-31 | N/A（Project list filters SQL 精确契约）"
+    project_list_repository_args_exact_row = _quality_ops_row(
+        "| 2026-05-31 | N/A（Project list repository args 精确契约）"
     )
-    run_list_filter_sql_exact_row = _quality_ops_row(
-        "| 2026-05-31 | N/A（Run list filters SQL 精确契约）"
+    run_list_repository_args_exact_row = _quality_ops_row(
+        "| 2026-05-31 | N/A（Run list repository args 精确契约）"
     )
-    run_results_filter_sql_exact_row = _quality_ops_row(
-        "| 2026-05-31 | N/A（Run results filters SQL 精确契约）"
+    run_results_repository_args_exact_row = _quality_ops_row(
+        "| 2026-05-31 | N/A（Run results repository args 精确契约）"
     )
     dependency_session_exception_exact_row = _quality_ops_row(
         "| 2026-05-31 | N/A（Dependency session exception 精确契约）"
@@ -72,39 +72,52 @@ def test_quality_ops_records_current_gate_data_runtime_evidence():
     assert "assert len(container.session.statements) == 1" not in health_test
     assert (
         "`tests/unit/test_api/test_projects.py::test_list_projects tests/unit/test_api/test_projects.py::test_list_projects_with_search tests/unit/test_api/test_projects.py::test_list_projects_filters_by_status` 3 passed"
-        in (project_list_filter_sql_exact_row)
+        in (project_list_repository_args_exact_row)
     )
-    assert "tenant filter" in project_list_filter_sql_exact_row
-    assert "search `name/description ILIKE` filter" in project_list_filter_sql_exact_row
-    assert "只用 `len(filters) == 1/2`" in project_list_filter_sql_exact_row
-    assert "拆开 `tenant_filter.left/right`" in project_list_filter_sql_exact_row
-    assert "某个过滤片段存在" in project_list_filter_sql_exact_row
-    assert "def _render_filters(filters) -> list[str]:" in projects_test
-    assert 'assert _render_filters(list_kwargs["filters"]) == [' in projects_test
-    assert "f\"project.tenant_id = '{tenant_id.hex}'\"" in projects_test
-    assert "lower(project.name) LIKE lower('%keyword%')" in projects_test
-    assert "\"project.status = 'archived'\"" in projects_test
-    assert 'assert len(list_kwargs["filters"]) == 1' not in projects_test
-    assert 'assert len(list_kwargs["filters"]) == 2' not in projects_test
-    assert 'getattr(tenant_filter.left, "name", None)' not in projects_test
-    assert "assert any(\"project.status = 'archived'\" in r for r in rendered)" not in (
+    assert "list_filtered_by_tenant" in project_list_repository_args_exact_row
+    assert "tenant_id、offset/limit、status、query" in (
+        project_list_repository_args_exact_row
+    )
+    assert "route 漏传 status/query" in project_list_repository_args_exact_row
+    assert "list_kwargs = mock_project_repo.list_filtered_by_tenant.await_args.kwargs" in (
         projects_test
     )
+    assert 'assert list_kwargs["tenant_id"] == tenant_id' in projects_test
+    assert 'assert list_kwargs["offset"] == 0' in projects_test
+    assert 'assert list_kwargs["limit"] == 20' in projects_test
+    assert 'assert list_kwargs["offset"] == 10' in projects_test
+    assert 'assert list_kwargs["limit"] == 10' in projects_test
+    assert 'assert list_kwargs["status"] is None' in projects_test
+    assert 'assert list_kwargs["status"] == "archived"' in projects_test
+    assert 'assert list_kwargs["query"] is None' in projects_test
+    assert 'assert list_kwargs["query"] == "keyword"' in projects_test
+    assert "def _render_filters(filters) -> list[str]:" not in projects_test
+    assert 'list_kwargs["filters"]' not in projects_test
     assert (
         "`tests/unit/test_api/test_runs.py::test_list_runs tests/unit/test_api/test_runs.py::test_list_runs_member_user_uses_project_member_repository tests/unit/test_api/test_runs.py::test_list_runs_multi_status_filter tests/unit/test_api/test_runs.py::test_list_runs_single_status_uses_equality` 4 passed"
-        in (run_list_filter_sql_exact_row)
+        in (run_list_repository_args_exact_row)
     )
-    assert "tenant、project_id IN、status equality / IN" in (
-        run_list_filter_sql_exact_row
+    assert "list_filtered_for_tenant 参数" in run_list_repository_args_exact_row
+    assert "tenant_id、project_ids、statuses、sort" in (
+        run_list_repository_args_exact_row
     )
-    assert '`getattr(expr.left, "name", None)`' in run_list_filter_sql_exact_row
-    assert '`any("project_id IN" ...)`' in run_list_filter_sql_exact_row
-    assert 'not any("IN" ...)' in run_list_filter_sql_exact_row
-    assert "只证明“目标片段出现过”" in run_list_filter_sql_exact_row
-    assert "run.tenant_id = '{tenant_id.hex}'" in runs_test
-    assert "run.status = 'queued'" in runs_test
-    assert "run.status IN ('queued', 'running')" in runs_test
-    assert "run.project_id IN ('{project_id.hex}')" in runs_test
+    assert "成员用户走 project member repository" in (
+        run_list_repository_args_exact_row
+    )
+    assert "list_kwargs = mock_run_repo.list_filtered_for_tenant.await_args.kwargs" in (
+        runs_test
+    )
+    assert 'assert list_kwargs["tenant_id"] == tenant_id' in runs_test
+    assert 'assert list_kwargs["offset"] == 0' in runs_test
+    assert 'assert list_kwargs["limit"] == 10' in runs_test
+    assert 'assert list_kwargs["statuses"] == ["queued"]' in runs_test
+    assert 'assert list_kwargs["statuses"] == ["queued", "running"]' in runs_test
+    assert 'assert list_kwargs["project_ids"] is None' in runs_test
+    assert 'assert list_kwargs["project_ids"] == [project_id]' in runs_test
+    assert 'assert list_kwargs["sort"] == "-created_at"' in runs_test
+    assert "mock_project_member_repo.list_project_ids_by_user.assert_awaited_once_with" in (
+        runs_test
+    )
     assert 'getattr(expr.left, "name", None)' not in runs_test
     assert (
         'assert any("project_id IN" in r and project_id.hex in r for r in rendered)'
@@ -114,19 +127,23 @@ def test_quality_ops_records_current_gate_data_runtime_evidence():
     assert "assert any(\"= 'queued'\" in r for r in rendered)" not in runs_test
     assert (
         "`tests/unit/test_api/test_runs.py::test_get_run_results_filters_by_suite tests/unit/test_api/test_runs.py::test_get_run_results_filters_by_keyword tests/unit/test_api/test_runs.py::test_get_run_results_combines_suite_and_keyword tests/unit/test_api/test_runs.py::test_get_run_results_escapes_keyword_like_wildcards` 4 passed"
-        in (run_results_filter_sql_exact_row)
+        in (run_results_repository_args_exact_row)
     )
-    assert "固定完整 filter 序列" in run_results_filter_sql_exact_row
-    assert "name/error_message ILIKE" in run_results_filter_sql_exact_row
-    assert "只用 `any(\"suite = 'checkout'\")`" in run_results_filter_sql_exact_row
-    assert "某个片段出现过" in run_results_filter_sql_exact_row
-    assert "def _render_filters(filters) -> list[str]:" in runs_test
-    assert "assert _render_filters(filters) == [" in runs_test
-    assert "test_result.run_id" in runs_test
-    assert "lower(test_result.error_message) LIKE lower('%timeout%')" in runs_test
-    assert r"lower(test_result.error_message) LIKE lower('%case\\%\\_\\\\%')" in (
+    assert "list_filtered_by_run 参数" in run_results_repository_args_exact_row
+    assert "run_id、offset/limit、suite、status、query" in (
+        run_results_repository_args_exact_row
+    )
+    assert "route 漏传 q/suite/status" in run_results_repository_args_exact_row
+    assert "list_kwargs = mock_result_repo.list_filtered_by_run.await_args.kwargs" in (
         runs_test
     )
+    assert 'assert list_kwargs["run_id"] == run_id' in runs_test
+    assert 'assert list_kwargs["offset"] == 0' in runs_test
+    assert 'assert list_kwargs["limit"] == 20' in runs_test
+    assert 'assert list_kwargs["suite"] == "checkout"' in runs_test
+    assert 'assert list_kwargs["status"] == "failed"' in runs_test
+    assert 'assert list_kwargs["query"] == "timeout"' in runs_test
+    assert 'assert list_kwargs["query"] == "case%_\\\\"' in runs_test
     assert "assert any(\"suite = 'checkout'\" in r for r in rendered)" not in runs_test
     assert "assert any(\"status = 'failed'\" in r for r in rendered)" not in runs_test
     assert "`tests/unit/test_api/test_admin.py` 4 passed" in (

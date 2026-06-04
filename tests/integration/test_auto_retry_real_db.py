@@ -550,6 +550,8 @@ async def test_reclaim_resources_worker_lost_marks_failed_publishes_event_and_sc
             "settings": SimpleNamespace(
                 max_concurrent_runs=10,
                 max_concurrent_per_project=10,
+                preparing_timeout_seconds=300,
+                collecting_timeout_seconds=180,
             ),
             "docker_backend": docker_backend,
         }

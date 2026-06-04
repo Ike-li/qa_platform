@@ -19,7 +19,11 @@ from uuid import UUID
 from opentelemetry import trace
 
 from qaplatform.domain.models.run import Run, RunStatus
-from qaplatform.domain.ports import RunRepositoryProtocol
+from qaplatform.domain.ports import (
+    LogStreamProtocol,
+    ObjectStorageProtocol,
+    RunRepositoryProtocol,
+)
 from qaplatform.engine.cancel import watch_for_cancel
 from qaplatform.engine.docker_backend import (
     DockerBackend,
@@ -31,7 +35,6 @@ from qaplatform.engine.docker_backend import (
     SandboxSecurity,
 )
 from qaplatform.engine.events import publish_status_event
-from qaplatform.engine.log_stream import LogStream
 from qaplatform.engine.redact import redact_sensitive_text
 from qaplatform.plugins.registry import PluginRegistry
 
@@ -267,10 +270,10 @@ class RunExecutor:
     def __init__(
         self,
         backend: DockerBackend,
-        log_stream: LogStream,
+        log_stream: LogStreamProtocol,
         run_repo: RunRepositoryProtocol,
         plugin_registry: PluginRegistry | None = None,
-        s3_client: Any = None,
+        s3_client: ObjectStorageProtocol | None = None,
         s3_bucket: str = "qa-platform",
         workspace_dir: str = "/workspace",
         artifact_repo: Any = None,

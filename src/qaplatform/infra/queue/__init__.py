@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import sys as _sys
-
-from qaplatform.infra.queue import scheduler as _scheduler
 from qaplatform.infra.queue.scheduler import (
     PRIORITY_QUEUES,
     TRIGGER_PRIORITY,
@@ -18,5 +15,3 @@ __all__ = [
     "TRIGGER_PRIORITY",
     "enqueue_run",
 ]
-
-_sys.modules[__name__] = _scheduler

@@ -194,6 +194,29 @@ class TestCheckPermission:
         assert check_permission(ctx, Action.PROJECT_READ) is True
         assert check_permission(ctx, Action.RUN_TRIGGER) is False
 
+    def test_api_token_run_cancel_own_scope_only_allows_own_run_cancel(self):
+        own_ctx = PermissionContext(
+            user_id="u1",
+            role="member",
+            tenant_id="t1",
+            is_own_resource=True,
+            project_id="p1",
+            project_role=ProjectRole.DEVELOPER,
+            scopes=["run.cancel.own"],
+        )
+        assert check_permission(own_ctx, Action.RUN_CANCEL) is True
+
+        other_ctx = PermissionContext(
+            user_id="u1",
+            role="member",
+            tenant_id="t1",
+            is_own_resource=False,
+            project_id="p1",
+            project_role=ProjectRole.DEVELOPER,
+            scopes=["run.cancel.own"],
+        )
+        assert check_permission(other_ctx, Action.RUN_CANCEL) is False
+
     def test_api_token_wildcard_scope_keeps_role_permissions(self):
         ctx = PermissionContext(
             user_id="u1",

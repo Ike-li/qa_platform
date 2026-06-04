@@ -376,6 +376,16 @@ jobs:
       - name: Install backend dependencies
         run: python -m pip install -e '.[dev]'
 
+      - name: Validate OpenAPI API test matrix
+        run: |
+          python scripts/validate_api_test_matrix.py
+          python scripts/validate_api_test_case_matrix.py
+
+      - name: Write API test quality report
+        run: |
+          python scripts/report_api_test_quality.py \
+            --output-dir artifacts/backend-integration/api-test-quality
+
       - name: Run required integration tests
         env:
           RUN_INTEGRATION_TESTS: "1"
@@ -402,8 +412,7 @@ jobs:
           set -e
           exit "$status"
 
-      - name: Run OpenAPI contract smoke (nightly/release candidate)
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.gate == 'nightly' || inputs.gate == 'release_candidate'))
+      - name: Run OpenAPI contract smoke
         env:
           RUN_INTEGRATION_TESTS: "1"
         shell: bash
@@ -651,20 +660,22 @@ jobs:
             echo "# backend-integration evidence manifest"
             echo "recorded_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
-            find artifacts/backend-integration -maxdepth 1 -type f -print | sort
+            find artifacts/backend-integration -type f -print | sort
           } > "$manifest"
 
           expected=(
+            artifacts/backend-integration/api-test-quality/index.md
+            artifacts/backend-integration/api-test-quality/summary.json
             artifacts/backend-integration/required-integration-collect.txt
             artifacts/backend-integration/required-integration.log
             artifacts/backend-integration/required-integration.xml
+            artifacts/backend-integration/openapi-contract-collect.txt
+            artifacts/backend-integration/openapi-contract.log
+            artifacts/backend-integration/openapi-contract.xml
+            artifacts/backend-integration/openapi-contract-openapi.json
           )
           if [ "$GITHUB_EVENT_NAME" = "schedule" ] || { [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && { [ "${{ inputs.gate }}" = "nightly" ] || [ "${{ inputs.gate }}" = "release_candidate" ]; }; }; then
             expected+=(
-              artifacts/backend-integration/openapi-contract-collect.txt
-              artifacts/backend-integration/openapi-contract.log
-              artifacts/backend-integration/openapi-contract.xml
-              artifacts/backend-integration/openapi-contract-openapi.json
               artifacts/backend-integration/heavy-docker-integration-collect.txt
               artifacts/backend-integration/heavy-docker-integration.log
               artifacts/backend-integration/heavy-docker-integration.xml
@@ -1438,6 +1449,8 @@ jobs:
           frontend_contract=artifacts/release-gate/frontend-api-contract-artifacts/openapi.json
           backend_manifest=artifacts/release-gate/backend-integration-artifacts/evidence-manifest.txt
           backend_openapi_contract=artifacts/release-gate/backend-integration-artifacts/openapi-contract-openapi.json
+          backend_api_quality_summary=artifacts/release-gate/backend-integration-artifacts/api-test-quality/summary.json
+          backend_api_quality_dashboard=artifacts/release-gate/backend-integration-artifacts/api-test-quality/index.md
           e2e_manifest=artifacts/release-gate/e2e-artifacts/evidence-manifest.txt
           if [ ! -s "$e2e_manifest" ]; then
             e2e_manifest=artifacts/release-gate/e2e-artifacts/artifacts/e2e/evidence-manifest.txt
@@ -1463,6 +1476,8 @@ jobs:
           require_nonempty "$frontend_contract"
           require_nonempty "$backend_manifest"
           require_nonempty "$backend_openapi_contract"
+          require_nonempty "$backend_api_quality_summary"
+          require_nonempty "$backend_api_quality_dashboard"
           require_nonempty "$e2e_manifest"
 
           require_line "$backend_test_manifest" "backend_test_artifacts_validation=passed"
@@ -1503,6 +1518,7 @@ jobs:
             echo "- backend unit artifacts: passed"
             echo "- frontend API contract: passed"
             echo "- OpenAPI contract smoke: passed"
+            echo "- API test quality dashboard: passed"
             echo "- backend integration artifacts: passed"
             echo "- performance SLO gate profile: release_candidate"
             echo "- performance trend gate: passed"
@@ -1521,7 +1537,7 @@ jobs:
           cat <<'EOF'
           release_candidate_gate=passed
           required_jobs=lint-and-type-check,backend-test,frontend-api-contract,backend-integration-test,frontend-build,e2e-test
-          evidence=frontend-api-contract,openapi-contract,required-integration,heavy-docker,external-stack,performance-slo,full-playwright
+          evidence=frontend-api-contract,openapi-contract,api-test-quality,required-integration,heavy-docker,external-stack,performance-slo,full-playwright
           EOF
 
       - name: Upload release gate evidence

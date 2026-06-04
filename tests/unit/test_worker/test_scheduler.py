@@ -251,6 +251,34 @@ async def test_enqueue_job_conflict_marks_waiting_for_different_run():
 
 
 @pytest.mark.asyncio
+async def test_enqueue_job_exception_marks_waiting_with_sanitized_reason():
+    run = _run()
+    repo = _repo()
+    arq = _arq()
+    arq.enqueue_job = AsyncMock(
+        side_effect=RuntimeError("redis://user:queue-secret@localhost/0")
+    )
+    scheduler = FairScheduler(arq, repo, _settings())
+
+    assert await scheduler.enqueue(run) is False
+
+    arq.enqueue_job.assert_awaited_once_with(
+        "execute_run",
+        str(run.id),
+        _queue_name=PRIORITY_QUEUES[Priority.MEDIUM],
+        _job_id=f"run:{run.id}",
+        _defer_by=0,
+    )
+    repo.get_by_arq_job_id.assert_not_awaited()
+    repo.mark_enqueued.assert_not_awaited()
+    repo.mark_waiting.assert_awaited_once_with(
+        run.id,
+        reason="queue unavailable",
+    )
+    assert "queue-secret" not in repr(repo.mark_waiting.await_args)
+
+
+@pytest.mark.asyncio
 async def test_try_dequeue_waiting_enqueues_until_capacity_is_full():
     first = _run()
     second = _run()

@@ -42,3 +42,17 @@ class RunRepositoryProtocol(Protocol):
     async def update_git_sha(self, run_id: UUID | str, sha: str) -> None: ...
     async def update_status(self, run_id: UUID | str, status: RunStatus, **kwargs) -> bool: ...
     async def commit(self) -> None: ...
+
+
+class LogStreamProtocol(Protocol):
+    async def write_log(
+        self,
+        run_id: UUID | str,
+        line: str,
+        *,
+        stream: str = "stdout",
+    ) -> None: ...
+
+
+class ObjectStorageProtocol(Protocol):
+    async def put_object(self, **kwargs: Any) -> Any: ...

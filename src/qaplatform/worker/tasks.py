@@ -90,7 +90,7 @@ async def _schedule_retry_for_run(
     ``False`` means no retry run was created. A retry run that is waiting due to
     capacity still counts as scheduled because the dequeue cron can pick it up.
     """
-    from qaplatform.worker.scheduler import FairScheduler
+    from qaplatform.infra.queue.scheduler import FairScheduler
 
     retry_policy = getattr(original.pipeline, "retry_policy", None)
     if not _should_retry(exc, retry_policy, original.attempt):

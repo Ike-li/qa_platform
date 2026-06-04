@@ -118,7 +118,7 @@ def test_release_candidate_gate_profiles_are_explicit():
     for required_job in expected_release_needs:
         assert required_job in jobs
     assert "release_candidate_gate=passed" in text
-    assert "evidence=frontend-api-contract,openapi-contract,required-integration,heavy-docker,external-stack,performance-slo,full-playwright" in text
+    assert "evidence=frontend-api-contract,openapi-contract,api-test-quality,required-integration,heavy-docker,external-stack,performance-slo,full-playwright" in text
 
 
 def test_ci_uses_node24_ready_official_actions():
@@ -184,6 +184,8 @@ def test_release_gate_validates_downloaded_evidence_markers():
     assert "frontend-api-contract-artifacts/openapi.json" in release_block
     assert "backend-integration-artifacts/evidence-manifest.txt" in release_block
     assert "backend-integration-artifacts/openapi-contract-openapi.json" in release_block
+    assert "backend-integration-artifacts/api-test-quality/summary.json" in release_block
+    assert "backend-integration-artifacts/api-test-quality/index.md" in release_block
     assert "e2e-artifacts/evidence-manifest.txt" in release_block
     assert "e2e-artifacts/artifacts/e2e/evidence-manifest.txt" in release_block
     for marker in (
@@ -221,12 +223,15 @@ def test_release_candidate_jobs_have_realistic_time_budgets():
 
 def test_release_candidate_backend_gate_runs_real_stack_and_slo_validation():
     text = _workflow_text()
+    backend_block = _job_block(text, "backend-integration-test")
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
     docker_compose = DOCKER_COMPOSE.read_text(encoding="utf-8")
     compose = yaml.safe_load(docker_compose)
 
     for step in (
-        "Run OpenAPI contract smoke (nightly/release candidate)",
+        "Validate OpenAPI API test matrix",
+        "Write API test quality report",
+        "Run OpenAPI contract smoke",
         "Run heavy docker integration tests (nightly/release candidate)",
         "Start external API/worker stack (nightly/release candidate)",
         "Run external-stack worker integration tests (nightly/release candidate)",
@@ -235,12 +240,31 @@ def test_release_candidate_backend_gate_runs_real_stack_and_slo_validation():
     ):
         assert step in text
 
+    assert backend_block.index("Validate OpenAPI API test matrix") < backend_block.index(
+        "Write API test quality report"
+    )
+    assert backend_block.index("Write API test quality report") < backend_block.index(
+        "Run required integration tests"
+    )
+    openapi_step = re.search(
+        r"^      - name: Run OpenAPI contract smoke\n(?P<body>.*?)(?=^      - name: )",
+        backend_block,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert openapi_step is not None
+    assert "\n        if:" not in openapi_step.group(0)
+
     assert '-m "not heavy_docker and not external_stack and not performance and not openapi_contract"' in text
     assert '-m "openapi_contract"' in text
     assert '-m "heavy_docker and not external_stack"' in text
     assert '-m "external_stack and not performance"' in text
     assert '-m "external_stack and performance"' in text
     assert '-m "performance"' in text
+    assert "python scripts/validate_api_test_matrix.py" in text
+    assert "python scripts/validate_api_test_case_matrix.py" in text
+    assert "python scripts/report_api_test_quality.py" in text
+    assert "artifacts/backend-integration/api-test-quality/summary.json" in text
+    assert "artifacts/backend-integration/api-test-quality/index.md" in text
     assert "openapi-contract-openapi.json" in text
     assert ".github/performance-slo-manifest.json" in text
     assert ".github/performance-slo-baseline.json" in text

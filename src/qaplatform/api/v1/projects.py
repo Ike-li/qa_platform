@@ -6,13 +6,11 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
 from qaplatform.api.deps import CurrentUser, Repos, _get_db_session, require_permission, require_project_permission
-from qaplatform.api.v1._filters import escape_like
 from qaplatform.api.schemas import (
     ErrorResponse,
     GitBranchDiscoveryRequest,
@@ -26,7 +24,6 @@ from qaplatform.api.schemas import (
 from qaplatform.domain.models.project import SilentWindow
 from qaplatform.engine.redact import redact_url_userinfo
 from qaplatform.infra.database.models import Project as ProjectORM
-from qaplatform.plugins.builtin.git_source import GitSource
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 _SSH_GIT_URL_RE = re.compile(r"^[^@]+@[^:]+:.+")
@@ -161,33 +158,23 @@ async def list_projects(
     ),
     _perm=require_permission(Action.PROJECT_READ),
 ):
-    filters = [ProjectORM.tenant_id == user.tenant_id]
     if status is not None:
         if status == "":
             raise HTTPException(status_code=422, detail="Invalid project status: empty")
         if status not in _PROJECT_STATUS_VALUES:
             raise HTTPException(status_code=422, detail=f"Invalid project status: {status}")
-        filters.append(ProjectORM.status == status)
     if q is not None:
         if q.strip() == "":
             raise HTTPException(status_code=422, detail="Invalid project search query: empty")
         if len(q) > _PROJECT_SEARCH_MAX_LENGTH:
             raise HTTPException(status_code=422, detail="Invalid project search query: too long")
-        pattern = f"%{escape_like(q)}%"
-        filters.append(
-            or_(
-                ProjectORM.name.ilike(pattern, escape="\\"),
-                ProjectORM.description.ilike(pattern, escape="\\"),
-                ProjectORM.slug.ilike(pattern, escape="\\"),
-                ProjectORM.git_url.ilike(pattern, escape="\\"),
-            )
-        )
 
-    items, total = await repos.project.list(
+    items, total = await repos.project.list_filtered_by_tenant(
+        tenant_id=user.tenant_id,
         offset=(page - 1) * per_page,
         limit=per_page,
-        filters=filters,
-        order_by=ProjectORM.created_at.desc(),
+        status=status,
+        query=q,
     )
     return PaginatedResponse(
         data=[_to_response(i) for i in items],
@@ -275,6 +262,8 @@ async def discover_git_branches(
             detail="Branch discovery currently supports public repositories only",
         )
     settings = request.app.state.container.settings
+    from qaplatform.plugins.builtin.git_source import GitSource
+
     source = GitSource(allowed_private_hosts=settings.git_allowed_private_hosts)
     try:
         branches, default_branch = await source.list_branches(body.git_url)

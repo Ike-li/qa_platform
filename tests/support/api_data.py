@@ -15,6 +15,8 @@ from uuid import uuid4
 import httpx
 from httpx import AsyncClient, Response
 
+from tests.support.openapi_response_schema import assert_current_openapi_response
+
 
 Headers = Mapping[str, str]
 
@@ -62,10 +64,13 @@ def assert_status(response: Response, expected: int) -> dict[str, Any]:
     assert response.status_code == expected, response.text
     if expected == 204:
         assert response.content == b""
+        assert_current_openapi_response(response, expected)
         return {}
     content_type = response.headers.get("content-type", "")
     assert "application/json" in content_type
-    return response.json()
+    body = response.json()
+    assert_current_openapi_response(response, expected, body)
+    return body
 
 
 def project_payload(

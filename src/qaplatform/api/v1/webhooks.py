@@ -397,7 +397,7 @@ async def _create_webhook_run(
     container = request.app.state.container
     arq_pool = getattr(container, "arq_pool", None)
     if arq_pool is not None:
-        from qaplatform.worker.scheduler import enqueue_run
+        from qaplatform.infra.queue.scheduler import enqueue_run
 
         await enqueue_run(arq_pool, repos.run, run, "webhook", container.settings)
 
