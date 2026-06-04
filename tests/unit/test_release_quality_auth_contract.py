@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tests.unit.release_quality_contract_helpers import (
     _after,
+    _before,
     _block_between,
     _marked_block,
     _marked_block_or_tail,
@@ -640,9 +641,17 @@ def test_quality_ops_capture_api_token_create_exact_response_contract():
     assert '"token": full_token' in create_block
     assert '"name": "ci"' in create_block
     assert '"scopes": ["runs:read"]' in create_block
-    assert '"expires_at": create_kwargs["expires_at"].isoformat().replace(' in (
-        create_block
+    expires_fragment = _before(
+        _after(
+            create_block,
+            '"expires_at": create_kwargs["expires_at"]',
+        ),
+        '"created_at"',
     )
+    assert ".isoformat()" in expires_fragment
+    assert ".replace(" in expires_fragment
+    assert '"+00:00"' in expires_fragment
+    assert '"Z"' in expires_fragment
     assert '"created_at": "2026-05-31T07:08:09Z"' in create_block
     assert 'assert "secret_hash" not in resp.text' in create_block
     assert 'assert "hashed-secret" not in resp.text' in create_block

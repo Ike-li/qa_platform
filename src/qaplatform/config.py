@@ -1,7 +1,8 @@
 import ipaddress
+from typing import Annotated
 
 from pydantic import Field, ValidationInfo, field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, NoDecode
 
 
 _HEX_CHARS = set("0123456789abcdefABCDEF")
@@ -43,6 +44,7 @@ class Settings(BaseSettings):
     jwt_secret: str
     jwt_access_token_ttl: int = Field(default=3600, ge=1)  # 1h
     jwt_refresh_token_ttl: int = Field(default=604800, ge=1)  # 7d
+    refresh_cookie_secure: bool | None = None
     encryption_key: str  # 32 bytes hex
 
     @field_validator(
@@ -78,7 +80,9 @@ class Settings(BaseSettings):
             raise ValueError("encryption_key must be 64 hex chars (32 bytes)")
         return v
 
-    encryption_keys: dict[int, str] | None = None  # {version: key_hex}, overrides encryption_key
+    encryption_keys: dict[int, str] | None = (
+        None  # {version: key_hex}, overrides encryption_key
+    )
 
     @field_validator("encryption_keys")
     @classmethod
@@ -105,6 +109,35 @@ class Settings(BaseSettings):
     collecting_timeout_seconds: int = Field(default=180, ge=1)
     max_event_chain_depth: int = Field(default=5, ge=1)
     docker_host: str = "unix:///var/run/docker.sock"
+    git_allowed_private_hosts: Annotated[list[str], NoDecode] = []
+
+    @field_validator("git_allowed_private_hosts", mode="before")
+    @classmethod
+    def _parse_git_allowed_private_hosts(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            return [host.strip() for host in v.split(",")]
+        return v
+
+    @field_validator("git_allowed_private_hosts")
+    @classmethod
+    def _git_allowed_private_hosts_are_hostnames(cls, v: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for index, hostname in enumerate(v):
+            stripped = hostname.strip().lower()
+            if not stripped:
+                raise ValueError(
+                    f"git_allowed_private_hosts[{index}] must not be blank"
+                )
+            if "/" in stripped or ":" in stripped:
+                raise ValueError(
+                    f"git_allowed_private_hosts[{index}] must be a hostname, not a URL"
+                )
+            normalized.append(stripped)
+        return normalized
 
     # Rate limiting
     rate_limit_per_minute: int = Field(default=100, ge=1)
@@ -150,7 +183,9 @@ class Settings(BaseSettings):
     def _log_level_is_supported(cls, v: str) -> str:
         normalized = v.strip().upper()
         if normalized not in _LOG_LEVELS:
-            raise ValueError("log_level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL")
+            raise ValueError(
+                "log_level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL"
+            )
         return normalized
 
     @field_validator("log_format")

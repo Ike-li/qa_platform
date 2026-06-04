@@ -27,6 +27,11 @@ export interface Project {
 
 export type GitAuthMethod = "none" | "token" | "ssh_key";
 
+export interface GitBranchDiscoveryResponse {
+  branches: string[];
+  default_branch: string | null;
+}
+
 export interface ProjectCreatePayload {
   name: string;
   slug: string;

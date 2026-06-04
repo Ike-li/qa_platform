@@ -326,7 +326,7 @@ def test_quality_ops_capture_write_audit_failure_exact_warning_contract():
     assert "audit unit full 13 passed" in row
     assert "release quality docs contract full 223 passed" in row
     assert "targeted ruff passed" in row
-    assert "只记录一条 `qaplatform.api.audit` WARNING" in row
+    assert "只记录一条 `qaplatform.infra.audit` WARNING" in row
     assert "message 精确包含 action/resource/id" in row
     assert "exc_info 保留原始 `RuntimeError(\"audit table is down\")`" in row
     assert "完整 `repos.audit.create` kwargs" in row
@@ -341,11 +341,11 @@ def test_quality_ops_capture_write_audit_failure_exact_warning_contract():
         "async def test_write_audit_handles_dict_states",
     )
 
-    assert "with caplog.at_level(logging.WARNING, logger=\"qaplatform.api.audit\"):" in (
+    assert "with caplog.at_level(logging.WARNING, logger=\"qaplatform.infra.audit\"):" in (
         block
     )
     assert "assert repos.audit.create.await_args.kwargs == {" in block
-    assert "record.name == \"qaplatform.api.audit\"" in block
+    assert "record.name == \"qaplatform.infra.audit\"" in block
     assert "record.levelno == logging.WARNING" in block
     assert '"levelno": record.levelno' in block
     assert '"message": record.getMessage()' in block

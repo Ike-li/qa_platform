@@ -335,7 +335,7 @@ def test_quality_ops_capture_log_stream_archive_retry_s3_ttl_exact_contract():
         "`tests/unit/test_engine/test_log_stream.py::TestLogStream::test_retry_failed_archives_replays_recorded_runs` 1 passed"
         in quality_ops
     )
-    assert "retry set 两个 run 的 `xread` cursor 序列" in quality_ops
+    assert "retry set 两个 run 的 `xrange` cursor 序列" in quality_ops
     assert "只上传成功 run 的 `logs/{run_id}.jsonl`" in quality_ops
     assert "S3 `Bucket/Key/Body/ContentType` 精确匹配" in quality_ops
     assert "成功 run 写 1h stream TTL 并清 retry marker" in quality_ops
@@ -343,10 +343,19 @@ def test_quality_ops_capture_log_stream_archive_retry_s3_ttl_exact_contract():
     assert "`s3_client.put_object.await_count == 1`" in quality_ops
     assert "上传错 bucket/key/body/content-type" in quality_ops
     assert "归档补偿测试只证明“某次重试上传了一次”" in quality_ops
-    assert "assert self.redis.xread.await_args_list == [" in log_stream_test
-    assert 'call({f"run:{self.run_id}:logs": "0"}, count=500)' in log_stream_test
-    assert 'call({f"run:{self.run_id}:logs": "1-0"}, count=500)' in log_stream_test
-    assert 'call({f"run:{failed_run}:logs": "0"}, count=500)' in log_stream_test
+    assert "assert self.redis.xrange.await_args_list == [" in log_stream_test
+    assert (
+        'call(f"run:{self.run_id}:logs", min="-", max="+", count=500)'
+        in log_stream_test
+    )
+    assert (
+        'call(f"run:{self.run_id}:logs", min="1-1", max="+", count=500)'
+        in log_stream_test
+    )
+    assert (
+        'call(f"run:{failed_run}:logs", min="-", max="+", count=500)'
+        in log_stream_test
+    )
     assert "s3_client.put_object.assert_awaited_once_with(" in log_stream_test
     assert 'Key=f"logs/{self.run_id}.jsonl"' in log_stream_test
     assert 'Body=b\'{"stream": "stdout", "line": "ok"}\'' in log_stream_test
@@ -712,7 +721,7 @@ def test_quality_ops_capture_log_stream_archive_success_cursor_s3_exact_contract
     )
     assert "log stream full 18 passed" in row
     assert "release quality docs contract full 184 passed" in row
-    assert "Redis `xread` cursor 序列 `0 -> 2-0`" in row
+    assert "Redis `xrange` cursor 序列 `- -> 2-1`" in row
     assert "S3 `Bucket/Key/Body/ContentType` 精确参数" in row
     assert "1h stream TTL 和清除 retry marker" in row
     assert "`put_object.assert_awaited_once()` 后抽查 bucket/key/content-type" in row
@@ -726,9 +735,9 @@ def test_quality_ops_capture_log_stream_archive_success_cursor_s3_exact_contract
     )
 
     for expected in [
-        "assert self.redis.xread.await_args_list == [",
-        'call({f"run:{self.run_id}:logs": "0"}, count=500)',
-        'call({f"run:{self.run_id}:logs": "2-0"}, count=500)',
+        "assert self.redis.xrange.await_args_list == [",
+        'call(f"run:{self.run_id}:logs", min="-", max="+", count=500)',
+        'call(f"run:{self.run_id}:logs", min="2-1", max="+", count=500)',
         "expected_body = (",
         'b\'{"stream": "stdout", "line": "line1"}\\n\'',
         'b\'{"stream": "stdout", "line": "line2"}\'',

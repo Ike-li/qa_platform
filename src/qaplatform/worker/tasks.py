@@ -7,10 +7,8 @@ from typing import Any
 from uuid import UUID
 
 from opentelemetry import trace
-from sqlalchemy import select as _select
 
 from qaplatform.domain.models.run import RunStatus
-from qaplatform.infra.database.models import Credential, Project
 
 log = logging.getLogger(__name__)
 
@@ -193,6 +191,7 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
         RunRepository,
         TestResultRepository,
     )
+    from qaplatform.infra.database.repositories.project_repo import ProjectRepository
     from qaplatform.engine.events import publish_status_event
     from qaplatform.engine.executor import RunExecutor
 
@@ -210,10 +209,16 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
         s3_client=ctx.get("s3_client"),
         s3_bucket=ctx.get("s3_bucket", "qa-platform"),
         redis=redis,
+        source_clone_timeout_seconds=getattr(
+            ctx.get("settings"),
+            "preparing_timeout_seconds",
+            300,
+        ),
     )
 
     async with session_factory() as session:
         run_repo = RunRepository(session)
+        project_repo = ProjectRepository(session)
         artifact_repo = ArtifactRepository(session)
         test_result_repo = TestResultRepository(session)
         executor.run_repo = run_repo
@@ -243,13 +248,7 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
             return
 
         # Check if project is archived — skip execution
-        proj_result = await session.execute(
-            _select(Project).where(
-                Project.id == run.project_id,
-                Project.deleted_at.is_(None),
-            )
-        )
-        project = proj_result.scalar_one_or_none()
+        project = await project_repo.get_for_tenant(run.project_id, run.tenant_id)
         if project is None or project.status == "archived":
             if await run_repo.cancel_if_current(run.id):
                 log.info("run %s skipped: project archived or deleted", run_id)
@@ -343,6 +342,8 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
             await session.commit()
 
 async def _build_source_auth(run, project, session, crypto) -> dict[str, str] | None:
+    from qaplatform.infra.database.repositories.project_repo import CredentialRepository
+
     metadata = getattr(run, "metadata_", None) or {}
     if not isinstance(metadata, dict):
         metadata = {}
@@ -361,15 +362,11 @@ async def _build_source_auth(run, project, session, crypto) -> dict[str, str] | 
     except ValueError as exc:
         raise RuntimeError("Invalid project Git credential id") from exc
 
-    result = await session.execute(
-        _select(Credential).where(
-            Credential.id == credential_uuid,
-            Credential.project_id == project.id,
-            Credential.tenant_id == project.tenant_id,
-            Credential.deleted_at.is_(None),
-        )
+    credential = await CredentialRepository(session).get_by_project_tenant(
+        credential_uuid,
+        project.id,
+        project.tenant_id,
     )
-    credential = result.scalar_one_or_none()
     if credential is None:
         raise RuntimeError("Project Git credential not found")
 

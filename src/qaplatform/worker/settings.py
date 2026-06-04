@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 import uuid
@@ -16,7 +16,9 @@ from qaplatform.worker.tasks import execute_run
 log = logging.getLogger(__name__)
 
 
-def _schedule_run_audit_state(run: Any, *, schedule_id: uuid.UUID, enqueued: bool) -> dict:
+def _schedule_run_audit_state(
+    run: Any, *, schedule_id: uuid.UUID, enqueued: bool
+) -> dict:
     status = run.status.value if hasattr(run.status, "value") else run.status
     return {
         "id": str(run.id),
@@ -80,7 +82,10 @@ async def on_startup(ctx: dict) -> None:
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
 
     log_stream = LogStream(container.redis_client)
-    plugin_registry = PluginRegistry()
+    plugin_registry = PluginRegistry(
+        git_allowed_private_hosts=settings.git_allowed_private_hosts,
+        git_clone_timeout_seconds=settings.preparing_timeout_seconds,
+    )
     plugin_registry.register_builtins()
     docker_client = aiodocker.Docker()
     ctx["docker_client"] = docker_client
@@ -90,6 +95,7 @@ async def on_startup(ctx: dict) -> None:
         log_stream=log_stream,
         run_repo=None,  # set per-job from session-scoped repo
         plugin_registry=plugin_registry,
+        source_clone_timeout_seconds=settings.preparing_timeout_seconds,
     )
 
     ctx["docker_backend"] = backend
@@ -121,7 +127,9 @@ async def on_shutdown(ctx: dict) -> None:
 async def reclaim_resources(ctx: dict) -> None:
     """Periodic task: reclaim orphan containers and timeout stale runs."""
     from qaplatform.engine.reclaim import reclaim_worker_lost
+    from qaplatform.engine.events import publish_status_event
     from qaplatform.observability.metrics import run_queue_depth, runs_in_flight
+    from qaplatform.infra.database.models import RunStatusEnum
     from qaplatform.infra.database.repositories.run_repo import RunRepository
     from qaplatform.worker.tasks import _schedule_retry_for_run
 
@@ -129,14 +137,14 @@ async def reclaim_resources(ctx: dict) -> None:
     redis = ctx.get("redis")
     arq = ctx.get("arq_pool")
     settings = ctx.get("settings")
-    if session_factory is None or redis is None:
+    if session_factory is None or redis is None or settings is None:
         return
 
     async with session_factory() as session:
         run_repo = RunRepository(session)
 
         async def _retry_reclaimed(run, message: str) -> None:
-            if arq is None or settings is None:
+            if arq is None:
                 return
             await _schedule_retry_for_run(
                 run,
@@ -153,6 +161,50 @@ async def reclaim_resources(ctx: dict) -> None:
                 backend=ctx.get("docker_backend"),
                 on_reclaimed=_retry_reclaimed,
             )
+            now = datetime.now(timezone.utc)
+            stale_preparing = await run_repo.find_stale(
+                status=RunStatusEnum.PREPARING,
+                older_than=now - timedelta(seconds=settings.preparing_timeout_seconds),
+            )
+            for run in stale_preparing:
+                updated = await run_repo.fail_if_current(
+                    run.id,
+                    expected_in=[RunStatusEnum.PREPARING],
+                    message=(
+                        "preparing_timeout: exceeded "
+                        f"{settings.preparing_timeout_seconds}s"
+                    ),
+                )
+                if updated:
+                    await publish_status_event(
+                        redis, run.id, "failed", previous="preparing"
+                    )
+                    if run.worker_id:
+                        await run_repo.release_worker(run.id, worker_id=run.worker_id)
+
+            stale_collecting = await run_repo.find_stale(
+                status=RunStatusEnum.COLLECTING,
+                older_than=now - timedelta(seconds=settings.collecting_timeout_seconds),
+            )
+            for run in stale_collecting:
+                updated = await run_repo.finish_if_current(
+                    run.id,
+                    status=RunStatusEnum.TIMEOUT,
+                    expected_in=[RunStatusEnum.COLLECTING],
+                    summary={
+                        "resource_termination": {
+                            "reason": "collecting_timeout",
+                            "timeout_seconds": settings.collecting_timeout_seconds,
+                        }
+                    },
+                )
+                if updated:
+                    await publish_status_event(
+                        redis, run.id, "timeout", previous="collecting"
+                    )
+                    if run.worker_id:
+                        await run_repo.release_worker(run.id, worker_id=run.worker_id)
+
             # Update gauges after reclaim so values reflect post-cleanup state
             in_flight = await run_repo.count_active_or_enqueued()
             runs_in_flight.set(in_flight)
@@ -199,7 +251,9 @@ async def cleanup_old_runs(ctx: dict) -> None:
         deleted = await run_repo.delete_terminal_older_than(cutoff=cutoff)
         await session.commit()
     if deleted:
-        log.info("retention_cleanup_done deleted=%s cutoff=%s", deleted, cutoff.isoformat())
+        log.info(
+            "retention_cleanup_done deleted=%s cutoff=%s", deleted, cutoff.isoformat()
+        )
 
 
 async def cleanup_old_audit_events(ctx: dict) -> None:
@@ -219,7 +273,11 @@ async def cleanup_old_audit_events(ctx: dict) -> None:
         deleted = await audit_repo.delete_older_than(cutoff=cutoff)
         await session.commit()
     if deleted:
-        log.info("audit_retention_cleanup_done deleted=%s cutoff=%s", deleted, cutoff.isoformat())
+        log.info(
+            "audit_retention_cleanup_done deleted=%s cutoff=%s",
+            deleted,
+            cutoff.isoformat(),
+        )
 
 
 async def retry_failed_archives(ctx: dict) -> None:
@@ -239,12 +297,12 @@ async def check_schedules(ctx: dict) -> None:
     """Periodic task: fire due schedules by creating runs and enqueueing them."""
     from types import SimpleNamespace
 
-    from qaplatform.api.audit import write_audit
     from qaplatform.domain.services.schedule import (
         ScheduleSkippedSilentWindowAudit,
         is_in_silent_window,
         silent_windows_from_settings,
     )
+    from qaplatform.infra.audit import write_audit
     from qaplatform.domain.services.scheduling import (
         compute_next_run_at,
         should_fire,
@@ -288,7 +346,9 @@ async def check_schedules(ctx: dict) -> None:
                 # Resolve pipeline for project context
                 pipeline = await pipeline_repo.get_by_id(schedule.pipeline_id)
                 if pipeline is None:
-                    next_run = compute_next_run_at(schedule.cron_expr, schedule.timezone, now)
+                    next_run = compute_next_run_at(
+                        schedule.cron_expr, schedule.timezone, now
+                    )
                     await schedule_repo.update_after_fire(
                         schedule.id,
                         last_run_at=now,
@@ -322,7 +382,9 @@ async def check_schedules(ctx: dict) -> None:
                     await schedule_repo.update_after_fire(
                         schedule.id,
                         last_run_at=now,
-                        next_run_at=compute_next_run_at(schedule.cron_expr, schedule.timezone, now),
+                        next_run_at=compute_next_run_at(
+                            schedule.cron_expr, schedule.timezone, now
+                        ),
                         last_error="project not found",
                     )
                     await session.commit()
@@ -334,7 +396,9 @@ async def check_schedules(ctx: dict) -> None:
                 )
                 if silent_window is not None:
                     audit_repos = SimpleNamespace(audit=audit_repo)
-                    audit_user = SimpleNamespace(tenant_id=project.tenant_id, user_id=None)
+                    audit_user = SimpleNamespace(
+                        tenant_id=project.tenant_id, user_id=None
+                    )
                     await write_audit(
                         audit_repos,
                         audit_user,
@@ -349,9 +413,12 @@ async def check_schedules(ctx: dict) -> None:
                     await session.commit()
                     continue
 
-                # Resolve environment
-                envs, _ = await env_repo.list_by_project(schedule.project_id, limit=1)
-                environment_id = envs[0].id if envs else None
+                # Match manual trigger semantics: project default environment first,
+                # then the first project environment as a compatibility fallback.
+                environment_id = project.default_env_id
+                if environment_id is None:
+                    envs, _ = await env_repo.list_by_project(schedule.project_id, limit=1)
+                    environment_id = envs[0].id if envs else None
 
                 # Determine git_ref from pipeline's project default
                 git_ref = project.default_branch or "main"
@@ -394,7 +461,9 @@ async def check_schedules(ctx: dict) -> None:
                         enqueued=enqueued,
                     ),
                 )
-                next_run = compute_next_run_at(schedule.cron_expr, schedule.timezone, now)
+                next_run = compute_next_run_at(
+                    schedule.cron_expr, schedule.timezone, now
+                )
                 await schedule_repo.update_after_fire(
                     schedule.id,
                     last_run_at=now,
@@ -412,9 +481,13 @@ async def check_schedules(ctx: dict) -> None:
                     },
                 )
             except Exception:
-                log.exception("schedule_fire_failed", extra={"schedule_id": str(schedule.id)})
+                log.exception(
+                    "schedule_fire_failed", extra={"schedule_id": str(schedule.id)}
+                )
                 try:
-                    next_run = compute_next_run_at(schedule.cron_expr, schedule.timezone, now)
+                    next_run = compute_next_run_at(
+                        schedule.cron_expr, schedule.timezone, now
+                    )
                     await schedule_repo.update_after_fire(
                         schedule.id,
                         last_run_at=now,
@@ -423,7 +496,10 @@ async def check_schedules(ctx: dict) -> None:
                     )
                     await session.commit()
                 except Exception:
-                    log.exception("schedule_update_failed", extra={"schedule_id": str(schedule.id)})
+                    log.exception(
+                        "schedule_update_failed",
+                        extra={"schedule_id": str(schedule.id)},
+                    )
 
 
 async def after_job_end(ctx: dict) -> None:
@@ -445,6 +521,7 @@ async def after_job_end(ctx: dict) -> None:
     run = await run_repo.get(run_id)
     if run and run.status not in TERMINAL_STATUSES:
         from qaplatform.engine.redact import redact_url_userinfo
+
         await run_repo.fail_if_current(
             run.id,
             message=redact_url_userinfo(
@@ -484,6 +561,8 @@ class WorkerSettings:
         cron(check_schedules, second={15}),
         cron(retry_failed_archives, second={45}),
         cron(cleanup_old_runs, minute={0}, second={0}),  # hourly retention sweep
-        cron(cleanup_old_audit_events, minute={5}, second={0}),  # hourly audit retention sweep
+        cron(
+            cleanup_old_audit_events, minute={5}, second={0}
+        ),  # hourly audit retention sweep
     ]
     redis_settings = _get_redis_settings()

@@ -551,6 +551,50 @@ class RunRepository(BaseRepository[Run]):
         result = await self.session.execute(stmt)
         return result.scalar_one()
 
+    async def count_consecutive_failures(
+        self,
+        *,
+        project_id: UUID,
+        run_id: UUID,
+        limit: int = 100,
+    ) -> int:
+        """Count terminal failed runs ending with ``run_id`` within a project."""
+        current_stmt = select(Run).where(
+            Run.id == run_id,
+            Run.project_id == project_id,
+            Run.deleted_at.is_(None),
+        )
+        current_result = await self.session.execute(current_stmt)
+        current = current_result.scalar_one_or_none()
+        if current is None or current.status != RunStatusEnum.FAILED:
+            return 0
+
+        terminal_statuses = (
+            RunStatusEnum.DONE,
+            RunStatusEnum.FAILED,
+            RunStatusEnum.CANCELLED,
+            RunStatusEnum.TIMEOUT,
+        )
+        stmt = (
+            select(Run.status)
+            .where(
+                Run.project_id == project_id,
+                Run.deleted_at.is_(None),
+                Run.status.in_(terminal_statuses),
+                Run.created_at <= current.created_at,
+            )
+            .order_by(Run.created_at.desc(), Run.id.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+
+        count = 0
+        for status in result.scalars():
+            if status != RunStatusEnum.FAILED:
+                break
+            count += 1
+        return count
+
     async def list_trend_points(
         self,
         *,

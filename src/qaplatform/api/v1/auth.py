@@ -8,7 +8,16 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
 
 from argon2 import PasswordHasher as _PasswordHasher
@@ -128,51 +137,75 @@ class ApiTokenListItem(BaseModel):
 
 
 REFRESH_TOKEN_COOKIE = "refresh_token"
+_LOCAL_HTTP_COOKIE_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
-def _set_refresh_cookie(response: Response, token: str, max_age: int) -> None:
+def _refresh_cookie_secure(request: Request, settings: object | None = None) -> bool:
+    configured = getattr(settings, "refresh_cookie_secure", None)
+    if isinstance(configured, bool):
+        return configured
+
+    if request.url.scheme != "http":
+        return True
+
+    host = request.url.hostname or ""
+    is_local_http = host in _LOCAL_HTTP_COOKIE_HOSTS
+    is_development = (
+        getattr(settings, "debug", False) is True
+        or getattr(settings, "environment", None) == "development"
+    )
+    return not (is_local_http and is_development)
+
+
+def _set_refresh_cookie(
+    response: Response,
+    token: str,
+    max_age: int,
+    *,
+    secure: bool = True,
+) -> None:
     response.set_cookie(
         key=REFRESH_TOKEN_COOKIE,
         value=token,
         httponly=True,
-        secure=True,
+        secure=secure,
         samesite="strict",
         max_age=max_age,
         path="/api/v1/auth",
     )
 
 
-def _clear_refresh_cookie(response: Response) -> None:
+def _clear_refresh_cookie(response: Response, *, secure: bool = True) -> None:
     response.delete_cookie(
         key=REFRESH_TOKEN_COOKIE,
         httponly=True,
-        secure=True,
+        secure=secure,
         samesite="strict",
         path="/api/v1/auth",
     )
 
 
-def _refresh_cookie_clear_headers() -> dict[str, str]:
+def _refresh_cookie_clear_headers(*, secure: bool = True) -> dict[str, str]:
     clear_response = Response()
-    _clear_refresh_cookie(clear_response)
+    _clear_refresh_cookie(clear_response, secure=secure)
     return {"Set-Cookie": clear_response.headers["set-cookie"]}
 
 
 def _raise_refresh_unauthorized_clearing_cookie(
     response: Response,
     detail: str,
+    *,
+    secure: bool = True,
 ) -> None:
-    _clear_refresh_cookie(response)
+    _clear_refresh_cookie(response, secure=secure)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=detail,
-        headers=_refresh_cookie_clear_headers(),
+        headers=_refresh_cookie_clear_headers(secure=secure),
     )
 
 
-async def _resolve_tenant_id(
-    session: AsyncSession, tenant_id: UUID | None
-) -> UUID:
+async def _resolve_tenant_id(session: AsyncSession, tenant_id: UUID | None) -> UUID:
     """Resolve tenant_id for MVP (single-tenant fallback)."""
     if tenant_id is not None:
         return tenant_id
@@ -253,7 +286,12 @@ async def register(
         is_platform_admin=user_is_platform_admin,
     )
     refresh_token = jwt_svc.create_refresh_token(user_id=user_id)
-    _set_refresh_cookie(response, refresh_token, settings.jwt_refresh_token_ttl)
+    _set_refresh_cookie(
+        response,
+        refresh_token,
+        settings.jwt_refresh_token_ttl,
+        secure=_refresh_cookie_secure(request, settings),
+    )
 
     return LoginResponse(
         access_token=access_token,
@@ -312,7 +350,9 @@ async def login(
         try:
             user_repo = UserRepository(session)
             tenant_id = await _resolve_tenant_id(session, body.tenant_id)
-            user: AppUser | None = await user_repo.get_by_username(tenant_id, body.username)
+            user: AppUser | None = await user_repo.get_by_username(
+                tenant_id, body.username
+            )
 
             if user is None:
                 await _write_failed_audit("invalid_credentials")
@@ -370,7 +410,12 @@ async def login(
         is_platform_admin=bool(getattr(user, "is_platform_admin", False)),
     )
     refresh_token = jwt_svc.create_refresh_token(user_id=str(user.id))
-    _set_refresh_cookie(response, refresh_token, settings.jwt_refresh_token_ttl)
+    _set_refresh_cookie(
+        response,
+        refresh_token,
+        settings.jwt_refresh_token_ttl,
+        secure=_refresh_cookie_secure(request, settings),
+    )
 
     return LoginResponse(
         access_token=access_token,
@@ -395,6 +440,7 @@ async def refresh(
 ) -> TokenPair:
     client_ip = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
+    refresh_cookie_secure = _refresh_cookie_secure(request, settings)
 
     async def _write_refresh_failed_audit(reason: str) -> None:
         async with session_factory() as audit_session:
@@ -431,6 +477,7 @@ async def refresh(
         _raise_refresh_unauthorized_clearing_cookie(
             response,
             "Invalid refresh token",
+            secure=refresh_cookie_secure,
         )
 
     if payload.get("type") != "refresh":
@@ -438,6 +485,7 @@ async def refresh(
         _raise_refresh_unauthorized_clearing_cookie(
             response,
             "Invalid token type",
+            secure=refresh_cookie_secure,
         )
 
     old_jti = payload.get("jti")
@@ -456,6 +504,7 @@ async def refresh(
             _raise_refresh_unauthorized_clearing_cookie(
                 response,
                 "Refresh token has been revoked",
+                secure=refresh_cookie_secure,
             )
 
     old_exp = payload.get("exp")
@@ -470,6 +519,7 @@ async def refresh(
                 _raise_refresh_unauthorized_clearing_cookie(
                     response,
                     "User not found or deactivated",
+                    secure=refresh_cookie_secure,
                 )
 
             # Revoke the old refresh token only after confirming user is valid
@@ -510,7 +560,12 @@ async def refresh(
             await session.rollback()
             raise
 
-    _set_refresh_cookie(response, new_refresh_token, settings.jwt_refresh_token_ttl)
+    _set_refresh_cookie(
+        response,
+        new_refresh_token,
+        settings.jwt_refresh_token_ttl,
+        secure=refresh_cookie_secure,
+    )
 
     return TokenPair(
         access_token=access_token,
@@ -580,7 +635,11 @@ async def logout(
         except Exception:
             pass
 
-    _clear_refresh_cookie(response)
+    settings = getattr(getattr(request.app.state, "container", None), "settings", None)
+    _clear_refresh_cookie(
+        response,
+        secure=_refresh_cookie_secure(request, settings),
+    )
 
     async with session_factory() as audit_session:
         try:
@@ -590,7 +649,9 @@ async def logout(
                 action="auth.logout",
                 resource_type="auth",
                 resource_id=None,
-                after_state={"had_access_token": auth_header.lower().startswith("bearer ")},
+                after_state={
+                    "had_access_token": auth_header.lower().startswith("bearer ")
+                },
                 ip_address=client_ip,
                 user_agent=user_agent,
             )

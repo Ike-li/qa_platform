@@ -43,6 +43,14 @@ def _truncate_line(line: str) -> str:
     return encoded[:cap].decode("utf-8", errors="ignore") + _TRUNCATION_MARKER
 
 
+def _next_stream_id(stream_id: bytes | str) -> str:
+    """Return the next inclusive-safe Redis Stream ID after ``stream_id``."""
+    if isinstance(stream_id, bytes):
+        stream_id = stream_id.decode("utf-8")
+    timestamp, sequence = stream_id.split("-", 1)
+    return f"{timestamp}-{int(sequence) + 1}"
+
+
 class LogStream:
     """Redis Stream-based real-time log transport for run executions.
 
@@ -141,19 +149,20 @@ class LogStream:
         s3_key = f"logs/{run_id}.jsonl"
 
         try:
-            # Read all entries in the stream
+            # Read all historical entries in the stream. ``XREAD`` starts at
+            # IDs greater than the supplied cursor for live reads, but client
+            # behavior around historical tail cursors is easy to misuse here.
+            # ``XRANGE`` with an explicitly advanced inclusive cursor gives a
+            # finite, deterministic archive pass.
             all_entries: list[dict[str, str]] = []
-            cursor = "0"
+            cursor = "-"
             while True:
-                batch = await self._redis.xread({key: cursor}, count=500)
-                if not batch:
+                messages = await self._redis.xrange(key, min=cursor, max="+", count=500)
+                if not messages:
                     break
-                for _stream_name, messages in batch:
-                    if not messages:
-                        return True  # no more entries
-                    for msg_id, data in messages:
-                        cursor = msg_id
-                        all_entries.append(data)
+                for msg_id, data in messages:
+                    cursor = _next_stream_id(msg_id)
+                    all_entries.append(data)
 
             # Build JSONL content
             lines = [json.dumps(entry) for entry in all_entries]

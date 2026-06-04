@@ -5,7 +5,7 @@ from typing import Any, get_args
 from urllib.parse import urlparse
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,8 @@ from qaplatform.api.deps import CurrentUser, Repos, _get_db_session, require_per
 from qaplatform.api.v1._filters import escape_like
 from qaplatform.api.schemas import (
     ErrorResponse,
+    GitBranchDiscoveryRequest,
+    GitBranchDiscoveryResponse,
     PaginatedResponse,
     ProjectCreate,
     ProjectResponse,
@@ -24,6 +26,7 @@ from qaplatform.api.schemas import (
 from qaplatform.domain.models.project import SilentWindow
 from qaplatform.engine.redact import redact_url_userinfo
 from qaplatform.infra.database.models import Project as ProjectORM
+from qaplatform.plugins.builtin.git_source import GitSource
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 _SSH_GIT_URL_RE = re.compile(r"^[^@]+@[^:]+:.+")
@@ -150,7 +153,7 @@ async def list_projects(
     user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    q: str | None = Query(None, description="按名称/描述搜索"),
+    q: str | None = Query(None, description="按名称/描述/Slug/Git 仓库搜索"),
     status: str | None = Query(
         None,
         description="active / archived",
@@ -175,6 +178,8 @@ async def list_projects(
             or_(
                 ProjectORM.name.ilike(pattern, escape="\\"),
                 ProjectORM.description.ilike(pattern, escape="\\"),
+                ProjectORM.slug.ilike(pattern, escape="\\"),
+                ProjectORM.git_url.ilike(pattern, escape="\\"),
             )
         )
 
@@ -182,7 +187,7 @@ async def list_projects(
         offset=(page - 1) * per_page,
         limit=per_page,
         filters=filters,
-        order_by=ProjectORM.name.asc(),
+        order_by=ProjectORM.created_at.desc(),
     )
     return PaginatedResponse(
         data=[_to_response(i) for i in items],
@@ -247,6 +252,50 @@ async def create_project(
         resource_type="project",
         resource_id=orm.id,
         after=_to_audit_state(response),
+    )
+    return response
+
+
+@router.post(
+    "/branches",
+    response_model=GitBranchDiscoveryResponse,
+    responses={422: {"model": ErrorResponse}},
+    summary="发现 Git 仓库分支",
+)
+async def discover_git_branches(
+    body: GitBranchDiscoveryRequest,
+    request: Request,
+    repos: Repos,
+    user: CurrentUser,
+    _perm=require_permission(Action.PROJECT_CREATE),
+):
+    if body.git_auth_method != "none":
+        raise HTTPException(
+            status_code=422,
+            detail="Branch discovery currently supports public repositories only",
+        )
+    settings = request.app.state.container.settings
+    source = GitSource(allowed_private_hosts=settings.git_allowed_private_hosts)
+    try:
+        branches, default_branch = await source.list_branches(body.git_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    response = GitBranchDiscoveryResponse(
+        branches=branches,
+        default_branch=default_branch,
+    )
+    await write_audit(
+        repos,
+        user,
+        action="project.branches_discover",
+        resource_type="project",
+        after={
+            "git_url": redact_url_userinfo(body.git_url),
+            "branch_count": len(branches),
+            "default_branch": default_branch,
+        },
     )
     return response
 

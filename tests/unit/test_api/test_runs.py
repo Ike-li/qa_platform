@@ -343,7 +343,12 @@ async def test_trigger_run(
 
     # Mock arq_pool on container
     mock_arq = AsyncMock()
-    mock_arq.enqueue_job.return_value = MagicMock(job_id=f"run:{run.id}")
+
+    async def _enqueue_job(*_args, **_kwargs):
+        assert mock_run_repo.commit.await_count == 1
+        return MagicMock(job_id=f"run:{run.id}")
+
+    mock_arq.enqueue_job.side_effect = _enqueue_job
     app.state.container.arq_pool = mock_arq
     app.state.container.settings = MagicMock(max_concurrent_runs=5, max_concurrent_per_project=3)
     mock_run_repo.count_active_or_enqueued.return_value = 0
@@ -390,6 +395,7 @@ async def test_trigger_run(
         "default_branch": "main",
     }
     mock_run_repo.set_retry_group_id.assert_awaited_once_with(run.id, run.id)
+    mock_run_repo.commit.assert_awaited_once()
     mock_arq.enqueue_job.assert_awaited_once_with(
         "execute_run",
         str(run.id),
@@ -544,6 +550,7 @@ async def test_trigger_run_stays_queued_and_audited_without_arq_pool(
         "default_branch": "main",
     }
     mock_run_repo.set_retry_group_id.assert_awaited_once_with(run.id, run.id)
+    mock_run_repo.commit.assert_not_awaited()
     mock_run_repo.mark_enqueued.assert_not_awaited()
     mock_run_repo.mark_waiting.assert_not_awaited()
     _assert_run_trigger_audit(mock_repos, mock_user, run, body)
@@ -891,6 +898,10 @@ async def test_run_resource_routes_hide_missing_run_without_side_effects(
             ),
             await client.get(
                 f"/api/v1/runs/{run_id}/artifacts",
+                headers={"Authorization": "Bearer fake"},
+            ),
+            await client.get(
+                f"/api/v1/runs/{run_id}/artifacts/allure-report",
                 headers={"Authorization": "Bearer fake"},
             ),
             await client.get(
@@ -1363,6 +1374,80 @@ async def test_get_run_artifacts(
     )
     s3_client.get_object.assert_not_awaited()
     s3_client.generate_presigned_url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_run_allure_report_artifact_scans_beyond_first_page(
+    client,
+    mock_run_repo,
+    mock_artifact_repo,
+    tenant_id,
+    mock_user,
+):
+    from qaplatform.api.auth.permissions import Action
+
+    run_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    created_at = datetime(2026, 5, 31, 12, 13, 14, tzinfo=timezone.utc)
+
+    asset = MagicMock()
+    asset.type = "allure-report"
+    asset.name = "allure-report/assets/app.js"
+
+    index_id = uuid.uuid4()
+    index = MagicMock()
+    index.id = index_id
+    index.run_id = run_id
+    index.type = "allure-report"
+    index.name = "allure-report/index.html"
+    index.storage_path = f"reports/{run_id}/allure-report/index.html"
+    index.size_bytes = 128
+    index.mime_type = "text/html"
+    index.expires_at = None
+    index.created_at = created_at
+
+    mock_run_repo.get_for_tenant.return_value = _make_orm_run(
+        id=run_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+    )
+    mock_artifact_repo.list_by_run.side_effect = [
+        ([asset], 2),
+        ([index], 2),
+    ]
+
+    with patch(
+        "qaplatform.api.v1.runs.enforce_project_action",
+        new_callable=AsyncMock,
+    ) as enforce_project_action:
+        resp = await client.get(
+            f"/api/v1/runs/{run_id}/artifacts/allure-report",
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "id": str(index_id),
+        "run_id": str(run_id),
+        "type": "allure-report",
+        "name": "allure-report/index.html",
+        "storage_path": f"reports/{run_id}/allure-report/index.html",
+        "size_bytes": 128,
+        "mime_type": "text/html",
+        "expires_at": None,
+        "created_at": _json_datetime(created_at),
+    }
+    mock_run_repo.get_for_tenant.assert_awaited_once_with(run_id, tenant_id)
+    enforce_project_action.assert_awaited_once()
+    assert enforce_project_action.await_args.args[1:] == (
+        mock_user,
+        project_id,
+        Action.RUN_READ,
+    )
+    assert mock_artifact_repo.list_by_run.await_args_list == [
+        call(run_id, offset=0, limit=100),
+        call(run_id, offset=1, limit=100),
+    ]
 
 
 @pytest.mark.asyncio

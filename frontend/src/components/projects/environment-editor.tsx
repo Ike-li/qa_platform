@@ -13,6 +13,14 @@ import { isPinnedDockerImage } from "../../lib/contracts";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
+import { Textarea } from "../../components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../../components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,6 +43,8 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
   const [isAdding, setIsAdding] = useState(false);
   const [newEnvName, setNewEnvName] = useState("");
   const [newEnvBaseImage, setNewEnvBaseImage] = useState(DEFAULT_ENVIRONMENT_BASE_IMAGE);
+  const [newEnvSetupScript, setNewEnvSetupScript] = useState("");
+  const [newEnvNetworkPolicy, setNewEnvNetworkPolicy] = useState<Environment["network_policy"]>("deny");
 
   if (isLoading) return <div className="space-y-4 animate-pulse">
     <div className="h-32 bg-surface-1 rounded-lg" />
@@ -50,10 +60,18 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
       return;
     }
     try {
-      await createEnv({ name, base_image: baseImage, env_vars: {} });
+      await createEnv({
+        name,
+        base_image: baseImage,
+        setup_script: newEnvSetupScript.trim() || null,
+        network_policy: newEnvNetworkPolicy,
+        env_vars: {},
+      });
       toast.success(t('environments.toast.created'));
       setNewEnvName("");
       setNewEnvBaseImage(DEFAULT_ENVIRONMENT_BASE_IMAGE);
+      setNewEnvSetupScript("");
+      setNewEnvNetworkPolicy("deny");
       setIsAdding(false);
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } };
@@ -73,7 +91,7 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
       </div>
 
       {isAdding && (
-        <div className="grid grid-cols-1 gap-4 rounded-lg border border-hairline bg-surface-1 p-4 animate-in fade-in slide-in-from-top-2 md:grid-cols-[1fr_1.2fr_auto] md:items-end">
+        <div className="grid grid-cols-1 gap-4 rounded-lg border border-hairline bg-surface-1 p-4 animate-in fade-in slide-in-from-top-2">
           <div className="flex-1 space-y-2">
             <Label>{t('environments.envNameLabel')}</Label>
             <Input
@@ -91,6 +109,31 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
               className="font-mono text-xs"
             />
           </div>
+          <div className="space-y-2">
+            <Label>{t('environments.networkPolicyLabel')}</Label>
+            <Select
+              value={newEnvNetworkPolicy}
+              onValueChange={(value) => setNewEnvNetworkPolicy(value as Environment["network_policy"])}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="deny">{t('environments.networkPolicy.deny')}</SelectItem>
+                <SelectItem value="restricted">{t('environments.networkPolicy.restricted')}</SelectItem>
+                <SelectItem value="allow">{t('environments.networkPolicy.allow')}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>{t('environments.setupScriptLabel')}</Label>
+            <Textarea
+              value={newEnvSetupScript}
+              onChange={(e) => setNewEnvSetupScript(e.target.value)}
+              placeholder={t('environments.setupScriptPlaceholder')}
+              className="min-h-36 font-mono text-xs"
+            />
+          </div>
           <div className="flex gap-2 md:justify-end">
             <Button
               variant="outline"
@@ -98,6 +141,8 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
               onClick={() => {
                 setNewEnvName("");
                 setNewEnvBaseImage(DEFAULT_ENVIRONMENT_BASE_IMAGE);
+                setNewEnvSetupScript("");
+                setNewEnvNetworkPolicy("deny");
                 setIsAdding(false);
               }}
             >
@@ -136,6 +181,8 @@ export function EnvironmentEditor({ projectId }: { projectId: string }) {
 function EnvironmentCard({ env, projectId }: { env: Environment; projectId: string }) {
   const { t } = useTranslation();
   const [variables, setVariables] = useState(env.variables);
+  const [setupScript, setSetupScript] = useState(env.setup_script ?? "");
+  const [networkPolicy, setNetworkPolicy] = useState<Environment["network_policy"]>(env.network_policy);
   const [isEditing, setIsEditing] = useState(false);
   const [showValues, setShowValues] = useState<Record<string, boolean>>({});
 
@@ -144,7 +191,11 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
 
   const handleSave = async () => {
     try {
-      await updateEnv({ env_vars: variables });
+      await updateEnv({
+        setup_script: setupScript.trim() || null,
+        network_policy: networkPolicy,
+        env_vars: variables,
+      });
       toast.success(t('environments.toast.saved'));
       setIsEditing(false);
     } catch {
@@ -207,7 +258,14 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
           )}
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button size="sm" variant="ghost" className="text-ink-tertiary hover:text-status-failed">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="text-ink-tertiary hover:text-status-failed"
+                aria-label={t('environments.deleteEnvironmentAria', { name: env.name })}
+                title={t('environments.deleteEnvironmentAria', { name: env.name })}
+              >
                 <Trash2 className="h-4 w-4" />
               </Button>
             </AlertDialogTrigger>
@@ -228,6 +286,39 @@ function EnvironmentCard({ env, projectId }: { env: Environment; projectId: stri
       </div>
 
       <div className="p-6 space-y-4">
+        <div className="grid gap-4 md:grid-cols-[220px_1fr]">
+          <div className="space-y-2">
+            <Label>{t('environments.networkPolicyLabel')}</Label>
+            <Select
+              value={networkPolicy}
+              onValueChange={(value) => {
+                setNetworkPolicy(value as Environment["network_policy"]);
+                setIsEditing(true);
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="deny">{t('environments.networkPolicy.deny')}</SelectItem>
+                <SelectItem value="restricted">{t('environments.networkPolicy.restricted')}</SelectItem>
+                <SelectItem value="allow">{t('environments.networkPolicy.allow')}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>{t('environments.setupScriptLabel')}</Label>
+            <Textarea
+              value={setupScript}
+              onChange={(e) => {
+                setSetupScript(e.target.value);
+                setIsEditing(true);
+              }}
+              placeholder={t('environments.setupScriptPlaceholder')}
+              className="min-h-28 font-mono text-xs"
+            />
+          </div>
+        </div>
         <div className="space-y-3">
           {Object.entries(variables).map(([key, value]) => (
             <div key={key} className="flex gap-3 items-start">

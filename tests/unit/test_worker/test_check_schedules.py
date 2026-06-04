@@ -98,6 +98,7 @@ class TestCheckSchedules:
         project.credential_id = None
         project.shallow_clone = True
         project.default_branch = "main"
+        project.default_env_id = None
         project.settings = {}
         project_repo = AsyncMock()
         project_repo.get_by_id = AsyncMock(return_value=project)
@@ -227,6 +228,94 @@ class TestCheckSchedules:
             "update_after_fire",
             "commit",
         ]
+
+    @pytest.mark.asyncio
+    async def test_fires_due_schedule_uses_project_default_environment(
+        self,
+        ctx,
+        sample_schedule,
+    ):
+        """Project default environment takes precedence over fallback lookup."""
+        schedule_repo = AsyncMock()
+        schedule_repo.find_due_schedules = AsyncMock(return_value=[sample_schedule])
+        schedule_repo.update_after_fire = AsyncMock()
+
+        pipeline = MagicMock()
+        pipeline.project = MagicMock()
+        pipeline.project.tenant_id = uuid4()
+        pipeline_repo = AsyncMock()
+        pipeline_repo.get_by_id = AsyncMock(return_value=pipeline)
+
+        default_env_id = uuid4()
+        project = MagicMock()
+        project.tenant_id = pipeline.project.tenant_id
+        project.git_url = "https://github.com/org/repo.git"
+        project.git_auth_method = "none"
+        project.credential_id = None
+        project.shallow_clone = False
+        project.default_branch = "main"
+        project.default_env_id = default_env_id
+        project.settings = {}
+        project_repo = AsyncMock()
+        project_repo.get_by_id = AsyncMock(return_value=project)
+
+        env_repo = AsyncMock()
+        env_repo.list_by_project = AsyncMock()
+
+        run = MagicMock()
+        run.id = uuid4()
+        run.tenant_id = project.tenant_id
+        run.project_id = sample_schedule.project_id
+        run.pipeline_id = sample_schedule.pipeline_id
+        run.environment_id = default_env_id
+        run.status = "queued"
+        run.trigger_type = "schedule"
+        run.triggered_by = None
+        run.git_ref = "main"
+        run.git_sha = None
+        run.priority = 2
+        run.attempt = 1
+        run.metadata_ = {"schedule_id": str(sample_schedule.id)}
+        run.retry_group_id = None
+        run_repo = AsyncMock()
+        run_repo.create = AsyncMock(return_value=run)
+        run_repo.set_retry_group_id = AsyncMock()
+        audit_repo = AsyncMock()
+
+        next_run_at = datetime.now(timezone.utc)
+        patches = _patch_repos(
+            schedule_repo=schedule_repo,
+            pipeline_repo=pipeline_repo,
+            project_repo=project_repo,
+            env_repo=env_repo,
+            run_repo=run_repo,
+            audit_repo=audit_repo,
+        )
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patch(
+                "qaplatform.worker.scheduler.enqueue_run",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "qaplatform.domain.services.scheduling.should_fire",
+                return_value=True,
+            ),
+            patch(
+                "qaplatform.domain.services.scheduling.compute_next_run_at",
+                return_value=next_run_at,
+            ),
+        ):
+            await check_schedules(ctx)
+
+        env_repo.list_by_project.assert_not_awaited()
+        run_repo.create.assert_awaited_once()
+        assert run_repo.create.await_args.kwargs["environment_id"] == default_env_id
 
     @pytest.mark.asyncio
     async def test_skips_in_quiet_window(self, ctx, sample_schedule):
@@ -470,6 +559,7 @@ class TestCheckSchedules:
         project.credential_id = None
         project.shallow_clone = True
         project.default_branch = "main"
+        project.default_env_id = None
         project.settings = {}
         project_repo = AsyncMock()
         project_repo.get_by_id = AsyncMock(return_value=project)

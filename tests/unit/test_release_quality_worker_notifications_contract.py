@@ -409,7 +409,7 @@ def test_quality_ops_capture_notification_consecutive_failures_exact_log_contrac
     )
     assert "worker notifications full 35 passed" in row
     assert "release quality docs contract full 182 passed" in row
-    assert "`_load_consecutive_failures(session, project_id, run_id)`" in row
+    assert "`_load_consecutive_failures(run_repo, project_id, run_id)`" in row
     assert "delivery 去重 key" in row
     assert "`_send_channel` 完整参数" in row
     assert "`_assert_delivery_log` direct helper 与 sent log 投影" in row
@@ -440,7 +440,7 @@ def test_quality_ops_capture_notification_consecutive_failures_exact_log_contrac
     assert "assert set(call_kwargs)" not in helper_block
 
     for expected in [
-        "load_consecutive.assert_awaited_once_with(session, project_id, run_id)",
+        "load_consecutive.assert_awaited_once_with(run_repo, project_id, run_id)",
         "log_repo.get_by_delivery.assert_awaited_once_with(",
         "run_id=run_id",
         "rule_id=rule.id",

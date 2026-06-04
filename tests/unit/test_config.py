@@ -285,6 +285,54 @@ def test_trusted_proxies_accept_valid_cidrs_and_strip_whitespace(
     assert settings.trusted_proxies == ["10.0.0.0/8", "2001:db8::/32"]
 
 
+def test_git_allowed_private_hosts_parse_comma_separated_env(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_GIT_ALLOWED_PRIVATE_HOSTS", " GitHub.com,gitlab.example ")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.git_allowed_private_hosts == ["github.com", "gitlab.example"]
+
+
+@pytest.mark.parametrize(
+    ("hosts", "expected_msg"),
+    [
+        ([""], "git_allowed_private_hosts[0] must not be blank"),
+        (
+            ["https://github.com"],
+            "git_allowed_private_hosts[0] must be a hostname, not a URL",
+        ),
+        (
+            ["github.com:443"],
+            "git_allowed_private_hosts[0] must be a hostname, not a URL",
+        ),
+    ],
+)
+def test_git_allowed_private_hosts_reject_invalid_hostnames(
+    monkeypatch: pytest.MonkeyPatch,
+    hosts: list[str],
+    expected_msg: str,
+):
+    _set_required(monkeypatch)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            git_allowed_private_hosts=hosts,
+            _env_file=None,
+        )
+
+    assert _validation_error_projection(exc_info.value.errors()) == [
+        {
+            "type": "value_error",
+            "loc": ("git_allowed_private_hosts",),
+            "msg": f"Value error, {expected_msg}",
+            "input": hosts,
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     ("env_key", "expected_field"),
     [

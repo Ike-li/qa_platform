@@ -130,7 +130,7 @@ async def test_write_audit_swallows_repo_errors(caplog):
     resource_id = uuid4()
 
     # Must not raise — audit is best-effort, never blocks the main path.
-    with caplog.at_level(logging.WARNING, logger="qaplatform.api.audit"):
+    with caplog.at_level(logging.WARNING, logger="qaplatform.infra.audit"):
         await write_audit(
             repos,
             user,
@@ -163,7 +163,7 @@ async def test_write_audit_swallows_repo_errors(caplog):
             ),
         }
         for record in caplog.records
-        if record.name == "qaplatform.api.audit" and record.levelno == logging.WARNING
+        if record.name == "qaplatform.infra.audit" and record.levelno == logging.WARNING
     ]
     assert warning_records == [
         {

@@ -153,3 +153,12 @@ def test_register_builtins_includes_expected_plugin_families():
     assert registry.runner_names == ["pytest", "jest", "go_test", "playwright"]
     assert registry.collector_names == ["junit"]
     assert registry.source_names == ["git"]
+
+
+def test_register_builtins_passes_git_private_host_allowlist():
+    registry = PluginRegistry(git_allowed_private_hosts=["github.example"])
+
+    registry.register_builtins()
+
+    source = registry.get_source("git")
+    assert source._allowed_private_hosts == ("github.example",)

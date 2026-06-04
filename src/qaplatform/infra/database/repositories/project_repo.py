@@ -356,4 +356,5 @@ class NotificationLogRepository(BaseRepository[NotificationLog]):
             offset=offset,
             limit=limit,
             filters=[NotificationLog.run_id == run_id],
+            order_by=NotificationLog.sent_at.desc(),
         )

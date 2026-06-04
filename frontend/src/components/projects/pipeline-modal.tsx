@@ -51,6 +51,7 @@ function createPipelineSchema() {
     timeout_seconds: z.number().min(1, i18n.t('validation.timeoutRequired')),
     collector_plugin: z.string().min(1),
     collector_path: z.string().min(1),
+    allure_enabled: z.boolean(),
     trigger_type: z.enum(["manual", "webhook", "schedule"]),
     max_attempts: z.number().min(1).max(5),
     backoff_seconds: z.number().min(0),
@@ -89,6 +90,10 @@ function pipelineCollectorPath(pipeline: Pipeline): string {
   return typeof path === "string" && path.trim() ? path : DEFAULT_COLLECTOR_PATH;
 }
 
+function pipelineAllureEnabled(pipeline: Pipeline): boolean {
+  return pipeline.stages[0]?.config.allure_enabled === true;
+}
+
 export function PipelineModal({
   projectId,
   pipeline,
@@ -122,6 +127,7 @@ export function PipelineModal({
       timeout_seconds: 600,
       collector_plugin: "junit",
       collector_path: DEFAULT_COLLECTOR_PATH,
+      allure_enabled: false,
       trigger_type: "manual",
       max_attempts: 1,
       backoff_seconds: 0,
@@ -138,6 +144,7 @@ export function PipelineModal({
         timeout_seconds: pipeline.timeout_seconds,
         collector_plugin: pipeline.collectors?.[0]?.plugin ?? "junit",
         collector_path: pipelineCollectorPath(pipeline),
+        allure_enabled: pipelineAllureEnabled(pipeline),
         trigger_type: (pipeline.trigger_config.type || "manual") as PipelineFormValues["trigger_type"],
         max_attempts: pipeline.retry_policy?.max_attempts ?? 1,
         backoff_seconds: pipeline.retry_policy?.backoff_seconds ?? 0,
@@ -150,6 +157,7 @@ export function PipelineModal({
         timeout_seconds: 600,
         collector_plugin: "junit",
         collector_path: DEFAULT_COLLECTOR_PATH,
+        allure_enabled: false,
         trigger_type: "manual",
         max_attempts: 1,
         backoff_seconds: 0,
@@ -161,6 +169,7 @@ export function PipelineModal({
   const runner = useWatch({ control, name: "runner" });
   const triggerType = useWatch({ control, name: "trigger_type" });
   const collectorPlugin = useWatch({ control, name: "collector_plugin" });
+  const allureEnabled = useWatch({ control, name: "allure_enabled" });
   const enabled = useWatch({ control, name: "enabled" });
 
   const onSubmit = async (data: PipelineFormValues) => {
@@ -171,7 +180,10 @@ export function PipelineModal({
         stages: [{
           name: "run-tests",
           plugin: data.runner,
-          config: { test_paths: includePaths },
+          config: {
+            test_paths: includePaths,
+            ...(data.runner === "pytest" ? { allure_enabled: data.allure_enabled } : {}),
+          },
           continue_on_error: false,
           phase: "execute" as const,
         }],
@@ -238,7 +250,14 @@ export function PipelineModal({
             {isEditing && (
               <AlertDialog>
                 <AlertDialogTrigger asChild>
-                  <Button variant="ghost" size="sm" className="text-ink-tertiary hover:text-status-failed">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-ink-tertiary hover:text-status-failed"
+                    aria-label={t('pipelines.deletePipelineAria')}
+                    title={t('pipelines.deletePipelineAria')}
+                  >
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 </AlertDialogTrigger>
@@ -279,6 +298,19 @@ export function PipelineModal({
               </div>
             </div>
           </div>
+
+          {runner === "pytest" && (
+            <div className="flex items-center space-x-2 rounded-lg border border-hairline p-3">
+              <Checkbox
+                id="allure_enabled"
+                checked={allureEnabled}
+                onCheckedChange={(checked) => setValue("allure_enabled", checked === true)}
+              />
+              <label htmlFor="allure_enabled" className="text-sm text-ink-muted">
+                {t('pipelines.enableAllure')}
+              </label>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">

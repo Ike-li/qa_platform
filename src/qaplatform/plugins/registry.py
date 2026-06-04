@@ -20,10 +20,17 @@ class PluginRegistry:
     via the ``qaplatform.plugins`` entry-point group.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        git_allowed_private_hosts: list[str] | None = None,
+        git_clone_timeout_seconds: int = 300,
+    ) -> None:
         self._runners: dict[str, RunnerProtocol] = {}
         self._collectors: dict[str, CollectorProtocol] = {}
         self._sources: dict[str, SourceProtocol] = {}
+        self._git_allowed_private_hosts = git_allowed_private_hosts or []
+        self._git_clone_timeout_seconds = git_clone_timeout_seconds
 
     # -- registration ---------------------------------------------------------
 
@@ -95,7 +102,12 @@ class PluginRegistry:
         self.register_runner(GoTestRunner())
         self.register_runner(PlaywrightRunner())
         self.register_collector(JUnitCollector())
-        self.register_source(GitSource())
+        self.register_source(
+            GitSource(
+                allowed_private_hosts=self._git_allowed_private_hosts,
+                clone_timeout_seconds=self._git_clone_timeout_seconds,
+            )
+        )
 
     @property
     def runner_names(self) -> list[str]:

@@ -95,6 +95,13 @@ def _to_artifact_response(orm: ArtifactORM) -> ArtifactResponse:
     return ArtifactResponse.model_validate(orm)
 
 
+def _is_allure_report_index(artifact: ArtifactORM) -> bool:
+    return (
+        artifact.type == "allure-report"
+        and artifact.name.lower().endswith("allure-report/index.html")
+    )
+
+
 @router.post(
     "",
     response_model=RunResponse,
@@ -169,6 +176,7 @@ async def trigger_run(
     container = request.app.state.container
     arq_pool = getattr(container, "arq_pool", None)
     if arq_pool is not None:
+        await repos.run.commit()
         from qaplatform.worker.scheduler import enqueue_run
 
         await enqueue_run(arq_pool, repos.run, run, "manual", container.settings)
@@ -406,6 +414,7 @@ async def batch_retry_runs(
             await repos.run.set_retry_group_id(new_run.id, new_run.id)
 
             if arq_pool is not None:
+                await repos.run.commit()
                 from qaplatform.worker.scheduler import enqueue_run
 
                 await enqueue_run(arq_pool, repos.run, new_run, "manual", container.settings)
@@ -571,6 +580,41 @@ async def get_run_results(
         per_page=per_page,
         total=total,
     )
+
+
+@router.get(
+    "/{run_id}/artifacts/allure-report",
+    response_model=ArtifactResponse,
+    responses={404: {"model": ErrorResponse}},
+    summary="Allure 报告入口",
+)
+async def get_run_allure_report_artifact(
+    run_id: UUID,
+    repos: Repos,
+    user: CurrentUser,
+    session: AsyncSession = Depends(_get_db_session),
+):
+    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
+
+    offset = 0
+    page_size = 100
+    while True:
+        items, total = await repos.artifact.list_by_run(
+            run_id,
+            offset=offset,
+            limit=page_size,
+        )
+        for artifact in items:
+            if _is_allure_report_index(artifact):
+                return _to_artifact_response(artifact)
+        offset += len(items)
+        if offset >= total or not items:
+            break
+
+    raise HTTPException(status_code=404, detail="Allure report not found")
 
 
 @router.get(

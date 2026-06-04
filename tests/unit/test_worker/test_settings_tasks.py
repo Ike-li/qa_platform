@@ -3,12 +3,13 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 from uuid import uuid4
 
 import pytest
 
 from qaplatform.domain.models.run import RunStatus
+from qaplatform.infra.database.models import RunStatusEnum
 from qaplatform.worker.settings import (
     after_job_end,
     cleanup_old_audit_events,
@@ -34,7 +35,12 @@ def _ctx_with_session(**overrides):
         "redis": AsyncMock(),
         "docker_backend": MagicMock(),
         "arq_pool": AsyncMock(),
-        "settings": SimpleNamespace(retention_runs_days=14, retention_audit_days=365),
+        "settings": SimpleNamespace(
+            retention_runs_days=14,
+            retention_audit_days=365,
+            preparing_timeout_seconds=300,
+            collecting_timeout_seconds=180,
+        ),
     }
     ctx.update(overrides)
     return ctx, session
@@ -111,6 +117,7 @@ async def test_reclaim_resources_reclaims_updates_metrics_and_commits():
     run_repo = AsyncMock()
     run_repo.count_active_or_enqueued.return_value = 2
     run_repo.count_queued_waiting.return_value = 5
+    run_repo.find_stale.side_effect = [[], []]
     runs_in_flight = MagicMock()
     run_queue_depth = MagicMock()
 
@@ -139,6 +146,7 @@ async def test_reclaim_resources_retry_callback_schedules_reclaimed_run():
     run_repo = AsyncMock()
     run_repo.count_active_or_enqueued.return_value = 0
     run_repo.count_queued_waiting.return_value = 0
+    run_repo.find_stale.side_effect = [[], []]
     reclaimed_run = SimpleNamespace(id=uuid4())
     message = "worker_lost: heartbeat expired for worker-a"
 
@@ -165,6 +173,58 @@ async def test_reclaim_resources_retry_callback_schedules_reclaimed_run():
         "arq": ctx["arq_pool"],
         "settings": ctx["settings"],
     }
+    session.commit.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_resources_marks_stale_preparing_and_collecting_runs():
+    ctx, session = _ctx_with_session()
+    preparing = SimpleNamespace(id=uuid4(), worker_id="worker-preparing")
+    collecting = SimpleNamespace(id=uuid4(), worker_id="worker-collecting")
+    run_repo = AsyncMock()
+    run_repo.find_stale.side_effect = [[preparing], [collecting]]
+    run_repo.fail_if_current.return_value = True
+    run_repo.finish_if_current.return_value = True
+    run_repo.count_active_or_enqueued.return_value = 0
+    run_repo.count_queued_waiting.return_value = 0
+
+    with (
+        patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo),
+        patch("qaplatform.engine.reclaim.reclaim_worker_lost", new_callable=AsyncMock),
+        patch("qaplatform.engine.events.publish_status_event", new_callable=AsyncMock) as publish,
+        patch("qaplatform.observability.metrics.runs_in_flight", MagicMock()),
+        patch("qaplatform.observability.metrics.run_queue_depth", MagicMock()),
+    ):
+        await reclaim_resources(ctx)
+
+    assert run_repo.find_stale.await_args_list == [
+        call(status=RunStatusEnum.PREPARING, older_than=ANY),
+        call(status=RunStatusEnum.COLLECTING, older_than=ANY),
+    ]
+    run_repo.fail_if_current.assert_awaited_once_with(
+        preparing.id,
+        expected_in=[RunStatusEnum.PREPARING],
+        message="preparing_timeout: exceeded 300s",
+    )
+    run_repo.finish_if_current.assert_awaited_once_with(
+        collecting.id,
+        status=RunStatusEnum.TIMEOUT,
+        expected_in=[RunStatusEnum.COLLECTING],
+        summary={
+            "resource_termination": {
+                "reason": "collecting_timeout",
+                "timeout_seconds": 180,
+            }
+        },
+    )
+    assert publish.await_args_list == [
+        call(ctx["redis"], preparing.id, "failed", previous="preparing"),
+        call(ctx["redis"], collecting.id, "timeout", previous="collecting"),
+    ]
+    assert run_repo.release_worker.await_args_list == [
+        call(preparing.id, worker_id="worker-preparing"),
+        call(collecting.id, worker_id="worker-collecting"),
+    ]
     session.commit.assert_awaited_once_with()
 
 

@@ -3,8 +3,9 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import i18n from "../../i18n";
-import { useCreateProject } from "../../hooks/use-projects";
+import { discoverGitBranches, useCreateProject } from "../../hooks/use-projects";
 import { isGitUrlAllowedForAuth } from "../../lib/contracts";
 import {
   Dialog,
@@ -25,7 +26,7 @@ import {
   SelectTrigger,
   SelectValue
 } from "../../components/ui/select";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 function createProjectSchema() {
   return z.object({
@@ -51,13 +52,18 @@ type ProjectFormValues = z.infer<ReturnType<typeof createProjectSchema>>;
 
 export function CreateProjectModal({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { mutateAsync: createProject, isPending } = useCreateProject();
   const projectSchema = createProjectSchema();
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branchStatus, setBranchStatus] = useState<"idle" | "loading" | "loaded" | "error">("idle");
+  const [branchMessage, setBranchMessage] = useState<string | null>(null);
 
   const {
     register,
     handleSubmit,
     control,
+    getValues,
     setValue,
     reset,
     formState: { errors },
@@ -71,18 +77,91 @@ export function CreateProjectModal({ open, onOpenChange }: { open: boolean; onOp
   });
 
   const name = useWatch({ control, name: "name" });
+  const gitUrl = useWatch({ control, name: "git_url" });
+  const authMethod = useWatch({ control, name: "git_auth_method" });
+  const defaultBranch = useWatch({ control, name: "default_branch" }) ?? "main";
+
   useEffect(() => {
     if (name) {
       setValue("slug", name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""));
     }
   }, [name, setValue]);
 
+  useEffect(() => {
+    if (!open) {
+      const resetTimer = window.setTimeout(() => {
+        setBranches([]);
+        setBranchStatus("idle");
+        setBranchMessage(null);
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
+    }
+
+    const url = gitUrl?.trim();
+    if (!url || !authMethod || !isGitUrlAllowedForAuth(url, authMethod)) {
+      const resetTimer = window.setTimeout(() => {
+        setBranches([]);
+        setBranchStatus("idle");
+        setBranchMessage(null);
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
+    }
+
+    if (authMethod !== "none") {
+      const resetTimer = window.setTimeout(() => {
+        setBranches([]);
+        setBranchStatus("idle");
+        setBranchMessage(t("projects.form.branchDiscoveryPublicOnly"));
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setBranchStatus("loading");
+      setBranchMessage(null);
+      try {
+        const result = await discoverGitBranches({
+          git_url: url,
+          git_auth_method: authMethod,
+        });
+        if (cancelled) return;
+        setBranches(result.branches);
+        setBranchStatus("loaded");
+        if (result.branches.length === 0) {
+          setBranchMessage(t("projects.form.noBranchesFound"));
+          return;
+        }
+        const preferred = result.default_branch && result.branches.includes(result.default_branch)
+          ? result.default_branch
+          : result.branches[0];
+        const current = getValues("default_branch");
+        if (!current || current === "main" || !result.branches.includes(current)) {
+          setValue("default_branch", preferred, { shouldDirty: true, shouldValidate: true });
+        }
+        setBranchMessage(t("projects.form.branchesLoaded", { count: result.branches.length }));
+      } catch (error: unknown) {
+        if (cancelled) return;
+        const axiosError = error as { response?: { data?: { detail?: string } } };
+        setBranches([]);
+        setBranchStatus("error");
+        setBranchMessage(axiosError.response?.data?.detail || t("projects.form.branchLoadFailed"));
+      }
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [authMethod, getValues, gitUrl, open, setValue, t]);
+
   const onSubmit = async (data: ProjectFormValues) => {
     try {
-      await createProject(data);
+      const project = await createProject(data);
       toast.success(t('projects.toast.created'));
       reset();
       onOpenChange(false);
+      navigate(`/projects/${project.id}`);
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } };
       toast.error(axiosError.response?.data?.detail || t('projects.toast.createFailed'));
@@ -141,7 +220,34 @@ export function CreateProjectModal({ open, onOpenChange }: { open: boolean; onOp
             </div>
             <div className="space-y-2">
               <Label htmlFor="default_branch">{t('projects.form.defaultBranch')}</Label>
-              <Input id="default_branch" {...register("default_branch")} placeholder="main" />
+              {branches.length > 0 ? (
+                <Select
+                  value={defaultBranch}
+                  onValueChange={(value) => setValue("default_branch", value, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  })}
+                >
+                  <SelectTrigger id="default_branch">
+                    <SelectValue placeholder={t("projects.form.selectBranch")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {branches.map((branch) => (
+                      <SelectItem key={branch} value={branch}>{branch}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input id="default_branch" {...register("default_branch")} placeholder="main" />
+              )}
+              {branchStatus === "loading" && (
+                <p className="text-xs text-ink-tertiary">{t("projects.form.loadingBranches")}</p>
+              )}
+              {branchMessage && (
+                <p className={branchStatus === "error" ? "text-xs text-status-failed" : "text-xs text-ink-tertiary"}>
+                  {branchMessage}
+                </p>
+              )}
               {errors.default_branch && <p className="text-xs text-status-failed">{errors.default_branch.message}</p>}
             </div>
           </div>

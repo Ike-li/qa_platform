@@ -584,12 +584,14 @@ class TestEvaluateAndNotify:
         rule_repo.find_enabled_by_project = AsyncMock(return_value=[rule])
         log_repo = AsyncMock()
         log_repo.get_by_delivery = AsyncMock(return_value=None)
+        run_repo = MagicMock()
         mock_send = AsyncMock()
         load_consecutive = AsyncMock(return_value=3)
 
         with (
             patch("qaplatform.infra.database.repositories.project_repo.NotificationRuleRepository", return_value=rule_repo),
             patch("qaplatform.infra.database.repositories.project_repo.NotificationLogRepository", return_value=log_repo),
+            patch("qaplatform.infra.database.repositories.run_repo.RunRepository", return_value=run_repo),
             patch("qaplatform.worker.notifications._load_consecutive_failures", load_consecutive),
             patch("qaplatform.worker.notifications._send_channel", mock_send),
         ):
@@ -601,7 +603,7 @@ class TestEvaluateAndNotify:
                 session_factory=sf,
             )
 
-        load_consecutive.assert_awaited_once_with(session, project_id, run_id)
+        load_consecutive.assert_awaited_once_with(run_repo, project_id, run_id)
         log_repo.get_by_delivery.assert_awaited_once_with(
             run_id=run_id,
             rule_id=rule.id,

@@ -260,6 +260,21 @@ class ProjectCreate(BaseModel):
         return validate_project_text(info.field_name, v)
 
 
+class GitBranchDiscoveryRequest(BaseModel):
+    git_url: str = Field(..., min_length=1, max_length=255)
+    git_auth_method: Literal["none", "token", "ssh_key"] = "none"
+
+    @field_validator("git_url")
+    @classmethod
+    def _validate_git_url(cls, v: str) -> str:
+        return validate_project_text("git_url", v)
+
+
+class GitBranchDiscoveryResponse(BaseModel):
+    branches: list[str]
+    default_branch: str | None = None
+
+
 class ProjectUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
     description: str | None = Field(None, max_length=500)

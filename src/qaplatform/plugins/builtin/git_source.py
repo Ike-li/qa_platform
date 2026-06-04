@@ -7,16 +7,21 @@ import re
 import shlex
 import socket
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import urlparse
 
-from qaplatform.engine.redact import redact_sensitive_text
+from qaplatform.domain.services.redact import redact_sensitive_text
 from qaplatform.plugins.protocols import SourceRevision
 
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 
 
-def _validate_git_url(url: str) -> None:
+def _validate_git_url(
+    url: str,
+    *,
+    allowed_private_hosts: Iterable[str] = (),
+) -> None:
     """Reject URLs that could lead to SSRF attacks.
 
     Allowed formats:
@@ -26,7 +31,9 @@ def _validate_git_url(url: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme:
         if parsed.scheme not in ("https",):
-            raise ValueError(f"Git URL must use https:// or SSH format, got: {parsed.scheme}://")
+            raise ValueError(
+                f"Git URL must use https:// or SSH format, got: {parsed.scheme}://"
+            )
         hostname = parsed.hostname
     else:
         # SSH scp-like format: git@hostname:path
@@ -37,6 +44,10 @@ def _validate_git_url(url: str) -> None:
 
     if not hostname:
         raise ValueError("Git URL has no hostname")
+
+    if hostname.lower() in {host.lower() for host in allowed_private_hosts}:
+        return
+
     try:
         infos = socket.getaddrinfo(hostname, None)
         for _, _, _, _, sockaddr in infos:
@@ -52,6 +63,17 @@ class GitSource:
 
     name: str = "git"
 
+    def __init__(
+        self,
+        *,
+        allowed_private_hosts: Iterable[str] = (),
+        clone_timeout_seconds: int = 300,
+    ) -> None:
+        self._allowed_private_hosts = tuple(
+            host.lower() for host in allowed_private_hosts
+        )
+        self._clone_timeout_seconds = clone_timeout_seconds
+
     async def clone(
         self,
         url: str,
@@ -59,12 +81,58 @@ class GitSource:
         dest: Path,
         auth: dict[str, str] | None = None,
     ) -> SourceRevision:
-        _validate_git_url(url)
+        try:
+            return await asyncio.wait_for(
+                self._clone(url, ref, dest, auth),
+                timeout=self._clone_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"git clone timed out after {self._clone_timeout_seconds}s"
+            ) from exc
+
+    async def _clone(
+        self,
+        url: str,
+        ref: str,
+        dest: Path,
+        auth: dict[str, str] | None = None,
+    ) -> SourceRevision:
+        _validate_git_url(url, allowed_private_hosts=self._allowed_private_hosts)
         with tempfile.TemporaryDirectory(prefix="qap-git-auth-") as tmp_dir:
             clone_url, env, secrets = self._prepare_auth(url, auth, Path(tmp_dir))
             if _SHA_PATTERN.match(ref):
-                return await self._clone_by_sha(clone_url, ref, dest, env=env, secrets=secrets)
-            return await self._clone_by_ref(clone_url, ref, dest, env=env, secrets=secrets)
+                return await self._clone_by_sha(
+                    clone_url, ref, dest, env=env, secrets=secrets
+                )
+            return await self._clone_by_ref(
+                clone_url, ref, dest, env=env, secrets=secrets
+            )
+
+    async def list_branches(
+        self,
+        url: str,
+        auth: dict[str, str] | None = None,
+    ) -> tuple[list[str], str | None]:
+        _validate_git_url(url, allowed_private_hosts=self._allowed_private_hosts)
+        with tempfile.TemporaryDirectory(prefix="qap-git-auth-") as tmp_dir:
+            remote_url, env, secrets = self._prepare_auth(url, auth, Path(tmp_dir))
+            output = await self._exec_output(
+                ["git", "ls-remote", "--symref", remote_url, "HEAD", "refs/heads/*"],
+                env=env,
+                secrets=secrets,
+            )
+        branches: list[str] = []
+        default_branch: str | None = None
+        for line in output.splitlines():
+            if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
+                default_branch = line.removeprefix("ref: refs/heads/").removesuffix("\tHEAD")
+                continue
+            if "\trefs/heads/" in line:
+                branch = line.rsplit("\trefs/heads/", 1)[-1].strip()
+                if branch:
+                    branches.append(branch)
+        return sorted(set(branches)), default_branch
 
     def _prepare_auth(
         self,
@@ -92,7 +160,7 @@ class GitSource:
         askpass = tmp_dir / "askpass.sh"
         askpass.write_text(
             "#!/bin/sh\n"
-            "case \"$1\" in\n"
+            'case "$1" in\n'
             "*Username*) printf '%s\\n' \"${QAP_GIT_USERNAME:-x-access-token}\" ;;\n"
             "*Password*) printf '%s\\n' \"$QAP_GIT_TOKEN\" ;;\n"
             "*) printf '\\n' ;;\n"
@@ -154,10 +222,17 @@ class GitSource:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            process.kill()
+            await process.communicate()
+            raise
         if process.returncode != 0:
             err_msg = stderr.decode(errors="replace").strip()
-            raise RuntimeError(f"git rev-parse failed (exit {process.returncode}): {err_msg}")
+            raise RuntimeError(
+                f"git rev-parse failed (exit {process.returncode}): {err_msg}"
+            )
         sha = stdout.decode().strip()
         if not sha:
             raise RuntimeError("git rev-parse failed: empty HEAD SHA")
@@ -175,8 +250,49 @@ class GitSource:
             stderr=asyncio.subprocess.PIPE,
             env={**os.environ, **env} if env else None,
         )
-        _, stderr = await process.communicate()
+        try:
+            _, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            process.kill()
+            await process.communicate()
+            raise
         if process.returncode != 0:
             err_msg = stderr.decode(errors="replace").strip()
             err_msg = redact_sensitive_text(err_msg, secrets)
-            raise RuntimeError(f"git clone failed (exit {process.returncode}): {err_msg}")
+            raise RuntimeError(
+                f"git clone failed (exit {process.returncode}): {err_msg}"
+            )
+
+    async def _exec_output(
+        self,
+        cmd: list[str],
+        env: dict[str, str] | None = None,
+        secrets: list[str] | None = None,
+    ) -> str:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={
+                **os.environ,
+                "GIT_TERMINAL_PROMPT": "0",
+                **(env or {}),
+            },
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+        except TimeoutError as exc:
+            process.kill()
+            await process.communicate()
+            raise RuntimeError("git ls-remote timed out") from exc
+        except asyncio.CancelledError:
+            process.kill()
+            await process.communicate()
+            raise
+        if process.returncode != 0:
+            err_msg = stderr.decode(errors="replace").strip()
+            err_msg = redact_sensitive_text(err_msg, secrets)
+            raise RuntimeError(
+                f"git ls-remote failed (exit {process.returncode}): {err_msg}"
+            )
+        return stdout.decode(errors="replace")

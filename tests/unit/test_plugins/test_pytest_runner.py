@@ -145,6 +145,46 @@ class TestPytestBuildCommandInternal:
             "tests",
         ]
 
+    def test_allure_enabled_adds_alluredir_and_keeps_junit_xml(self):
+        runner = PytestRunner()
+        cmd = runner._build_command({"allure_enabled": True})
+        assert cmd == [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "--alluredir=results/allure-results",
+            "tests",
+        ]
+
+    def test_allure_disabled_keeps_existing_command(self):
+        runner = PytestRunner()
+        cmd = runner._build_command({"allure_enabled": False})
+        assert cmd == [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=results/junit.xml",
+            "tests",
+        ]
+
+    @pytest.mark.parametrize(
+        "allure_results",
+        ["/tmp/allure", "../allure-results", "results/../allure-results"],
+    )
+    def test_rejects_allure_results_outside_workspace(self, allure_results):
+        runner = PytestRunner()
+        with pytest.raises(ValueError) as exc_info:
+            runner._build_command(
+                {"allure_enabled": True, "allure_results": allure_results}
+            )
+
+        assert (
+            str(exc_info.value)
+            == "allure_results must be a relative path inside the workspace"
+        )
+        assert allure_results not in str(exc_info.value)
+
     @pytest.mark.parametrize(
         "junit_xml",
         ["/tmp/report.xml", "../report.xml", "reports/../report.xml", r"C:\tmp\report.xml"],

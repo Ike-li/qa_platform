@@ -12,7 +12,14 @@ import {
   Eye
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useRun, useRunResults, useRunArtifacts, useCancelRun, useTriggerRun } from "../../hooks/use-runs";
+import {
+  useRun,
+  useRunResults,
+  useRunArtifacts,
+  useRunAllureReportArtifact,
+  useCancelRun,
+  useTriggerRun,
+} from "../../hooks/use-runs";
 import { RunStatusBadge } from "../../components/run-status-badge";
 import { BranchBadge } from "../../components/branch-badge";
 import { DurationDisplay } from "../../components/duration-display";
@@ -37,14 +44,19 @@ import { toast } from "sonner";
 import { cn } from "../../lib/utils";
 
 import { usePageTitle } from "../../hooks/use-page-title";
-import { getArtifactDownloadUrl } from "../../lib/api";
+import { getArtifactDownloadUrl, getArtifactPreviewUrl } from "../../lib/api";
 import { ArtifactPreview } from "../../components/runs/artifact-preview";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type PreviewState = {
   url: string;
   title: string;
   iframeTitle: string;
+};
+
+type AllurePreviewState = {
+  artifactId: string;
+  url: string | null;
 };
 
 function isPreviewableArtifact(artifact: Artifact): boolean {
@@ -81,17 +93,54 @@ function isSafeArtifactUrl(url: string): boolean {
 
 export default function RunDetail() {
   const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [allurePreview, setAllurePreview] = useState<AllurePreviewState | null>(null);
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
   const { data: run, isLoading: isRunLoading } = useRun(id!);
   const { data: results, isLoading: isResultsLoading } = useRunResults(id!, { per_page: 50 });
   const { data: artifacts, isLoading: isArtifactsLoading } = useRunArtifacts(id!);
+  const { data: allureReportArtifact } = useRunAllureReportArtifact(id!);
 
   const { mutateAsync: cancelRun, isPending: isCancelling } = useCancelRun(id!);
   const { mutateAsync: triggerRun, isPending: isReRunning } = useTriggerRun();
+  const hasAllureReport = Boolean(allureReportArtifact);
+  const matchingAllurePreview = allurePreview?.artifactId === allureReportArtifact?.id
+    ? allurePreview
+    : null;
+  const allureReportUrl = matchingAllurePreview?.url ?? null;
+  const isAllureReportLoading = Boolean(
+    allureReportArtifact && allurePreview?.artifactId !== allureReportArtifact.id,
+  );
+  const allureReportPreviewFailed = Boolean(matchingAllurePreview && !allureReportUrl);
 
   usePageTitle(run ? `Run ${run.pipeline_name}` : t('runs.notFound'));
+
+  useEffect(() => {
+    if (!allureReportArtifact) return;
+
+    let cancelled = false;
+    getArtifactPreviewUrl(allureReportArtifact.id)
+      .then((url) => {
+        if (cancelled) return;
+        if (!isSafeArtifactUrl(url)) {
+          setAllurePreview({ artifactId: allureReportArtifact.id, url: null });
+          toast.error(t('runs.artifacts.previewFailed'));
+          return;
+        }
+        setAllurePreview({ artifactId: allureReportArtifact.id, url });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAllurePreview({ artifactId: allureReportArtifact.id, url: null });
+          toast.error(t('runs.artifacts.previewFailed'));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [allureReportArtifact, t]);
 
   const onCancelRun = async () => {
     try {
@@ -209,11 +258,20 @@ export default function RunDetail() {
       </div>
 
       {/* Main Content Tabs */}
-      <Tabs defaultValue="results" className="w-full">
+      <Tabs
+        key={`${id}-${hasAllureReport ? "allure" : "results"}`}
+        defaultValue={hasAllureReport ? "report" : "results"}
+        className="w-full"
+      >
         <TabsList>
           <TabsTrigger value="logs">
             <Terminal className="mr-2 h-4 w-4" /> {t('runs.tabs.logs')}
           </TabsTrigger>
+          {hasAllureReport && (
+            <TabsTrigger value="report">
+              <FileText className="mr-2 h-4 w-4" /> {t('runs.tabs.report')}
+            </TabsTrigger>
+          )}
           <TabsTrigger value="results">
             <FileText className="mr-2 h-4 w-4" /> {t('runs.tabs.results')}
           </TabsTrigger>
@@ -225,6 +283,28 @@ export default function RunDetail() {
         <TabsContent value="logs" className="mt-4">
           <LogViewer runId={id!} archivedEnabled={archivedLogsEnabled} />
         </TabsContent>
+
+        {hasAllureReport && (
+          <TabsContent value="report" className="mt-4">
+            <div className="h-[72vh] overflow-hidden rounded-lg border border-hairline bg-surface-1">
+              {isAllureReportLoading || !allureReportUrl ? (
+                <div className="flex h-full items-center justify-center text-sm text-ink-tertiary">
+                  {allureReportPreviewFailed
+                    ? t('runs.artifacts.previewFailed')
+                    : t('runs.report.loading')}
+                </div>
+              ) : (
+                <iframe
+                  src={allureReportUrl}
+                  title="Allure Report Preview"
+                  className="h-full w-full border-0"
+                  sandbox="allow-scripts"
+                  referrerPolicy="no-referrer"
+                />
+              )}
+            </div>
+          </TabsContent>
+        )}
 
         <TabsContent value="results" className="mt-4 space-y-4">
           {/* Summary Bar */}
@@ -268,7 +348,7 @@ export default function RunDetail() {
                         title={t('runs.artifacts.previewArtifact', { name: artifact.name })}
                         onClick={async () => {
                           try {
-                            const url = await getArtifactDownloadUrl(artifact.id);
+                            const url = await getArtifactPreviewUrl(artifact.id);
                             if (!isSafeArtifactUrl(url)) {
                               toast.error(t('runs.artifacts.previewFailed'));
                               return;

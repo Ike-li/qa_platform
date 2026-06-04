@@ -81,6 +81,14 @@ class PytestRunner:
         )
         cmd += [f"--junitxml={report_path}"]
 
+        if config.get("allure_enabled") is True:
+            allure_results_path = safe_workspace_output_path(
+                config.get("allure_results"),
+                "results/allure-results",
+                field="allure_results",
+            )
+            cmd += [f"--alluredir={allure_results_path}"]
+
         # Extra arguments (e.g. -k, --markers, -x)
         extra_args = config.get("args", [])
         if isinstance(extra_args, str):

@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import api, { getAccessToken, setAccessToken, setOnAuthFailure } from "../lib/api";
+import api, { getAccessToken, refreshAccessToken, setAccessToken, setOnAuthFailure } from "../lib/api";
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -41,10 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        const response = await api.post("/auth/refresh", null, {
-          withCredentials: true,
-        });
-        setAccessToken(response.data.access_token);
+        await refreshAccessToken();
         setIsAuthenticated(true);
       } catch {
         if (getAccessToken() === null) {

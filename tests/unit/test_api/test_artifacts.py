@@ -451,3 +451,184 @@ class TestDownloadArtifactRBAC:
         assert responses["503"]["content"]["application/json"]["schema"] == {
             "$ref": "#/components/schemas/ErrorResponse"
         }
+
+
+class TestArtifactPreview:
+    @pytest.mark.asyncio
+    async def test_preview_url_enforces_rbac_and_returns_tokenized_url(self):
+        from qaplatform.api.v1.artifacts import get_artifact_preview_url
+
+        tenant_id = uuid4()
+        project_id = uuid4()
+        run_id = uuid4()
+        artifact_id = uuid4()
+
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+        artifact = MagicMock(
+            id=artifact_id,
+            run_id=run_id,
+            storage_path=f"reports/{run_id}/allure-report/index.html",
+        )
+        artifact.name = "allure-report/index.html"
+        artifact.type = "allure-report"
+        artifact.mime_type = "text/html"
+        mock_repos.artifact.get_by_id.return_value = artifact
+        mock_repos.run = AsyncMock()
+        mock_repos.run.get_for_tenant.return_value = MagicMock(project_id=project_id)
+
+        request = MagicMock()
+        request.app.state.container.s3_client = AsyncMock()
+        request.app.state.container.settings.s3_presigned_url_ttl = 3600
+        request.app.state.container.settings.jwt_secret = "test-secret-with-at-least-32-bytes"
+        request.url_for.return_value = "http://test/api/v1/artifacts/preview-token/index.html"
+        user = MagicMock(tenant_id=tenant_id)
+        session = MagicMock()
+
+        with patch(
+            "qaplatform.api.v1.artifacts.enforce_project_action",
+            new=AsyncMock(),
+        ) as enforce_project_action:
+            result = await get_artifact_preview_url(
+                artifact_id=artifact_id,
+                request=request,
+                repos=mock_repos,
+                user=user,
+                session=session,
+            )
+
+        enforce_project_action.assert_awaited_once()
+        request.url_for.assert_called_once()
+        url_kwargs = request.url_for.call_args.kwargs
+        assert url_kwargs["artifact_id"] == str(artifact_id)
+        assert url_kwargs["artifact_path"] == "index.html"
+        assert isinstance(url_kwargs["token"], str)
+        assert result == {
+            "preview_url": "http://test/api/v1/artifacts/preview-token/index.html",
+            "expires_in": 3600,
+        }
+
+    @pytest.mark.asyncio
+    async def test_preview_file_maps_relative_allure_asset_to_same_report_prefix(self):
+        from qaplatform.api.v1.artifacts import (
+            _create_preview_token,
+            preview_artifact_file,
+        )
+
+        artifact_id = uuid4()
+        run_id = uuid4()
+        secret = "test-secret-with-at-least-32-bytes"
+        token = _create_preview_token(
+            secret,
+            artifact_id,
+            3600,
+            storage_prefix=f"reports/{run_id}/allure-report",
+            allow_relative_assets=True,
+        )
+
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+        mock_repos.artifact.get_by_id.return_value = MagicMock(
+            storage_path=f"reports/{run_id}/allure-report/index.html",
+        )
+
+        class _Body:
+            async def read(self):
+                return b"console.log('ok')"
+
+        s3_client = AsyncMock()
+        s3_client.get_object.return_value = {"Body": _Body()}
+        request = MagicMock()
+        request.app.state.container.s3_client = s3_client
+        request.app.state.container.settings.s3_bucket = "qa-platform"
+        request.app.state.container.settings.jwt_secret = secret
+
+        response = await preview_artifact_file(
+            artifact_id=artifact_id,
+            token=token,
+            artifact_path="assets/app.js",
+            request=request,
+            repos=mock_repos,
+        )
+
+        s3_client.get_object.assert_awaited_once_with(
+            Bucket="qa-platform",
+            Key=f"reports/{run_id}/allure-report/assets/app.js",
+        )
+        assert response.body == b"console.log('ok')"
+        assert response.media_type == "text/javascript"
+        assert "sandbox allow-scripts allow-downloads" in response.headers[
+            "content-security-policy"
+        ]
+        assert "allow-same-origin" not in response.headers[
+            "content-security-policy"
+        ]
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["referrer-policy"] == "no-referrer"
+        assert response.headers["access-control-allow-origin"] == "*"
+
+    @pytest.mark.asyncio
+    async def test_preview_file_rejects_relative_asset_without_allure_asset_scope(self):
+        from fastapi import HTTPException
+
+        from qaplatform.api.v1.artifacts import (
+            _create_preview_token,
+            preview_artifact_file,
+        )
+
+        artifact_id = uuid4()
+        run_id = uuid4()
+        secret = "test-secret-with-at-least-32-bytes"
+        token = _create_preview_token(
+            secret,
+            artifact_id,
+            3600,
+            storage_prefix=f"reports/{run_id}/html",
+            allow_relative_assets=False,
+        )
+
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+        mock_repos.artifact.get_by_id.return_value = MagicMock(
+            storage_path=f"reports/{run_id}/html/index.html",
+        )
+        s3_client = AsyncMock()
+        request = MagicMock()
+        request.app.state.container.s3_client = s3_client
+        request.app.state.container.settings.jwt_secret = secret
+
+        with pytest.raises(HTTPException) as exc_info:
+            await preview_artifact_file(
+                artifact_id=artifact_id,
+                token=token,
+                artifact_path="assets/app.js",
+                request=request,
+                repos=mock_repos,
+            )
+
+        assert exc_info.value.status_code == 404
+        s3_client.get_object.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_preview_file_rejects_invalid_token_before_storage_lookup(self):
+        from fastapi import HTTPException
+
+        from qaplatform.api.v1.artifacts import preview_artifact_file
+
+        request = MagicMock()
+        request.app.state.container.s3_client = AsyncMock()
+        request.app.state.container.settings.jwt_secret = "test-secret-with-at-least-32-bytes"
+        mock_repos = MagicMock()
+        mock_repos.artifact = AsyncMock()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await preview_artifact_file(
+                artifact_id=uuid4(),
+                token="not-a-token",
+                artifact_path="index.html",
+                request=request,
+                repos=mock_repos,
+            )
+
+        assert exc_info.value.status_code == 403
+        mock_repos.artifact.get_by_id.assert_not_awaited()

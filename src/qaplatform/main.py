@@ -14,7 +14,11 @@ from qaplatform.api.schemas import ErrorDetail, ErrorResponse
 from qaplatform.config import Settings
 from qaplatform.logging import configure_logging
 from qaplatform.observability.metrics import http_request_duration
-from qaplatform.observability.tracing import instrument_fastapi, instrument_infra, setup_tracing
+from qaplatform.observability.tracing import (
+    instrument_fastapi,
+    instrument_infra,
+    setup_tracing,
+)
 from qaplatform.api.middleware.request_id import RequestIdMiddleware
 from qaplatform.api.middleware.rate_limit import RateLimitMiddleware
 from qaplatform.api.middleware.security_headers import SecurityHeadersMiddleware
@@ -30,12 +34,17 @@ def _ensure_plugin_registry(container: Any) -> None:
     if getattr(container, "plugin_registry", None) is None:
         from qaplatform.plugins.registry import PluginRegistry
 
-        plugin_registry = PluginRegistry()
+        plugin_registry = PluginRegistry(
+            git_allowed_private_hosts=container.settings.git_allowed_private_hosts,
+            git_clone_timeout_seconds=container.settings.preparing_timeout_seconds,
+        )
         plugin_registry.register_builtins()
         container.plugin_registry = plugin_registry
 
 
-def create_app(container: Any | None = None, settings: Settings | None = None) -> FastAPI:
+def create_app(
+    container: Any | None = None, settings: Settings | None = None
+) -> FastAPI:
     """FastAPI application factory."""
 
     @asynccontextmanager
@@ -148,13 +157,19 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     # For BaseHTTPMiddleware, it's added during app creation.
 
     if container and container.redis_client:
-        app.add_middleware(RateLimitMiddleware, settings=_settings_obj, redis_client=container.redis_client)
+        app.add_middleware(
+            RateLimitMiddleware,
+            settings=_settings_obj,
+            redis_client=container.redis_client,
+        )
     else:
         # If container is not yet available, we can't easily add RateLimitMiddleware here
         # if it strictly requires redis_client at init time.
         # However, we can make RateLimitMiddleware fetch it from app.state.container at request time.
         # Let's adjust RateLimitMiddleware to be more flexible.
-        app.add_middleware(RateLimitMiddleware, settings=_settings_obj, redis_client=None)
+        app.add_middleware(
+            RateLimitMiddleware, settings=_settings_obj, redis_client=None
+        )
 
     # ── CORS ──────────────────────────────────────────────────────────────
     setup_cors(app, _settings_obj)
@@ -203,7 +218,9 @@ def create_app(container: Any | None = None, settings: Settings | None = None) -
     app.include_router(webhook_provider_router)
 
     # ── Health checks ────────────────────────────────────────────────────
-    app.add_route("/metrics", metrics_route.endpoint, methods=["GET"], include_in_schema=False)
+    app.add_route(
+        "/metrics", metrics_route.endpoint, methods=["GET"], include_in_schema=False
+    )
 
     @app.get("/health", tags=["ops"])
     async def health():
@@ -274,7 +291,9 @@ def _register_error_handlers(app: FastAPI) -> None:
         body = ErrorResponse(
             error=ErrorDetail(
                 code="NOT_FOUND",
-                message=str(exc.detail) if hasattr(exc, "detail") else "Resource not found",
+                message=str(exc.detail)
+                if hasattr(exc, "detail")
+                else "Resource not found",
             )
         )
         return JSONResponse(status_code=404, content=body.model_dump())

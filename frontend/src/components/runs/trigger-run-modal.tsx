@@ -53,18 +53,21 @@ export function TriggerRunModal({
   projectId, 
   open, 
   onOpenChange,
-  defaultPipelineId
+  defaultPipelineId,
+  onCreatePipeline
 }: { 
   projectId: string; 
   open: boolean; 
   onOpenChange: (open: boolean) => void;
   defaultPipelineId?: string;
+  onCreatePipeline?: () => void;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { data: pipelines } = useProjectPipelines(projectId);
+  const { data: pipelines, isLoading: isPipelinesLoading } = useProjectPipelines(projectId);
   const { data: environments } = useProjectEnvironments(projectId);
   const { mutateAsync: triggerRun, isPending } = useTriggerRun();
+  const hasPipelines = (pipelines?.length ?? 0) > 0;
   
   const {
     register,
@@ -125,6 +128,7 @@ export function TriggerRunModal({
             <Label htmlFor="pipeline">{t("trigger.selectPipeline")}</Label>
             <Select 
               value={selectedPipelineId}
+              disabled={isPipelinesLoading || !hasPipelines}
               onValueChange={(value) =>
                 setValue("pipeline_id", value, {
                   shouldDirty: true,
@@ -141,6 +145,27 @@ export function TriggerRunModal({
                 ))}
               </SelectContent>
             </Select>
+            {isPipelinesLoading && (
+              <p className="text-xs text-ink-tertiary">{t("trigger.loadingPipelines")}</p>
+            )}
+            {!isPipelinesLoading && !hasPipelines && (
+              <div className="space-y-2 rounded-md border border-hairline bg-surface-2 p-3">
+                <p className="text-xs text-ink-muted">{t("trigger.noPipelines")}</p>
+                {onCreatePipeline && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      onOpenChange(false);
+                      onCreatePipeline();
+                    }}
+                  >
+                    {t("trigger.createPipeline")}
+                  </Button>
+                )}
+              </div>
+            )}
             {errors.pipeline_id && <p className="text-xs text-status-failed">{t("validation.pipelineRequired")}</p>}
           </div>
 
@@ -213,7 +238,7 @@ export function TriggerRunModal({
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>{t("common.cancel")}</Button>
-            <Button type="submit" disabled={isPending || !pipelines?.length}>
+            <Button type="submit" disabled={isPending || isPipelinesLoading || !hasPipelines}>
               {isPending ? t("trigger.triggering") : t("trigger.runPipeline")}
             </Button>
           </DialogFooter>

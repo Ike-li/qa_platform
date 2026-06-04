@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_PREVIEW = ROOT / "frontend" / "src" / "components" / "runs" / "artifact-preview.tsx"
 RUN_DETAIL_PAGE = ROOT / "frontend" / "src" / "pages" / "runs" / "detail.tsx"
 USE_AUTH = ROOT / "frontend" / "src" / "hooks" / "use-auth.tsx"
+API_CLIENT = ROOT / "frontend" / "src" / "lib" / "api.ts"
 REAL_LOGIN_FLOW = ROOT / "tests" / "e2e" / "real-login-flow.spec.ts"
 E2E_HELPERS = ROOT / "tests" / "e2e" / "helpers.ts"
 TRIGGER_RUN_MODAL = (
@@ -27,7 +28,7 @@ def test_artifact_preview_and_download_reject_non_http_urls_before_opening():
 
     assert "function isSafeArtifactUrl(url: string): boolean" in source
     assert 'parsed.protocol === "https:" || parsed.protocol === "http:"' in source
-    assert source.count("if (!isSafeArtifactUrl(url))") == 2
+    assert source.count("if (!isSafeArtifactUrl(url))") == 3
 
     preview_handler = source.split("aria-label={t('runs.artifacts.previewArtifact'", 1)[
         1
@@ -71,8 +72,24 @@ def test_login_page_skips_initial_refresh_that_can_clear_new_cookie():
     assert 'window.location.pathname === "/login"' in init_auth
     assert "return;" in init_auth.split('window.location.pathname === "/login"', 1)[1]
     assert init_auth.index('window.location.pathname === "/login"') < init_auth.index(
-        'api.post("/auth/refresh"'
+        "refreshAccessToken();"
     )
+
+
+def test_refresh_helper_uses_configured_api_client_base_url():
+    source = API_CLIENT.read_text(encoding="utf-8")
+    refresh_body = source.split("export function refreshAccessToken", 1)[1].split(
+        "const AUTH_PATHS",
+        1,
+    )[0]
+
+    expected = (
+        'refreshPromise = api\n'
+        '      .post("/auth/refresh", null, { withCredentials: true })'
+    )
+    assert expected in refresh_body
+    assert '"/api/v1/auth/refresh"' not in refresh_body
+    assert "refreshPromise = axios" not in refresh_body
 
 
 def test_login_success_finishes_auth_loading_before_protected_navigation():

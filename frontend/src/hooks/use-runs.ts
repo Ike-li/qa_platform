@@ -166,6 +166,24 @@ export function useRunArtifacts(id: string) {
   });
 }
 
+export function useRunAllureReportArtifact(id: string) {
+  return useQuery({
+    queryKey: ["runs", id, "artifacts", "allure-report"],
+    queryFn: async () => {
+      try {
+        const { data } = await api.get<Artifact>(`/runs/${id}/artifacts/allure-report`);
+        return data;
+      } catch (error: unknown) {
+        const axiosError = error as { response?: { status?: number } };
+        if (axiosError.response?.status === 404) return null;
+        throw error;
+      }
+    },
+    enabled: !!id,
+    retry: false,
+  });
+}
+
 export function useArchivedRunLogs(id: string, enabled: boolean) {
   return useQuery({
     queryKey: ["runs", id, "logs", "archive"],

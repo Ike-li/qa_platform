@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../lib/api";
 import type {
   Project,
+  GitBranchDiscoveryResponse,
   PaginatedResponse,
   Pipeline,
   Environment,
@@ -33,6 +34,14 @@ export function useProjects(params?: { page?: number; per_page?: number; search?
     enabled,
     staleTime: 30_000,
   });
+}
+
+export async function discoverGitBranches(payload: {
+  git_url: string;
+  git_auth_method?: ProjectCreatePayload["git_auth_method"];
+}): Promise<GitBranchDiscoveryResponse> {
+  const { data } = await api.post<GitBranchDiscoveryResponse>("/projects/branches", payload);
+  return data;
 }
 
 export function useProject(id: string) {

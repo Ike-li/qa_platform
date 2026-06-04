@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import stat
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 from uuid import UUID, uuid4
@@ -10,7 +11,8 @@ from uuid import UUID, uuid4
 import pytest
 
 from qaplatform.domain.models.run import Run, RunStatus
-from qaplatform.engine.executor import RunExecutor
+from qaplatform.engine.docker_backend import ExitResult
+from qaplatform.engine.executor import PipelineConfig, RunExecutor
 from qaplatform.plugins.protocols import SourceRevision
 from qaplatform.plugins.registry import PluginRegistry
 
@@ -576,6 +578,45 @@ class TestExecutorUsesSourcePlugin:
         executor.run_repo.update_git_sha.assert_not_awaited()
         executor.run_repo.commit.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_execute_times_out_source_clone(
+        self,
+        mock_backend,
+        mock_log_stream,
+        mock_run_repo,
+        mock_plugin_registry,
+        sample_run,
+    ):
+        source = mock_plugin_registry.get_source.return_value
+
+        async def _hang_clone(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        source.clone.side_effect = _hang_clone
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+            source_clone_timeout_seconds=0.01,
+        )
+        pipeline = PipelineConfig(image="python:3.12", stages=[])
+
+        status = await executor.execute(sample_run, pipeline)
+
+        assert status == RunStatus.FAILED
+        mock_run_repo.fail_if_current.assert_awaited_once()
+        assert mock_run_repo.fail_if_current.await_args.args == (str(sample_run.id),)
+        assert mock_run_repo.fail_if_current.await_args.kwargs == {
+            "message": "Source clone timed out after 0.01s",
+        }
+        assert mock_log_stream.write_log.await_args_list[0] == call(
+            str(sample_run.id),
+            "Source clone exceeded timeout 0.01s",
+            stream="stderr",
+        )
+        mock_run_repo.mark_running.assert_not_awaited()
+
 
 class TestUploadArtifacts:
     """Verify _upload_artifacts uploads to S3 AND writes Artifact rows."""
@@ -720,6 +761,134 @@ class TestUploadArtifacts:
                 "mime_type": "text/html",
             },
         ]
+
+    @pytest.mark.asyncio
+    async def test_generate_allure_report_runs_cli_when_results_exist(
+        self,
+        mock_backend,
+        mock_log_stream,
+        mock_run_repo,
+        mock_plugin_registry,
+        tmp_path,
+    ):
+        now = datetime.now(timezone.utc)
+        mock_backend.create_execution.return_value = "allure-123"
+        mock_backend.wait.return_value = ExitResult(
+            exit_code=0,
+            started_at=now,
+            finished_at=now,
+        )
+
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+        )
+        (tmp_path / "results" / "allure-results").mkdir(parents=True)
+        (tmp_path / "results" / "allure-results" / "result.json").write_text("{}")
+
+        run_id = "11111111-1111-1111-1111-111111111111"
+        pipeline = PipelineConfig(
+            image="python:3.12",
+            stages=[],
+            env_vars={"TOKEN": "secret"},
+            network_policy="allow",
+        )
+        await executor._generate_allure_report(run_id, tmp_path, pipeline)
+
+        spec = mock_backend.create_execution.await_args.args[0]
+        assert spec.image == "python:3.12"
+        assert spec.command == [
+            "sh",
+            "-c",
+            "cd /workspace && allure generate results/allure-results -o results/allure-report --clean",
+        ]
+        assert spec.env_vars == {"TOKEN": "secret"}
+        assert spec.network_policy == "allow"
+        assert _mount_projection(spec.mounts) == [
+            {"source": str(tmp_path), "target": "/workspace", "read_only": False}
+        ]
+        assert spec.labels == {"run_id": run_id, "stage": "allure-report"}
+        mock_backend.start.assert_awaited_once_with("allure-123")
+        mock_backend.wait.assert_awaited_once_with("allure-123", 300)
+        mock_backend.cleanup.assert_awaited_once_with("allure-123")
+        mock_log_stream.write_log.assert_any_await(
+            run_id,
+            "Allure report generated: allure-report",
+        )
+
+    @pytest.mark.asyncio
+    async def test_generate_allure_report_failure_is_logged_not_raised(
+        self,
+        mock_backend,
+        mock_log_stream,
+        mock_run_repo,
+        mock_plugin_registry,
+        tmp_path,
+    ):
+        now = datetime.now(timezone.utc)
+        mock_backend.create_execution.return_value = "allure-123"
+        mock_backend.wait.return_value = ExitResult(
+            exit_code=1,
+            started_at=now,
+            finished_at=now,
+        )
+
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+        )
+        (tmp_path / "results" / "allure-results").mkdir(parents=True)
+        (tmp_path / "results" / "allure-results" / "result.json").write_text("{}")
+
+        run_id = "11111111-1111-1111-1111-111111111111"
+        pipeline = PipelineConfig(image="python:3.12", stages=[])
+        await executor._generate_allure_report(run_id, tmp_path, pipeline)
+
+        mock_log_stream.write_log.assert_awaited_once_with(
+            run_id,
+            "Allure report generation failed with code 1",
+            stream="stderr",
+        )
+
+    @pytest.mark.asyncio
+    async def test_generate_allure_report_missing_cli_is_logged_not_raised(
+        self,
+        mock_backend,
+        mock_log_stream,
+        mock_run_repo,
+        mock_plugin_registry,
+        tmp_path,
+    ):
+        now = datetime.now(timezone.utc)
+        mock_backend.create_execution.return_value = "allure-123"
+        mock_backend.wait.return_value = ExitResult(
+            exit_code=127,
+            started_at=now,
+            finished_at=now,
+        )
+
+        executor = RunExecutor(
+            backend=mock_backend,
+            log_stream=mock_log_stream,
+            run_repo=mock_run_repo,
+            plugin_registry=mock_plugin_registry,
+        )
+        (tmp_path / "results" / "allure-results").mkdir(parents=True)
+        (tmp_path / "results" / "allure-results" / "result.json").write_text("{}")
+
+        run_id = "11111111-1111-1111-1111-111111111111"
+        pipeline = PipelineConfig(image="python:3.12", stages=[])
+        await executor._generate_allure_report(run_id, tmp_path, pipeline)
+
+        mock_log_stream.write_log.assert_awaited_once_with(
+            run_id,
+            "Allure report generation skipped: allure CLI is not installed in the execution image",
+            stream="stderr",
+        )
 
     @pytest.mark.asyncio
     async def test_upload_skips_artifact_row_when_repo_missing(

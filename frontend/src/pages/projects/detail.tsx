@@ -309,6 +309,7 @@ export default function ProjectDetail() {
         projectId={id!}
         open={isTriggerModalOpen}
         onOpenChange={setIsTriggerModalOpen}
+        onCreatePipeline={openNewPipeline}
       />
 
       {/* Tabs */}

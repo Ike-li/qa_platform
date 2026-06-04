@@ -261,7 +261,7 @@ async def test_list_projects(client, mock_project_repo, tenant_id):
     list_kwargs = mock_project_repo.list.await_args.kwargs
     assert list_kwargs["offset"] == 0
     assert list_kwargs["limit"] == 20
-    assert str(list_kwargs["order_by"]) == "project.name ASC"
+    assert str(list_kwargs["order_by"]) == "project.created_at DESC"
     assert _render_filters(list_kwargs["filters"]) == [
         f"project.tenant_id = '{tenant_id.hex}'",
     ]
@@ -285,9 +285,68 @@ async def test_list_projects_with_search(client, mock_project_repo, tenant_id):
     assert _render_filters(list_kwargs["filters"]) == [
         f"project.tenant_id = '{tenant_id.hex}'",
         "lower(project.name) LIKE lower('%keyword%') ESCAPE '\\' "
-        "OR lower(project.description) LIKE lower('%keyword%') ESCAPE '\\'",
+        "OR lower(project.description) LIKE lower('%keyword%') ESCAPE '\\' "
+        "OR lower(project.slug) LIKE lower('%keyword%') ESCAPE '\\' "
+        "OR lower(project.git_url) LIKE lower('%keyword%') ESCAPE '\\'",
     ]
-    assert "project.name ASC" in str(list_kwargs["order_by"])
+    assert "project.created_at DESC" in str(list_kwargs["order_by"])
+
+
+@pytest.mark.asyncio
+async def test_discover_git_branches(client, app, monkeypatch, mock_repos, mock_user):
+    class FakeGitSource:
+        def __init__(self, *, allowed_private_hosts):
+            assert allowed_private_hosts == ["github.com"]
+
+        async def list_branches(self, git_url):
+            assert git_url == "https://github.com/example/repo.git"
+            return ["main", "release"], "main"
+
+    app.state.container.settings.git_allowed_private_hosts = ["github.com"]
+    monkeypatch.setattr("qaplatform.api.v1.projects.GitSource", FakeGitSource)
+
+    resp = await client.post(
+        "/api/v1/projects/branches",
+        json={"git_url": "https://github.com/example/repo.git"},
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"branches": ["main", "release"], "default_branch": "main"}
+    mock_repos.audit.create.assert_awaited_once_with(
+        tenant_id=mock_user.tenant_id,
+        user_id=mock_user.user_id,
+        action="project.branches_discover",
+        resource_type="project",
+        resource_id=None,
+        before_state=None,
+        after_state={
+            "git_url": "https://github.com/example/repo.git",
+            "branch_count": 2,
+            "default_branch": "main",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_discover_git_branches_rejects_private_auth(client):
+    resp = await client.post(
+        "/api/v1/projects/branches",
+        json={
+            "git_url": "https://github.com/example/repo.git",
+            "git_auth_method": "token",
+        },
+        headers={"Authorization": "Bearer fake"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json() == {
+        "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Branch discovery currently supports public repositories only",
+            "details": [],
+        }
+    }
 
 
 @pytest.mark.asyncio

@@ -542,19 +542,29 @@ function RuleCard({
         </div>
         <div className="flex gap-2">
           <Button
+            type="button"
             size="sm"
             variant="ghost"
             className="text-ink-tertiary hover:text-ink"
             onClick={onEdit}
+            aria-label={t("notifications.editRuleAria", { name: rule.name })}
+            title={t("notifications.editRuleAria", { name: rule.name })}
           >
             <Pencil className="h-4 w-4" />
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button
+                type="button"
                 size="sm"
                 variant="ghost"
                 className="text-ink-tertiary hover:text-status-failed"
+                aria-label={t("notifications.deleteRuleAria", {
+                  name: rule.name,
+                })}
+                title={t("notifications.deleteRuleAria", {
+                  name: rule.name,
+                })}
               >
                 <Trash2 className="h-4 w-4" />
               </Button>

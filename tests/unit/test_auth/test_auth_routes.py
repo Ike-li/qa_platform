@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from qaplatform.api import deps as auth_deps
 from qaplatform.api.auth.jwt_service import JWTService
 from qaplatform.api.auth.middleware import CurrentUser, get_current_user
-from qaplatform.api.v1.auth import _resolve_tenant_id, router
+from qaplatform.api.v1.auth import _refresh_cookie_secure, _resolve_tenant_id, router
 
 
 # --- Helpers ---
@@ -93,8 +93,15 @@ def _make_session_factory(session_cm):
     return MagicMock(return_value=session_cm)
 
 
+def _request_for_url(url: str):
+    scheme, rest = url.split("://", 1)
+    host = rest.split("/", 1)[0]
+    return SimpleNamespace(url=SimpleNamespace(scheme=scheme, hostname=host))
+
+
 def _multi_session_factory():
     """Return a factory callable that yields a fresh AsyncMock session each call."""
+
     def _make_fresh_session():
         session = AsyncMock()
         session.add = MagicMock()
@@ -109,6 +116,41 @@ def _multi_session_factory():
         return _cm()
 
     return MagicMock(side_effect=lambda: _make_fresh_session())
+
+
+def test_refresh_cookie_secure_defaults_to_secure():
+    assert _refresh_cookie_secure(_request_for_url("http://test")) is True
+    assert _refresh_cookie_secure(_request_for_url("https://127.0.0.1")) is True
+
+
+def test_refresh_cookie_secure_allows_local_development_http():
+    settings = SimpleNamespace(debug=True, environment="development")
+
+    assert (
+        _refresh_cookie_secure(_request_for_url("http://127.0.0.1"), settings) is False
+    )
+    assert (
+        _refresh_cookie_secure(_request_for_url("http://localhost"), settings) is False
+    )
+
+
+def test_refresh_cookie_secure_can_be_configured_explicitly():
+    assert (
+        _refresh_cookie_secure(
+            _request_for_url("http://127.0.0.1"),
+            SimpleNamespace(
+                refresh_cookie_secure=True, debug=True, environment="development"
+            ),
+        )
+        is True
+    )
+    assert (
+        _refresh_cookie_secure(
+            _request_for_url("https://qa.example"),
+            SimpleNamespace(refresh_cookie_secure=False),
+        )
+        is False
+    )
 
 
 @pytest.fixture
@@ -240,10 +282,14 @@ def _assert_login_failed_audit(
     }
 
 
-def _setup_overrides(app: FastAPI, *, session_factory=None, jwt_svc=None, settings=None):
+def _setup_overrides(
+    app: FastAPI, *, session_factory=None, jwt_svc=None, settings=None
+):
     """Install dependency overrides on the app for auth deps."""
     if session_factory is not None:
-        app.dependency_overrides[auth_deps.get_session_factory] = lambda: session_factory
+        app.dependency_overrides[auth_deps.get_session_factory] = lambda: (
+            session_factory
+        )
     if jwt_svc is not None:
         app.dependency_overrides[auth_deps.get_jwt_service] = lambda: jwt_svc
     if settings is not None:
@@ -420,10 +466,17 @@ class TestLogin:
 
         with (
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
+            patch(
+                "qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock
+            ) as mock_resolve,
         ):
             mock_resolve.return_value = tenant_id
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await client.post(
                 "/api/v1/auth/login",
                 json={"username": "alice", "password": "correct-password"},
@@ -481,11 +534,20 @@ class TestLogin:
 
         with (
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock
+            ) as mock_resolve,
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
             mock_resolve.return_value = tenant_id
-            _setup_overrides(app, session_factory=_multi_session_factory(), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_multi_session_factory(),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await client.post(
                 "/api/v1/auth/login",
                 headers={"user-agent": "login-wrong-password-audit-test"},
@@ -520,11 +582,20 @@ class TestLogin:
 
         with (
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock
+            ) as mock_resolve,
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
             mock_resolve.return_value = tenant_id
-            _setup_overrides(app, session_factory=_multi_session_factory(), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_multi_session_factory(),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await client.post(
                 "/api/v1/auth/login",
                 headers={"user-agent": "login-user-not-found-audit-test"},
@@ -563,11 +634,20 @@ class TestLogin:
 
         with (
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock) as mock_resolve,
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock
+            ) as mock_resolve,
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
             mock_resolve.return_value = tenant_id
-            _setup_overrides(app, session_factory=_multi_session_factory(), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_multi_session_factory(),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await client.post(
                 "/api/v1/auth/login",
                 headers={"user-agent": "login-inactive-user-audit-test"},
@@ -665,7 +745,12 @@ class TestRegister:
             patch("qaplatform.api.v1.auth.TenantRepository", return_value=tenant_repo),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
         ):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await client.post(
                 "/api/v1/auth/register",
                 json={
@@ -718,7 +803,9 @@ class TestRegister:
 
         with (
             patch("qaplatform.api.v1.auth.TenantRepository", return_value=tenant_repo),
-            patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo) as user_repo_cls,
+            patch(
+                "qaplatform.api.v1.auth.UserRepository", return_value=user_repo
+            ) as user_repo_cls,
             patch("qaplatform.api.v1.auth.AuditEventRepository") as audit_repo_cls,
         ):
             _setup_overrides(
@@ -816,7 +903,9 @@ class TestRegister:
         with (
             patch("qaplatform.api.v1.auth.TenantRepository", return_value=tenant_repo),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
             _setup_overrides(
                 app,
@@ -892,7 +981,9 @@ class TestRegister:
         with (
             patch("qaplatform.api.v1.auth.TenantRepository", return_value=tenant_repo),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
             _setup_overrides(
                 app,
@@ -930,7 +1021,9 @@ class TestRegister:
         with (
             patch("qaplatform.api.v1.auth.TenantRepository", return_value=tenant_repo),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
             _setup_overrides(
                 app,
@@ -981,7 +1074,12 @@ class TestRefresh:
         session, session_cm = _session_mock()
 
         with patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await _post_with_refresh_cookie(
                 client,
                 "/api/v1/auth/refresh",
@@ -1014,7 +1112,9 @@ class TestRefresh:
         jwt_svc = JWTService(settings)
         session, session_cm = _session_mock()
         session_factory = _make_session_factory(session_cm)
-        _setup_overrides(app, session_factory=session_factory, jwt_svc=jwt_svc, settings=settings)
+        _setup_overrides(
+            app, session_factory=session_factory, jwt_svc=jwt_svc, settings=settings
+        )
         resp = await client.post("/api/v1/auth/refresh")
 
         assert resp.status_code == 401
@@ -1031,15 +1131,24 @@ class TestRefresh:
         session.rollback.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_refresh_with_access_token_rejected(self, app: FastAPI, client: AsyncClient):
+    async def test_refresh_with_access_token_rejected(
+        self, app: FastAPI, client: AsyncClient
+    ):
         settings = _settings()
         jwt_svc = JWTService(settings)
         access_token = jwt_svc.create_access_token("user-1", "viewer", "t1")
         session, session_cm = _session_mock()
         audit_repo = _make_audit_repo_mock()
 
-        with patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+        with patch(
+            "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+        ):
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await _post_with_refresh_cookie(
                 client,
                 "/api/v1/auth/refresh",
@@ -1065,14 +1174,22 @@ class TestRefresh:
         settings.jwt_refresh_token_ttl = 0
         jwt_svc = JWTService(settings)
         import time
+
         session, session_cm = _session_mock()
         audit_repo = _make_audit_repo_mock()
 
         refresh_token = jwt_svc.create_refresh_token("user-1")
         time.sleep(0.01)
 
-        with patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+        with patch(
+            "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+        ):
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await _post_with_refresh_cookie(
                 client,
                 "/api/v1/auth/refresh",
@@ -1159,7 +1276,9 @@ async def auth_client(authenticated_app):
 
 class TestTokenRoutes:
     @pytest.mark.asyncio
-    async def test_create_token(self, authenticated_app: FastAPI, auth_client: AsyncClient):
+    async def test_create_token(
+        self, authenticated_app: FastAPI, auth_client: AsyncClient
+    ):
         token_id = "c" * 32
         token_secret = "d" * 64
         full_token = f"qap_{token_id}_{token_secret}"
@@ -1182,8 +1301,12 @@ class TestTokenRoutes:
         session, session_cm = _session_mock()
 
         with (
-            patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo
+            ),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
             patch(
                 "qaplatform.api.v1.auth.TokenService.generate_token",
                 return_value=(token_id, full_token),
@@ -1193,7 +1316,9 @@ class TestTokenRoutes:
                 return_value="hashed-secret",
             ) as hash_token,
         ):
-            _setup_overrides(authenticated_app, session_factory=_make_session_factory(session_cm))
+            _setup_overrides(
+                authenticated_app, session_factory=_make_session_factory(session_cm)
+            )
             resp = await auth_client.post(
                 "/api/v1/auth/tokens",
                 headers={"user-agent": "api-token-create-audit-test"},
@@ -1209,7 +1334,9 @@ class TestTokenRoutes:
             "token": full_token,
             "name": "ci",
             "scopes": ["runs:read"],
-            "expires_at": create_kwargs["expires_at"].isoformat().replace(
+            "expires_at": create_kwargs["expires_at"]
+            .isoformat()
+            .replace(
                 "+00:00",
                 "Z",
             ),
@@ -1222,7 +1349,11 @@ class TestTokenRoutes:
         assert create_kwargs["token_id"] == token_id
         assert create_kwargs["secret_hash"] == "hashed-secret"
         assert create_kwargs["scopes"] == ["runs:read"]
-        assert timedelta(days=29, hours=23) < create_kwargs["expires_at"] - datetime.now(timezone.utc) <= timedelta(days=30)
+        assert (
+            timedelta(days=29, hours=23)
+            < create_kwargs["expires_at"] - datetime.now(timezone.utc)
+            <= timedelta(days=30)
+        )
         audit_repo.create.assert_awaited_once()
         audit_kwargs = audit_repo.create.await_args.kwargs
         assert audit_kwargs == {
@@ -1315,7 +1446,9 @@ class TestTokenRoutes:
         with (
             patch("qaplatform.api.v1.auth.ApiTokenRepository", api_token_repo_cls),
             patch("qaplatform.api.v1.auth.AuditEventRepository", audit_repo_cls),
-            patch("qaplatform.api.v1.auth.TokenService.generate_token") as generate_token,
+            patch(
+                "qaplatform.api.v1.auth.TokenService.generate_token"
+            ) as generate_token,
             patch("qaplatform.api.v1.auth.TokenService.hash_token") as hash_token,
         ):
             _setup_overrides(
@@ -1351,7 +1484,9 @@ class TestTokenRoutes:
         json_body: dict | None,
     ):
         session_factory = MagicMock(
-            side_effect=AssertionError("unauthenticated token routes must not open DB sessions")
+            side_effect=AssertionError(
+                "unauthenticated token routes must not open DB sessions"
+            )
         )
         app.dependency_overrides[auth_deps.get_session_factory] = session_factory
         request = getattr(client, method)
@@ -1364,7 +1499,9 @@ class TestTokenRoutes:
         session_factory.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_revoke_token(self, authenticated_app: FastAPI, auth_client: AsyncClient):
+    async def test_revoke_token(
+        self, authenticated_app: FastAPI, auth_client: AsyncClient
+    ):
         fake_token = _make_orm_token(
             token_id="tok123",
             user_id=UUID("a0000000-0000-0000-0000-000000000001"),
@@ -1377,10 +1514,16 @@ class TestTokenRoutes:
         session, session_cm = _session_mock()
 
         with (
-            patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo
+            ),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
-            _setup_overrides(authenticated_app, session_factory=_make_session_factory(session_cm))
+            _setup_overrides(
+                authenticated_app, session_factory=_make_session_factory(session_cm)
+            )
             resp = await auth_client.delete(
                 "/api/v1/auth/tokens/tok123",
                 headers={"user-agent": "api-token-revoke-audit-test"},
@@ -1406,7 +1549,9 @@ class TestTokenRoutes:
         session.rollback.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_revoke_token_not_found(self, authenticated_app: FastAPI, auth_client: AsyncClient):
+    async def test_revoke_token_not_found(
+        self, authenticated_app: FastAPI, auth_client: AsyncClient
+    ):
         api_token_repo = AsyncMock()
         api_token_repo.get_by_token_id.return_value = None
         api_token_repo.revoke = AsyncMock()
@@ -1415,10 +1560,16 @@ class TestTokenRoutes:
         session, session_cm = _session_mock()
 
         with (
-            patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo
+            ),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
-            _setup_overrides(authenticated_app, session_factory=_make_session_factory(session_cm))
+            _setup_overrides(
+                authenticated_app, session_factory=_make_session_factory(session_cm)
+            )
             resp = await auth_client.delete("/api/v1/auth/tokens/nonexistent")
 
         assert resp.status_code == 404
@@ -1447,8 +1598,12 @@ class TestTokenRoutes:
         session, session_cm = _session_mock()
 
         with (
-            patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo
+            ),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
             _setup_overrides(
                 authenticated_app,
@@ -1465,7 +1620,9 @@ class TestTokenRoutes:
         session.rollback.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_list_tokens(self, authenticated_app: FastAPI, auth_client: AsyncClient):
+    async def test_list_tokens(
+        self, authenticated_app: FastAPI, auth_client: AsyncClient
+    ):
         expires_at = datetime(2026, 5, 31, 1, 2, 3, tzinfo=timezone.utc)
         last_used_at = datetime(2026, 5, 31, 4, 5, 6, tzinfo=timezone.utc)
         created_at = datetime(2026, 5, 31, 7, 8, 9, tzinfo=timezone.utc)
@@ -1483,8 +1640,12 @@ class TestTokenRoutes:
 
         _, session_cm = _session_mock()
 
-        with patch("qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo):
-            _setup_overrides(authenticated_app, session_factory=_make_session_factory(session_cm))
+        with patch(
+            "qaplatform.api.v1.auth.ApiTokenRepository", return_value=api_token_repo
+        ):
+            _setup_overrides(
+                authenticated_app, session_factory=_make_session_factory(session_cm)
+            )
             resp = await auth_client.get("/api/v1/auth/tokens?page=2&per_page=1")
 
         assert resp.status_code == 200
@@ -1537,7 +1698,9 @@ def _make_redis_mock(revoked_jtis: set[str] | None = None):
 
 class TestRefreshRevokesOldToken:
     @pytest.mark.asyncio
-    async def test_refresh_revokes_old_refresh_token(self, app: FastAPI, client: AsyncClient):
+    async def test_refresh_revokes_old_refresh_token(
+        self, app: FastAPI, client: AsyncClient
+    ):
         """After refresh, the old refresh token jti must be in the blacklist."""
         settings = _settings()
         redis_mock, store = _make_redis_mock()
@@ -1546,6 +1709,7 @@ class TestRefreshRevokesOldToken:
         old_refresh_token = jwt_svc.create_refresh_token(str(user_id))
 
         import jwt as _jwt
+
         old_payload = _jwt.decode(
             old_refresh_token,
             settings.jwt_secret,
@@ -1562,9 +1726,16 @@ class TestRefreshRevokesOldToken:
 
         with (
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await _post_with_refresh_cookie(
                 client,
                 "/api/v1/auth/refresh",
@@ -1596,7 +1767,9 @@ class TestRefreshRevokesOldToken:
         redis_mock.exists.assert_awaited_once_with(f"jwt:revoked:{old_jti}")
         redis_mock.set.assert_awaited_once()
         assert redis_mock.set.await_args.args == (f"jwt:revoked:{old_jti}", "1")
-        assert 0 < redis_mock.set.await_args.kwargs["ex"] <= settings.jwt_refresh_token_ttl
+        assert (
+            0 < redis_mock.set.await_args.kwargs["ex"] <= settings.jwt_refresh_token_ttl
+        )
         assert f"jwt:revoked:{old_jti}" in store
         audit_repo.create.assert_awaited_once()
         audit_kwargs = audit_repo.create.await_args.kwargs
@@ -1611,7 +1784,9 @@ class TestRefreshRevokesOldToken:
         session.rollback.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_refresh_with_revoked_token_returns_401(self, app: FastAPI, client: AsyncClient):
+    async def test_refresh_with_revoked_token_returns_401(
+        self, app: FastAPI, client: AsyncClient
+    ):
         """A refresh token already in the blacklist must not be rotated again."""
         settings = _settings()
         redis_mock, store = _make_redis_mock()
@@ -1620,9 +1795,8 @@ class TestRefreshRevokesOldToken:
         refresh_token = jwt_svc.create_refresh_token(str(user_id))
 
         import jwt as _jwt
-        payload = _jwt.decode(
-            refresh_token, settings.jwt_secret, algorithms=["HS256"]
-        )
+
+        payload = _jwt.decode(refresh_token, settings.jwt_secret, algorithms=["HS256"])
         old_jti = payload["jti"]
         store[f"jwt:revoked:{old_jti}"] = "1"
 
@@ -1635,9 +1809,16 @@ class TestRefreshRevokesOldToken:
 
         with (
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await _post_with_refresh_cookie(
                 client,
                 "/api/v1/auth/refresh",
@@ -1669,12 +1850,15 @@ class TestLogoutRevokesTokens:
         access_token = jwt_svc.create_access_token("user-1", "developer", "tenant-1")
 
         import jwt as _jwt
+
         payload = _jwt.decode(access_token, settings.jwt_secret, algorithms=["HS256"])
         access_jti = payload["jti"]
 
         _, session_cm = _session_mock()
 
-        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
+        _setup_overrides(
+            app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc
+        )
         resp = await client.post(
             "/api/v1/auth/logout",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -1685,11 +1869,15 @@ class TestLogoutRevokesTokens:
         assert f"jwt:revoked:{access_jti}" in store
         redis_mock.set.assert_awaited_once()
         assert redis_mock.set.await_args.args == (f"jwt:revoked:{access_jti}", "1")
-        assert 0 < redis_mock.set.await_args.kwargs["ex"] <= settings.jwt_access_token_ttl
+        assert (
+            0 < redis_mock.set.await_args.kwargs["ex"] <= settings.jwt_access_token_ttl
+        )
         _assert_refresh_cookie_cleared(resp)
 
     @pytest.mark.asyncio
-    async def test_logout_revokes_refresh_token(self, app: FastAPI, client: AsyncClient):
+    async def test_logout_revokes_refresh_token(
+        self, app: FastAPI, client: AsyncClient
+    ):
         """logout must add the refresh token jti to the blacklist."""
         settings = _settings()
         redis_mock, store = _make_redis_mock()
@@ -1697,12 +1885,15 @@ class TestLogoutRevokesTokens:
         refresh_token = jwt_svc.create_refresh_token("user-1")
 
         import jwt as _jwt
+
         payload = _jwt.decode(refresh_token, settings.jwt_secret, algorithms=["HS256"])
         refresh_jti = payload["jti"]
 
         _, session_cm = _session_mock()
 
-        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
+        _setup_overrides(
+            app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc
+        )
         resp = await _post_with_refresh_cookie(
             client,
             "/api/v1/auth/logout",
@@ -1714,7 +1905,9 @@ class TestLogoutRevokesTokens:
         assert f"jwt:revoked:{refresh_jti}" in store
         redis_mock.set.assert_awaited_once()
         assert redis_mock.set.await_args.args == (f"jwt:revoked:{refresh_jti}", "1")
-        assert 0 < redis_mock.set.await_args.kwargs["ex"] <= settings.jwt_refresh_token_ttl
+        assert (
+            0 < redis_mock.set.await_args.kwargs["ex"] <= settings.jwt_refresh_token_ttl
+        )
         _assert_refresh_cookie_cleared(resp)
 
     @pytest.mark.asyncio
@@ -1727,12 +1920,17 @@ class TestLogoutRevokesTokens:
         refresh_token = jwt_svc.create_refresh_token("user-1")
 
         import jwt as _jwt
+
         a_payload = _jwt.decode(access_token, settings.jwt_secret, algorithms=["HS256"])
-        r_payload = _jwt.decode(refresh_token, settings.jwt_secret, algorithms=["HS256"])
+        r_payload = _jwt.decode(
+            refresh_token, settings.jwt_secret, algorithms=["HS256"]
+        )
 
         _, session_cm = _session_mock()
 
-        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
+        _setup_overrides(
+            app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc
+        )
         resp = await _post_with_refresh_cookie(
             client,
             "/api/v1/auth/logout",
@@ -1754,7 +1952,9 @@ class TestLogoutRevokesTokens:
         _assert_refresh_cookie_cleared(resp)
 
     @pytest.mark.asyncio
-    async def test_logout_no_tokens_still_returns_204(self, app: FastAPI, client: AsyncClient):
+    async def test_logout_no_tokens_still_returns_204(
+        self, app: FastAPI, client: AsyncClient
+    ):
         """logout with no tokens at all must still succeed (idempotent)."""
         settings = _settings()
         redis_mock, store = _make_redis_mock()
@@ -1762,7 +1962,9 @@ class TestLogoutRevokesTokens:
 
         _, session_cm = _session_mock()
 
-        _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
+        _setup_overrides(
+            app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc
+        )
         resp = await client.post("/api/v1/auth/logout")
 
         assert resp.status_code == 204
@@ -1968,10 +2170,21 @@ class TestAuditLogin:
 
         with (
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth._resolve_tenant_id", new_callable=AsyncMock, return_value=uuid4()),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth._resolve_tenant_id",
+                new_callable=AsyncMock,
+                return_value=uuid4(),
+            ),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await client.post(
                 "/api/v1/auth/login",
                 headers={"user-agent": "auth-audit-test"},
@@ -1999,7 +2212,9 @@ class TestAuditLogin:
 
 class TestAuditRegister:
     @pytest.mark.asyncio
-    async def test_register_success_emits_audit(self, app: FastAPI, client: AsyncClient):
+    async def test_register_success_emits_audit(
+        self, app: FastAPI, client: AsyncClient
+    ):
         settings = _settings()
         jwt_svc = JWTService(settings)
         audit_repo = _make_audit_repo_mock()
@@ -2020,11 +2235,18 @@ class TestAuditRegister:
         user_repo.create.return_value = user
 
         with (
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
             patch("qaplatform.api.v1.auth.TenantRepository", return_value=tenant_repo),
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
         ):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await client.post(
                 "/api/v1/auth/register",
                 headers={"user-agent": "register-audit-test"},
@@ -2107,8 +2329,12 @@ class TestAuditLogout:
         audit_repo = _make_audit_repo_mock()
         session, session_cm = _session_mock()
 
-        with patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
+        with patch(
+            "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+        ):
+            _setup_overrides(
+                app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc
+            )
             resp = await _post_with_refresh_cookie(
                 client,
                 "/api/v1/auth/logout",
@@ -2134,7 +2360,9 @@ class TestAuditLogout:
         session.rollback.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_logout_without_token_still_emits_audit(self, app: FastAPI, client: AsyncClient):
+    async def test_logout_without_token_still_emits_audit(
+        self, app: FastAPI, client: AsyncClient
+    ):
         """Logout with no token still writes an audit record with user_id=None."""
         settings = _settings()
         redis_mock, _ = _make_redis_mock()
@@ -2143,8 +2371,12 @@ class TestAuditLogout:
         audit_repo = _make_audit_repo_mock()
         session, session_cm = _session_mock()
 
-        with patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc)
+        with patch(
+            "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+        ):
+            _setup_overrides(
+                app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc
+            )
             resp = await client.post(
                 "/api/v1/auth/logout",
                 headers={"user-agent": "logout-empty-audit-test"},
@@ -2165,7 +2397,9 @@ class TestAuditLogout:
 
 class TestAuditRefresh:
     @pytest.mark.asyncio
-    async def test_refresh_success_emits_audit_with_jti(self, app: FastAPI, client: AsyncClient):
+    async def test_refresh_success_emits_audit_with_jti(
+        self, app: FastAPI, client: AsyncClient
+    ):
         settings = _settings()
         redis_mock, _ = _make_redis_mock()
         jwt_svc = JWTService(settings, redis=redis_mock)
@@ -2173,7 +2407,10 @@ class TestAuditRefresh:
         old_refresh_token = jwt_svc.create_refresh_token(str(user_id))
 
         import jwt as _jwt
-        old_payload = _jwt.decode(old_refresh_token, settings.jwt_secret, algorithms=["HS256"])
+
+        old_payload = _jwt.decode(
+            old_refresh_token, settings.jwt_secret, algorithms=["HS256"]
+        )
         old_jti = old_payload["jti"]
 
         user = _make_orm_user(id=user_id)
@@ -2185,9 +2422,16 @@ class TestAuditRefresh:
 
         with (
             patch("qaplatform.api.v1.auth.UserRepository", return_value=user_repo),
-            patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo),
+            patch(
+                "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+            ),
         ):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await _post_with_refresh_cookie(
                 client,
                 "/api/v1/auth/refresh",
@@ -2223,8 +2467,15 @@ class TestAuditRefresh:
         audit_repo = _make_audit_repo_mock()
         session, session_cm = _session_mock()
 
-        with patch("qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo):
-            _setup_overrides(app, session_factory=_make_session_factory(session_cm), jwt_svc=jwt_svc, settings=settings)
+        with patch(
+            "qaplatform.api.v1.auth.AuditEventRepository", return_value=audit_repo
+        ):
+            _setup_overrides(
+                app,
+                session_factory=_make_session_factory(session_cm),
+                jwt_svc=jwt_svc,
+                settings=settings,
+            )
             resp = await _post_with_refresh_cookie(
                 client,
                 "/api/v1/auth/refresh",

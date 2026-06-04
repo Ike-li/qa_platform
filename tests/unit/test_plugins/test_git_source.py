@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import shlex
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -27,7 +28,9 @@ class TestGitSourceClone:
 
     @pytest.fixture(autouse=True)
     def _stub_url_validation(self):
-        with patch("qaplatform.plugins.builtin.git_source._validate_git_url") as mock_validate:
+        with patch(
+            "qaplatform.plugins.builtin.git_source._validate_git_url"
+        ) as mock_validate:
             yield mock_validate
 
     @pytest.fixture
@@ -47,7 +50,9 @@ class TestGitSourceClone:
             mock_exec.return_value = process
 
             with patch.object(source, "_resolve_sha", return_value="abc123"):
-                result = await source.clone("https://github.com/org/repo.git", "main", dest)
+                result = await source.clone(
+                    "https://github.com/org/repo.git", "main", dest
+                )
 
         assert isinstance(result, SourceRevision)
         assert result.path == dest
@@ -165,7 +170,9 @@ class TestGitSourceClone:
         assert token not in message
 
     @pytest.mark.asyncio
-    async def test_clone_failure_redacts_url_userinfo_without_explicit_secret(self, source, dest):
+    async def test_clone_failure_redacts_url_userinfo_without_explicit_secret(
+        self, source, dest
+    ):
         url = "https://x-access-token:embedded-secret-token@github.com/org/repo.git"
         stderr = f"fatal: Authentication failed for '{url}'"
         with patch("asyncio.create_subprocess_exec") as mock_exec:
@@ -321,6 +328,31 @@ class TestGitSourceClone:
         assert mock_exec.await_args.kwargs["env"] is None
 
     @pytest.mark.asyncio
+    async def test_clone_timeout_kills_subprocess(self, dest):
+        source = GitSource(clone_timeout_seconds=0.01)
+
+        class _HangingProcess:
+            returncode = 0
+
+            def __init__(self) -> None:
+                self.kill = MagicMock()
+                self.communicate_calls = 0
+
+            async def communicate(self):
+                self.communicate_calls += 1
+                if self.communicate_calls == 1:
+                    await asyncio.Event().wait()
+                return b"", b""
+
+        process = _HangingProcess()
+        with patch("asyncio.create_subprocess_exec", return_value=process):
+            with pytest.raises(RuntimeError) as exc_info:
+                await source.clone("https://github.com/org/repo.git", "main", dest)
+
+        assert str(exc_info.value) == "git clone timed out after 0.01s"
+        process.kill.assert_called_once_with()
+
+    @pytest.mark.asyncio
     async def test_clone_returns_source_revision(self, source, dest):
         with patch("asyncio.create_subprocess_exec") as mock_exec:
             process = AsyncMock()
@@ -329,7 +361,9 @@ class TestGitSourceClone:
             mock_exec.return_value = process
 
             with patch.object(source, "_resolve_sha", return_value="deadbeef"):
-                result = await source.clone("https://github.com/org/repo.git", "v1.0", dest)
+                result = await source.clone(
+                    "https://github.com/org/repo.git", "v1.0", dest
+                )
 
         assert result.path == dest
         assert result.sha == "deadbeef"
@@ -380,6 +414,85 @@ class TestGitSourceClone:
 
         assert str(exc_info.value) == "git rev-parse failed: empty HEAD SHA"
 
+    @pytest.mark.asyncio
+    async def test_clone_forwards_allowed_private_hosts_to_url_validation(
+        self,
+        _stub_url_validation,
+        dest,
+    ):
+        source = GitSource(allowed_private_hosts=["github.example"])
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            process = AsyncMock()
+            process.returncode = 0
+            process.communicate.return_value = (b"", b"")
+            mock_exec.return_value = process
+
+            with patch.object(source, "_resolve_sha", return_value="abc123"):
+                await source.clone("https://github.example/org/repo.git", "main", dest)
+
+        _stub_url_validation.assert_called_once_with(
+            "https://github.example/org/repo.git",
+            allowed_private_hosts=("github.example",),
+        )
+
+
+class TestGitSourceListBranches:
+    @pytest.fixture(autouse=True)
+    def _stub_url_validation(self):
+        with patch(
+            "qaplatform.plugins.builtin.git_source._validate_git_url"
+        ) as mock_validate:
+            yield mock_validate
+
+    @pytest.mark.asyncio
+    async def test_list_branches_parses_heads_and_default_branch(self):
+        source = GitSource()
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            process = AsyncMock()
+            process.returncode = 0
+            process.communicate.return_value = (
+                b"ref: refs/heads/main\tHEAD\n"
+                b"abc\tHEAD\n"
+                b"abc\trefs/heads/main\n"
+                b"def\trefs/heads/release/x\n",
+                b"",
+            )
+            mock_exec.return_value = process
+
+            branches, default_branch = await source.list_branches(
+                "https://github.com/org/repo.git"
+            )
+
+        assert branches == ["main", "release/x"]
+        assert default_branch == "main"
+        assert mock_exec.await_args.args == (
+            "git",
+            "ls-remote",
+            "--symref",
+            "https://github.com/org/repo.git",
+            "HEAD",
+            "refs/heads/*",
+        )
+
+    @pytest.mark.asyncio
+    async def test_list_branches_forwards_allowed_private_hosts_to_validation(
+        self,
+        _stub_url_validation,
+    ):
+        source = GitSource(allowed_private_hosts=["github.example"])
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            process = AsyncMock()
+            process.returncode = 0
+            process.communicate.return_value = (b"abc\trefs/heads/main\n", b"")
+            mock_exec.return_value = process
+
+            await source.list_branches("https://github.example/org/repo.git")
+
+        _stub_url_validation.assert_called_once_with(
+            "https://github.example/org/repo.git",
+            allowed_private_hosts=("github.example",),
+        )
+
 
 class TestGitSourceRegistration:
     """Test that GitSource is registered in builtins."""
@@ -411,7 +524,9 @@ class TestGitUrlValidation:
             with pytest.raises(ValueError) as exc_info:
                 _validate_git_url("https://github.example/repo.git")
 
-        assert str(exc_info.value) == f"Git URL hostname resolves to non-public IP: {ip}"
+        assert (
+            str(exc_info.value) == f"Git URL hostname resolves to non-public IP: {ip}"
+        )
         getaddrinfo.assert_called_once_with("github.example", None)
 
     def test_allows_https_hostname_that_resolves_to_public_ip(self):
@@ -421,6 +536,24 @@ class TestGitUrlValidation:
         ) as getaddrinfo:
             _validate_git_url("https://github.example/repo.git")
         getaddrinfo.assert_called_once_with("github.example", None)
+
+    def test_allows_configured_private_hostname_without_dns_lookup(self):
+        with patch("socket.getaddrinfo") as getaddrinfo:
+            _validate_git_url(
+                "https://github.example/repo.git",
+                allowed_private_hosts=["github.example"],
+            )
+
+        getaddrinfo.assert_not_called()
+
+    def test_allows_configured_private_hostname_case_insensitively(self):
+        with patch("socket.getaddrinfo") as getaddrinfo:
+            _validate_git_url(
+                "git@GitHub.Example:org/repo.git",
+                allowed_private_hosts=["github.example"],
+            )
+
+        getaddrinfo.assert_not_called()
 
     def test_allows_ssh_format_after_hostname_validation(self):
         with patch(

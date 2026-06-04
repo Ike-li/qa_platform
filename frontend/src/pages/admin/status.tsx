@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import api from "../../lib/api";
+import { Button } from "../../components/ui/button";
 
 interface SystemStatus {
   queue_depth: number;
@@ -34,7 +35,7 @@ function StatusCard({
 export default function AdminStatus() {
   const { t } = useTranslation();
 
-  const { data, isLoading, isError } = useQuery<SystemStatus>({
+  const { data, isLoading, isError, refetch } = useQuery<SystemStatus>({
     queryKey: ["admin", "status"],
     queryFn: async () => {
       const { data } = await api.get<SystemStatus>("/admin/status");
@@ -67,8 +68,11 @@ export default function AdminStatus() {
         <h1 className="text-2xl font-semibold tracking-tight">
           {t("admin.status.title", "System Status")}
         </h1>
-        <div className="flex h-[200px] items-center justify-center text-sm text-status-failed">
-          {t("admin.status.error", "Failed to load system status")}
+        <div className="flex h-[200px] flex-col items-center justify-center gap-4 text-sm text-status-failed">
+          <p>{t("admin.status.error", "Failed to load system status")}</p>
+          <Button variant="outline" onClick={() => void refetch()}>
+            {t("common.retry", "Retry")}
+          </Button>
         </div>
       </div>
     );

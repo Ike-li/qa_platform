@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import os
 import re
+import shlex
 import shutil
 import tempfile
 from contextlib import suppress
@@ -56,6 +57,7 @@ GRACE_PERIOD_SECONDS = 30
 # coroutine would block the run's finally block forever, leaving subsequent
 # stages, the workdir teardown, and worker release dangling.
 _LOG_DRAIN_TIMEOUT = 5
+_ALLURE_REPORT_TIMEOUT_SECONDS = 300
 _FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _FAILED_TESTS_SUMMARY_LIMIT = 20
 
@@ -274,6 +276,7 @@ class RunExecutor:
         artifact_repo: Any = None,
         test_result_repo: Any = None,
         redis: Any = None,
+        source_clone_timeout_seconds: int = 300,
     ) -> None:
         self.backend = backend
         self.log_stream = log_stream
@@ -285,6 +288,7 @@ class RunExecutor:
         self.artifact_repo = artifact_repo
         self.test_result_repo = test_result_repo
         self.redis = redis
+        self.source_clone_timeout_seconds = source_clone_timeout_seconds
         # P1-D: persistent flag the cancel watcher sets on every signal.
         # Initialised here (not just in execute()) so direct callers of
         # _run_stages / _check_cancel_boundary in tests still work.
@@ -373,7 +377,22 @@ class RunExecutor:
                 "source_clone",
                 attributes=source_clone_attributes,
             ):
-                await self._clone_repo(run, working_dir, pipeline.source_auth)
+                try:
+                    await asyncio.wait_for(
+                        self._clone_repo(run, working_dir, pipeline.source_auth),
+                        timeout=self.source_clone_timeout_seconds,
+                    )
+                except asyncio.TimeoutError as exc:
+                    await self.log_stream.write_log(
+                        run_id,
+                        "Source clone exceeded timeout "
+                        f"{self.source_clone_timeout_seconds}s",
+                        stream="stderr",
+                    )
+                    raise RuntimeError(
+                        "Source clone timed out after "
+                        f"{self.source_clone_timeout_seconds}s"
+                    ) from exc
             await self.log_stream.write_log(run_id, "Repository cloned successfully")
 
             # 2. Run setup script
@@ -496,6 +515,8 @@ class RunExecutor:
                             for result in results
                         ]
                     )
+
+            await self._generate_allure_report(run_id, working_dir, pipeline)
 
             # 5. Upload artifacts to S3
             with tracer.start_as_current_span(
@@ -1054,6 +1075,103 @@ class RunExecutor:
                 f"Uploaded artifact: {rel_path}",
             )
             uploaded_count += 1
+
+    async def _generate_allure_report(
+        self,
+        run_id: str,
+        working_dir: Path,
+        pipeline: PipelineConfig,
+    ) -> None:
+        """Generate static Allure HTML inside the same execution image."""
+        results_dir = working_dir / "results" / "allure-results"
+        if not results_dir.exists() or not any(results_dir.iterdir()):
+            return
+
+        command = " ".join(
+            shlex.quote(part)
+            for part in [
+                "allure",
+                "generate",
+                "results/allure-results",
+                "-o",
+                "results/allure-report",
+                "--clean",
+            ]
+        )
+        spec = ExecutionSpec(
+            image=pipeline.image,
+            command=["sh", "-c", f"cd /workspace && {command}"],
+            env_vars=pipeline.env_vars,
+            mounts=[
+                Mount(source=str(working_dir), target="/workspace", read_only=False),
+            ],
+            resource_limits=pipeline.resource_limits,
+            network_policy=pipeline.network_policy,
+            security=SandboxSecurity(readonly_rootfs=False),
+            labels={"run_id": str(run_id), "stage": "allure-report"},
+        )
+        execution_id: str | None = None
+        log_task: asyncio.Task | None = None
+        try:
+            execution_id = await self.backend.create_execution(spec)
+            await self.backend.start(execution_id)
+            log_task = asyncio.create_task(
+                self._stream_container_logs(
+                    run_id,
+                    execution_id,
+                    redact_env_vars=pipeline.env_vars,
+                )
+            )
+            try:
+                exit_result = await asyncio.wait_for(
+                    self.backend.wait(execution_id, _ALLURE_REPORT_TIMEOUT_SECONDS),
+                    timeout=_ALLURE_REPORT_TIMEOUT_SECONDS + 5,
+                )
+            except asyncio.TimeoutError:
+                await self.log_stream.write_log(
+                    run_id,
+                    "Allure report generation timed out",
+                    stream="stderr",
+                )
+                await self._graceful_stop(
+                    execution_id,
+                    reason="allure report generation timeout",
+                )
+                return
+        except Exception as exc:
+            log.warning("failed to generate Allure report for run %s", run_id, exc_info=True)
+            detail = redact_sensitive_text(str(exc), pipeline.env_vars)
+            await self.log_stream.write_log(
+                run_id,
+                f"Allure report generation failed: {detail}",
+                stream="stderr",
+            )
+            return
+        finally:
+            if log_task is not None:
+                await self._drain_log_task(log_task)
+            if execution_id is not None:
+                try:
+                    await self.backend.cleanup(execution_id)
+                except Exception:
+                    log.warning("failed to cleanup Allure report container %s", execution_id)
+
+        if exit_result.exit_code == 127:
+            await self.log_stream.write_log(
+                run_id,
+                "Allure report generation skipped: allure CLI is not installed in the execution image",
+                stream="stderr",
+            )
+            return
+        if exit_result.exit_code != 0:
+            await self.log_stream.write_log(
+                run_id,
+                f"Allure report generation failed with code {exit_result.exit_code}",
+                stream="stderr",
+            )
+            return
+
+        await self.log_stream.write_log(run_id, "Allure report generated: allure-report")
 
 
 def _iter_artifact_files(results_dir: Path) -> list[Path]:

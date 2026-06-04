@@ -16,6 +16,7 @@ from qaplatform.engine.log_stream import (
     _MAXLEN,
     _STREAM_TTL,
     _TRUNCATION_MARKER,
+    _next_stream_id,
 )
 
 _ARCHIVE_RETRY_SET = "run:logs:archive_failed"
@@ -34,6 +35,10 @@ class TestLogStream:
     def test_stream_key_with_uuid(self):
         key = LogStream._stream_key(self.run_id)
         assert key == f"run:{self.run_id}:logs"
+
+    def test_next_stream_id_accepts_str_and_bytes(self):
+        assert _next_stream_id("1780386444371-0") == "1780386444371-1"
+        assert _next_stream_id(b"1780386444371-12") == "1780386444371-13"
 
     @pytest.mark.asyncio
     async def test_write_log(self):
@@ -141,22 +146,20 @@ class TestLogStream:
     async def test_archive_logs_success(self):
         # Simulate two batches then empty
         msg_data = [
-            (f"run:{self.run_id}:logs", [
-                ("1-0", {"stream": "stdout", "line": "line1"}),
-                ("2-0", {"stream": "stdout", "line": "line2"}),
-            ]),
+            ("1-0", {"stream": "stdout", "line": "line1"}),
+            ("2-0", {"stream": "stdout", "line": "line2"}),
         ]
         empty = []
 
-        self.redis.xread = AsyncMock(side_effect=[msg_data, empty])
+        self.redis.xrange = AsyncMock(side_effect=[msg_data, empty])
 
         s3_client = AsyncMock()
         result = await self.stream.archive_logs(self.run_id, s3_client, "qa-platform")
 
         assert result is True
-        assert self.redis.xread.await_args_list == [
-            call({f"run:{self.run_id}:logs": "0"}, count=500),
-            call({f"run:{self.run_id}:logs": "2-0"}, count=500),
+        assert self.redis.xrange.await_args_list == [
+            call(f"run:{self.run_id}:logs", min="-", max="+", count=500),
+            call(f"run:{self.run_id}:logs", min="2-1", max="+", count=500),
         ]
         expected_body = (
             b'{"stream": "stdout", "line": "line1"}\n'
@@ -188,8 +191,8 @@ class TestLogStream:
         s3_client = AsyncMock()
         s3_client.put_object.side_effect = Exception("S3 down")
 
-        # Force xread to raise
-        self.redis.xread = AsyncMock(side_effect=Exception("redis error"))
+        # Force xrange to raise
+        self.redis.xrange = AsyncMock(side_effect=Exception("redis error"))
 
         result = await self.stream.archive_logs(self.run_id, s3_client, "qa-platform")
 
@@ -206,11 +209,9 @@ class TestLogStream:
     async def test_retry_failed_archives_replays_recorded_runs(self):
         failed_run = uuid4()
         self.redis.smembers.return_value = [str(self.run_id).encode(), str(failed_run)]
-        self.redis.xread = AsyncMock(side_effect=[
+        self.redis.xrange = AsyncMock(side_effect=[
             [
-                (f"run:{self.run_id}:logs", [
-                    ("1-0", {"stream": "stdout", "line": "ok"}),
-                ]),
+                ("1-0", {"stream": "stdout", "line": "ok"}),
             ],
             [],
             Exception("redis still down"),
@@ -224,10 +225,10 @@ class TestLogStream:
         )
 
         assert retried == 1
-        assert self.redis.xread.await_args_list == [
-            call({f"run:{self.run_id}:logs": "0"}, count=500),
-            call({f"run:{self.run_id}:logs": "1-0"}, count=500),
-            call({f"run:{failed_run}:logs": "0"}, count=500),
+        assert self.redis.xrange.await_args_list == [
+            call(f"run:{self.run_id}:logs", min="-", max="+", count=500),
+            call(f"run:{self.run_id}:logs", min="1-1", max="+", count=500),
+            call(f"run:{failed_run}:logs", min="-", max="+", count=500),
         ]
         s3_client.put_object.assert_awaited_once_with(
             Bucket="qa-platform",

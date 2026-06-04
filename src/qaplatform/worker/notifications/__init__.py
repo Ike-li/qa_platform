@@ -8,28 +8,21 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from qaplatform.engine.redact import redact_sensitive_text
+from qaplatform.domain.services.redact import redact_sensitive_text
 from qaplatform.domain.models.notification import (
     NOTIFICATION_CONDITION_FIELDS,
     NOTIFICATION_CONDITION_OPERATORS,
     normalize_notification_channel,
 )
-from qaplatform.infra.database.models import NotificationStatusEnum, Run, RunStatusEnum
+from qaplatform.infra.database.models import NotificationStatusEnum
 
 log = logging.getLogger(__name__)
 
 _TEMPLATE_VAR_RE = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
 _CONSECUTIVE_FAILURE_FIELDS = frozenset({"consecutive_failures", "consecutive_failed_runs"})
 _NOTIFICATION_LOG_UNIQUE_CONSTRAINT = "uq_notification_log_run_rule_channel"
-_TERMINAL_RUN_STATUSES = (
-    RunStatusEnum.DONE,
-    RunStatusEnum.FAILED,
-    RunStatusEnum.CANCELLED,
-    RunStatusEnum.TIMEOUT,
-)
 
 
 def _evaluate_conditions(
@@ -139,36 +132,11 @@ def _conditions_include_fields(conditions: list[dict], fields: frozenset[str]) -
     return False
 
 
-async def _load_consecutive_failures(session: Any, project_id: UUID, run_id: UUID) -> int:
-    current_result = await session.execute(
-        select(Run).where(
-            Run.id == run_id,
-            Run.project_id == project_id,
-            Run.deleted_at.is_(None),
-        )
+async def _load_consecutive_failures(run_repo: Any, project_id: UUID, run_id: UUID) -> int:
+    return await run_repo.count_consecutive_failures(
+        project_id=project_id,
+        run_id=run_id,
     )
-    current = current_result.scalar_one_or_none()
-    if current is None or current.status != RunStatusEnum.FAILED:
-        return 0
-
-    result = await session.execute(
-        select(Run.status)
-        .where(
-            Run.project_id == project_id,
-            Run.deleted_at.is_(None),
-            Run.status.in_(_TERMINAL_RUN_STATUSES),
-            Run.created_at <= current.created_at,
-        )
-        .order_by(Run.created_at.desc(), Run.id.desc())
-        .limit(100)
-    )
-
-    count = 0
-    for run_status in result.scalars():
-        if run_status != RunStatusEnum.FAILED:
-            break
-        count += 1
-    return count
 
 
 def _compare(actual: Any, op: str, expected: Any) -> bool:
@@ -318,11 +286,13 @@ async def evaluate_and_notify(
         NotificationRuleRepository,
         ProjectRepository,
     )
+    from qaplatform.infra.database.repositories.run_repo import RunRepository
 
     async with session_factory() as session:
         rule_repo = NotificationRuleRepository(session)
         log_repo = NotificationLogRepository(session)
         project_repo = ProjectRepository(session)
+        run_repo = RunRepository(session)
         project_loaded = False
         project_name = ""
 
@@ -334,7 +304,9 @@ async def evaluate_and_notify(
             _conditions_include_fields(rule.conditions, _CONSECUTIVE_FAILURE_FIELDS)
             for rule in rules
         ):
-            consecutive_failures = await _load_consecutive_failures(session, project_id, run_id)
+            consecutive_failures = await _load_consecutive_failures(
+                run_repo, project_id, run_id
+            )
             condition_context["consecutive_failures"] = consecutive_failures
             condition_context["consecutive_failed_runs"] = consecutive_failures
 

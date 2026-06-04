@@ -19,6 +19,7 @@ RUN_DETAIL_PAGE = ROOT / "frontend" / "src" / "pages" / "runs" / "detail.tsx"
 TEST_STATUS_ICON = ROOT / "frontend" / "src" / "components" / "test-status-icon.tsx"
 TEST_RESULTS_TABLE = ROOT / "frontend" / "src" / "components" / "test-results-table.tsx"
 NOTIFICATION_RULES_PANEL = ROOT / "frontend" / "src" / "components" / "projects" / "notification-rules-panel.tsx"
+PIPELINE_MODAL = ROOT / "frontend" / "src" / "components" / "projects" / "pipeline-modal.tsx"
 ANALYTICS_HOOK = ROOT / "frontend" / "src" / "hooks" / "use-analytics.ts"
 ANALYTICS_PANEL = ROOT / "frontend" / "src" / "components" / "projects" / "analytics-panel.tsx"
 SETTINGS_PAGE = ROOT / "frontend" / "src" / "pages" / "settings.tsx"
@@ -612,5 +613,23 @@ def test_run_detail_previews_html_artifact_contract():
     assert 'name.endsWith(".htm")' in run_detail_source
     assert "isPreviewableArtifact(artifact)" in run_detail_source
     assert 'artifact.type === "allure-report" && (' not in run_detail_source
+    assert "useRunAllureReportArtifact" in run_detail_source
+    assert '<TabsTrigger value="report">' in run_detail_source
+    assert "getArtifactPreviewUrl(allureReportArtifact.id)" in run_detail_source
+    assert "getArtifactPreviewUrl(artifact.id)" in run_detail_source
     assert "getArtifactPreviewTitle(artifact)" in run_detail_source
     assert "getArtifactPreviewFrameTitle(artifact)" in run_detail_source
+
+    use_runs_source = (ROOT / "frontend" / "src" / "hooks" / "use-runs.ts").read_text(
+        encoding="utf-8",
+    )
+    assert "useRunAllureReportArtifact" in use_runs_source
+    assert 'api.get<Artifact>(`/runs/${id}/artifacts/allure-report`)' in use_runs_source
+
+
+def test_pytest_pipeline_modal_does_not_enable_allure_by_default():
+    source = PIPELINE_MODAL.read_text(encoding="utf-8")
+
+    assert source.count("allure_enabled: false") >= 2
+    assert "allure_enabled: true" not in source
+    assert "setValue(\"allure_enabled\", checked === true)" in source

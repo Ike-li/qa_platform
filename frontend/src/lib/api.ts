@@ -22,6 +22,22 @@ export const setOnAuthFailure = (handler: () => void) => {
 
 let refreshPromise: Promise<string> | null = null;
 
+export function refreshAccessToken(): Promise<string> {
+  if (!refreshPromise) {
+    refreshPromise = api
+      .post("/auth/refresh", null, { withCredentials: true })
+      .then((res) => {
+        setAccessToken(res.data.access_token);
+        return res.data.access_token;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+
+  return refreshPromise;
+}
+
 const AUTH_PATHS = ["/auth/login", "/auth/refresh", "/auth/logout"];
 
 api.interceptors.request.use((config) => {
@@ -44,19 +60,7 @@ api.interceptors.response.use(
     ) {
       originalRequest._retry = true;
       try {
-        if (!refreshPromise) {
-          refreshPromise = axios
-            .post("/api/v1/auth/refresh", null, { withCredentials: true })
-            .then((res) => {
-              setAccessToken(res.data.access_token);
-              return res.data.access_token;
-            })
-            .finally(() => {
-              refreshPromise = null;
-            });
-        }
-
-        const token = await refreshPromise;
+        const token = await refreshAccessToken();
         originalRequest.headers.Authorization = `Bearer ${token}`;
         return api(originalRequest);
       } catch (refreshError) {
@@ -74,6 +78,11 @@ api.interceptors.response.use(
 export async function getArtifactDownloadUrl(artifactId: string): Promise<string> {
   const { data } = await api.get<{ download_url: string }>(`/artifacts/${artifactId}/download`);
   return data.download_url;
+}
+
+export async function getArtifactPreviewUrl(artifactId: string): Promise<string> {
+  const { data } = await api.get<{ preview_url: string }>(`/artifacts/${artifactId}/preview-url`);
+  return data.preview_url;
 }
 
 export default api;
