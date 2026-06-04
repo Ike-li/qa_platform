@@ -169,6 +169,14 @@ qa_platform/
 | `GET /api/v1/runs/{id}/events?ticket=...` | SSE 状态事件 |
 | `GET /api/v1/audit-events` | 审计事件查询 |
 
+## 文档入口
+
+文档总目录见 [docs/README.md](docs/README.md)。维护时按用途分流：
+
+- 当前实现与边界：`architecture.md`、`feature-catalog.md`、`TODO.md`、`development.md`、`runbook.md`、`testing-strategy.md`
+- 测试和发布证据：`testing-quality-ops.md`、`backend-test-audit.md`、`release-quality-review-slices.md`
+- 历史审计和规划：`prd.md`、`docs/tasks/`、`docs/archive/`
+
 ## 常用命令
 
 以下 Makefile 目标默认在已激活虚拟环境，或 `PATH` 已包含 `.venv/bin` 时运行。

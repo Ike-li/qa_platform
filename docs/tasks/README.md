@@ -40,6 +40,6 @@
 ## 不要做（scope creep）
 
 - 不要顺手重构相邻代码
-- 不要修改 review 工具发现的其他问题（fix-roadmap 是历史档案）
+- 不要修改 review 工具发现的其他问题（`docs/archive/fix-roadmap.md` 是历史档案）
 - 不要新增依赖除非任务包明确允许
-- 不要改 PRD（如发现 PRD / catalog / task 与代码冲突，先在任务报告或 `docs/doc-conflict-audit.md` 中记录，必要时单独开文档任务）
+- 不要改 PRD（如发现 PRD / catalog / task 与代码冲突，先在任务报告或 `docs/archive/doc-conflict-audit.md` 中记录，必要时单独开文档任务）

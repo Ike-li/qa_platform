@@ -37,6 +37,7 @@ frontend/dist/
 Thumbs.db
 
 # Playwright
+.playwright-mcp/
 artifacts/
 test-results/
 playwright-report/

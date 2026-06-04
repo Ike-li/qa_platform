@@ -1,5 +1,6 @@
 # 文档冲突审计报告
 
+> **归档位置**：2026-06-03 起本文迁入 `docs/archive/`，仅作历史审计证据。当前实现状态请以 `docs/architecture.md`、`docs/feature-catalog.md`、`docs/TODO.md` 和最新测试证据为准。
 > 生成日期：2026-05-26
 > 审计范围：`README.md`、`DESIGN.md`、`docs/**`、`frontend/README.md`、`frontend/FRONTEND_PROMPT.md`，并用 `main` 分支源码与配置做交叉验证。
 > 审计方式：初始阶段为只读检索与源码核对；后续按审计结论完成了一轮低风险文档、配置与 E2E 入口修正。本文同时记录原始发现、已落地修复和剩余待决事项。
@@ -18,8 +19,8 @@
 - 审计期间观察到 `origin/HEAD` 曾指向 `origin/phase1-release-prep` 而非 `origin/main`；后续脚本或人工操作应显式使用 `main` / `origin/main`，不要依赖 `origin/HEAD`。
 - 原始审计期间观察到 `feature/T01-env-vars-encryption`、`feature/T02-audit-query-api`、`feature/T03-dingtalk-notify`、`feature/T04-wecom-notify`、`feature/T05-silent-windows`、`feature/T06-webhook-branch-dedup`、`feature/T07-test-results-filter`、`feature/T10-opentelemetry` 当时均未合入 `main`；2026-05-30 复核后，T02 / T06 / T07 任务包已按当前工作树验收结果标记为已完成于 `main`。
 - 因此，文档里凡是描述“已完成并合并”的状态，仍必须区分“`main` 已有”与“历史 feature 分支曾推送/验收”。
-- `docs/fix-roadmap.md` 是历史 review 合并路线图，不应当作为当前实现状态的唯一真相源。
-- `docs/doc-conflict-audit.md` 本身也是审计证据档案；当前执行真源仍是 `docs/feature-catalog.md`、`docs/TODO.md` 和 `docs/tasks/`。
+- `docs/archive/fix-roadmap.md` 是历史 review 合并路线图，不应当作为当前实现状态的唯一真相源。
+- `docs/archive/doc-conflict-audit.md` 本身也是审计证据档案；当前执行真源仍是 `docs/feature-catalog.md`、`docs/TODO.md` 和 `docs/tasks/`。
 
 建议的真相源边界：
 
@@ -28,8 +29,8 @@
 | `docs/prd.md` | 产品目标与验收意图。只描述目标，不应误报当前实现状态。 |
 | `docs/feature-catalog.md` | 当前 `main` 的功能盘点和近期 backlog。已完成第一轮状态与路径修正，后续要继续区分 `main` 已有与 feature 分支已推送。 |
 | `docs/tasks/*.md` | 可执行任务包。应跟随 `main` 代码现状和 maintainer 最新验收口径。 |
-| `docs/doc-conflict-audit.md` | 本轮文档冲突审计证据档案。可查为什么改，但不作为实时 git 状态或 backlog 排期真源。 |
-| `docs/fix-roadmap.md` | 历史 review 档案和决策记录。建议加醒目说明：非当前 backlog。 |
+| `docs/archive/doc-conflict-audit.md` | 本轮文档冲突审计证据档案。可查为什么改，但不作为实时 git 状态或 backlog 排期真源。 |
+| `docs/archive/fix-roadmap.md` | 历史 review 档案和决策记录。建议加醒目说明：非当前 backlog。 |
 | `frontend/FRONTEND_PROMPT.md` | 前端初始实现提示/历史提示词。已标为历史资料，不应作为 API 契约真相源。 |
 | `DESIGN.md` | 当前 QA Platform 产品设计系统。应跟随前端实现和后台工具体验约束维护。 |
 
@@ -218,7 +219,7 @@
 | T10 OTel instrumentor API 复核 | 查官方 OpenTelemetry Python 文档后发现：FastAPI app 级装配应使用 `FastAPIInstrumentor.instrument_app(app, ...)`，request hook 不能靠修改 headers copy 证明敏感 header 不落 trace；当前项目使用 async SQLAlchemy engine，SQLAlchemy instrumentation 应传 `container.db_engine.sync_engine`；worker 进程没有 FastAPI app。T10 与 catalog 已补充 app/infra 分离装配、`http_capture_headers_sanitize_fields`、async engine `sync_engine` 和幂等测试要求。 |
 | T10 tenant span 属性复核 | 发现 catalog 说 FastAPI span “含 tenant_id”，但当前认证用户在 FastAPI dependency 中解析，不会自动出现在 `server_request_hook` 的 ASGI scope。T10/catalog 已改为：HTTP span 自动能力只声明 path/status 等；若需要 tenant 维度，应在 `src/qaplatform/api/deps.py::get_current_user` 归一化后手动设置当前 span 的低敏属性，且不得写 token/user_id。 |
 | 旧口径关键字续扫 | 通过，`PRD §9.6`、`/health/live`、`/health/ready`、`make frontend-test`、`httpx_mock`、`pytest-httpx`、`X-API-Token`、`/admin/audit-events`、`POST /webhooks/{provider}` 等剩余命中均在历史冲突说明、负向说明、防御性过滤或当前不做语境中；任务包执行要求未继续引用这些旧口径。 |
-| 固定源码行号续扫 | 通过，当前执行性文档不再依赖易漂移的源码 line number；剩余 `path:line` / `path:line-line` 主要集中在 `docs/fix-roadmap.md` 的历史 review 档案中，且该文件顶部已声明非当前实现状态真相源。 |
+| 固定源码行号续扫 | 通过，当前执行性文档不再依赖易漂移的源码 line number；剩余 `path:line` / `path:line-line` 主要集中在 `docs/archive/fix-roadmap.md` 的历史 review 档案中，且该文件顶部已声明非当前实现状态真相源。 |
 | 最终收口复扫 | 通过，继续复扫 `PRD §9.6`、`/admin/audit-events`、`/health/live`、`/health/ready`、`make frontend-test`、`pytest-httpx`、`httpx_mock`、`X-API-Token`、旧 `env_overrides/params`、旧 `summary.errors`、OTel `instrument_app` / `http_capture_headers_sanitize_fields`、T01 `raw bytes` / `environment_id`、T03/T04 完整敏感 URL、T05 audit metadata、T06 `return {...}, 200` 等高风险词；剩余命中均为历史说明、负向约束、防御性过滤或已登记债务，未发现新的执行性文档冲突。 |
 | 机械抽取复核 | 通过，非历史文档源码路径、`make` 目标与 `npm run` script 均能解析；当前 `/api/v1/audit-events` 已匹配 FastAPI 路由并标为 T02 已完成验收档案，不再作为计划新增端点统计。剩余不匹配端点均处在历史说明、T10 旧健康检查路径负向说明或 backlog/负向语境中，未发现新的未归类端点。 |
 | 章节引用深扫 | 通过，显式章节引用已和对应文档标题编号对照；唯一特殊项仍是刻意保留的旧 `PRD §9.6` 负向/历史说明。非历史文档中裸 `§x` 引用已无无法归属的问题；T05/T10 顶部的“设计见 §4.3”、TODO 的 `PRD §3.2 / §3.4` 和 feature-catalog 的 architecture 章节来源已补成完整目标文档名。 |
@@ -241,7 +242,7 @@
 | 前端依赖安装口径复跑 | 发现 README / frontend README 快速启动仍写 `npm install`，但仓库有 `package-lock.json`，CI、E2E 与 development 文档均使用 `npm ci`；已统一快速启动为 `npm ci`，减少本地依赖树与 CI 锁文件漂移。 |
 | 依赖与 Alembic 最终复跑 | 通过，`pyproject.toml` 的 `dev` extra 仍包含 pytest / pytest-asyncio / pytest-cov / httpx / testcontainers / ruff，可支撑 README / development 的后端本地命令；根目录与 frontend 均有 `package-lock.json`，执行性文档已统一用 `npm ci`。Alembic 源码迁移链仍为单 head `006`，本地数据库 current 仍为 `005`，因此真实 DB 测试前需先 `alembic upgrade head` 的提醒仍成立。 |
 | 非历史真源文档旧 PRD 章节引用复跑 | 发现 `docs/feature-catalog.md` / `docs/TODO.md` 仍直接提到不存在的旧 `PRD §9.6`；已改为当前事实口径：审计日志查询 API 以 catalog/T02 为执行来源，正式 PRD 章节仍待补。历史细节继续保留在本文冲突记录中。 |
-| 文档真源稳定性复跑 | 2026-05-27 review 发现本文的 git SHA / ahead 计数、`docs/feature-catalog.md` 的同步源说明、`docs/fix-roadmap.md` 的当前真源列表和 `docs/TODO.md` 的 `TODO #n` 映射存在易漂移风险；已改为审计快照、证据档案与稳定标题映射。 |
+| 文档真源稳定性复跑 | 2026-05-27 review 发现本文的 git SHA / ahead 计数、`docs/feature-catalog.md` 的同步源说明、`docs/archive/fix-roadmap.md` 的当前真源列表和 `docs/TODO.md` 的 `TODO #n` 映射存在易漂移风险；已改为审计快照、证据档案与稳定标题映射。 |
 
 结论：本轮“十多轮”审计结果已经落到本文和相关真相源文档中；剩余事项不是文档漏写，而是需要后续产品/实现任务继续处理的 backlog。
 
@@ -700,7 +701,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 原始冲突：
 
-- `docs/fix-roadmap.md` 说 global setup 改用 `E2E_ADMIN_PASSWORD`。
+- `docs/archive/fix-roadmap.md` 说 global setup 改用 `E2E_ADMIN_PASSWORD`。
 - 当前 `tests/e2e/global-setup.ts` 有 fallback `admin123`。
 - `tests/e2e/real-login-flow.spec.ts` 和 `tests/e2e/real-run-trigger.spec.ts` 曾直接填写 `admin123`。
 - `tests/integration/test_worker_execute.py` 也出现 `admin123`。
@@ -1425,7 +1426,7 @@ e3fe38d docs(prd): 与代码现状对齐三处偏移
 
 ## 13. `fix-roadmap.md` 的定位
 
-`docs/fix-roadmap.md` 不是当前功能 backlog，而是“合并多 review 共识版”的历史路线图。
+`docs/archive/fix-roadmap.md` 不是当前功能 backlog，而是“合并多 review 共识版”的历史路线图。
 
 已确认问题：
 

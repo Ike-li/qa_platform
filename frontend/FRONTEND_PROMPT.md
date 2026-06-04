@@ -1,6 +1,6 @@
 # QA Platform Frontend Implementation Prompt
 
-> Historical prompt: this file captured the initial frontend implementation brief. It is not the current API contract and must not be used as implementation input without checking current source. Prefer backend OpenAPI/schemas, `frontend/README.md`, and `docs/doc-conflict-audit.md` when maintaining the app.
+> Historical prompt: this file captured the initial frontend implementation brief. It is not the current API contract and must not be used as implementation input without checking current source. Prefer backend OpenAPI/schemas, `frontend/README.md`, and `docs/archive/doc-conflict-audit.md` when maintaining the app.
 
 ## Project Overview
 

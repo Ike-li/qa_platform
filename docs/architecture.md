@@ -49,10 +49,22 @@ domain → (无外部依赖)
 
 **已收敛与当前偏差：**
 - Prometheus 指标定义已迁到 `qaplatform.observability.metrics`；`api.metrics` 只负责 `/metrics` endpoint 并兼容 re-export，`engine/executor.py` 直接引用中立指标模块。
-- `engine/reclaim.py` 已直接使用 `engine.redact`；`worker._redact` 仅作为旧调用方兼容 shim 保留。
+- `engine/reclaim.py` 已直接使用 `engine.redact`；纯脱敏实现位于 `qaplatform.domain.services.redact`，`engine.redact` 与 `worker._redact` 仅作为旧调用方兼容 shim 保留，新增代码优先引用 `domain.services.redact`。
+- 审计写入 helper 位于 `qaplatform.infra.audit`；`api.audit` 仅作为旧 import path 兼容 shim 保留，API/worker 新调用优先引用 `infra.audit.write_audit`。
 - `tests/unit/test_architecture_boundaries.py` 锁住 `engine` 不得 import `qaplatform.api.*` 或 `qaplatform.worker.*`，避免 engine 反向依赖回流。
 - `api/deps.py` 的项目可见性 / ProjectMember 角色查询已下沉到 `ProjectRepository` / `ProjectMemberRepository`；`api/v1/admin.py` 的 status 计数已下沉到 `RunRepository`；`api/auth/middleware.py` 的平台管理员复核与 `api/v1/auth.py` 的租户注册 / fallback 查询已下沉到 `UserRepository` / `TenantRepository`；`api/v1/runs.py` 的成员项目过滤已下沉到 `ProjectMemberRepository`；`api/v1/analytics.py` 的趋势、flaky、单用例历史聚合已下沉到 `RunRepository` / `TestResultRepository`。
 - `tests/unit/test_architecture_boundaries.py` 锁住上述 API 入口不得直接 `session.execute()` / `db.execute()`；本轮静态扫描未发现 `src/qaplatform/api` 下仍有 route 层直接执行 SQLAlchemy 查询。
+
+**新增代码放置规则：**
+
+| 需求 | 放置位置 | 依赖边界 |
+|---|---|---|
+| 纯业务规则、状态计算、脱敏等无 IO 逻辑 | `domain/models` 或 `domain/services` | 不依赖 FastAPI、SQLAlchemy、Redis、Docker、S3 |
+| HTTP 输入输出、权限、错误响应、SSE ticket | `api/` | 通过 repositories / services 调用下层，不直接写 SQL 查询 |
+| 容器执行、取消、日志流、worker_lost 回收 | `engine/` | 不 import `api` 或 `worker` |
+| arq 任务、调度 tick、通知编排 | `worker/` | 可组合 engine / infra / plugins，不把业务规则内联成 IO helper |
+| DB/S3/Redis 具体实现与审计持久化 helper | `infra/` | 只向上暴露 repository/helper API |
+| Runner / Collector / Source 扩展点 | `plugins/` | 内置插件可用 domain 纯 helper，不 import API/worker |
 
 ---
 
