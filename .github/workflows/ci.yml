@@ -384,7 +384,7 @@ jobs:
           set +e
           set -o pipefail
           pytest tests/integration/ \
-            -m "not heavy_docker and not external_stack and not performance" \
+            -m "not heavy_docker and not external_stack and not performance and not openapi_contract" \
             --collect-only -q \
             2>&1 | tee artifacts/backend-integration/required-integration-collect.txt
           status=${PIPESTATUS[0]}
@@ -392,12 +392,44 @@ jobs:
             exit "$status"
           fi
           pytest tests/integration/ \
-            -m "not heavy_docker and not external_stack and not performance" \
+            -m "not heavy_docker and not external_stack and not performance and not openapi_contract" \
             -v \
             --junitxml=artifacts/backend-integration/required-integration.xml \
             --tb=short \
             --durations=20 \
             2>&1 | tee artifacts/backend-integration/required-integration.log
+          status=$?
+          set -e
+          exit "$status"
+
+      - name: Run OpenAPI contract smoke (nightly/release candidate)
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.gate == 'nightly' || inputs.gate == 'release_candidate'))
+        env:
+          RUN_INTEGRATION_TESTS: "1"
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          pytest tests/integration/test_openapi_contract_smoke.py \
+            -m "openapi_contract" \
+            --collect-only -q \
+            2>&1 | tee artifacts/backend-integration/openapi-contract-collect.txt
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          python scripts/export_openapi.py artifacts/backend-integration/openapi-contract-openapi.json
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          pytest tests/integration/test_openapi_contract_smoke.py \
+            -m "openapi_contract" \
+            -v \
+            --junitxml=artifacts/backend-integration/openapi-contract.xml \
+            --tb=short \
+            --durations=20 \
+            2>&1 | tee artifacts/backend-integration/openapi-contract.log
           status=$?
           set -e
           exit "$status"
@@ -629,6 +661,10 @@ jobs:
           )
           if [ "$GITHUB_EVENT_NAME" = "schedule" ] || { [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && { [ "${{ inputs.gate }}" = "nightly" ] || [ "${{ inputs.gate }}" = "release_candidate" ]; }; }; then
             expected+=(
+              artifacts/backend-integration/openapi-contract-collect.txt
+              artifacts/backend-integration/openapi-contract.log
+              artifacts/backend-integration/openapi-contract.xml
+              artifacts/backend-integration/openapi-contract-openapi.json
               artifacts/backend-integration/heavy-docker-integration-collect.txt
               artifacts/backend-integration/heavy-docker-integration.log
               artifacts/backend-integration/heavy-docker-integration.xml
@@ -670,7 +706,8 @@ jobs:
           manifest_path = Path(sys.argv[1])
           collect_paths = [Path(path) for path in sys.argv[2:]]
           minimums = {
-              "required-integration-collect.txt": 161,
+              "required-integration-collect.txt": 167,
+              "openapi-contract-collect.txt": 72,
               "heavy-docker-integration-collect.txt": 12,
               "external-stack-integration-collect.txt": 6,
               "external-stack-performance-collect.txt": 2,
@@ -1400,6 +1437,7 @@ jobs:
           backend_test_manifest=artifacts/release-gate/backend-test-artifacts/evidence-manifest.txt
           frontend_contract=artifacts/release-gate/frontend-api-contract-artifacts/openapi.json
           backend_manifest=artifacts/release-gate/backend-integration-artifacts/evidence-manifest.txt
+          backend_openapi_contract=artifacts/release-gate/backend-integration-artifacts/openapi-contract-openapi.json
           e2e_manifest=artifacts/release-gate/e2e-artifacts/evidence-manifest.txt
           if [ ! -s "$e2e_manifest" ]; then
             e2e_manifest=artifacts/release-gate/e2e-artifacts/artifacts/e2e/evidence-manifest.txt
@@ -1424,6 +1462,7 @@ jobs:
           require_nonempty "$backend_test_manifest"
           require_nonempty "$frontend_contract"
           require_nonempty "$backend_manifest"
+          require_nonempty "$backend_openapi_contract"
           require_nonempty "$e2e_manifest"
 
           require_line "$backend_test_manifest" "backend_test_artifacts_validation=passed"
@@ -1463,6 +1502,7 @@ jobs:
             echo
             echo "- backend unit artifacts: passed"
             echo "- frontend API contract: passed"
+            echo "- OpenAPI contract smoke: passed"
             echo "- backend integration artifacts: passed"
             echo "- performance SLO gate profile: release_candidate"
             echo "- performance trend gate: passed"
@@ -1481,7 +1521,7 @@ jobs:
           cat <<'EOF'
           release_candidate_gate=passed
           required_jobs=lint-and-type-check,backend-test,frontend-api-contract,backend-integration-test,frontend-build,e2e-test
-          evidence=frontend-api-contract,required-integration,heavy-docker,external-stack,performance-slo,full-playwright
+          evidence=frontend-api-contract,openapi-contract,required-integration,heavy-docker,external-stack,performance-slo,full-playwright
           EOF
 
       - name: Upload release gate evidence

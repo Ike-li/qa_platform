@@ -330,6 +330,49 @@ async def integration_client(integration_app) -> AsyncIterator[AsyncClient]:
         yield client
 
 
+@pytest_asyncio.fixture
+async def no_auth_integration_app(test_settings, integration_db_schema):
+    """Build a real integration app without overriding current-user auth."""
+    from qaplatform.api import create_app
+    from qaplatform.dependencies import init_container
+    from qaplatform.plugins.registry import PluginRegistry
+
+    settings = test_settings.model_copy(
+        update={
+            "rate_limit_per_minute": 10_000,
+            "rate_limit_auth_failure": 10_000,
+            "rate_limit_auth_failure_window": 1,
+        }
+    )
+    container = init_container(settings)
+    await container.init_db()
+    await container.init_redis()
+    container.init_crypto()
+
+    plugin_registry = PluginRegistry()
+    plugin_registry.register_builtins()
+    container.plugin_registry = plugin_registry
+
+    app = create_app(container=container, settings=settings)
+    app.state.container = container
+
+    yield app
+
+    app.dependency_overrides.clear()
+    await container.close()
+
+
+@pytest_asyncio.fixture
+async def no_auth_integration_client(
+    no_auth_integration_app,
+) -> AsyncIterator[AsyncClient]:
+    transport = ASGITransport(app=no_auth_integration_app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as client:
+        yield client
+
+
 # --------------------------------------------------------------------------- #
 # Second-tenant seed: tenant_B with full chain + credential + artifact
 # --------------------------------------------------------------------------- #

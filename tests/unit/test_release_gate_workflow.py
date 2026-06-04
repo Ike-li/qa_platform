@@ -118,7 +118,7 @@ def test_release_candidate_gate_profiles_are_explicit():
     for required_job in expected_release_needs:
         assert required_job in jobs
     assert "release_candidate_gate=passed" in text
-    assert "evidence=frontend-api-contract,required-integration,heavy-docker,external-stack,performance-slo,full-playwright" in text
+    assert "evidence=frontend-api-contract,openapi-contract,required-integration,heavy-docker,external-stack,performance-slo,full-playwright" in text
 
 
 def test_ci_uses_node24_ready_official_actions():
@@ -158,7 +158,8 @@ def test_backend_integration_collect_minimums_match_current_gate_baselines():
     integration_block = _job_block(_workflow_text(), "backend-integration-test")
 
     expected_minimums = {
-        "required-integration-collect.txt": 161,
+        "required-integration-collect.txt": 167,
+        "openapi-contract-collect.txt": 72,
         "heavy-docker-integration-collect.txt": 12,
         "external-stack-integration-collect.txt": 6,
         "external-stack-performance-collect.txt": 2,
@@ -182,6 +183,7 @@ def test_release_gate_validates_downloaded_evidence_markers():
     assert "backend-test-artifacts/evidence-manifest.txt" in release_block
     assert "frontend-api-contract-artifacts/openapi.json" in release_block
     assert "backend-integration-artifacts/evidence-manifest.txt" in release_block
+    assert "backend-integration-artifacts/openapi-contract-openapi.json" in release_block
     assert "e2e-artifacts/evidence-manifest.txt" in release_block
     assert "e2e-artifacts/artifacts/e2e/evidence-manifest.txt" in release_block
     for marker in (
@@ -224,6 +226,7 @@ def test_release_candidate_backend_gate_runs_real_stack_and_slo_validation():
     compose = yaml.safe_load(docker_compose)
 
     for step in (
+        "Run OpenAPI contract smoke (nightly/release candidate)",
         "Run heavy docker integration tests (nightly/release candidate)",
         "Start external API/worker stack (nightly/release candidate)",
         "Run external-stack worker integration tests (nightly/release candidate)",
@@ -232,10 +235,13 @@ def test_release_candidate_backend_gate_runs_real_stack_and_slo_validation():
     ):
         assert step in text
 
+    assert '-m "not heavy_docker and not external_stack and not performance and not openapi_contract"' in text
+    assert '-m "openapi_contract"' in text
     assert '-m "heavy_docker and not external_stack"' in text
     assert '-m "external_stack and not performance"' in text
     assert '-m "external_stack and performance"' in text
     assert '-m "performance"' in text
+    assert "openapi-contract-openapi.json" in text
     assert ".github/performance-slo-manifest.json" in text
     assert ".github/performance-slo-baseline.json" in text
     assert "scripts/validate_performance_summary.py" in text

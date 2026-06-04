@@ -1,0 +1,710 @@
+version: 1
+metadata:
+  source: openapi
+  operation_count: 69
+  generated_from: create_app().openapi()["paths"]
+  qa_owner: qa
+scope:
+  target_paths:
+    - "/api/v1/**"
+    - "/health"
+    - "/ready"
+    - "/webhooks/{provider}"
+coverage_dimensions:
+  - contract
+  - auth
+  - success
+  - schema_negative
+  - rbac_tenant
+  - declared_responses
+operations:
+  - operation_id: get_api_v1_admin_status
+    method: GET
+    path: "/api/v1/admin/status"
+    tag: admin
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "403"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "No public API creates a platform admin identity for the 200 path; auth rejection and owner 403 paths are covered by existing guardrails."
+  - operation_id: get_api_v1_artifacts_artifact_id_download
+    method: GET
+    path: "/api/v1/artifacts/{artifact_id}/download"
+    tag: artifacts
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "403", "404", "422", "503"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "A 200 path requires a persisted artifact object in storage; the public API can read it but cannot create the object directly without a run worker artifact upload."
+  - operation_id: get_api_v1_artifacts_artifact_id_preview_url
+    method: GET
+    path: "/api/v1/artifacts/{artifact_id}/preview-url"
+    tag: artifacts
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "403", "404", "422", "503"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "A 200 path requires a persisted previewable artifact object in storage; the public API cannot create that object directly without worker output."
+  - operation_id: get_api_v1_artifacts_artifact_id_preview_token_artifact_path
+    method: GET
+    path: "/api/v1/artifacts/{artifact_id}/preview/{token}/{artifact_path}"
+    tag: artifacts
+    auth_type: public
+    request_schema: none
+    declared_responses: ["200", "403", "404", "422", "503"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "A valid public preview token and object require prior artifact state that has no direct public setup API."
+  - operation_id: get_api_v1_audit_events
+    method: GET
+    path: "/api/v1/audit-events"
+    tag: audit-events
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "403", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_auth_login
+    method: POST
+    path: "/api/v1/auth/login"
+    tag: auth
+    auth_type: public
+    request_schema: body
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_auth_logout
+    method: POST
+    path: "/api/v1/auth/logout"
+    tag: auth
+    auth_type: public
+    request_schema: none
+    declared_responses: ["204", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_auth_refresh
+    method: POST
+    path: "/api/v1/auth/refresh"
+    tag: auth
+    auth_type: public
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_auth_register
+    method: POST
+    path: "/api/v1/auth/register"
+    tag: auth
+    auth_type: public
+    request_schema: body
+    declared_responses: ["201", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_auth_sse_ticket
+    method: POST
+    path: "/api/v1/auth/sse-ticket"
+    tag: auth
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_auth_tokens
+    method: GET
+    path: "/api/v1/auth/tokens"
+    tag: auth
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_auth_tokens
+    method: POST
+    path: "/api/v1/auth/tokens"
+    tag: auth
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: delete_api_v1_auth_tokens_token_id
+    method: DELETE
+    path: "/api/v1/auth/tokens/{token_id}"
+    tag: auth
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["204", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects
+    method: GET
+    path: "/api/v1/projects"
+    tag: projects
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_projects
+    method: POST
+    path: "/api/v1/projects"
+    tag: projects
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "409", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_projects_branches
+    method: POST
+    path: "/api/v1/projects/branches"
+    tag: projects
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "422"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "The 200 path requires a reachable public or SSH Git remote; local file repositories are rejected by the public schema and external network Git fixtures are not stable enough for this black-box lane."
+  - operation_id: delete_api_v1_projects_project_id
+    method: DELETE
+    path: "/api/v1/projects/{project_id}"
+    tag: projects
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["204", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id
+    method: GET
+    path: "/api/v1/projects/{project_id}"
+    tag: projects
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: put_api_v1_projects_project_id
+    method: PUT
+    path: "/api/v1/projects/{project_id}"
+    tag: projects
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id_analytics_flaky
+    method: GET
+    path: "/api/v1/projects/{project_id}/analytics/flaky"
+    tag: analytics
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "Empty 200, query validation, and tenant isolation are covered; populated flaky analytics require TestResult rows, and no public API creates those rows without worker result ingestion."
+  - operation_id: get_api_v1_projects_project_id_analytics_test_history
+    method: GET
+    path: "/api/v1/projects/{project_id}/analytics/test-history"
+    tag: analytics
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "Empty 200, query validation, and tenant isolation are covered; populated test history requires TestResult rows, and no public API creates those rows without worker result ingestion."
+  - operation_id: get_api_v1_projects_project_id_analytics_trends
+    method: GET
+    path: "/api/v1/projects/{project_id}/analytics/trends"
+    tag: analytics
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "Empty 200, query validation, and tenant isolation are covered; populated trend analytics require terminal run result data, and no public API creates complete result rows without worker result ingestion."
+  - operation_id: get_api_v1_projects_project_id_credentials
+    method: GET
+    path: "/api/v1/projects/{project_id}/credentials"
+    tag: credentials
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_projects_project_id_credentials
+    method: POST
+    path: "/api/v1/projects/{project_id}/credentials"
+    tag: credentials
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "404", "409", "422", "503"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: delete_api_v1_projects_project_id_credentials_credential_id
+    method: DELETE
+    path: "/api/v1/projects/{project_id}/credentials/{credential_id}"
+    tag: credentials
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["204", "404", "409", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id_credentials_credential_id
+    method: GET
+    path: "/api/v1/projects/{project_id}/credentials/{credential_id}"
+    tag: credentials
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: put_api_v1_projects_project_id_credentials_credential_id
+    method: PUT
+    path: "/api/v1/projects/{project_id}/credentials/{credential_id}"
+    tag: credentials
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "404", "422", "503"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id_environments
+    method: GET
+    path: "/api/v1/projects/{project_id}/environments"
+    tag: environments
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422", "503"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_projects_project_id_environments
+    method: POST
+    path: "/api/v1/projects/{project_id}/environments"
+    tag: environments
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "404", "422", "503"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: delete_api_v1_projects_project_id_environments_env_id
+    method: DELETE
+    path: "/api/v1/projects/{project_id}/environments/{env_id}"
+    tag: environments
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["204", "404", "422", "503"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id_environments_env_id
+    method: GET
+    path: "/api/v1/projects/{project_id}/environments/{env_id}"
+    tag: environments
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422", "503"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: put_api_v1_projects_project_id_environments_env_id
+    method: PUT
+    path: "/api/v1/projects/{project_id}/environments/{env_id}"
+    tag: environments
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "404", "422", "503"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id_members
+    method: GET
+    path: "/api/v1/projects/{project_id}/members"
+    tag: project-members
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_projects_project_id_members
+    method: POST
+    path: "/api/v1/projects/{project_id}/members"
+    tag: project-members
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "404", "409", "422"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "A full success path needs a second same-tenant user identity; registration creates isolated tenants and there is no public tenant-invite/setup API."
+  - operation_id: delete_api_v1_projects_project_id_members_user_id
+    method: DELETE
+    path: "/api/v1/projects/{project_id}/members/{user_id}"
+    tag: project-members
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["204", "404", "409", "422"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "A full success path needs an existing same-tenant member row; there is no public API to create a second same-tenant user fixture."
+  - operation_id: put_api_v1_projects_project_id_members_user_id
+    method: PUT
+    path: "/api/v1/projects/{project_id}/members/{user_id}"
+    tag: project-members
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "404", "422"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "A full success path needs an existing same-tenant member row; there is no public API to create a second same-tenant user fixture."
+  - operation_id: get_api_v1_projects_project_id_notification_rules
+    method: GET
+    path: "/api/v1/projects/{project_id}/notification-rules"
+    tag: notifications
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_projects_project_id_notification_rules
+    method: POST
+    path: "/api/v1/projects/{project_id}/notification-rules"
+    tag: notifications
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: delete_api_v1_projects_project_id_notification_rules_rule_id
+    method: DELETE
+    path: "/api/v1/projects/{project_id}/notification-rules/{rule_id}"
+    tag: notifications
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["204", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id_notification_rules_rule_id
+    method: GET
+    path: "/api/v1/projects/{project_id}/notification-rules/{rule_id}"
+    tag: notifications
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: put_api_v1_projects_project_id_notification_rules_rule_id
+    method: PUT
+    path: "/api/v1/projects/{project_id}/notification-rules/{rule_id}"
+    tag: notifications
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id_pipelines
+    method: GET
+    path: "/api/v1/projects/{project_id}/pipelines"
+    tag: pipelines
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_projects_project_id_pipelines
+    method: POST
+    path: "/api/v1/projects/{project_id}/pipelines"
+    tag: pipelines
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: delete_api_v1_projects_project_id_pipelines_pipeline_id
+    method: DELETE
+    path: "/api/v1/projects/{project_id}/pipelines/{pipeline_id}"
+    tag: pipelines
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["204", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id_pipelines_pipeline_id
+    method: GET
+    path: "/api/v1/projects/{project_id}/pipelines/{pipeline_id}"
+    tag: pipelines
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: put_api_v1_projects_project_id_pipelines_pipeline_id
+    method: PUT
+    path: "/api/v1/projects/{project_id}/pipelines/{pipeline_id}"
+    tag: pipelines
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id_schedules
+    method: GET
+    path: "/api/v1/projects/{project_id}/schedules"
+    tag: schedules
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_projects_project_id_schedules
+    method: POST
+    path: "/api/v1/projects/{project_id}/schedules"
+    tag: schedules
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: delete_api_v1_projects_project_id_schedules_schedule_id
+    method: DELETE
+    path: "/api/v1/projects/{project_id}/schedules/{schedule_id}"
+    tag: schedules
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["204", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_projects_project_id_schedules_schedule_id
+    method: GET
+    path: "/api/v1/projects/{project_id}/schedules/{schedule_id}"
+    tag: schedules
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: put_api_v1_projects_project_id_schedules_schedule_id
+    method: PUT
+    path: "/api/v1/projects/{project_id}/schedules/{schedule_id}"
+    tag: schedules
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_runs
+    method: GET
+    path: "/api/v1/runs"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_runs
+    method: POST
+    path: "/api/v1/runs"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "404", "409", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_runs_batch_cancel
+    method: POST
+    path: "/api/v1/runs/batch/cancel"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_runs_batch_retry
+    method: POST
+    path: "/api/v1/runs/batch/retry"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_runs_run_id
+    method: GET
+    path: "/api/v1/runs/{run_id}"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_runs_run_id_artifacts
+    method: GET
+    path: "/api/v1/runs/{run_id}/artifacts"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_runs_run_id_artifacts_allure_report
+    method: GET
+    path: "/api/v1/runs/{run_id}/artifacts/allure-report"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "A 200 path requires a persisted Allure report artifact generated by worker output; there is no direct public API to create that artifact fixture."
+  - operation_id: post_api_v1_runs_run_id_cancel
+    method: POST
+    path: "/api/v1/runs/{run_id}/cancel"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "404", "409", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_runs_run_id_events
+    method: GET
+    path: "/api/v1/runs/{run_id}/events"
+    tag: sse
+    auth_type: public
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_runs_run_id_logs
+    method: GET
+    path: "/api/v1/runs/{run_id}/logs"
+    tag: sse
+    auth_type: public
+    request_schema: none
+    declared_responses: ["200", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_runs_run_id_logs_archive
+    method: GET
+    path: "/api/v1/runs/{run_id}/logs/archive"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422", "503"]
+    coverage_status: blocked_by_missing_public_setup
+    test_cases: [contract, auth, declared_responses, schema_negative, rbac_tenant]
+    blocked_reason: "A 200 path requires archived log objects written by the worker/S3 archival flow; no public API creates archived log fixtures directly."
+  - operation_id: get_api_v1_runs_run_id_notifications
+    method: GET
+    path: "/api/v1/runs/{run_id}/notifications"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_runs_run_id_results
+    method: GET
+    path: "/api/v1/runs/{run_id}/results"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_webhooks_project_id_trigger
+    method: POST
+    path: "/api/v1/webhooks/{project_id}/trigger"
+    tag: webhooks
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["200", "201", "401", "404", "409", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_webhooks_provider
+    method: POST
+    path: "/api/v1/webhooks/{provider}"
+    tag: webhooks
+    auth_type: public
+    request_schema: none
+    declared_responses: ["200", "201", "202", "400", "401", "404", "409", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_health
+    method: GET
+    path: "/health"
+    tag: ops
+    auth_type: public
+    request_schema: none
+    declared_responses: ["200"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_ready
+    method: GET
+    path: "/ready"
+    tag: ops
+    auth_type: public
+    request_schema: none
+    declared_responses: ["200"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_webhooks_provider
+    method: POST
+    path: "/webhooks/{provider}"
+    tag: webhooks
+    auth_type: public
+    request_schema: none
+    declared_responses: ["200", "201", "202", "400", "401", "404", "409", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []

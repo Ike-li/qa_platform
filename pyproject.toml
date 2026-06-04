@@ -61,6 +61,7 @@ testpaths = ["tests"]
 markers = [
     "heavy_docker: integration tests that require Docker image pulls or real containers; run in nightly/manual lanes when registry stability matters",
     "external_stack: integration tests that require a separately running API/worker stack instead of the in-process ASGI test app",
+    "openapi_contract: OpenAPI-driven API contract smoke tests for nightly/manual lanes",
     "performance: nonfunctional smoke tests for nightly/manual trend monitoring",
 ]
 filterwarnings = [

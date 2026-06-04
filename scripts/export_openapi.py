@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -23,7 +24,16 @@ def _contract_settings() -> Settings:
 
 
 def main() -> None:
-    output = Path("artifacts/frontend-api-contract/openapi.json")
+    parser = argparse.ArgumentParser(description="Export the FastAPI OpenAPI JSON")
+    parser.add_argument(
+        "output",
+        nargs="?",
+        default="artifacts/frontend-api-contract/openapi.json",
+        help="Output path for the OpenAPI JSON",
+    )
+    args = parser.parse_args()
+
+    output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     app = create_app(container=None, settings=_contract_settings())

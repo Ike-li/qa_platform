@@ -1,0 +1,42 @@
+version: 1
+metadata:
+  source: openapi_operation_matrix
+  operation_matrix: tests/api_matrix/openapi_operation_matrix.yml
+  operation_count: 69
+  dimension_count: 6
+  case_count: 414
+  covered_case_count: 401
+  blocked_case_count: 13
+  missing_case_count: 0
+case_id_pattern: "{operation_id}::{dimension}"
+dimensions:
+  - id: contract
+    purpose: "OpenAPI declaration, security metadata, public allowlist, runtime status declaration, and JSON error envelope."
+    test_reference: "tests/integration/test_openapi_contract_smoke.py"
+  - id: auth
+    purpose: "Authentication and authorization rejection paths, including missing, invalid, expired, revoked, and insufficient privilege tokens."
+    test_reference: "tests/integration/test_openapi_contract_smoke.py and tests/integration/test_openapi_behavior_blackbox.py"
+  - id: success
+    purpose: "2xx behavior using setup data created only through public HTTP APIs."
+    test_reference: "tests/integration/test_openapi_behavior_blackbox.py"
+  - id: schema_negative
+    purpose: "Required fields, invalid enums, invalid UUIDs, pagination boundaries, date ranges, and domain validation failures."
+    test_reference: "tests/integration/test_openapi_contract_smoke.py and tests/integration/test_openapi_behavior_blackbox.py"
+  - id: rbac_tenant
+    purpose: "Cross-tenant non-leakage and permission denial through read, write, delete, stream, and list surfaces."
+    test_reference: "tests/integration/test_openapi_behavior_blackbox.py"
+  - id: declared_responses
+    purpose: "Runtime statuses observed by black-box tests must be declared by OpenAPI responses, with only global auth compatibility statuses allowed by contract smoke."
+    test_reference: "tests/integration/test_openapi_contract_smoke.py"
+status_rules:
+  - when: "dimension is listed in operation.test_cases"
+    status: covered
+  - when: "operation.coverage_status is blocked_by_missing_public_setup and dimension is success"
+    status: blocked_by_missing_public_setup
+    reason_source: operation.blocked_reason
+reporting:
+  group_by:
+    - tag
+    - operation_id
+    - dimension
+    - status
