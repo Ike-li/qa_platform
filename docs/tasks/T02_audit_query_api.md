@@ -10,7 +10,7 @@
 
 [feature-catalog.md](../feature-catalog.md) §4.1 要求提供审计日志查询 API（仅 Owner/Admin 可访问）。当前写入端 `api/audit.py`、仓储 `infra/database/repositories/audit_repo.py`、查询路由 `api/v1/audit_events.py`、`Action.AUDIT_READ` 权限和真实 API/DB 测试均已落地。
 
-> 注意：旧文档曾引用 `PRD §9.6`，但当前 `docs/prd.md` 实际只到第 8 章。PR 描述不要继续引用不存在的章节；如需 PRD 出处，应先补 PRD 章节或引用 catalog。
+> 注意：旧文档曾引用 `PRD §9.6`（审计日志章节），但 `docs/product.md` 并无审计日志的正式 PRD 章节（编号功能需求到 §8，§9 为试点边界）。PR 描述不要继续引用不存在的章节；如需 PRD 出处，应先补 PRD 章节或引用 catalog。
 
 ## 已实现
 

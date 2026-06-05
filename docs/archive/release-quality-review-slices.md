@@ -127,7 +127,7 @@ Review focus:
 Primary files:
 
 - `docs/testing-strategy.md`
-- `docs/backend-test-audit.md`
+- `docs/archive/backend-test-audit.md`
 - `docs/runbook.md`
 - `docs/TODO.md`
 - this file

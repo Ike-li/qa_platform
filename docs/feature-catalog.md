@@ -1,7 +1,7 @@
 # 功能清单 · QA 自动化执行平台
 
 > **用途**：一页看全产品功能盘子。PRD 对照 / 发版门禁 / 新人 onboarding 都从这里出发。
-> **当前真源**：`docs/prd.md` 提供产品目标与功能 ID，`docs/architecture.md` 提供当前实现边界，`docs/product-status.md` 提供试点产品化边界，`docs/TODO.md` 提供排期；`docs/archive/doc-conflict-audit.md` 仅作审计证据档案，不作为实时状态源。
+> **当前真源**：`docs/product.md` 提供产品目标、功能 ID 与试点产品化边界，`docs/architecture.md` 提供当前实现边界，`docs/TODO.md` 提供排期；`docs/archive/doc-conflict-audit.md` 仅作审计证据档案，不作为实时状态源。
 > **最后更新**：2026-06-04
 > **路径约定**：未带仓库前缀的后端路径默认相对 `src/qaplatform/`；未带仓库前缀的前端路径默认相对 `frontend/src/`。
 
@@ -23,7 +23,7 @@
 
 ---
 
-## 1. PRD 功能 ID 对照（来自 `prd.md` §3）
+## 1. PRD 功能 ID 对照（来自 `product.md` §3）
 
 ### 1.1 项目管理
 
@@ -277,7 +277,7 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 
 ## 7. 维护约定
 
-1. **新增功能**：在 §1 或 §2 添加一行；如属于 PRD §3 范围，先在 `prd.md` 增功能 ID 再回填到此表
+1. **新增功能**：在 §1 或 §2 添加一行；如属于 PRD §3 范围，先在 `product.md` 增功能 ID 再回填到此表
 2. **不得自造 PRD 子 ID**：禁止在 catalog 写 `F-XX-NNa/b/c` 这类子拆分；如确需拆分须先提 PRD 增补 PR 合并后再回填
 3. **当前范围不做**：移到 §5，写清楚理由；理由不得引用尚未实现的功能作为替代方案
 4. **状态变更**：✅ / ❌ / ⚠️ / ⏳ 与 `docs/TODO.md` 严格同步；catalog §4 是 TODO 的功能 backlog 真源

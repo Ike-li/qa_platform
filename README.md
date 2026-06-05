@@ -173,9 +173,8 @@ qa_platform/
 
 文档总目录见 [docs/README.md](docs/README.md)。维护时按用途分流：
 
-- 当前实现与边界：`architecture.md`、`feature-catalog.md`、`TODO.md`、`development.md`、`runbook.md`、`testing-strategy.md`
-- 测试和发布证据：`backend-test-audit.md`、`release-quality-review-slices.md`
-- 历史审计和规划：`prd.md`、`docs/tasks/`、`docs/archive/`
+- 当前实现与边界：`architecture.md`、`feature-catalog.md`、`product.md`、`TODO.md`、`development.md`、`runbook.md`、`testing-strategy.md`
+- 任务包与历史归档：`docs/tasks/`、`docs/archive/`（归档含 backend-test-audit、release-quality-review-slices、doc-conflict-audit、fix-roadmap）
 
 ## 常用命令
 
