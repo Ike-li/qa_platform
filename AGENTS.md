@@ -23,6 +23,8 @@ Use Python 3.12+ with 4-space indentation, type hints, and async APIs where surr
 
 Use `pytest` and `pytest-asyncio` for backend tests. Name test files `test_*.py` and test functions `test_*`. Integration tests that require containers or real services must be guarded with markers/env flags such as `RUN_INTEGRATION_TESTS=1`, `heavy_docker`, `external_stack`, `performance`, or `openapi_contract`. Coverage for `qaplatform` has an 83% fail-under target.
 
+Tests must verify the observable behavior of product code. Do not add meta-tests that assert documentation strings, ledger/registry wording, or the source text of other test files. Quality and coverage evidence belongs in the PR description and CI artifacts, not in `tests/` assertions; documentation is maintained by people, not pinned character-by-character by tests.
+
 ## Commit & Pull Request Guidelines
 
 Recent commits use concise imperative subjects, for example `Keep backend gates importable under CI parity`. Keep commits focused and avoid mixing unrelated frontend, backend, and docs churn. PRs should describe behavior changes, list commands run, link issues or tasks, and include screenshots for visible UI changes. Note skipped tests, required environment variables, and follow-up risks.
