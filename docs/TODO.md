@@ -4,7 +4,7 @@
 > 试点产品边界、Beta/GA 准入和成功指标见 [`product-status.md`](product-status.md)
 > **首批可交付任务包见 [`tasks/`](tasks/README.md)**（codex-ready，含规格 + 起点 + 验收 + 约束）；本轮审计新增的待办若进入实施，需要后续补任务包。
 > 本文件按优先级排序验收状态、剩余缺口与不做范围，与 catalog §4 保持同步。
-> 更新于 2026-06-04（PRD / catalog / tasks 与代码的历史偏移审计见 [`archive/doc-conflict-audit.md`](archive/doc-conflict-audit.md)；旧 `feature/T*` 分支合并状态仅作为审计快照保留，当前实现与 backlog 以本文件、catalog、project memory 和现场 git 状态为准）
+> 更新于 2026-06-05（PRD / catalog / tasks 与代码的历史偏移审计见 [`archive/doc-conflict-audit.md`](archive/doc-conflict-audit.md)；旧 `feature/T*` 分支合并状态仅作为审计快照保留，当前实现与 backlog 以本文件、catalog、project memory 和现场 git 状态为准）
 
 ---
 
@@ -55,8 +55,8 @@
 |---|---|---|
 | T-LINT | 已完成：清理 main 既有 ruff 历史债务 | CI `backend-test` 已加入 `ruff check src tests`，后续新增债务会阻断；backend-test 已收口到 `tests/unit`，并用 manifest 解析 unit JUnit/coverage XML/JSON，避免 integration skip 混进 unit 证据 |
 | T-FRONTEND-TS | 已完成：清理前端历史 TS build 债 | CI 前端 type/build 不再走历史债豁免；`npm run build` / `npx tsc --noEmit` / `npm run lint -- --max-warnings=0` 均应保持全量通过 |
-| T-FRONTEND-API | 拆分/对齐前端 API DTO、hook 路径/响应形状与视图模型类型 | 已对齐 Pipeline schema/payload/collector 配置、project search `search -> q`、pipeline 嵌套路由、notification rule 分页解包与渠道类型、run trigger `pipeline_id/git_ref/git_sha/environment_id/priority`、Run response/view model、SSE 重连游标、TestResult `xfail` 状态，以及 Environment response/view/create/update payload 边界；CI 已新增 `frontend-api-contract`，导出 FastAPI OpenAPI 并校验前端关键 DTO / hook 映射、字段存在、type/nullable/enum/required/array item 对齐，防止手写类型再次漂移；后续若继续硬化，优先演进为 OpenAPI 生成 DTO/client；以后端 `api/schemas.py` 为契约源 |
-| T-ARCH-LAYERS | 收敛分层 import / DB 访问偏差 | 已完成：`engine` 不再反向依赖 `api.metrics` / `worker._redact`，指标定义已迁到 `observability.metrics`，`engine.reclaim` 直接使用 `engine.redact`；`api/deps.py` 项目 RBAC 查询、`api/v1/admin.py` status 计数、`api/auth/middleware.py` 平台管理员复核、`api/v1/auth.py` 租户注册 / fallback 查询、`api/v1/runs.py` 成员项目过滤、`api/v1/analytics.py` 聚合查询均已下沉到 repositories，并由 `tests/unit/test_architecture_boundaries.py` 锁住这些入口不得直接 `session.execute()` / `db.execute()`；本轮静态扫描未发现 `src/qaplatform/api` 下仍有 route 层直接执行 SQLAlchemy 查询 |
+| T-FRONTEND-API | 拆分/对齐前端 API DTO、hook 路径/响应形状与视图模型类型 | 已对齐 Pipeline schema/payload/collector 配置、project search `search -> q`、pipeline 嵌套路由、notification rule 分页解包与渠道类型、run trigger `pipeline_id/git_ref/git_sha/environment_id/priority`、Run response/view model、SSE 重连游标、TestResult `xfail` 状态，以及 Environment response/view/create/update payload 边界；CI 已新增 `frontend-api-contract`，导出 FastAPI OpenAPI 并校验前端关键 DTO / hook 映射、字段存在、type/nullable/enum/required/array item 对齐，防止手写类型再次漂移；后续若继续硬化，优先演进为 OpenAPI 生成 DTO/client；以后端 `api.schemas` package re-export 与 OpenAPI schema 为契约源 |
+| T-ARCH-LAYERS | 收敛分层 import / DB 访问偏差 | 已完成：`engine` 不再反向依赖 `api.metrics` / `worker._redact`，指标定义已迁到 `observability.metrics`，`engine.reclaim` 直接使用 `engine.redact`；`api/deps.py` 项目 RBAC 查询、`api/v1/admin.py` status 计数、`api/auth/middleware.py` 平台管理员复核、`api/v1/auth.py` 租户注册 / fallback 查询、`api/v1/runs.py` 成员项目过滤、`api/v1/analytics.py` 聚合查询均已下沉到 repositories；auth、webhook、run batch、worker schedule firing/run execution、PipelineConfig builder 和 API schema 已拆到对应 command/helper/builder/schema package，并由 `tests/unit/test_architecture_boundaries.py` 锁住这些入口不得直接 `session.execute()` / `db.execute()`、route 模块不得导入 SQLAlchemy core 查询 API、engine 不得反向 import API/worker、`api.schemas` re-export/OpenAPI component 名称不漂移 |
 | T-LOGGING | 已完成：结构化日志全局化 | API app 默认 factory 与 worker/arq `on_startup` 均调用 `configure_logging`；worker startup 单测锁住日志配置早于依赖初始化。trace-log 关联仍归入 OpenTelemetry 后续优化 |
 
 ### 审计报告任务 ID 对照

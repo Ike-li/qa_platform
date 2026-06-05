@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -60,6 +61,13 @@ def test_build_pipeline_config_decrypts_environment_env_vars(fake_run):
     )
 
     assert config.env_vars == {"API_TOKEN": "secret-value"}
+
+
+def test_worker_tasks_keeps_pipeline_config_builder_compat_alias():
+    from qaplatform.engine.pipeline_config_builder import build_pipeline_config
+    from qaplatform.worker import tasks
+
+    assert tasks._build_pipeline_config is build_pipeline_config
 
 
 def test_build_pipeline_config_requires_crypto_for_encrypted_env_vars(fake_run):
@@ -884,3 +892,67 @@ class TestHeartbeatLoop:
 
         # Should get CancelledError
         assert [type(result) for result in results] == [asyncio.CancelledError]
+
+
+@pytest.mark.asyncio
+async def test_finalize_run_execution_keeps_best_effort_cleanup_order():
+    from qaplatform.domain.models.run import RunStatus
+    from qaplatform.worker.run_execution import finalize_run_execution
+
+    async def _heartbeat_forever():
+        await asyncio.sleep(3600)
+
+    run = SimpleNamespace(id=uuid4(), project_id=uuid4(), summary={"tests": 1})
+    heartbeat_task = asyncio.create_task(_heartbeat_forever())
+    log_stream = AsyncMock()
+    log_stream.archive_logs.side_effect = RuntimeError("archive failed")
+    run_repo = AsyncMock()
+    run_repo.release_worker.side_effect = RuntimeError("release failed")
+    session = AsyncMock()
+    session_factory = MagicMock()
+    s3_client = object()
+
+    with (
+        patch(
+            "qaplatform.worker.notifications.evaluate_and_notify",
+            new_callable=AsyncMock,
+        ) as evaluate_and_notify,
+        patch("qaplatform.worker.run_execution.log") as log,
+    ):
+        evaluate_and_notify.side_effect = RuntimeError("notify failed")
+
+        await finalize_run_execution(
+            heartbeat_task=heartbeat_task,
+            run=run,
+            run_id=str(run.id),
+            status=RunStatus.DONE,
+            log_stream=log_stream,
+            s3_client=s3_client,
+            s3_bucket="qa-platform",
+            run_repo=run_repo,
+            worker_id="worker-test",
+            session=session,
+            session_factory=session_factory,
+        )
+
+    assert heartbeat_task.cancelled()
+    evaluate_and_notify.assert_awaited_once_with(
+        run_id=run.id,
+        project_id=run.project_id,
+        status="done",
+        summary={"tests": 1},
+        session_factory=session_factory,
+    )
+    log_stream.archive_logs.assert_awaited_once_with(
+        str(run.id), s3_client, "qa-platform"
+    )
+    run_repo.release_worker.assert_awaited_once_with(
+        str(run.id),
+        worker_id="worker-test",
+    )
+    session.commit.assert_awaited_once_with()
+    assert [call.args[0] for call in log.warning.call_args_list] == [
+        "notification_evaluation_failed",
+        "failed to archive logs for run %s",
+        "failed to release worker for run %s",
+    ]

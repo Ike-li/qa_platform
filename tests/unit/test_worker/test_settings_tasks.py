@@ -8,10 +8,10 @@ from uuid import uuid4
 
 import pytest
 
-from qaplatform.domain.models.run import RunStatus
 from qaplatform.infra.database.models import RunStatusEnum
 from qaplatform.worker.settings import (
     after_job_end,
+    check_schedules,
     cleanup_old_audit_events,
     cleanup_old_runs,
     dequeue_waiting,
@@ -258,6 +258,33 @@ async def test_dequeue_waiting_uses_fair_scheduler_and_commits():
     session.commit.assert_awaited_once_with()
 
 
+def test_worker_settings_keeps_schedule_firing_helper_exports():
+    from qaplatform.worker import schedule_firing
+    from qaplatform.worker import settings as worker_settings
+
+    assert (
+        worker_settings._schedule_run_audit_state
+        is schedule_firing._schedule_run_audit_state
+    )
+    assert (
+        worker_settings._schedule_skip_audit_state
+        is schedule_firing._schedule_skip_audit_state
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_schedules_delegates_to_schedule_firing():
+    ctx = {"db_session_factory": MagicMock(), "arq_pool": AsyncMock()}
+
+    with patch(
+        "qaplatform.worker.settings.fire_due_schedules",
+        new_callable=AsyncMock,
+    ) as fire_due_schedules:
+        await check_schedules(ctx)
+
+    fire_due_schedules.assert_awaited_once_with(ctx)
+
+
 @pytest.mark.asyncio
 async def test_cleanup_old_runs_exits_without_session_or_settings():
     session_factory = MagicMock()
@@ -371,32 +398,39 @@ async def test_retry_failed_archives_retries_and_logs_success():
 
 @pytest.mark.asyncio
 async def test_after_job_end_ignores_successful_and_non_run_jobs():
-    run_repo = AsyncMock()
+    session_factory = MagicMock()
 
-    await after_job_end({"success": True, "job_id": "run:1", "run_repo": run_repo})
-    await after_job_end({"success": False, "job_id": "maintenance:1", "run_repo": run_repo})
+    await after_job_end({"success": True, "job_id": f"run:{uuid4()}", "db_session_factory": session_factory})
+    await after_job_end({"success": False, "job_id": "maintenance:1", "db_session_factory": session_factory})
+    await after_job_end({"success": False, "job_id": "run:not-a-uuid", "db_session_factory": session_factory})
 
-    run_repo.get.assert_not_awaited()
+    session_factory.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_after_job_end_marks_active_run_failed_with_redacted_error():
     run_id = uuid4()
-    run = SimpleNamespace(id=run_id, status=RunStatus.RUNNING)
+    run = SimpleNamespace(id=run_id, status=RunStatusEnum.RUNNING)
     run_repo = AsyncMock()
-    run_repo.get.return_value = run
+    run_repo.get_by_id.return_value = run
+    ctx, session = _ctx_with_session()
 
-    await after_job_end(
-        {
-            "success": False,
-            "job_id": f"run:{run_id}",
-            "result": "git clone https://user:secret@example.com/repo.git failed",
-            "run_repo": run_repo,
-        }
-    )
+    with patch(
+        "qaplatform.infra.database.repositories.run_repo.RunRepository",
+        return_value=run_repo,
+    ):
+        await after_job_end(
+            {
+                **ctx,
+                "success": False,
+                "job_id": f"run:{run_id}",
+                "result": "git clone https://user:secret@example.com/repo.git failed",
+            }
+        )
 
-    run_repo.get.assert_awaited_once_with(str(run_id))
+    run_repo.get_by_id.assert_awaited_once_with(run_id)
     run_repo.fail_if_current.assert_awaited_once_with(run_id, message=ANY)
+    session.commit.assert_awaited_once_with()
     message = run_repo.fail_if_current.await_args.kwargs["message"]
     assert "user:secret@" not in message
     assert "https://***@example.com/repo.git" in message

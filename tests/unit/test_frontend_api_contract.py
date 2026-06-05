@@ -1,50 +1,43 @@
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import pytest
 
-from qaplatform.config import Settings
 from qaplatform.main import create_app
-
-
-ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_TYPES = ROOT / "frontend" / "src" / "types" / "api.ts"
-RUN_HOOK = ROOT / "frontend" / "src" / "hooks" / "use-runs.ts"
-API_TOKENS_HOOK = ROOT / "frontend" / "src" / "hooks" / "use-api-tokens.ts"
-PROJECTS_LIST_PAGE = ROOT / "frontend" / "src" / "pages" / "projects" / "list.tsx"
-RUNS_LIST_PAGE = ROOT / "frontend" / "src" / "pages" / "runs" / "list.tsx"
-RUN_DETAIL_PAGE = ROOT / "frontend" / "src" / "pages" / "runs" / "detail.tsx"
-TEST_STATUS_ICON = ROOT / "frontend" / "src" / "components" / "test-status-icon.tsx"
-TEST_RESULTS_TABLE = ROOT / "frontend" / "src" / "components" / "test-results-table.tsx"
-NOTIFICATION_RULES_PANEL = ROOT / "frontend" / "src" / "components" / "projects" / "notification-rules-panel.tsx"
-PIPELINE_MODAL = ROOT / "frontend" / "src" / "components" / "projects" / "pipeline-modal.tsx"
-ANALYTICS_HOOK = ROOT / "frontend" / "src" / "hooks" / "use-analytics.ts"
-ANALYTICS_PANEL = ROOT / "frontend" / "src" / "components" / "projects" / "analytics-panel.tsx"
-SETTINGS_PAGE = ROOT / "frontend" / "src" / "pages" / "settings.tsx"
-E2E_HELPERS = ROOT / "tests" / "e2e" / "helpers.ts"
-
-_SCHEMA_REF_TYPE_ALIASES = {
-    "CollectorDefinitionInput": "PipelineCollector",
-    "NotificationChannelPayload": "NotificationChannel",
-    "StageDefinitionInput": "PipelineStage",
-}
-
-
-def _settings() -> Settings:
-    return Settings(
-        database_url="postgresql+asyncpg://qaplatform:qaplatform@localhost:5432/qaplatform",
-        redis_url="redis://localhost:6379/0",
-        s3_endpoint="http://localhost:9000",
-        s3_access_key="minioadmin",
-        s3_secret_key="minioadmin",
-        jwt_secret="contract-test-secret-at-least-32bytes!",
-        encryption_key="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        debug=True,
-        environment="test",
-        _env_file=None,
-    )
+from tests.unit.frontend_contract_helpers import (
+    ANALYTICS_HELPERS,
+    ANALYTICS_HOOK,
+    ANALYTICS_PANEL,
+    ANALYTICS_RELEASE_SUMMARY_PANEL,
+    ANALYTICS_TEST_HISTORY_TABLE,
+    API_TOKENS_HOOK,
+    E2E_HELPERS,
+    NOTIFICATION_RULES_CHANNEL_CONFIG,
+    NOTIFICATION_RULES_HELPERS,
+    NOTIFICATION_RULES_PANEL,
+    NOTIFICATION_RULES_RULE_FORM,
+    PIPELINE_MODAL,
+    PROJECTS_LIST_PAGE,
+    ROOT,
+    RUN_DETAIL_PAGE,
+    RUN_HOOK,
+    RUNS_LIST_PAGE,
+    SETTINGS_API_TOKEN_DIALOG,
+    SETTINGS_API_TOKEN_TABLE,
+    SETTINGS_API_TOKEN_UTILS,
+    SETTINGS_PAGE,
+    TEST_RESULTS_TABLE,
+    TEST_STATUS_ICON,
+    assert_frontend_type_matches_schema as _assert_frontend_type_matches_schema,
+    base_schema_name as _base_schema_name,
+    combined_source as _combined_source,
+    contract_settings as _settings,
+    frontend_source as _frontend_source,
+    interface_members as _interface_members,
+    interface_properties as _interface_properties,
+    non_null_schema as _non_null_schema,
+    ref_schema_name as _ref_schema_name,
+    type_aliases as _type_aliases,
+)
 
 
 @pytest.fixture(scope="module")
@@ -59,184 +52,6 @@ def _schema_properties(schemas: dict, schema_name: str) -> set[str]:
 
 def _schema_required(schemas: dict, schema_name: str) -> set[str]:
     return set(schemas[schema_name].get("required", []))
-
-
-def _frontend_source() -> str:
-    return FRONTEND_TYPES.read_text(encoding="utf-8")
-
-
-def _interface_properties(interface_name: str) -> set[str]:
-    return set(_interface_members(interface_name))
-
-
-def _interface_members(interface_name: str) -> dict[str, dict[str, object]]:
-    source = _frontend_source()
-    match = re.search(
-        rf"export interface {re.escape(interface_name)}(?:<[^>]+>)?\s*\{{(?P<body>.*?)\n\}}",
-        source,
-        re.DOTALL,
-    )
-    assert match is not None, f"{interface_name} interface missing"
-    members: dict[str, dict[str, object]] = {}
-    for member in re.finditer(
-        r"^\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?P<optional>\?)?:\s*(?P<type>.*?);",
-        match.group("body"),
-        re.MULTILINE,
-    ):
-        members[member.group("name")] = {
-            "optional": bool(member.group("optional")),
-            "type": member.group("type").strip(),
-        }
-    return members
-
-
-def _type_aliases() -> dict[str, str]:
-    source = _frontend_source()
-    return {
-        match.group("name"): match.group("body").strip()
-        for match in re.finditer(
-            r"export type (?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<body>.*?);",
-            source,
-            re.DOTALL,
-        )
-    }
-
-
-def _literal_values(type_source: str) -> set[str]:
-    aliases = _type_aliases()
-    values = set(re.findall(r'"([^"]+)"', type_source))
-    for token in re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", type_source):
-        values.update(re.findall(r'"([^"]+)"', aliases.get(token, "")))
-    return values
-
-
-def _union_parts(type_source: str) -> set[str]:
-    return {part.strip() for part in type_source.split("|")}
-
-
-def _ref_schema_name(schema: dict) -> str | None:
-    ref = schema.get("$ref")
-    if not isinstance(ref, str):
-        return None
-    return ref.rsplit("/", 1)[-1]
-
-
-def _base_schema_name(schema_name: str | None) -> str | None:
-    if schema_name is None:
-        return None
-    return re.sub(r"-(Input|Output)$", "", schema_name)
-
-
-def _expected_ts_ref_name(schema_name: str) -> str:
-    return _SCHEMA_REF_TYPE_ALIASES.get(schema_name, schema_name)
-
-
-def _array_item_type(ts_type: str) -> str | None:
-    match = re.fullmatch(r"(?P<item>.+)\[\]", ts_type)
-    if match:
-        return match.group("item").strip()
-    match = re.fullmatch(r"Array<(?P<item>.+)>", ts_type)
-    if match:
-        return match.group("item").strip()
-    return None
-
-
-def _non_null_schema(schema: dict) -> dict:
-    for branch_key in ("anyOf", "oneOf"):
-        if branch_key in schema:
-            branches = [
-                branch for branch in schema[branch_key]
-                if branch.get("type") != "null"
-            ]
-            assert len(branches) == 1, f"ambiguous schema branch: {schema}"
-            return branches[0]
-    return schema
-
-
-def _schema_allows_null(schema: dict) -> bool:
-    return any(
-        branch.get("type") == "null"
-        for branch_key in ("anyOf", "oneOf")
-        for branch in schema.get(branch_key, [])
-    )
-
-
-def _assert_frontend_type_matches_schema(field_name: str, schema: dict, ts_type: str):
-    non_null_schema = _non_null_schema(schema)
-    schema_type = non_null_schema.get("type")
-
-    if _schema_allows_null(schema):
-        assert "null" in ts_type, f"{field_name} can be null in OpenAPI"
-    else:
-        assert "null" not in _union_parts(ts_type), f"{field_name} cannot be null in OpenAPI"
-
-    if "enum" in non_null_schema:
-        expected_values = set(non_null_schema["enum"])
-        assert _literal_values(ts_type) == expected_values, field_name
-        assert "string" not in _union_parts(ts_type), f"{field_name} is broader than OpenAPI enum"
-    elif schema_type in {"integer", "number"}:
-        assert "number" in ts_type, field_name
-    elif schema_type == "boolean":
-        assert "boolean" in ts_type, field_name
-    elif schema_type == "string":
-        assert "string" in ts_type or _literal_values(ts_type), field_name
-    elif schema_type == "array":
-        item_type = _array_item_type(ts_type)
-        assert item_type is not None, field_name
-        item_schema = non_null_schema["items"]
-        item_union_refs = {
-            _base_schema_name(_ref_schema_name(_non_null_schema(branch)))
-            for branch_key in ("anyOf", "oneOf")
-            for branch in item_schema.get(branch_key, [])
-        }
-        notification_condition_union_refs = {
-            frozenset(
-                {
-                    "NotificationConditionLeaf",
-                    "NotificationConditionAllGroup",
-                    "NotificationConditionAnyGroup",
-                }
-            ),
-            frozenset(
-                {
-                    "NotificationConditionLeaf",
-                    "NotificationConditionResponseAllGroup",
-                    "NotificationConditionResponseAnyGroup",
-                    "NotificationInvalidCondition",
-                }
-            ),
-        }
-        if frozenset(item_union_refs) in notification_condition_union_refs:
-            assert item_type == "NotificationConditionExpression", field_name
-            return
-        item_schema = _non_null_schema(item_schema)
-        item_ref = _ref_schema_name(item_schema)
-        if item_ref is not None:
-            assert item_type == _expected_ts_ref_name(item_ref), field_name
-        elif item_schema.get("type") == "string":
-            assert item_type == "string" or _literal_values(item_type), field_name
-        elif item_schema.get("type") in {"integer", "number"}:
-            assert item_type == "number", field_name
-        elif item_schema.get("type") == "boolean":
-            assert item_type == "boolean", field_name
-        elif item_schema.get("type") == "object":
-            assert (
-                item_type.startswith("Record<")
-                or item_type == "unknown"
-                or re.fullmatch(r"[A-Z][A-Za-z0-9_]*", item_type)
-            ), field_name
-        else:
-            raise AssertionError(f"unsupported array item schema for {field_name}: {schema}")
-    elif schema_type == "object":
-        assert (
-            "Record<" in ts_type
-            or "unknown" in ts_type
-            or re.search(r"\b[A-Z][A-Za-z0-9_]*\b", ts_type)
-        ), field_name
-    elif "$ref" in non_null_schema:
-        assert ts_type and ts_type != "unknown", field_name
-    else:
-        raise AssertionError(f"unsupported schema for {field_name}: {schema}")
 
 
 @pytest.mark.parametrize(
@@ -427,49 +242,55 @@ def test_notification_create_payload_matches_backend_required_field_contract(
 
 def test_notification_rule_ui_matches_supported_channel_contract():
     types_source = _frontend_source()
-    panel_source = NOTIFICATION_RULES_PANEL.read_text(encoding="utf-8")
+    notification_rules_source = _combined_source(
+        NOTIFICATION_RULES_PANEL,
+        NOTIFICATION_RULES_HELPERS,
+        NOTIFICATION_RULES_RULE_FORM,
+        NOTIFICATION_RULES_CHANNEL_CONFIG,
+    )
 
     assert (
         'export type NotificationChannelType = "email" | "webhook" | "dingtalk" | "wecom";'
         in types_source
     )
-    assert 'const CHANNEL_TYPES: NotificationChannel["type"][] = [' in panel_source
+    assert 'const CHANNEL_TYPES: NotificationChannel["type"][] = [' in notification_rules_source
     for channel_type in ('"email"', '"webhook"', '"dingtalk"', '"wecom"'):
-        assert channel_type in panel_source
+        assert channel_type in notification_rules_source
     assert '"slack"' not in types_source
 
-    assert "to_addresses" in panel_source
-    assert 'update("to",' not in panel_source
-    assert "smtp_host" in panel_source
-    assert "from_address" in panel_source
-    assert "access_token" in panel_source
-    assert "webhook_key" in panel_source
-    assert "normalized.template = template" in panel_source
+    assert "to_addresses" in notification_rules_source
+    assert 'update("to",' not in notification_rules_source
+    assert "smtp_host" in notification_rules_source
+    assert "from_address" in notification_rules_source
+    assert "access_token" in notification_rules_source
+    assert "webhook_key" in notification_rules_source
+    assert "normalized.template = template" in notification_rules_source
 
-    assert "function nextAvailableChannelType" in panel_source
-    assert "function channelTypeOptions" in panel_source
-    assert "hasDuplicateChannelTypes" in panel_source
-    assert 'toast.error(t("notifications.duplicateChannels"))' in panel_source
-    assert "disabled={!nextChannelType}" in panel_source
+    assert "function nextAvailableChannelType" in notification_rules_source
+    assert "function channelTypeOptions" in notification_rules_source
+    assert "hasDuplicateChannelTypes" in notification_rules_source
+    assert 'toast.error(t("notifications.duplicateChannels"))' in notification_rules_source
+    assert "disabled={!nextChannelType}" in notification_rules_source
 
     assert '"consecutive_failures"' in types_source
     assert '"consecutive_failed_runs"' not in types_source
     assert "NotificationConditionExpression" in types_source
     assert "all?: NotificationConditionExpression[]" in types_source
     assert "any?: NotificationConditionExpression[]" in types_source
-    assert "function isConditionLeaf" in panel_source
-    assert "condition is NotificationCondition" in panel_source
-    assert "const CONDITION_MODES = [\"all\", \"any\"] as const" in panel_source
-    assert "conditionModeFromRule" in panel_source
-    assert "NotificationConditionInputExpression[]" in panel_source
-    assert "serializeConditionsForSave(conditionMode, conditions)" in panel_source
-    assert "notifications.condition.field.${f}" in panel_source
+    assert "function isConditionLeaf" in notification_rules_source
+    assert "condition is NotificationCondition" in notification_rules_source
+    assert "const CONDITION_MODES = [\"all\", \"any\"] as const" in notification_rules_source
+    assert "conditionModeFromRule" in notification_rules_source
+    assert "NotificationConditionInputExpression[]" in notification_rules_source
+    assert "serializeConditionsForSave(conditionMode, conditions)" in notification_rules_source
+    assert "notifications.condition.field.${f}" in notification_rules_source
 
 
 def test_analytics_ui_exposes_single_test_history_contract(openapi_schemas: dict):
     types_source = _frontend_source()
     hook_source = ANALYTICS_HOOK.read_text(encoding="utf-8")
     panel_source = ANALYTICS_PANEL.read_text(encoding="utf-8")
+    history_table_source = ANALYTICS_TEST_HISTORY_TABLE.read_text(encoding="utf-8")
 
     assert "TestHistoryResponse" in openapi_schemas
     assert "TestHistoryPoint" in types_source
@@ -484,13 +305,14 @@ def test_analytics_ui_exposes_single_test_history_contract(openapi_schemas: dict
     assert "selectedTest" in panel_source
     assert "TestHistoryTable" in panel_source
     assert "analytics.historyTitle" in panel_source
-    assert "analytics.status.${point.status}" in panel_source
+    assert "analytics.status.${point.status}" in history_table_source
 
 
 def test_analytics_ui_exposes_release_summary_and_git_ref_contract(openapi_schemas: dict):
     types_source = _frontend_source()
     hook_source = ANALYTICS_HOOK.read_text(encoding="utf-8")
     panel_source = ANALYTICS_PANEL.read_text(encoding="utf-8")
+    release_summary_source = ANALYTICS_RELEASE_SUMMARY_PANEL.read_text(encoding="utf-8")
 
     assert "ReleaseSummaryResponse" in openapi_schemas
     assert "ReleaseTestDelta" in openapi_schemas
@@ -520,18 +342,18 @@ def test_analytics_ui_exposes_release_summary_and_git_ref_contract(openapi_schem
     assert "defaultBranch" in panel_source
     assert "ReleaseSummaryPanel" in panel_source
     assert "analytics.release.targetRef" in panel_source
-    assert "analytics.release.adjustedPassRate" in panel_source
+    assert "analytics.release.adjustedPassRate" in release_summary_source
     assert "initialSuite" in panel_source
     assert "initialTest" in panel_source
 
 
 def test_analytics_history_status_colors_match_result_status_semantics():
-    panel_source = ANALYTICS_PANEL.read_text(encoding="utf-8")
+    helpers_source = ANALYTICS_HELPERS.read_text(encoding="utf-8")
 
-    assert 'if (status === "passed") return "text-status-passed"' in panel_source
-    assert 'status === "passed" || status === "xfail"' not in panel_source
-    assert 'if (status === "failed" || status === "error") return "text-status-failed"' in panel_source
-    assert 'if (status === "skipped" || status === "xfail") return "text-status-skipped"' in panel_source
+    assert 'if (status === "passed") return "text-status-passed"' in helpers_source
+    assert 'status === "passed" || status === "xfail"' not in helpers_source
+    assert 'if (status === "failed" || status === "error") return "text-status-failed"' in helpers_source
+    assert 'if (status === "skipped" || status === "xfail") return "text-status-skipped"' in helpers_source
 
 
 def test_trigger_run_payload_maps_to_backend_run_trigger_contract(openapi_schemas: dict):
@@ -599,22 +421,28 @@ def test_frontend_paginated_response_matches_backend_shape(openapi_schemas: dict
 
 
 def test_settings_page_uses_real_api_token_contract():
-    settings_source = SETTINGS_PAGE.read_text(encoding="utf-8")
+    settings_page_source = SETTINGS_PAGE.read_text(encoding="utf-8")
+    settings_source = _combined_source(
+        SETTINGS_PAGE,
+        SETTINGS_API_TOKEN_DIALOG,
+        SETTINGS_API_TOKEN_TABLE,
+        SETTINGS_API_TOKEN_UTILS,
+    )
     hook_source = API_TOKENS_HOOK.read_text(encoding="utf-8")
     auth_flow_source = (ROOT / "tests" / "e2e" / "auth-flow.spec.ts").read_text(
         encoding="utf-8"
     )
 
-    assert "settings.placeholder" not in settings_source
-    assert "useApiTokens" in settings_source
+    assert "settings.placeholder" not in settings_page_source
+    assert "useApiTokens" in settings_page_source
     assert "useCreateApiToken" in settings_source
-    assert "useRevokeApiToken" in settings_source
-    assert "isError, refetch" in settings_source
-    assert "const handleRetry = () =>" in settings_source
-    assert "if (page === 1)" in settings_source
-    assert "void refetch();" in settings_source
-    assert "onClick={handleRetry}" in settings_source
-    assert "onClick={() => setPage(1)}" not in settings_source
+    assert "useRevokeApiToken" in settings_page_source
+    assert "isError, refetch" in settings_page_source
+    assert "const handleRetry = () =>" in settings_page_source
+    assert "if (page === 1)" in settings_page_source
+    assert "void refetch();" in settings_page_source
+    assert "onClick={handleRetry}" in settings_page_source
+    assert "onClick={() => setPage(1)}" not in settings_page_source
     assert "token.is_revoked" in settings_source
     assert "settings.tokens.status.revoked" in settings_source
     assert "disabled={token.is_revoked}" in settings_source

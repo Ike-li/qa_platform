@@ -153,6 +153,37 @@ def test_refresh_cookie_secure_can_be_configured_explicitly():
     )
 
 
+def test_auth_route_module_keeps_refresh_cookie_helper_exports():
+    from qaplatform.api.auth import refresh_cookie as refresh_cookie_helpers
+    from qaplatform.api.v1 import auth as auth_module
+
+    assert auth_module.REFRESH_TOKEN_COOKIE == refresh_cookie_helpers.REFRESH_TOKEN_COOKIE
+    assert auth_module._clear_refresh_cookie is refresh_cookie_helpers._clear_refresh_cookie
+    assert (
+        auth_module._raise_refresh_unauthorized_clearing_cookie
+        is refresh_cookie_helpers._raise_refresh_unauthorized_clearing_cookie
+    )
+    assert (
+        auth_module._refresh_cookie_clear_headers
+        is refresh_cookie_helpers._refresh_cookie_clear_headers
+    )
+    assert auth_module._refresh_cookie_secure is refresh_cookie_helpers._refresh_cookie_secure
+    assert auth_module._set_refresh_cookie is refresh_cookie_helpers._set_refresh_cookie
+
+
+def test_auth_route_module_keeps_command_dependency_patch_points():
+    from qaplatform.api.v1 import auth as auth_module
+
+    deps = auth_module._auth_command_dependencies()
+
+    assert deps.tenant_repository is auth_module.TenantRepository
+    assert deps.user_repository is auth_module.UserRepository
+    assert deps.api_token_repository is auth_module.ApiTokenRepository
+    assert deps.audit_event_repository is auth_module.AuditEventRepository
+    assert deps.token_service is auth_module.TokenService
+    assert deps.resolve_tenant_id is auth_module._resolve_tenant_id
+
+
 @pytest.fixture
 def app():
     a = FastAPI()

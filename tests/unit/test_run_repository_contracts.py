@@ -9,8 +9,13 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from qaplatform.domain.models.run import RunStatus
 from qaplatform.infra.database.models import RunStatusEnum
 from qaplatform.infra.database.repositories.run_repo import RunRepository
+from qaplatform.infra.database.repositories.run_status_helpers import (
+    coerce_run_status_enum,
+    run_status_enums,
+)
 
 
 def _postgres_sql(statement) -> str:
@@ -64,6 +69,12 @@ def _scalar_result(value: int):
     return result
 
 
+def _rowcount_result(value: int):
+    result = MagicMock()
+    result.rowcount = value
+    return result
+
+
 def _scalars_result(items: list | None = None):
     result = MagicMock()
     result.scalars.return_value.all.return_value = items or []
@@ -80,6 +91,19 @@ def _one_result(item):
     result = MagicMock()
     result.one.return_value = item
     return result
+
+
+def test_run_status_helpers_accept_domain_infra_and_string_statuses():
+    assert coerce_run_status_enum(RunStatus.RUNNING) == RunStatusEnum.RUNNING
+    assert coerce_run_status_enum(RunStatusEnum.COLLECTING) == RunStatusEnum.COLLECTING
+    assert coerce_run_status_enum("failed") == RunStatusEnum.FAILED
+    assert run_status_enums(
+        [RunStatus.PREPARING, RunStatusEnum.RUNNING, "collecting"]
+    ) == {
+        RunStatusEnum.PREPARING,
+        RunStatusEnum.RUNNING,
+        RunStatusEnum.COLLECTING,
+    }
 
 
 @pytest.mark.asyncio
@@ -167,6 +191,105 @@ async def test_waiting_capacity_count_excludes_already_enqueued_runs():
     assert "run.enqueued_at IS NULL" in sql
     status_param = _bound_param_name(sql, "run.status =")
     assert params == {status_param: RunStatusEnum.QUEUED}
+
+
+@pytest.mark.asyncio
+async def test_reclaimer_active_worker_scan_uses_in_flight_statuses():
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=_scalars_result())
+    repo = RunRepository(session)
+
+    assert await repo.find_active_with_worker() == []
+
+    statement = session.execute.await_args.args[0]
+    sql = _postgres_sql(statement)
+    params = statement.compile(dialect=postgresql.dialect()).params
+
+    status_param = _postcompile_param_name(sql, "run.status")
+    assert set(params[status_param]) == {
+        RunStatusEnum.PREPARING,
+        RunStatusEnum.RUNNING,
+        RunStatusEnum.COLLECTING,
+    }
+    assert RunStatusEnum.QUEUED not in params[status_param]
+    assert "run.worker_id IS NOT NULL" in sql
+    assert "run.deleted_at IS NULL" in sql
+
+
+@pytest.mark.asyncio
+async def test_reclaimer_pipeline_deadline_uses_pipeline_timeout_floor_and_buffer():
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=_scalars_result())
+    repo = RunRepository(session)
+
+    assert await repo.find_past_pipeline_deadline(
+        [RunStatus.RUNNING, "collecting"],
+        buffer_seconds=42,
+    ) == []
+
+    statement = session.execute.await_args.args[0]
+    sql = _postgres_sql(statement)
+    params = statement.compile(dialect=postgresql.dialect()).params
+
+    status_param = _postcompile_param_name(sql, "run.status")
+    assert set(params[status_param]) == {
+        RunStatusEnum.RUNNING,
+        RunStatusEnum.COLLECTING,
+    }
+    assert params["buffer_seconds"] == 42
+    assert "JOIN pipeline ON pipeline.id = run.pipeline_id" in sql
+    assert "GREATEST(pipeline.timeout_seconds, 1800)" in sql
+    assert "run.deleted_at IS NULL" in sql
+
+
+@pytest.mark.asyncio
+async def test_maintenance_counts_coerce_domain_infra_and_string_statuses():
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=_scalar_result(9))
+    repo = RunRepository(session)
+
+    assert await repo.count_by_statuses(
+        [RunStatus.QUEUED, RunStatusEnum.RUNNING, "collecting"]
+    ) == 9
+
+    statement = session.execute.await_args.args[0]
+    sql = _postgres_sql(statement)
+    params = statement.compile(dialect=postgresql.dialect()).params
+
+    status_param = _postcompile_param_name(sql, "run.status")
+    assert set(params[status_param]) == {
+        RunStatusEnum.QUEUED,
+        RunStatusEnum.RUNNING,
+        RunStatusEnum.COLLECTING,
+    }
+    assert "count(*)" in sql
+    assert "run.deleted_at IS NULL" in sql
+
+
+@pytest.mark.asyncio
+async def test_maintenance_delete_terminal_older_than_only_targets_terminal_runs():
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=_rowcount_result(3))
+    repo = RunRepository(session)
+    cutoff = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    assert await repo.delete_terminal_older_than(cutoff=cutoff) == 3
+
+    statement = session.execute.await_args.args[0]
+    sql = _postgres_sql(statement)
+    params = statement.compile(dialect=postgresql.dialect()).params
+
+    status_param = _postcompile_param_name(sql, "run.status")
+    cutoff_param = _bound_param_name(sql, "run.finished_at <")
+    assert set(params[status_param]) == {
+        RunStatusEnum.DONE,
+        RunStatusEnum.FAILED,
+        RunStatusEnum.CANCELLED,
+        RunStatusEnum.TIMEOUT,
+    }
+    assert params[cutoff_param] == cutoff
+    assert "run.finished_at < " in sql
+    session.flush.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

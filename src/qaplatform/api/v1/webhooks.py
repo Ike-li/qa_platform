@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import logging
-import re
-from fnmatch import fnmatch
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.auth.permissions import Action
@@ -20,28 +17,32 @@ from qaplatform.api.deps import (
     enforce_project_action,
 )
 from qaplatform.api.audit import write_audit
+from qaplatform.api.run_commands import (
+    RESERVED_RUN_METADATA_KEYS,
+    build_project_run_metadata,
+    resolve_project_run_environment_id,
+)
+from qaplatform.api.run_presenters import to_run_response
 from qaplatform.api.schemas import (
     ErrorResponse,
     RunResponse,
     WebhookTriggerRequest,
+)
+from qaplatform.api.webhook_helpers import (
+    _allowed_branch_patterns as _allowed_branch_patterns,
+    _branch_allowed as _branch_allowed,
+    _branch_name_from_ref as _branch_name_from_ref,
+    _dedup_key as _dedup_key,
+    _github_payload_to_trigger_request as _github_payload_to_trigger_request,
+    _github_repo_url_candidates as _github_repo_url_candidates,
+    _is_integrity_error as _is_integrity_error,
+    _webhook_decision_audit_state as _webhook_decision_audit_state,
 )
 from qaplatform.infra.webhook_signature import verify_webhook_signature
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 provider_router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 log = logging.getLogger(__name__)
-_INTEGRITY_ERRORS = (
-    SQLAlchemyIntegrityError,
-)
-_RESERVED_METADATA_KEYS = {
-    "git_url",
-    "git_auth_method",
-    "credential_id",
-    "shallow_clone",
-    "default_branch",
-}
-_RESERVED_METADATA_KEYS_LOWER = {key.lower() for key in _RESERVED_METADATA_KEYS}
-_FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 def _detail_response(description: str) -> dict[str, Any]:
@@ -77,91 +78,6 @@ def _webhook_decision_response(description: str) -> dict[str, Any]:
     }
 
 
-def _branch_name_from_ref(git_ref: str) -> str:
-    heads_prefix = "refs/heads/"
-    if git_ref.startswith(heads_prefix):
-        return git_ref[len(heads_prefix):]
-    return git_ref
-
-
-def _allowed_branch_patterns(settings: dict | None) -> list[str]:
-    allowed = (settings or {}).get("allowed_branches", [])
-    if not isinstance(allowed, list):
-        return []
-    return [pattern for pattern in allowed if isinstance(pattern, str) and pattern]
-
-
-def _branch_allowed(branch_name: str, allowed_patterns: list[str]) -> bool:
-    if not allowed_patterns:
-        return True
-    return any(fnmatch(branch_name, pattern) for pattern in allowed_patterns)
-
-
-def _dedup_key(metadata: dict, repo_url: str, commit_sha: str | None, branch_name: str) -> str | None:
-    if not commit_sha:
-        return None
-    provider = str(metadata.get("provider") or "webhook")
-    return f"{provider}:{repo_url}:{commit_sha}:{branch_name}"
-
-
-def _webhook_decision_audit_state(
-    body: WebhookTriggerRequest,
-    *,
-    project_id: UUID,
-    branch_name: str,
-    status: str,
-    reason: str,
-) -> dict:
-    metadata = body.metadata or {}
-    state = {
-        "project_id": str(project_id),
-        "status": status,
-        "reason": reason,
-        "git_ref": body.git_ref,
-        "git_sha": body.git_sha,
-        "branch_name": branch_name,
-        "provider": str(metadata.get("provider") or "webhook"),
-    }
-    delivery_id = metadata.get("delivery_id")
-    if delivery_id is not None:
-        state["delivery_id"] = str(delivery_id)
-    return state
-
-
-def _exception_chain(exc: Exception):
-    pending = [exc]
-    seen: set[int] = set()
-    while pending:
-        current = pending.pop()
-        if current is None or id(current) in seen:
-            continue
-        seen.add(id(current))
-        yield current
-        pending.extend(
-            (
-                getattr(current, "orig", None),
-                current.__cause__,
-                current.__context__,
-            )
-        )
-
-
-def _is_integrity_error(exc: Exception) -> bool:
-    if any(
-        isinstance(candidate, _INTEGRITY_ERRORS)
-        or candidate.__class__.__name__ in {"IntegrityError", "UniqueViolationError"}
-        for candidate in _exception_chain(exc)
-    ):
-        return True
-    message = repr(exc)
-    return "UniqueViolationError" in message or "duplicate key value" in message
-
-
-def _to_run_response(orm) -> RunResponse:
-    from qaplatform.api.v1.runs import _to_run_response as _to_resp
-    return _to_resp(orm)
-
-
 async def _duplicate_webhook_response(
     *,
     repos: Repos,
@@ -194,95 +110,6 @@ def _signature_header(request: Request) -> str:
         or request.headers.get("X-Hub-Signature-256")
         or ""
     )
-
-
-def _github_repo_url_candidates(repo: dict[str, Any]) -> set[str]:
-    candidates: set[str] = set()
-    for key in ("clone_url", "ssh_url", "git_url", "html_url"):
-        value = repo.get(key)
-        if isinstance(value, str) and value:
-            candidates.add(value)
-            if key == "html_url" and not value.endswith(".git"):
-                candidates.add(f"{value}.git")
-
-    full_name = repo.get("full_name")
-    if isinstance(full_name, str) and "/" in full_name:
-        candidates.update(
-            {
-                f"https://github.com/{full_name}",
-                f"https://github.com/{full_name}.git",
-                f"git@github.com:{full_name}.git",
-            }
-        )
-    return candidates
-
-
-def _validate_github_commit_sha(value: Any, *, context: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise HTTPException(status_code=400, detail=f"Missing GitHub {context} SHA")
-    if not _FULL_GIT_SHA_RE.fullmatch(value):
-        raise HTTPException(status_code=400, detail=f"Invalid GitHub {context} SHA")
-    return value
-
-
-def _github_payload_to_trigger_request(
-    payload: dict[str, Any],
-    *,
-    event: str,
-    delivery_id: str | None,
-) -> tuple[WebhookTriggerRequest, set[str]]:
-    metadata = {"provider": "github", "event": event}
-    if delivery_id:
-        metadata["delivery_id"] = delivery_id
-
-    if event == "push":
-        repo = payload.get("repository")
-        if not isinstance(repo, dict):
-            raise HTTPException(status_code=400, detail="Missing GitHub repository payload")
-        git_ref = payload.get("ref")
-        if not isinstance(git_ref, str) or not git_ref.strip():
-            raise HTTPException(status_code=400, detail="Missing GitHub ref")
-        git_sha = _validate_github_commit_sha(
-            payload.get("after"),
-            context="commit",
-        )
-        full_name = repo.get("full_name")
-        if isinstance(full_name, str):
-            metadata["repository"] = full_name
-        return WebhookTriggerRequest(
-            git_ref=git_ref,
-            git_sha=git_sha,
-            metadata=metadata,
-        ), _github_repo_url_candidates(repo)
-
-    if event == "pull_request":
-        pull_request = payload.get("pull_request")
-        if not isinstance(pull_request, dict):
-            raise HTTPException(status_code=400, detail="Missing GitHub pull_request payload")
-        base = pull_request.get("base")
-        head = pull_request.get("head")
-        if not isinstance(base, dict) or not isinstance(head, dict):
-            raise HTTPException(status_code=400, detail="Missing GitHub pull_request refs")
-        base_repo = base.get("repo")
-        head_repo = head.get("repo")
-        if not isinstance(base_repo, dict) or not isinstance(head_repo, dict):
-            raise HTTPException(status_code=400, detail="Missing GitHub pull_request repo")
-        if head_repo.get("full_name") != base_repo.get("full_name"):
-            raise HTTPException(status_code=202, detail="Fork pull requests are ignored")
-        number = pull_request.get("number")
-        if not isinstance(number, int):
-            raise HTTPException(status_code=400, detail="Missing GitHub pull_request number or SHA")
-        sha = _validate_github_commit_sha(head.get("sha"), context="pull_request")
-        full_name = base_repo.get("full_name")
-        if isinstance(full_name, str):
-            metadata["repository"] = full_name
-        return WebhookTriggerRequest(
-            git_ref=f"refs/pull/{number}/head",
-            git_sha=sha,
-            metadata=metadata,
-        ), _github_repo_url_candidates(base_repo)
-
-    raise HTTPException(status_code=202, detail=f"Unsupported GitHub event: {event}")
 
 
 async def _create_webhook_run(
@@ -330,28 +157,14 @@ async def _create_webhook_run(
         raise HTTPException(status_code=409, detail="No pipeline configured for project")
     pipeline = pipelines[0]
 
-    environment_id = project.default_env_id
-    if environment_id is None:
-        envs, _ = await repos.environment.list_by_project(project.id, limit=1)
-        if envs:
-            environment_id = envs[0].id
-        else:
-            raise HTTPException(status_code=409, detail="No environment configured for project")
-
-    metadata = {"git_url": project.git_url}
-    if project.git_auth_method != "none" and project.credential_id:
-        metadata["git_auth_method"] = project.git_auth_method
-        metadata["credential_id"] = str(project.credential_id)
-    if project.shallow_clone:
-        metadata["shallow_clone"] = True
-    if project.default_branch:
-        metadata["default_branch"] = project.default_branch
-    metadata.update(
-        {
-            key: value
-            for key, value in body.metadata.items()
-            if key.lower() not in _RESERVED_METADATA_KEYS_LOWER
-        }
+    environment_id = await resolve_project_run_environment_id(
+        repos=repos,
+        project=project,
+    )
+    metadata = build_project_run_metadata(
+        project,
+        extra_metadata=body.metadata,
+        reserved_extra_keys=RESERVED_RUN_METADATA_KEYS,
     )
 
     dedup_key = _dedup_key(body.metadata, project.git_url, body.git_sha, branch_name)
@@ -401,7 +214,7 @@ async def _create_webhook_run(
 
         await enqueue_run(arq_pool, repos.run, run, "webhook", container.settings)
 
-    response = _to_run_response(run)
+    response = to_run_response(run)
     await write_audit(
         repos,
         audit_user,

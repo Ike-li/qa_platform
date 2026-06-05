@@ -1,16 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
-import mimetypes
-import os
-import re
-import shlex
 import shutil
-import tempfile
-from contextlib import suppress
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,25 +19,63 @@ from qaplatform.domain.ports import (
 from qaplatform.engine.cancel import watch_for_cancel
 from qaplatform.engine.docker_backend import (
     DockerBackend,
-    ExecutionSpec,
     ExitResult,
-    Mount,
     ResourceLimits,
-    ResourceUsageSample,
-    SandboxSecurity,
 )
 from qaplatform.engine.events import publish_status_event
+from qaplatform.engine import executor_artifacts as _executor_artifacts
+from qaplatform.engine import executor_sources as _executor_sources
+from qaplatform.engine import executor_specs as _executor_specs
+from qaplatform.engine import executor_summaries as _executor_summaries
+from qaplatform.engine import executor_workspace as _executor_workspace
+from qaplatform.engine.executor_artifacts import (
+    artifact_upload_info as _artifact_upload_info,
+    iter_artifact_files as _iter_artifact_files,
+)
+from qaplatform.engine.executor_collectors import (
+    collect_from_plugin as _collect_from_plugin,
+    collector_accepts_config as _collector_accepts_config,
+)
+from qaplatform.engine.executor_results import (
+    build_results_summary as _build_results_summary,
+    build_test_result_rows as _build_test_result_rows,
+)
+from qaplatform.engine.executor_sources import (
+    clone_ref_for_run as _clone_ref_for_run,
+    git_url_for_run as _git_url_for_run,
+)
+from qaplatform.engine.executor_specs import (
+    build_allure_report_execution_spec as _build_allure_report_execution_spec,
+    build_setup_execution_spec as _build_setup_execution_spec,
+    build_stage_execution_spec as _build_stage_execution_spec,
+)
+from qaplatform.engine.executor_summaries import (
+    ResourceUsageTracker as _ResourceUsageTracker,
+    attach_resource_usage as _attach_resource_usage,
+    resource_termination_summary as _resource_termination_summary,
+)
+from qaplatform.engine.executor_terminal import (
+    pipeline_failure_message as _pipeline_failure_message,
+    resource_termination_log_message as _resource_termination_log_message,
+    terminal_status_for_exit as _terminal_status_for_exit,
+)
+from qaplatform.engine.executor_tasks import (
+    collect_resource_usage as _collect_resource_usage,
+    drain_log_task as _drain_log_task,
+    drain_resource_usage_task as _drain_resource_usage_task,
+)
+from qaplatform.engine import pipeline_config as _pipeline_config
 from qaplatform.engine.redact import redact_sensitive_text
 from qaplatform.plugins.registry import PluginRegistry
 
-_ARTIFACT_TYPE_BY_EXT = {
-    ".xml": "junit",
-    ".html": "report",
-    ".htm": "report",
-    ".json": "json",
-    ".log": "log",
-    ".txt": "log",
-}
+_ARTIFACT_TYPE_BY_EXT = _executor_artifacts.ARTIFACT_TYPE_BY_EXT
+ExecutionSpec = _executor_specs.ExecutionSpec
+_create_workspace_dir = _executor_workspace.create_workspace_dir
+_failed_tests_summary = _executor_summaries.failed_tests_summary
+_run_metadata = _executor_sources.run_metadata
+CollectorDefinition = _pipeline_config.CollectorDefinition
+PipelineConfig = _pipeline_config.PipelineConfig
+StageDefinition = _pipeline_config.StageDefinition
 
 log = logging.getLogger(__name__)
 
@@ -61,193 +91,15 @@ GRACE_PERIOD_SECONDS = 30
 # stages, the workdir teardown, and worker release dangling.
 _LOG_DRAIN_TIMEOUT = 5
 _ALLURE_REPORT_TIMEOUT_SECONDS = 300
-_FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
-_FAILED_TESTS_SUMMARY_LIMIT = 20
+_FULL_GIT_SHA_RE = _executor_sources.FULL_GIT_SHA_RE
 
 _INFRA_EXCEPTIONS = (ConnectionError, TimeoutError, OSError)
-
-
-def _failed_tests_summary(results: list[Any]) -> tuple[list[dict[str, str]], int]:
-    failed_tests = [
-        {
-            "suite": result.suite,
-            "name": result.name,
-            "status": result.status,
-        }
-        for result in results
-        if result.status in {"failed", "error"}
-    ]
-    return (
-        failed_tests[:_FAILED_TESTS_SUMMARY_LIMIT],
-        max(0, len(failed_tests) - _FAILED_TESTS_SUMMARY_LIMIT),
-    )
-
-
-def _resource_termination_summary(exit_result: ExitResult) -> dict[str, Any] | None:
-    oom_killed = exit_result.oom_killed is True
-    timed_out = exit_result.timed_out is True
-    if not (oom_killed or timed_out):
-        return None
-    reasons = []
-    if oom_killed:
-        reasons.append("oom")
-    if timed_out:
-        reasons.append("timeout")
-    duration_ms = max(
-        0,
-        int((exit_result.finished_at - exit_result.started_at).total_seconds() * 1000),
-    )
-    summary = {
-        "reason": "+".join(reasons),
-        "exit_code": exit_result.exit_code,
-        "oom_killed": oom_killed,
-        "timed_out": timed_out,
-        "duration_ms": duration_ms,
-        "started_at": exit_result.started_at.isoformat(),
-        "finished_at": exit_result.finished_at.isoformat(),
-    }
-    resource_usage = getattr(exit_result, "resource_usage", None)
-    if resource_usage:
-        summary["resource_usage"] = resource_usage
-    return summary
-
-
-class _ResourceUsageTracker:
-    def __init__(self) -> None:
-        self.sample_count = 0
-        self.memory_peak_bytes: int | None = None
-        self.memory_limit_bytes: int | None = None
-        self.cpu_peak_percent: float | None = None
-        self.pids_peak: int | None = None
-
-    def observe(self, sample: ResourceUsageSample) -> None:
-        self.sample_count += 1
-        memory_candidates = [
-            value
-            for value in (sample.memory_max_usage_bytes, sample.memory_usage_bytes)
-            if value is not None
-        ]
-        if memory_candidates:
-            memory_peak = max(memory_candidates)
-            self.memory_peak_bytes = (
-                memory_peak
-                if self.memory_peak_bytes is None
-                else max(self.memory_peak_bytes, memory_peak)
-            )
-        if sample.memory_limit_bytes is not None:
-            self.memory_limit_bytes = sample.memory_limit_bytes
-        if sample.cpu_percent is not None:
-            self.cpu_peak_percent = (
-                sample.cpu_percent
-                if self.cpu_peak_percent is None
-                else max(self.cpu_peak_percent, sample.cpu_percent)
-            )
-        if sample.pids_current is not None:
-            self.pids_peak = (
-                sample.pids_current
-                if self.pids_peak is None
-                else max(self.pids_peak, sample.pids_current)
-            )
-
-    def summary(self) -> dict[str, Any] | None:
-        if self.sample_count == 0:
-            return None
-        summary: dict[str, Any] = {"sample_count": self.sample_count}
-        if self.memory_peak_bytes is not None:
-            summary["memory_peak_bytes"] = self.memory_peak_bytes
-        if self.memory_limit_bytes is not None:
-            summary["memory_limit_bytes"] = self.memory_limit_bytes
-        if self.memory_peak_bytes is not None and self.memory_limit_bytes:
-            summary["memory_peak_percent"] = (
-                self.memory_peak_bytes / self.memory_limit_bytes
-            ) * 100.0
-        if self.cpu_peak_percent is not None:
-            summary["cpu_peak_percent"] = self.cpu_peak_percent
-        if self.pids_peak is not None:
-            summary["pids_peak"] = self.pids_peak
-        return summary
-
-
-def _attach_resource_usage(
-    exit_result: ExitResult,
-    resource_usage: dict[str, Any] | None,
-) -> ExitResult:
-    if not resource_usage:
-        return exit_result
-    if isinstance(exit_result, ExitResult):
-        return replace(exit_result, resource_usage=resource_usage)
-    with suppress(Exception):
-        setattr(exit_result, "resource_usage", resource_usage)
-    return exit_result
 
 
 # --------------------------------------------------------------------------- #
 # Repository protocol (dependency injection, avoids ORM coupling)
 # --------------------------------------------------------------------------- #
 
-
-
-# --------------------------------------------------------------------------- #
-# Pipeline/config types
-# --------------------------------------------------------------------------- #
-
-
-class StageDefinition:
-    """Represents a single stage in a pipeline."""
-
-    def __init__(
-        self,
-        name: str,
-        plugin: str,
-        phase: str = "execute",
-        config: dict[str, Any] | None = None,
-        continue_on_error: bool = False,
-    ) -> None:
-        self.name = name
-        self.plugin = plugin
-        self.phase = phase
-        self.config = config or {}
-        self.continue_on_error = continue_on_error
-
-
-class CollectorDefinition:
-    """Represents a result collector plugin configured for a pipeline."""
-
-    def __init__(
-        self,
-        plugin: str = "junit",
-        config: dict[str, Any] | None = None,
-        enabled: bool = True,
-    ) -> None:
-        self.plugin = plugin
-        self.config = config or {}
-        self.enabled = enabled
-
-
-class PipelineConfig:
-    """Pipeline configuration for an execution run."""
-
-    def __init__(
-        self,
-        image: str,
-        stages: list[StageDefinition],
-        env_vars: dict[str, str] | None = None,
-        resource_limits: ResourceLimits | None = None,
-        network_policy: str = "deny",
-        timeout_seconds: int = 1800,
-        setup_script: str | None = None,
-        collectors: list[CollectorDefinition] | None = None,
-        source_auth: dict[str, str] | None = None,
-    ) -> None:
-        self.image = image
-        self.stages = stages
-        self.env_vars = env_vars or {}
-        self.resource_limits = resource_limits or ResourceLimits()
-        self.network_policy = network_policy
-        self.timeout_seconds = timeout_seconds
-        self.setup_script = setup_script
-        self.collectors = collectors if collectors is not None else [CollectorDefinition()]
-        self.source_auth = source_auth
 
 
 # --------------------------------------------------------------------------- #
@@ -302,24 +154,7 @@ class RunExecutor:
         await publish_status_event(self.redis, run_id, status, previous=previous)
 
     def _collector_accepts_config(self, collector: Any) -> bool:
-        try:
-            signature = inspect.signature(collector.collect)
-        except (TypeError, ValueError):
-            return True
-
-        params = list(signature.parameters.values())
-        if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
-            return True
-        positional = [
-            p for p in params
-            if p.kind in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            )
-        ]
-        # Bound methods expose run_id, working_dir, config as three positional
-        # parameters. Older collectors only expose run_id and working_dir.
-        return len(positional) >= 3
+        return _collector_accepts_config(collector)
 
     async def _collect_from_plugin(
         self,
@@ -328,26 +163,11 @@ class RunExecutor:
         working_dir: Path,
         config: dict[str, Any],
     ) -> list[Any]:
-        if self._collector_accepts_config(collector):
-            return await collector.collect(run_id, working_dir, config)
-        return await collector.collect(run_id, working_dir)
+        return await _collect_from_plugin(collector, run_id, working_dir, config)
 
     @staticmethod
     def _create_workspace_dir(run_id: str) -> Path:
-        workspace_root = os.environ.get("QAP_RUN_WORKSPACE_DIR")
-        if workspace_root:
-            root = Path(workspace_root)
-            root.mkdir(parents=True, exist_ok=True)
-            with suppress(PermissionError):
-                root.chmod(0o777)
-            working_dir = Path(tempfile.mkdtemp(prefix=f"qap-{run_id[:8]}-", dir=root))
-        else:
-            working_dir = Path(tempfile.mkdtemp(prefix=f"qap-{run_id[:8]}-"))
-        # Docker stage/setup containers run as a fixed non-root uid. GitHub
-        # Linux runners create mkdtemp directories as 0700 for the host runner
-        # user, so make this per-run sandbox writable by the mounted container.
-        working_dir.chmod(0o777)
-        return working_dir
+        return _create_workspace_dir(run_id)
 
     async def execute(self, run: Run, pipeline: PipelineConfig) -> RunStatus:
         """Execute a full pipeline run. Returns the terminal RunStatus."""
@@ -426,19 +246,14 @@ class RunExecutor:
             if exit_result.exit_code != 0:
                 await self.log_stream.write_log(
                     run_id,
-                    f"Pipeline failed with code {exit_result.exit_code}",
+                    _pipeline_failure_message(exit_result.exit_code),
                     stream="stderr",
                 )
             resource_termination = _resource_termination_summary(exit_result)
             if resource_termination:
                 await self.log_stream.write_log(
                     run_id,
-                    "Resource termination: "
-                    f"reason={resource_termination['reason']} "
-                    f"exit_code={resource_termination['exit_code']} "
-                    f"duration_ms={resource_termination['duration_ms']} "
-                    f"oom_killed={resource_termination['oom_killed']} "
-                    f"timed_out={resource_termination['timed_out']}",
+                    _resource_termination_log_message(resource_termination),
                     stream="stderr",
                 )
 
@@ -479,44 +294,11 @@ class RunExecutor:
                         collector_config.config,
                     )
                     results.extend(collector_results)
-                passed = sum(1 for r in results if r.status == "passed")
-                failed = sum(1 for r in results if r.status == "failed")
-                skipped = sum(1 for r in results if r.status in {"skipped", "xfail"})
-                error = sum(1 for r in results if r.status == "error")
-                total = passed + failed + skipped + error
-
-                summary = {
-                    "total": total,
-                    "passed": passed,
-                    "failed": failed,
-                    "skipped": skipped,
-                    "error": error,
-                    "pass_rate": passed / total if total > 0 else 0.0,
-                }
-                failed_tests, failed_tests_omitted = _failed_tests_summary(results)
-                if failed_tests:
-                    summary["failed_tests"] = failed_tests
-                if failed_tests_omitted:
-                    summary["failed_tests_omitted"] = failed_tests_omitted
-                if resource_termination:
-                    summary["resource_termination"] = resource_termination
+                summary = _build_results_summary(results, resource_termination)
 
                 if self.test_result_repo is not None and results:
                     await self.test_result_repo.bulk_create(
-                        [
-                            {
-                                "run_id": run.id,
-                                "suite": result.suite,
-                                "name": result.name,
-                                "status": result.status,
-                                "duration_ms": result.duration_ms,
-                                "error_message": result.error_message,
-                                "stack_trace": result.stack_trace,
-                                "tags": result.tags,
-                                "metadata_": result.metadata,
-                            }
-                            for result in results
-                        ]
+                        _build_test_result_rows(run.id, results)
                     )
 
             await self._generate_allure_report(run_id, working_dir, pipeline)
@@ -537,11 +319,7 @@ class RunExecutor:
                     )
 
             # 6. Write terminal state
-            status = RunStatus.DONE
-            if exit_result.oom_killed is True or exit_result.timed_out is True:
-                status = RunStatus.TIMEOUT
-            elif exit_result.exit_code != 0:
-                status = RunStatus.FAILED
+            status = _terminal_status_for_exit(exit_result)
 
             updated = await self.run_repo.finish_if_current(
                 run_id,
@@ -592,20 +370,7 @@ class RunExecutor:
         cannot pin the run's finally block, leaving the workdir + worker
         slot held indefinitely.
         """
-        if log_task.done():
-            try:
-                log_task.result()
-            except Exception:
-                pass
-            return
-        try:
-            await asyncio.wait_for(asyncio.shield(log_task), timeout=_LOG_DRAIN_TIMEOUT)
-        except asyncio.TimeoutError:
-            log.warning("log task did not drain within %ss; cancelling", _LOG_DRAIN_TIMEOUT)
-            log_task.cancel()
-            await asyncio.gather(log_task, return_exceptions=True)
-        except Exception:
-            log.warning("log task raised during drain", exc_info=True)
+        await _drain_log_task(log_task, timeout=_LOG_DRAIN_TIMEOUT)
 
     async def _collect_resource_usage(
         self,
@@ -613,36 +378,10 @@ class RunExecutor:
         tracker: _ResourceUsageTracker,
     ) -> None:
         """Collect best-effort resource stats for backends that expose them."""
-        stream_usage = getattr(self.backend, "stream_resource_usage", None)
-        if stream_usage is None:
-            return
-        try:
-            usage_stream = stream_usage(execution_id)
-            if inspect.isawaitable(usage_stream):
-                usage_stream = await usage_stream
-            if usage_stream is None:
-                return
-            async for sample in usage_stream:
-                tracker.observe(sample)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.debug("resource usage streaming ended for container %s", execution_id)
+        await _collect_resource_usage(self.backend, execution_id, tracker)
 
     async def _drain_resource_usage_task(self, usage_task: asyncio.Task | None) -> None:
-        if usage_task is None:
-            return
-        if usage_task.done():
-            with suppress(Exception):
-                usage_task.result()
-            return
-        usage_task.cancel()
-        try:
-            await asyncio.wait_for(usage_task, timeout=1)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
-        except Exception:
-            log.debug("resource usage task raised during drain", exc_info=True)
+        await _drain_resource_usage_task(usage_task)
 
     async def _graceful_stop(self, execution_id: str, *, reason: str) -> None:
         """SIGTERM → bounded wait (≤30 s) → SIGKILL teardown.
@@ -769,23 +508,21 @@ class RunExecutor:
                 )
                 break
             await self.log_stream.write_log(str(run.id), f"Starting stage: {stage.name}")
-            
+
             runner = self.plugin_registry.get_runner(stage.plugin)
             cmd = runner.build_command(stage.config)
-                
-            spec = ExecutionSpec(
+
+            spec = _build_stage_execution_spec(
+                run_id=str(run.id),
+                stage_name=stage.name,
                 image=pipeline.image,
-                command=["sh", "-c", cmd],
+                command=cmd,
                 env_vars=pipeline.env_vars,
-                mounts=[
-                    Mount(source=str(working_dir), target="/workspace", read_only=False),
-                ],
+                working_dir=working_dir,
                 resource_limits=pipeline.resource_limits,
                 network_policy=pipeline.network_policy,
-                security=SandboxSecurity(readonly_rootfs=False),
-                labels={"run_id": str(run.id), "stage": stage.name},
             )
-            
+
             execution_id = await self.backend.create_execution(spec)
             await self.run_repo.update_execution_id(str(run.id), execution_id)
             # Commit so the execution_id row update releases the run row lock
@@ -856,7 +593,7 @@ class RunExecutor:
                 final_exit = exit_result
                 if not stage.continue_on_error:
                     break
-                    
+
         return final_exit
 
     async def _clone_repo(
@@ -866,22 +603,13 @@ class RunExecutor:
         source_auth: dict[str, str] | None = None,
     ) -> None:
         """Clone the repository using the SourceProtocol plugin."""
-        metadata = getattr(run, "metadata_", None)
-        if metadata is None:
-            metadata = getattr(run, "metadata", None) or {}
-        if not isinstance(metadata, dict):
-            metadata = {}
-        git_url = metadata.get("git_url", "")
+        git_url = _git_url_for_run(run)
         if not git_url:
             await self.log_stream.write_log(str(run.id), "No git_url in metadata, using workspace")
             return
 
         source = self.plugin_registry.get_source("git")
-        clone_ref = (
-            run.git_sha
-            if run.git_sha and _FULL_GIT_SHA_RE.match(run.git_sha)
-            else run.git_ref
-        )
+        clone_ref = _clone_ref_for_run(run)
         if source_auth:
             revision = await source.clone(git_url, clone_ref, dest, source_auth)
         else:
@@ -911,18 +639,10 @@ class RunExecutor:
         run_id = str(run.id)
         await self.log_stream.write_log(run_id, "Running setup script...")
 
-        spec = ExecutionSpec(
-            image=pipeline.image,
-            command=["sh", "-c", f"cd /workspace && {pipeline.setup_script or ''}"],
-            env_vars=pipeline.env_vars,
-            mounts=[
-                Mount(source=str(working_dir), target="/workspace", read_only=False),
-            ],
-            resource_limits=pipeline.resource_limits,
-            network_policy=pipeline.network_policy,
-            security=SandboxSecurity(readonly_rootfs=False),
-            user="1000:1000",
-            labels={"run_id": run_id, "phase": "setup"},
+        spec = _build_setup_execution_spec(
+            run_id=run_id,
+            pipeline=pipeline,
+            working_dir=working_dir,
         )
 
         execution_id = await self.backend.create_execution(spec)
@@ -1013,33 +733,34 @@ class RunExecutor:
         uploaded_count = 0
 
         for artifact_path in _iter_artifact_files(results_dir):
-            rel_parts = artifact_path.relative_to(results_dir).parts
-            rel_path = Path(*rel_parts).as_posix()
+            artifact = _artifact_upload_info(
+                run_id=run_id,
+                results_dir=results_dir,
+                path=artifact_path,
+            )
             if uploaded_count >= limits.max_artifacts_count:
                 await self.log_stream.write_log(
                     run_id,
-                    f"Skipped artifact {rel_path}: artifact count limit exceeded",
+                    f"Skipped artifact {artifact.rel_path}: artifact count limit exceeded",
                     stream="stderr",
                 )
                 continue
-            size_bytes = artifact_path.stat().st_size
-            if size_bytes > limits.max_artifact_size_bytes:
+            if artifact.size_bytes > limits.max_artifact_size_bytes:
                 await self.log_stream.write_log(
                     run_id,
                     (
-                        f"Skipped artifact {rel_path}: size "
-                        f"{size_bytes} exceeds limit "
+                        f"Skipped artifact {artifact.rel_path}: size "
+                        f"{artifact.size_bytes} exceeds limit "
                         f"{limits.max_artifact_size_bytes} bytes"
                     ),
                     stream="stderr",
                 )
                 continue
-            s3_key = f"reports/{run_id}/{rel_path}"
             try:
                 with open(artifact_path, "rb") as f:
                     await self.s3_client.put_object(
                         Bucket=self.s3_bucket,
-                        Key=s3_key,
+                        Key=artifact.storage_path,
                         Body=f,
                     )
             except Exception:
@@ -1047,24 +768,14 @@ class RunExecutor:
                 continue
 
             if self.artifact_repo is not None:
-                ext = artifact_path.suffix.lower()
-                artifact_type = _ARTIFACT_TYPE_BY_EXT.get(ext, "other")
-                # Files under Allure report/results directories get a dedicated
-                # type so the UI can offer preview/download affordances.
-                if any(
-                    part in {"allure-report", "allure-results"}
-                    for part in rel_parts[:-1]
-                ):
-                    artifact_type = "allure-report"
-                mime_type, _ = mimetypes.guess_type(artifact_path.name)
                 try:
                     await self.artifact_repo.create(
                         run_id=UUID(run_id) if isinstance(run_id, str) else run_id,
-                        type=artifact_type,
-                        name=rel_path,
-                        storage_path=s3_key,
-                        size_bytes=size_bytes,
-                        mime_type=mime_type or "application/octet-stream",
+                        type=artifact.type,
+                        name=artifact.rel_path,
+                        storage_path=artifact.storage_path,
+                        size_bytes=artifact.size_bytes,
+                        mime_type=artifact.mime_type,
                     )
                 except Exception:
                     log.warning(
@@ -1075,7 +786,7 @@ class RunExecutor:
 
             await self.log_stream.write_log(
                 run_id,
-                f"Uploaded artifact: {rel_path}",
+                f"Uploaded artifact: {artifact.rel_path}",
             )
             uploaded_count += 1
 
@@ -1090,28 +801,10 @@ class RunExecutor:
         if not results_dir.exists() or not any(results_dir.iterdir()):
             return
 
-        command = " ".join(
-            shlex.quote(part)
-            for part in [
-                "allure",
-                "generate",
-                "results/allure-results",
-                "-o",
-                "results/allure-report",
-                "--clean",
-            ]
-        )
-        spec = ExecutionSpec(
-            image=pipeline.image,
-            command=["sh", "-c", f"cd /workspace && {command}"],
-            env_vars=pipeline.env_vars,
-            mounts=[
-                Mount(source=str(working_dir), target="/workspace", read_only=False),
-            ],
-            resource_limits=pipeline.resource_limits,
-            network_policy=pipeline.network_policy,
-            security=SandboxSecurity(readonly_rootfs=False),
-            labels={"run_id": str(run_id), "stage": "allure-report"},
+        spec = _build_allure_report_execution_spec(
+            run_id=run_id,
+            pipeline=pipeline,
+            working_dir=working_dir,
         )
         execution_id: str | None = None
         log_task: asyncio.Task | None = None
@@ -1175,7 +868,3 @@ class RunExecutor:
             return
 
         await self.log_stream.write_log(run_id, "Allure report generated: allure-report")
-
-
-def _iter_artifact_files(results_dir: Path) -> list[Path]:
-    return sorted(path for path in results_dir.rglob("*") if path.is_file())

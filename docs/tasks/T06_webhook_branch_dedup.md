@@ -18,7 +18,7 @@ F-EX-03 更宽的 Git provider 矩阵仍是 catalog/TODO 中的增强缺口：Gi
   - `_dedup_key()` 按 provider、repo URL、commit sha、branch 生成去重键
   - `_create_webhook_run()` 在创建 Run 前执行分支过滤和活跃态去重
   - filtered / duplicate 使用 200 decision response，避免 Git 平台把非业务失败标红
-- **配置校验**：`src/qaplatform/api/schemas.py::_validate_project_settings`
+- **配置校验**：`src/qaplatform/api/schemas/projects.py::_validate_project_settings`（经 `qaplatform.api.schemas` 兼容 re-export）
   - `allowed_branches` 必须是 `list[str]`
   - 最多 50 条，每条非空且不超过 200 字符
 - **存储约束**：`Run.dedup_key` 已在 ORM 和 partial unique index 中落地，仅对活跃状态冲突。

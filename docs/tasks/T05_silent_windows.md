@@ -59,7 +59,7 @@ def is_in_silent_window(windows: list[SilentWindow], now: datetime) -> SilentWin
 当前代码已经有 schedule 级 `quiet_windows`：
 
 - `src/qaplatform/infra/database/models.py` 的 `Schedule.quiet_windows`
-- `src/qaplatform/api/schemas.py` 的 `ScheduleCreate/Update/Response.quiet_windows`
+- `src/qaplatform/api/schemas/projects.py` 经 `qaplatform.api.schemas` re-export 的 `ScheduleCreate/Update/Response.quiet_windows`
 - `src/qaplatform/domain/services/scheduling.py::should_fire`
 
 当前已新增 project 级 `Project.settings.silent_windows`，用于发布冻结期等绝对时间窗口。实现时不要把两者混为一谈：`silent_windows` 命中时必须写 audit，且不更新 `schedule.last_run_at`；既有 `quiet_windows` 目前只是 schedule 级跳过逻辑。

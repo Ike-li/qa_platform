@@ -1094,6 +1094,285 @@ async def test_cancel_run(client, mock_run_repo, mock_repos, tenant_id, mock_use
 
 
 @pytest.mark.asyncio
+async def test_batch_cancel_preserves_batch_contract_without_project_permission(
+    client,
+    mock_run_repo,
+    mock_repos,
+    tenant_id,
+):
+    from fastapi import HTTPException
+    from qaplatform.infra.database.models import RunStatusEnum
+
+    run_id = uuid.uuid4()
+    before_run = _make_orm_run(
+        id=run_id,
+        status=RunStatusEnum.RUNNING,
+        tenant_id=tenant_id,
+    )
+    after_run = _make_orm_run(
+        id=run_id,
+        status=RunStatusEnum.CANCELLED,
+        tenant_id=tenant_id,
+    )
+    mock_run_repo.get_for_tenant.side_effect = [before_run, after_run]
+    mock_run_repo.cancel_if_current.return_value = True
+
+    with patch(
+        "qaplatform.api.v1.runs.enforce_project_action",
+        new_callable=AsyncMock,
+    ) as enforce_project_action:
+        enforce_project_action.side_effect = HTTPException(
+            status_code=403,
+            detail="Insufficient permissions",
+        )
+        resp = await client.post(
+            "/api/v1/runs/batch/cancel",
+            json={"run_ids": [str(run_id)]},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"processed": 1, "failed": 0, "errors": []}
+    enforce_project_action.assert_not_awaited()
+    mock_run_repo.cancel_if_current.assert_awaited_once()
+    mock_repos.audit.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_preflight_failure_keeps_batch_response_shape(
+    client,
+    mock_run_repo,
+    mock_repos,
+    tenant_id,
+):
+    from qaplatform.infra.database.models import RunStatusEnum
+
+    failing_run_id = uuid.uuid4()
+    second_run = _make_orm_run(status=RunStatusEnum.RUNNING, tenant_id=tenant_id)
+    second_run_after = _make_orm_run(
+        id=second_run.id,
+        status=RunStatusEnum.CANCELLED,
+        tenant_id=tenant_id,
+    )
+    mock_run_repo.get_for_tenant.side_effect = [
+        ValueError("repository failed with secret=batch-cancel-secret"),
+        second_run,
+        second_run_after,
+    ]
+    mock_run_repo.cancel_if_current.return_value = True
+
+    with patch(
+        "qaplatform.api.v1.runs.enforce_project_action",
+        new_callable=AsyncMock,
+    ) as enforce_project_action:
+        resp = await client.post(
+            "/api/v1/runs/batch/cancel",
+            json={"run_ids": [str(failing_run_id), str(second_run.id)]},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "processed": 1,
+        "failed": 1,
+        "errors": [f"{failing_run_id}: operation failed"],
+    }
+    assert "batch-cancel-secret" not in resp.text
+    enforce_project_action.assert_not_awaited()
+    mock_run_repo.cancel_if_current.assert_awaited_once_with(
+        second_run.id,
+        expected_in={
+            RunStatusEnum.QUEUED,
+            RunStatusEnum.PREPARING,
+            RunStatusEnum.RUNNING,
+            RunStatusEnum.COLLECTING,
+        },
+    )
+    mock_repos.audit.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_batch_retry_preserves_batch_contract_without_project_permission(
+    client,
+    mock_run_repo,
+    mock_repos,
+    tenant_id,
+    app,
+):
+    from fastapi import HTTPException
+    from qaplatform.api.deps import _get_db_session
+    from qaplatform.infra.database.models import RunStatusEnum
+
+    run_id = uuid.uuid4()
+    retry_run_id = uuid.uuid4()
+    original = _make_orm_run(
+        id=run_id,
+        status=RunStatusEnum.FAILED,
+        tenant_id=tenant_id,
+        metadata_={"git_url": "https://github.com/example/repo.git"},
+        chain_depth=0,
+    )
+    retry_run = _make_orm_run(
+        id=retry_run_id,
+        status=RunStatusEnum.QUEUED,
+        tenant_id=tenant_id,
+    )
+    mock_run_repo.get_for_tenant.return_value = original
+    mock_run_repo.create.return_value = retry_run
+    app.state.container.arq_pool = None
+
+    session = AsyncMock()
+
+    async def _override_session():
+        yield session
+
+    app.dependency_overrides[_get_db_session] = _override_session
+
+    with patch(
+        "qaplatform.api.v1.runs.enforce_project_action",
+        new_callable=AsyncMock,
+    ) as enforce_project_action:
+        enforce_project_action.side_effect = HTTPException(
+            status_code=403,
+            detail="Insufficient permissions",
+        )
+        resp = await client.post(
+            "/api/v1/runs/batch/retry",
+            json={"run_ids": [str(run_id)]},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"processed": 1, "failed": 0, "errors": []}
+    enforce_project_action.assert_not_awaited()
+    session.refresh.assert_awaited_once_with(original, ["pipeline", "environment"])
+    mock_run_repo.create.assert_awaited_once()
+    create_kwargs = mock_run_repo.create.await_args.kwargs
+    assert create_kwargs["source_run_id"] == original.id
+    assert create_kwargs["chain_depth"] == 1
+    mock_run_repo.set_retry_group_id.assert_awaited_once_with(retry_run.id, retry_run.id)
+    mock_repos.audit.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_batch_retry_preflight_failure_keeps_batch_response_shape(
+    client,
+    mock_run_repo,
+    mock_repos,
+    tenant_id,
+    app,
+):
+    from qaplatform.api.deps import _get_db_session
+    from qaplatform.infra.database.models import RunStatusEnum
+
+    failing_run_id = uuid.uuid4()
+    original = _make_orm_run(
+        status=RunStatusEnum.FAILED,
+        tenant_id=tenant_id,
+        metadata_={},
+        chain_depth=0,
+    )
+    retry_run = _make_orm_run(status=RunStatusEnum.QUEUED, tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.side_effect = [
+        ValueError("repository failed with secret=batch-retry-secret"),
+        original,
+    ]
+    mock_run_repo.create.return_value = retry_run
+
+    session = AsyncMock()
+
+    async def _override_session():
+        yield session
+
+    app.dependency_overrides[_get_db_session] = _override_session
+    app.state.container.arq_pool = None
+
+    with patch(
+        "qaplatform.api.v1.runs.enforce_project_action",
+        new_callable=AsyncMock,
+    ) as enforce_project_action:
+        resp = await client.post(
+            "/api/v1/runs/batch/retry",
+            json={"run_ids": [str(failing_run_id), str(original.id)]},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "processed": 1,
+        "failed": 1,
+        "errors": [f"{failing_run_id}: operation failed"],
+    }
+    assert "batch-retry-secret" not in resp.text
+    enforce_project_action.assert_not_awaited()
+    session.refresh.assert_awaited_once_with(original, ["pipeline", "environment"])
+    mock_run_repo.create.assert_awaited_once()
+    mock_run_repo.set_retry_group_id.assert_awaited_once_with(retry_run.id, retry_run.id)
+    mock_repos.audit.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_batch_retry_create_failure_reports_current_original_run_id(
+    client,
+    mock_run_repo,
+    mock_repos,
+    tenant_id,
+    app,
+):
+    from qaplatform.api.deps import _get_db_session
+    from qaplatform.infra.database.models import RunStatusEnum
+
+    first_run = _make_orm_run(
+        id=uuid.uuid4(),
+        status=RunStatusEnum.FAILED,
+        tenant_id=tenant_id,
+        metadata_={},
+        chain_depth=0,
+    )
+    second_run = _make_orm_run(
+        id=uuid.uuid4(),
+        status=RunStatusEnum.FAILED,
+        tenant_id=tenant_id,
+        metadata_={},
+        chain_depth=0,
+    )
+    retry_run = _make_orm_run(status=RunStatusEnum.QUEUED, tenant_id=tenant_id)
+    mock_run_repo.get_for_tenant.side_effect = [first_run, second_run]
+    mock_run_repo.create.side_effect = [ValueError("create failed"), retry_run]
+    app.state.container.arq_pool = None
+
+    session = AsyncMock()
+
+    async def _override_session():
+        yield session
+
+    app.dependency_overrides[_get_db_session] = _override_session
+
+    with patch(
+        "qaplatform.api.v1.runs.enforce_project_action",
+        new_callable=AsyncMock,
+    ):
+        resp = await client.post(
+            "/api/v1/runs/batch/retry",
+            json={"run_ids": [str(first_run.id), str(second_run.id)]},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "processed": 1,
+        "failed": 1,
+        "errors": [f"{first_run.id}: operation failed"],
+    }
+    assert mock_run_repo.create.await_count == 2
+    mock_run_repo.set_retry_group_id.assert_awaited_once_with(
+        retry_run.id,
+        retry_run.id,
+    )
+    mock_repos.audit.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_cancel_run_rejects_overlong_reason_without_side_effects(
     client,
     mock_run_repo,

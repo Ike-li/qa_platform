@@ -267,6 +267,26 @@ def test_signature_header_prefers_platform_header_then_github_alias():
     ) == "sha256=platform"
 
 
+def test_webhook_route_module_reexports_pure_helper_functions():
+    from qaplatform.api import webhook_helpers
+    from qaplatform.api.v1 import webhooks
+
+    assert webhooks._allowed_branch_patterns is webhook_helpers._allowed_branch_patterns
+    assert webhooks._branch_allowed is webhook_helpers._branch_allowed
+    assert webhooks._branch_name_from_ref is webhook_helpers._branch_name_from_ref
+    assert webhooks._dedup_key is webhook_helpers._dedup_key
+    assert (
+        webhooks._github_payload_to_trigger_request
+        is webhook_helpers._github_payload_to_trigger_request
+    )
+    assert webhooks._github_repo_url_candidates is webhook_helpers._github_repo_url_candidates
+    assert webhooks._is_integrity_error is webhook_helpers._is_integrity_error
+    assert (
+        webhooks._webhook_decision_audit_state
+        is webhook_helpers._webhook_decision_audit_state
+    )
+
+
 def test_github_repo_url_candidates_expand_common_clone_forms():
     from qaplatform.api.v1.webhooks import _github_repo_url_candidates
 

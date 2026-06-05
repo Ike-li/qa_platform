@@ -14,6 +14,7 @@ from tests.unit.release_quality_contract_helpers import (
 
 ROOT = Path(__file__).resolve().parents[2]
 AUTH_API_SOURCE = ROOT / "src" / "qaplatform" / "api" / "v1" / "auth.py"
+AUTH_COMMAND_SOURCE = ROOT / "src" / "qaplatform" / "api" / "auth" / "commands.py"
 AUTH_ROUTES_TEST = ROOT / "tests" / "unit" / "test_auth" / "test_auth_routes.py"
 PERFORMANCE_SMOKE = ROOT / "tests" / "integration" / "test_performance_smoke.py"
 REAL_AUTH_RESULTS_ARTIFACTS = (
@@ -760,7 +761,7 @@ def test_quality_ops_capture_refresh_token_revoke_outage_exact_warning_contract(
 
 def test_quality_ops_capture_auth_refresh_audit_new_jti_trace_contract():
     row = _quality_ops_row_containing("Auth refresh audit new_jti 真实追踪契约")
-    auth_source = _read(AUTH_API_SOURCE)
+    auth_command_source = _read(AUTH_COMMAND_SOURCE)
     auth_routes_test = _read(AUTH_ROUTES_TEST)
     real_auth_results_artifacts = _read(REAL_AUTH_RESULTS_ARTIFACTS)
 
@@ -776,9 +777,9 @@ def test_quality_ops_capture_auth_refresh_audit_new_jti_trace_contract():
     assert "只能证明字段名存在" in row
 
     refresh_source_block = _marked_block(
-        auth_source,
-        "async def refresh(",
-        '@router.post("/logout"',
+        auth_command_source,
+        "async def refresh_tokens_command(",
+        "async def _revoke_payload_token",
     )
 
     assert "access_token = jwt_svc.create_access_token(" in refresh_source_block

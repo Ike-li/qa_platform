@@ -53,7 +53,11 @@ domain → (无外部依赖)
 - 审计写入 helper 位于 `qaplatform.infra.audit`；`api.audit` 仅作为旧 import path 兼容 shim 保留，API/worker 新调用优先引用 `infra.audit.write_audit`。
 - `tests/unit/test_architecture_boundaries.py` 锁住 `engine` 不得 import `qaplatform.api.*` 或 `qaplatform.worker.*`，避免 engine 反向依赖回流。
 - `api/deps.py` 的项目可见性 / ProjectMember 角色查询已下沉到 `ProjectRepository` / `ProjectMemberRepository`；`api/v1/admin.py` 的 status 计数已下沉到 `RunRepository`；`api/auth/middleware.py` 的平台管理员复核与 `api/v1/auth.py` 的租户注册 / fallback 查询已下沉到 `UserRepository` / `TenantRepository`；`api/v1/runs.py` 的成员项目过滤已下沉到 `ProjectMemberRepository`；`api/v1/analytics.py` 的趋势、flaky、单用例历史聚合已下沉到 `RunRepository` / `TestResultRepository`。
-- `tests/unit/test_architecture_boundaries.py` 锁住上述 API 入口不得直接 `session.execute()` / `db.execute()`；本轮静态扫描未发现 `src/qaplatform/api` 下仍有 route 层直接执行 SQLAlchemy 查询。
+- `api/v1/auth.py` 的 register/login/refresh/logout/API token/SSE ticket 路由已委托 `api/auth/commands.py`；路由层保留依赖注入、schema/response 拼装与 refresh-cookie helper 兼容导出，command 层保留审计失败不阻断、refresh revoke 失败不阻断、logout token revoke 失败不阻断等既有语义。
+- `api/v1/webhooks.py` 的 GitHub payload 解析、repository URL candidates、branch filter、dedup key、filtered/duplicate audit state 等纯决策 helper 已下沉到 `api/webhook_helpers.py`；路由文件保留签名校验、RBAC、Run 创建和旧 helper re-export 兼容路径。
+- `api.schemas` 已由单文件拆为 `api/schemas/` 包，按 common/projects/environments/pipelines/runs/notifications/analytics/auth 分组；`api.schemas` 入口继续 re-export 旧名称，OpenAPI component 名称与拆分前保持一致。
+- `worker/settings.py` 的 schedule firing 已委托 `worker/schedule_firing.py`，`worker/tasks.py` 的 PipelineConfig 构建已下沉到 `engine/pipeline_config_builder.py`，执行结束后的通知、日志归档和 worker release 收尾已委托 `worker/run_execution.py`；旧私有 helper import path 继续保留兼容。
+- `tests/unit/test_architecture_boundaries.py` 锁住全量 `api/v1/*.py` route 模块不得直接 `session.execute()` / `db.execute()`，也不得导入 SQLAlchemy core 查询 API；本轮静态扫描未发现 `src/qaplatform/api` 下仍有 route 层直接执行 SQLAlchemy 查询。
 
 **新增代码放置规则：**
 
@@ -170,7 +174,7 @@ Worker 抢占 (queued → preparing)
 触发通知 (按规则)
 ```
 
-当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；环境 API 暴露 `disk_mb`，worker 可把 `Environment.resource_limits["disk_mb"]` 转成 `ResourceLimits.disk_bytes`，Docker backend 会在该值存在时写入 `HostConfig.StorageOpt.size`。OOM/timeout 会写 `summary.resource_termination` 与日志终止原因；Docker stats 峰值 CPU/内存采样已写 `summary.resource_termination.resource_usage`；稳定 Linux real-Docker 黑盒证据尚未形成验收闭环。`worker/tasks.py` 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；上传侧会递归扫描工作目录 `results/` 下文件，保留相对路径写入 S3/Artifact 行，并把 `allure-report/`、`allure-results/` 目录下文件标记为 `allure-report` 类型。前端 Allure/HTML 报告预览主路径已有 E2E 覆盖，多资源报告加载体验仍需后续设计。
+当前资源与产物边界：Docker backend 已对 CPU / 内存设置容器限制，超时路径会走 SIGTERM → 30s → SIGKILL；环境 API 暴露 `disk_mb`，`engine/pipeline_config_builder.py` 可把 `Environment.resource_limits["disk_mb"]` 转成 `ResourceLimits.disk_bytes`，Docker backend 会在该值存在时写入 `HostConfig.StorageOpt.size`。OOM/timeout 会写 `summary.resource_termination` 与日志终止原因；Docker stats 峰值 CPU/内存采样已写 `summary.resource_termination.resource_usage`；稳定 Linux real-Docker 黑盒证据尚未形成验收闭环。PipelineConfig builder 会把环境级 `max_artifact_size_mb` / `max_artifacts_count` 传入 `ResourceLimits`，`engine/executor.py` 上传前会强制跳过超大小/超数量产物并避免写入 dangling Artifact 行；上传侧会递归扫描工作目录 `results/` 下文件，保留相对路径写入 S3/Artifact 行，并把 `allure-report/`、`allure-results/` 目录下文件标记为 `allure-report` 类型。前端 Allure/HTML 报告预览主路径已有 E2E 覆盖，多资源报告加载体验仍需后续设计。
 
 当前 collector 边界：Pipeline 的 stage `plugin` 可以选择测试运行器，`collectors[]` 可以配置结果收集器；默认保持 JUnit。`RunExecutor.execute()` 会按 Pipeline 配置调用对应 collector，内置 JUnit collector 支持 `config.path` / `config.junit_xml` 相对路径。
 

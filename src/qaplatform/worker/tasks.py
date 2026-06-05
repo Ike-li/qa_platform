@@ -8,7 +8,10 @@ from uuid import UUID
 
 from opentelemetry import trace
 
-from qaplatform.domain.models.run import RunStatus
+from qaplatform.engine.pipeline_config_builder import (
+    build_pipeline_config as _build_pipeline_config,
+)
+from qaplatform.worker.run_execution import finalize_run_execution
 
 log = logging.getLogger(__name__)
 
@@ -303,43 +306,20 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
             await _attempt_retry(run_id, exc, ctx, session_factory)
 
         finally:
-            # Cancel heartbeat
-            heartbeat_task.cancel()
-            await asyncio.gather(heartbeat_task, return_exceptions=True)
+            await finalize_run_execution(
+                heartbeat_task=heartbeat_task,
+                run=run,
+                run_id=run_id,
+                status=status,
+                log_stream=log_stream,
+                s3_client=ctx.get("s3_client"),
+                s3_bucket=ctx.get("s3_bucket", "qa-platform"),
+                run_repo=run_repo,
+                worker_id=worker_id,
+                session=session,
+                session_factory=session_factory,
+            )
 
-            # Send notifications for terminal run (best-effort)
-            try:
-                from qaplatform.worker.notifications import evaluate_and_notify
-                terminal_status = status if status in (
-                    RunStatus.DONE, RunStatus.FAILED, RunStatus.TIMEOUT
-                ) else None
-                if terminal_status:
-                    await evaluate_and_notify(
-                        run_id=run.id,
-                        project_id=run.project_id,
-                        status=terminal_status.value,
-                        summary=getattr(run, "summary", None),
-                        session_factory=session_factory,
-                    )
-            except Exception:
-                log.warning("notification_evaluation_failed", exc_info=True)
-
-            # Best-effort log archival
-            try:
-                if ctx.get("s3_client"):
-                    await log_stream.archive_logs(
-                        run_id, ctx["s3_client"], ctx.get("s3_bucket", "qa-platform")
-                    )
-            except Exception:
-                log.warning("failed to archive logs for run %s", run_id)
-
-            # Release worker association
-            try:
-                await run_repo.release_worker(run_id, worker_id=worker_id)
-            except Exception:
-                log.warning("failed to release worker for run %s", run_id)
-
-            await session.commit()
 
 async def _build_source_auth(run, project, session, crypto) -> dict[str, str] | None:
     from qaplatform.infra.database.repositories.project_repo import CredentialRepository
@@ -379,80 +359,3 @@ async def _build_source_auth(run, project, session, crypto) -> dict[str, str] | 
         context_id=f"credential:{project.id}:{credential.name}",
     )
     return {"method": method, "secret": secret}
-
-
-def _build_pipeline_config(
-    run,
-    pipeline_orm,
-    environment_orm,
-    crypto=None,
-    source_auth: dict[str, str] | None = None,
-):
-    from qaplatform.engine.executor import (
-        CollectorDefinition,
-        PipelineConfig,
-        StageDefinition,
-    )
-    from qaplatform.engine.docker_backend import ResourceLimits
-    from qaplatform.domain.services.env_vars_crypto import (
-        decrypt_env_vars,
-        is_encrypted_env_vars,
-    )
-    
-    stages = []
-    for stage_dict in pipeline_orm.stages:
-        stages.append(StageDefinition(
-            name=stage_dict.get('name', 'stage'),
-            plugin=stage_dict.get('plugin', 'pytest'),
-            phase=stage_dict.get('phase', 'execute'),
-            config=stage_dict.get('config', {}),
-            continue_on_error=stage_dict.get('continue_on_error', False),
-        ))
-    
-    raw_env_vars = environment_orm.env_vars or {}
-    if is_encrypted_env_vars(raw_env_vars):
-        if crypto is None:
-            raise RuntimeError("Crypto service not initialised")
-        env_vars = decrypt_env_vars(
-            raw_env_vars,
-            environment_id=environment_orm.id,
-            crypto=crypto,
-        )
-    else:
-        env_vars = dict(raw_env_vars)
-
-    raw_resource_limits = environment_orm.resource_limits or {}
-    max_artifact_size_mb = raw_resource_limits.get("max_artifact_size_mb", 100)
-    max_artifacts_count = raw_resource_limits.get("max_artifacts_count", 50)
-    disk_mb = raw_resource_limits.get("disk_mb")
-    disk_bytes = disk_mb * 1024 * 1024 if disk_mb else None
-    raw_collectors = getattr(pipeline_orm, "collectors", None)
-    if not isinstance(raw_collectors, list) or not raw_collectors:
-        raw_collectors = [{"plugin": "junit", "config": {}, "enabled": True}]
-    collectors = [
-        CollectorDefinition(
-            plugin=collector.get("plugin", "junit"),
-            config=collector.get("config") or {},
-            enabled=collector.get("enabled", True),
-        )
-        for collector in raw_collectors
-        if isinstance(collector, dict)
-    ] or [CollectorDefinition()]
-
-    return PipelineConfig(
-        image=environment_orm.base_image,
-        stages=stages,
-        env_vars=env_vars,
-        resource_limits=ResourceLimits(
-            memory_bytes=environment_orm.memory_mb * 1024 * 1024,
-            cpu_cores=environment_orm.cpu_cores,
-            disk_bytes=disk_bytes,
-            max_artifact_size_bytes=max_artifact_size_mb * 1024 * 1024,
-            max_artifacts_count=max_artifacts_count,
-        ),
-        network_policy=environment_orm.network_policy,
-        timeout_seconds=pipeline_orm.timeout_seconds or 1800,
-        setup_script=environment_orm.setup_script,
-        collectors=collectors,
-        source_auth=source_auth,
-    )

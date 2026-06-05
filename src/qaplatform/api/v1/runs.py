@@ -5,7 +5,6 @@ from typing import get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.audit import write_audit
@@ -15,6 +14,22 @@ from qaplatform.api.deps import (
     Repos,
     _get_db_session,
     enforce_project_action,
+)
+from qaplatform.api.run_access import get_run_for_action
+from qaplatform.api.run_batch_commands import (
+    batch_cancel_run_command,
+    batch_retry_run_command,
+)
+from qaplatform.api.run_commands import (
+    build_project_run_metadata,
+    resolve_project_run_environment_id,
+)
+from qaplatform.api.run_presenters import (
+    is_allure_report_index,
+    to_artifact_response,
+    to_notification_log_response,
+    to_result_response,
+    to_run_response,
 )
 from qaplatform.api.schemas import (
     ArtifactResponse,
@@ -31,73 +46,19 @@ from qaplatform.api.schemas import (
     TestResultResponse,
     TestResultStatusValue,
 )
-from qaplatform.infra.log_stream import ArchivedLogsNotFound, LogStream
-from qaplatform.infra.database.models import (
-    Artifact as ArtifactORM,
-    NotificationLog as NotificationLogORM,
-    Run as RunORM,
-    RunStatusEnum,
-    TestResult as TestResultORM,
+from qaplatform.domain.services.execution import (
+    CANCELABLE_STATUSES,
+    is_cancelable_status,
 )
+from qaplatform.infra.log_stream import ArchivedLogsNotFound, LogStream
+from qaplatform.infra.database.models import RunStatusEnum
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
-_CANCELABLE = {RunStatusEnum.QUEUED, RunStatusEnum.PREPARING, RunStatusEnum.RUNNING, RunStatusEnum.COLLECTING}
+_CANCELABLE = frozenset(RunStatusEnum(status.value) for status in CANCELABLE_STATUSES)
 _RUN_STATUS_VALUES = set(get_args(RunStatusValue))
 _RUN_SORT_VALUES = {"created_at", "-created_at"}
 _RUN_GIT_REF_MAX_LENGTH = 200
-_BATCH_OPERATION_FAILED = "operation failed"
-
-
-def _to_run_response(orm: RunORM) -> RunResponse:
-    return RunResponse(
-        id=orm.id,
-        tenant_id=orm.tenant_id,
-        project_id=orm.project_id,
-        pipeline_id=orm.pipeline_id,
-        pipeline_name=orm.pipeline.name if orm.pipeline is not None else "",
-        environment_id=orm.environment_id,
-        status=orm.status.value if isinstance(orm.status, RunStatusEnum) else orm.status,
-        trigger_type=orm.trigger_type,
-        priority=orm.priority,
-        triggered_by=orm.triggered_by,
-        git_ref=orm.git_ref,
-        git_sha=orm.git_sha,
-        attempt=orm.attempt,
-        started_at=orm.started_at,
-        finished_at=orm.finished_at,
-        duration_ms=orm.duration_ms,
-        summary=orm.summary,
-        error_message=orm.error_message,
-        created_at=orm.created_at,
-        updated_at=orm.updated_at,
-    )
-
-
-def _to_result_response(orm: TestResultORM) -> TestResultResponse:
-    return TestResultResponse(
-        id=orm.id,
-        run_id=orm.run_id,
-        suite=orm.suite,
-        name=orm.name,
-        status=orm.status.value if hasattr(orm.status, "value") else orm.status,
-        duration_ms=orm.duration_ms,
-        error_message=orm.error_message,
-        stack_trace=orm.stack_trace,
-        tags=orm.tags or [],
-        metadata=orm.metadata_ or {},
-    )
-
-
-def _to_artifact_response(orm: ArtifactORM) -> ArtifactResponse:
-    return ArtifactResponse.model_validate(orm)
-
-
-def _is_allure_report_index(artifact: ArtifactORM) -> bool:
-    return (
-        artifact.type == "allure-report"
-        and artifact.name.lower().endswith("allure-report/index.html")
-    )
 
 
 @router.post(
@@ -135,26 +96,12 @@ async def trigger_run(
 
     git_ref = body.git_ref or project.default_branch
 
-    environment_id = body.environment_id or project.default_env_id
-    if environment_id is None:
-        envs, _ = await repos.environment.list_by_project(project.id, limit=1)
-        if envs:
-            environment_id = envs[0].id
-        else:
-            raise HTTPException(status_code=409, detail="No environment configured for project")
-    elif body.environment_id is not None:
-        environment = await repos.environment.get_by_id(body.environment_id)
-        if environment is None or environment.project_id != project.id:
-            raise HTTPException(status_code=404, detail="Environment not found")
-
-    metadata = {'git_url': project.git_url}
-    if project.git_auth_method != 'none' and project.credential_id:
-        metadata['git_auth_method'] = project.git_auth_method
-        metadata['credential_id'] = str(project.credential_id)
-    if project.shallow_clone:
-        metadata['shallow_clone'] = True
-    if project.default_branch:
-        metadata['default_branch'] = project.default_branch
+    environment_id = await resolve_project_run_environment_id(
+        repos=repos,
+        project=project,
+        requested_environment_id=body.environment_id,
+    )
+    metadata = build_project_run_metadata(project)
 
     run = await repos.run.create(
         tenant_id=user.tenant_id,
@@ -179,7 +126,7 @@ async def trigger_run(
 
         await enqueue_run(arq_pool, repos.run, run, "manual", container.settings)
 
-    response = _to_run_response(run)
+    response = to_run_response(run)
     await write_audit(
         repos, user,
         action="run.trigger",
@@ -276,7 +223,7 @@ async def list_runs(
         sort=sort,
     )
     return PaginatedResponse(
-        data=[_to_run_response(i) for i in items],
+        data=[to_run_response(i) for i in items],
         page=page,
         per_page=per_page,
         total=total,
@@ -293,63 +240,15 @@ async def batch_cancel_runs(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    _session: AsyncSession = Depends(_get_db_session),
 ):
-    processed = 0
-    failed = 0
-    errors: list[str] = []
-
     container = request.app.state.container
-    redis = getattr(container, "redis_client", None)
-
-    for run_id in body.run_ids:
-        try:
-            run = await repos.run.get_for_tenant(run_id, user.tenant_id)
-            if run is None:
-                errors.append(f"{run_id}: not found")
-                failed += 1
-                continue
-
-            if run.status not in _CANCELABLE:
-                errors.append(f"{run_id}: already terminal ({run.status})")
-                failed += 1
-                continue
-
-            before_response = _to_run_response(run)
-            previous = (
-                run.status.value
-                if isinstance(run.status, RunStatusEnum)
-                else str(run.status)
-            )
-            cancelled = await repos.run.cancel_if_current(run_id, expected_in=_CANCELABLE)
-            if not cancelled:
-                errors.append(f"{run_id}: status changed concurrently")
-                failed += 1
-                continue
-
-            if redis is not None:
-                from qaplatform.engine.cancel import publish_cancel
-                from qaplatform.engine.events import publish_status_event
-
-                await publish_cancel(redis, run_id)
-                await publish_status_event(redis, run_id, "cancelled", previous=previous)
-
-            run_after = await repos.run.get_for_tenant(run_id, user.tenant_id)
-            after_response = _to_run_response(run_after) if run_after is not None else {"status": "cancelled"}
-            await write_audit(
-                repos, user,
-                action="run.batch_cancel",
-                resource_type="run",
-                resource_id=run_id,
-                before=before_response,
-                after=after_response,
-            )
-            processed += 1
-        except (SQLAlchemyError, ValueError):
-            errors.append(f"{run_id}: {_BATCH_OPERATION_FAILED}")
-            failed += 1
-
-    return BatchRunResponse(processed=processed, failed=failed, errors=errors)
+    return await batch_cancel_run_command(
+        run_ids=body.run_ids,
+        repos=repos,
+        user=user,
+        redis=getattr(container, "redis_client", None),
+    )
 
 
 @router.post(
@@ -364,71 +263,15 @@ async def batch_retry_runs(
     user: CurrentUser,
     session: AsyncSession = Depends(_get_db_session),
 ):
-    processed = 0
-    failed = 0
-    errors: list[str] = []
-
     container = request.app.state.container
-    arq_pool = getattr(container, "arq_pool", None)
-
-    for run_id in body.run_ids:
-        try:
-            original = await repos.run.get_for_tenant(run_id, user.tenant_id)
-            if original is None:
-                errors.append(f"{run_id}: not found")
-                failed += 1
-                continue
-
-            terminal = {RunStatusEnum.DONE, RunStatusEnum.FAILED, RunStatusEnum.TIMEOUT, RunStatusEnum.CANCELLED}
-            if original.status not in terminal:
-                errors.append(f"{run_id}: not terminal ({original.status})")
-                failed += 1
-                continue
-
-            before_response = _to_run_response(original)
-            await session.refresh(original, ['pipeline', 'environment'])
-
-            new_run = await repos.run.create(
-                tenant_id=original.tenant_id,
-                project_id=original.project_id,
-                pipeline_id=original.pipeline_id,
-                environment_id=original.environment_id,
-                git_ref=original.git_ref,
-                git_sha=original.git_sha,
-                priority=original.priority,
-                triggered_by=user.user_id,
-                trigger_type="manual",
-                metadata_=dict(original.metadata_ or {}),
-                source_run_id=original.id,
-                chain_depth=(original.chain_depth or 0) + 1,
-            )
-            await repos.run.set_retry_group_id(new_run.id, new_run.id)
-
-            if arq_pool is not None:
-                await repos.run.commit()
-                from qaplatform.infra.queue.scheduler import enqueue_run
-
-                await enqueue_run(arq_pool, repos.run, new_run, "manual", container.settings)
-
-            await write_audit(
-                repos, user,
-                action="run.batch_retry",
-                resource_type="run",
-                resource_id=original.id,
-                before=before_response,
-                after={
-                    "retry_run_id": str(new_run.id),
-                    "source_run_id": str(original.id),
-                    "status": "queued",
-                    "attempt": getattr(new_run, "attempt", None),
-                },
-            )
-            processed += 1
-        except (SQLAlchemyError, ValueError):
-            errors.append(f"{run_id}: {_BATCH_OPERATION_FAILED}")
-            failed += 1
-
-    return BatchRunResponse(processed=processed, failed=failed, errors=errors)
+    return await batch_retry_run_command(
+        run_ids=body.run_ids,
+        repos=repos,
+        user=user,
+        session=session,
+        arq_pool=getattr(container, "arq_pool", None),
+        settings=container.settings,
+    )
 
 
 @router.get(
@@ -443,11 +286,15 @@ async def get_run(
     user: CurrentUser,
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
-    return _to_run_response(run)
+    run = await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.RUN_READ,
+        enforce_action=enforce_project_action,
+    )
+    return to_run_response(run)
 
 
 @router.post(
@@ -464,16 +311,17 @@ async def cancel_run(
     body: RunCancel | None = None,
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    is_own = str(run.triggered_by) == str(user.user_id)
-    await enforce_project_action(
-        session, user, run.project_id, Action.RUN_CANCEL, is_own_resource=is_own,
+    run = await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.RUN_CANCEL,
+        allow_own_resource=True,
+        enforce_action=enforce_project_action,
     )
 
-    if run.status not in _CANCELABLE:
+    if not is_cancelable_status(run.status):
         terminal_status = (
             run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
         )
@@ -483,7 +331,7 @@ async def cancel_run(
         )
 
     previous_status = run.status.value if isinstance(run.status, RunStatusEnum) else str(run.status)
-    before_response = _to_run_response(run)
+    before_response = to_run_response(run)
     cancelled = await repos.run.cancel_if_current(run_id, expected_in=_CANCELABLE)
     if not cancelled:
         raise HTTPException(status_code=409, detail="Run status changed concurrently")
@@ -499,7 +347,7 @@ async def cancel_run(
         await publish_status_event(redis, run_id, "cancelled", previous=previous_status)
 
     run = await repos.run.get_for_tenant(run_id, user.tenant_id)
-    after_response = _to_run_response(run)
+    after_response = to_run_response(run)
     after_state = after_response.model_dump(mode="json")
     if body is not None and body.reason:
         after_state["cancel_reason"] = body.reason
@@ -541,10 +389,14 @@ async def get_run_results(
     ),
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
+    await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.RUN_READ,
+        enforce_action=enforce_project_action,
+    )
 
     items, total = await repos.test_result.list_filtered_by_run(
         run_id=run_id,
@@ -555,7 +407,7 @@ async def get_run_results(
         query=q,
     )
     return PaginatedResponse(
-        data=[_to_result_response(i) for i in items],
+        data=[to_result_response(i) for i in items],
         page=page,
         per_page=per_page,
         total=total,
@@ -574,10 +426,14 @@ async def get_run_allure_report_artifact(
     user: CurrentUser,
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
+    await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.RUN_READ,
+        enforce_action=enforce_project_action,
+    )
 
     offset = 0
     page_size = 100
@@ -588,8 +444,8 @@ async def get_run_allure_report_artifact(
             limit=page_size,
         )
         for artifact in items:
-            if _is_allure_report_index(artifact):
-                return _to_artifact_response(artifact)
+            if is_allure_report_index(artifact):
+                return to_artifact_response(artifact)
         offset += len(items)
         if offset >= total or not items:
             break
@@ -611,16 +467,20 @@ async def get_run_artifacts(
     per_page: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
+    await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.RUN_READ,
+        enforce_action=enforce_project_action,
+    )
 
     items, total = await repos.artifact.list_by_run(
         run_id, offset=(page - 1) * per_page, limit=per_page,
     )
     return PaginatedResponse(
-        data=[_to_artifact_response(i) for i in items],
+        data=[to_artifact_response(i) for i in items],
         page=page,
         per_page=per_page,
         total=total,
@@ -645,10 +505,14 @@ async def get_archived_run_logs(
     per_page: int = Query(100, ge=1, le=1000),
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
+    await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.RUN_READ,
+        enforce_action=enforce_project_action,
+    )
 
     container = request.app.state.container
     if container.s3_client is None:
@@ -677,19 +541,6 @@ async def get_archived_run_logs(
     )
 
 
-def _to_notification_log_response(orm: NotificationLogORM) -> NotificationLogResponse:
-    return NotificationLogResponse(
-        id=orm.id,
-        project_id=orm.project_id,
-        run_id=orm.run_id,
-        rule_id=orm.rule_id,
-        channel_type=orm.channel_type,
-        status=orm.status.value if hasattr(orm.status, "value") else orm.status,
-        error_message=orm.error_message,
-        sent_at=orm.sent_at,
-    )
-
-
 @router.get(
     "/{run_id}/notifications",
     response_model=PaginatedResponse[NotificationLogResponse],
@@ -704,16 +555,20 @@ async def get_run_notifications(
     per_page: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(_get_db_session),
 ):
-    run = await repos.run.get_for_tenant(run_id, user.tenant_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    await enforce_project_action(session, user, run.project_id, Action.NOTIFICATION_READ)
+    await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.NOTIFICATION_READ,
+        enforce_action=enforce_project_action,
+    )
 
     items, total = await repos.notification_log.list_by_run(
         run_id, offset=(page - 1) * per_page, limit=per_page,
     )
     return PaginatedResponse(
-        data=[_to_notification_log_response(i) for i in items],
+        data=[to_notification_log_response(i) for i in items],
         page=page,
         per_page=per_page,
         total=total,

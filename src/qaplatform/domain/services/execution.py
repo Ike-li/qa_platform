@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
+from typing import Iterable
 from uuid import UUID
 
 from qaplatform.domain.models.run import Run, RunStatus, TERMINAL_STATUSES
@@ -20,8 +22,41 @@ _TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
     RunStatus.TIMEOUT: set(),
 }
 
-# From any non-terminal state, cancellation is allowed
-_CANCELABLE_STATES = {RunStatus.QUEUED, RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.COLLECTING}
+# From any active state, cancellation/failure is allowed.
+CANCELABLE_STATUSES = frozenset(
+    {RunStatus.QUEUED, RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.COLLECTING}
+)
+ACTIVE_STATUSES = CANCELABLE_STATUSES
+IN_FLIGHT_STATUSES = frozenset(
+    {RunStatus.PREPARING, RunStatus.RUNNING, RunStatus.COLLECTING}
+)
+RETRYABLE_STATUSES = frozenset(TERMINAL_STATUSES)
+FINISHABLE_STATUSES = frozenset({RunStatus.RUNNING, RunStatus.COLLECTING})
+
+
+def coerce_run_status(status: RunStatus | str | Enum) -> RunStatus:
+    """Normalize API/infra status representations to the domain enum."""
+    if isinstance(status, RunStatus):
+        return status
+    if isinstance(status, Enum):
+        return RunStatus(status.value)
+    return RunStatus(status)
+
+
+def run_status_values(statuses: Iterable[RunStatus]) -> frozenset[str]:
+    return frozenset(status.value for status in statuses)
+
+
+def is_terminal_status(status: RunStatus | str | Enum) -> bool:
+    return coerce_run_status(status) in TERMINAL_STATUSES
+
+
+def is_cancelable_status(status: RunStatus | str | Enum) -> bool:
+    return coerce_run_status(status) in CANCELABLE_STATUSES
+
+
+def is_retryable_status(status: RunStatus | str | Enum) -> bool:
+    return coerce_run_status(status) in RETRYABLE_STATUSES
 
 
 def is_valid_transition(current: RunStatus, target: RunStatus) -> bool:
@@ -176,4 +211,4 @@ class ExecutionService:
 
     def is_cancelable(self, run: Run) -> bool:
         """Check if the run can be cancelled."""
-        return run.status in _CANCELABLE_STATES and run.status not in TERMINAL_STATUSES
+        return is_cancelable_status(run.status)

@@ -9,15 +9,24 @@ import pytest
 
 from qaplatform.domain.models.run import RunStatus
 from qaplatform.domain.services.execution import (
+    ACTIVE_STATUSES,
+    CANCELABLE_STATUSES,
     ExecutionService,
+    IN_FLIGHT_STATUSES,
+    RETRYABLE_STATUSES,
     cancel_if_current,
     claim_for_worker,
     fail_if_current,
     finish_if_current,
+    is_cancelable_status,
+    is_retryable_status,
+    is_terminal_status,
     is_valid_transition,
+    run_status_values,
     start_execution,
     timeout_if_current,
 )
+from qaplatform.infra.database.models import RunStatusEnum
 
 
 # --------------------------------------------------------------------------- #
@@ -65,6 +74,40 @@ class TestIsValidTransition:
     def test_timeout_is_terminal(self):
         for target in RunStatus:
             assert is_valid_transition(RunStatus.TIMEOUT, target) is False
+
+
+class TestStatusSets:
+    def test_active_and_cancelable_statuses_are_the_same_domain_set(self):
+        assert ACTIVE_STATUSES == CANCELABLE_STATUSES
+        assert run_status_values(CANCELABLE_STATUSES) == frozenset(
+            {"queued", "preparing", "running", "collecting"}
+        )
+
+    def test_in_flight_statuses_exclude_waiting_queued_runs(self):
+        assert run_status_values(IN_FLIGHT_STATUSES) == frozenset(
+            {"preparing", "running", "collecting"}
+        )
+        assert RunStatus.QUEUED not in IN_FLIGHT_STATUSES
+
+    def test_terminal_status_helper_accepts_infra_enum_and_strings(self):
+        assert is_terminal_status(RunStatusEnum.DONE) is True
+        assert is_terminal_status("failed") is True
+        assert is_terminal_status(RunStatus.RUNNING) is False
+
+    def test_cancelable_status_helper_accepts_infra_enum_and_strings(self):
+        assert is_cancelable_status(RunStatusEnum.RUNNING) is True
+        assert is_cancelable_status("collecting") is True
+        assert is_cancelable_status(RunStatusEnum.CANCELLED) is False
+
+    def test_retryable_statuses_are_terminal_statuses(self):
+        assert RETRYABLE_STATUSES == {
+            RunStatus.DONE,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+            RunStatus.TIMEOUT,
+        }
+        assert is_retryable_status(RunStatusEnum.TIMEOUT) is True
+        assert is_retryable_status(RunStatusEnum.PREPARING) is False
 
 
 # --------------------------------------------------------------------------- #

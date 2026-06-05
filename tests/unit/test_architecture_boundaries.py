@@ -8,6 +8,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "qaplatform"
+API_V1_ROUTE_MODULES = tuple(
+    path
+    for path in sorted((SRC / "api" / "v1").glob("*.py"))
+    if path.name != "__init__.py"
+)
 
 
 def _imported_modules(path: Path) -> set[str]:
@@ -30,6 +35,8 @@ def _calls_session_execute(path: Path) -> bool:
         if isinstance(func, ast.Attribute) and func.attr == "execute":
             owner = func.value
             if isinstance(owner, ast.Name) and owner.id in {"session", "db"}:
+                return True
+            if isinstance(owner, ast.Attribute) and owner.attr in {"session", "db"}:
                 return True
     return False
 
@@ -127,21 +134,72 @@ def test_api_metrics_reexports_observability_metric_objects():
     assert api_metrics.runs_in_flight is observability_metrics.runs_in_flight
 
 
+def test_api_schemas_package_reexports_legacy_names():
+    from qaplatform.api import schemas
+    from qaplatform.api.schemas.analytics import TrendsResponse
+    from qaplatform.api.schemas.environments import EnvironmentCreate
+    from qaplatform.api.schemas.notifications import NotificationRuleCreate
+    from qaplatform.api.schemas.pipelines import PipelineCreate
+    from qaplatform.api.schemas.projects import ProjectCreate
+    from qaplatform.api.schemas.runs import RunResponse, WebhookTriggerRequest
+
+    assert schemas.ProjectCreate is ProjectCreate
+    assert schemas.EnvironmentCreate is EnvironmentCreate
+    assert schemas.PipelineCreate is PipelineCreate
+    assert schemas.RunResponse is RunResponse
+    assert schemas.WebhookTriggerRequest is WebhookTriggerRequest
+    assert schemas.NotificationRuleCreate is NotificationRuleCreate
+    assert schemas.TrendsResponse is TrendsResponse
+    assert {
+        "ProjectCreate",
+        "EnvironmentCreate",
+        "PipelineCreate",
+        "RunResponse",
+        "WebhookTriggerRequest",
+        "NotificationRuleCreate",
+        "TrendsResponse",
+    } <= set(schemas.__all__)
+
+
+def test_api_schemas_package_keeps_openapi_component_names():
+    from qaplatform.main import create_app
+
+    component_names = set(create_app().openapi()["components"]["schemas"])
+
+    assert {
+        "ProjectCreate",
+        "EnvironmentCreate",
+        "PipelineCreate",
+        "RunResponse",
+        "WebhookTriggerRequest",
+        "NotificationRuleCreate",
+        "TrendsResponse",
+    } <= component_names
+    assert not any("qaplatform.api.schemas" in name for name in component_names)
+
+
 @pytest.mark.parametrize(
-    "relative_path",
+    "path",
+    API_V1_ROUTE_MODULES,
+)
+def test_api_v1_routes_with_repository_boundaries_do_not_execute_sqlalchemy_inline(
+    path: Path,
+):
+    assert _calls_session_execute(path) is False
+    assert "sqlalchemy" not in _imported_modules(path)
+
+
+@pytest.mark.parametrize(
+    "path",
     [
-        "api/auth/middleware.py",
-        "api/deps.py",
-        "api/v1/admin.py",
-        "api/v1/analytics.py",
-        "api/v1/auth.py",
-        "api/v1/runs.py",
+        SRC / "api" / "auth" / "middleware.py",
+        SRC / "api" / "deps.py",
     ],
 )
-def test_api_entrypoints_with_repository_boundaries_do_not_execute_sqlalchemy_inline(
-    relative_path: str,
+def test_api_shared_entrypoints_with_repository_boundaries_do_not_execute_sqlalchemy_inline(
+    path: Path,
 ):
-    assert _calls_session_execute(SRC / relative_path) is False
+    assert _calls_session_execute(path) is False
 
 
 def test_domain_services_do_not_import_runtime_dependency_container():
@@ -207,7 +265,22 @@ async def route():
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 helper_nodes[node.name] = node
 
-    assert _has_audit_write(helper_nodes["_create_webhook_run"])
+    audited_helpers = {
+        "_create_webhook_run",
+        "batch_cancel_run_command",
+        "batch_retry_run_command",
+        "create_api_token_command",
+        "create_sse_ticket_command",
+        "login_user_command",
+        "logout_user_command",
+        "refresh_tokens_command",
+        "register_user_command",
+        "revoke_api_token_command",
+    }
+    missing_helpers = sorted(name for name in audited_helpers if name not in helper_nodes)
+    assert missing_helpers == []
+    for helper_name in audited_helpers:
+        assert _has_audit_write(helper_nodes[helper_name])
 
     for path in sorted((SRC / "api").rglob("*.py")):
         text = path.read_text(encoding="utf-8")
@@ -220,7 +293,7 @@ async def route():
                 continue
             if _has_audit_write(node):
                 continue
-            if _calls_helper(node, "_create_webhook_run"):
+            if any(_calls_helper(node, helper_name) for helper_name in audited_helpers):
                 continue
 
             route_failures.append(
