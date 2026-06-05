@@ -28,7 +28,7 @@ already passed.
 
 ## QA Sign-Off And Post-Merge
 
-Use `docs/testing-quality-ops.md` as the operator checklist before signing off this branch. The release sign-off evidence is the `workflow_dispatch.gate=release_candidate` run, not the pull request CI run; PR CI remains useful to prove the normal pull request path still passes and intentionally skips the final release gate.
+The release sign-off evidence is the `workflow_dispatch.gate=release_candidate` run, not the pull request CI run; PR CI remains useful to prove the normal pull request path still passes and intentionally skips the final release gate.
 
 After this PR or any follow-up gate change lands, rerun `workflow_dispatch.gate=release_candidate` on `main` and record that run URL in the release note or follow-up PR. A green branch run does not waive a failed `main` run, because workflow context, merge result, action cache state, and dependency resolution can change after merge.
 
@@ -127,7 +127,6 @@ Review focus:
 Primary files:
 
 - `docs/testing-strategy.md`
-- `docs/testing-quality-ops.md`
 - `docs/backend-test-audit.md`
 - `docs/runbook.md`
 - `docs/TODO.md`

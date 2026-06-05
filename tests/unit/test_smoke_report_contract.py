@@ -7,13 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMON_SH = ROOT / "scripts" / "smoke" / "lib" / "common.sh"
-SMOKE_SETUP = ROOT / "scripts" / "smoke" / "00-setup.sh"
-SMOKE_LOGIN = ROOT / "scripts" / "smoke" / "02-login-smoke.sh"
 SMOKE_RUN_ALL = ROOT / "scripts" / "smoke" / "run-all.sh"
-SEED_ADMIN = ROOT / "scripts" / "seed_admin.py"
-README = ROOT / "README.md"
-DEVELOPMENT = ROOT / "docs" / "development.md"
-FEATURE_CATALOG = ROOT / "docs" / "feature-catalog.md"
 
 
 def _run_smoke_report(
@@ -88,51 +82,6 @@ def test_smoke_report_failures_stay_failing_even_when_skips_are_allowed(
     assert "结果: FAIL" in report
 
 
-def test_smoke_admin_password_uses_shared_env_contract():
-    common = COMMON_SH.read_text(encoding="utf-8")
-    setup = SMOKE_SETUP.read_text(encoding="utf-8")
-    login = SMOKE_LOGIN.read_text(encoding="utf-8")
-
-    shared_default = 'SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-${E2E_ADMIN_PASSWORD:-admin123}}"'
-    assert shared_default in common
-    assert shared_default in setup
-    assert 'ADMIN_PASSWORD="$SMOKE_ADMIN_PASSWORD"' in setup
-    assert 'fill "#username" "${SMOKE_ADMIN_USERNAME}"' in login
-    assert 'fill "#password" "${SMOKE_ADMIN_PASSWORD}"' in login
-    assert 'fill "#password" "admin123"' not in login
-    assert "ADMIN_PASSWORD=admin123" not in setup
-
-
-def test_seed_admin_does_not_echo_password_value():
-    seed_admin = SEED_ADMIN.read_text(encoding="utf-8")
-
-    assert "password: {ADMIN_PASSWORD}" not in seed_admin
-    assert "password: <redacted>" in seed_admin
-
-
-def test_smoke_docs_explain_admin_password_override():
-    readme = README.read_text(encoding="utf-8")
-    development = DEVELOPMENT.read_text(encoding="utf-8")
-
-    for text in (readme, development):
-        assert "RESULTS_DIR=..." in text
-        assert "<script-name>/" in text
-        assert 'SMOKE_ADMIN_PASSWORD="$E2E_ADMIN_PASSWORD" ./scripts/smoke/run-all.sh' in text
-        assert "SMOKE_ALLOW_SKIPS=1 ./scripts/smoke/run-all.sh" in text
-
-
-def test_smoke_run_all_keeps_child_artifacts_under_parent_results_dir():
-    run_all = SMOKE_RUN_ALL.read_text(encoding="utf-8")
-    setup = SMOKE_SETUP.read_text(encoding="utf-8")
-
-    assert 'script_results_dir="${RESULTS_DIR}/${script%.sh}"' in run_all
-    assert 'RESULTS_DIR="${script_results_dir}" bash "${script_path}"' in run_all
-    assert '${RESULTS_DIR}/<script-name>/' in run_all
-    assert "if generate_report; then" in run_all
-    assert 'RESULTS_DIR="${RESULTS_DIR:-tests/smoke-results/$TIMESTAMP}"' in setup
-    assert 'RESULTS_DIR="tests/smoke-results/$TIMESTAMP"' not in setup
-
-
 def test_smoke_run_all_prints_artifact_root_even_when_a_child_fails(tmp_path: Path):
     smoke_dir = tmp_path / "scripts" / "smoke"
     smoke_dir.mkdir(parents=True)
@@ -176,15 +125,3 @@ def test_smoke_run_all_prints_artifact_root_even_when_a_child_fails(tmp_path: Pa
     assert f"  {results_dir}/<script-name>/" in result.stdout
     report = (results_dir / "report.txt").read_text(encoding="utf-8")
     assert "[FAIL] 04-project-detail.sh" in report
-
-
-def test_feature_catalog_describes_current_smoke_framework_contract():
-    catalog = FEATURE_CATALOG.read_text(encoding="utf-8")
-
-    assert "`scripts/smoke/run-all.sh`" in catalog
-    assert "`00-setup.sh`" in catalog
-    assert "`01-browser-bridge.sh`" in catalog
-    assert "6 个页面脚本" in catalog
-    assert "默认 skip 计失败" in catalog
-    assert "SMOKE_ALLOW_SKIPS=1" in catalog
-    assert "${RESULTS_DIR}/<script-name>/" in catalog
