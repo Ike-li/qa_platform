@@ -331,6 +331,7 @@ def test_release_candidate_e2e_gate_runs_all_specs_with_evidence_validation():
 
     assert spec_files == [
         "auth-flow.spec.ts",
+        "frontend-security.spec.ts",
         "real-login-flow.spec.ts",
         "real-run-trigger.spec.ts",
         "special-regressions.spec.ts",
