@@ -24,6 +24,10 @@ interface LogMessage {
   message: string;
 }
 
+// Maximum number of log entries to keep in memory to prevent memory exhaustion
+// with long-running tests. Older entries are dropped when limit is reached.
+const MAX_LOG_ENTRIES = 10000;
+
 function sanitizeLogMessage(message: string): string {
   return DOMPurify.sanitize(message, {
     ALLOWED_TAGS: [],
@@ -70,7 +74,14 @@ export function LogViewer({ runId, archivedEnabled = false }: { runId: string; a
             }
           : null;
       if (!logEntry) return;
-      setLogs((prev) => [...prev, logEntry]);
+      setLogs((prev) => {
+        const updated = [...prev, logEntry];
+        // Keep only the most recent MAX_LOG_ENTRIES to prevent memory exhaustion
+        if (updated.length > MAX_LOG_ENTRIES) {
+          return updated.slice(updated.length - MAX_LOG_ENTRIES);
+        }
+        return updated;
+      });
     }
   }, [data, lastEventId]);
 

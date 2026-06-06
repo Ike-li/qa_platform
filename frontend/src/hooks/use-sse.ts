@@ -15,6 +15,7 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
   const lastEventIdRef = useRef<string | null>(null);
   const retryCount = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectingRef = useRef(false); // Track in-progress connection attempts
   const maxRetries = 5;
 
   const cleanup = useCallback(() => {
@@ -26,6 +27,7 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
     }
+    connectingRef.current = false; // Reset connection state
   }, []);
 
   useEffect(() => {
@@ -41,16 +43,22 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
     }
 
     const connect = async () => {
+      // Prevent multiple concurrent connection attempts
+      if (connectingRef.current) {
+        return;
+      }
       if (eventSourceRef.current && eventSourceRef.current.readyState !== EventSource.CLOSED) {
         return;
       }
 
+      connectingRef.current = true;
       setStatus('connecting');
 
       let ticket: string;
       try {
         ticket = await fetchSSETicket();
       } catch {
+        connectingRef.current = false;
         setStatus('disconnected');
         if (retryCount.current < maxRetries) {
           retryCount.current += 1;
@@ -69,6 +77,7 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
       eventSourceRef.current = es;
 
       es.onopen = () => {
+        connectingRef.current = false;
         setStatus('connected');
         setError(null);
         retryCount.current = 0;
@@ -92,6 +101,7 @@ export function useSSE<T = unknown>(url: string, enabled: boolean = true) {
       es.addEventListener('done', handleMessage);
 
       es.onerror = (e) => {
+        connectingRef.current = false;
         setError(e);
         setStatus('disconnected');
         es.close();

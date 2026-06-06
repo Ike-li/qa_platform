@@ -85,8 +85,18 @@ function getArtifactPreviewFrameTitle(artifact: Artifact): string {
 function isSafeArtifactUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "https:" || parsed.protocol === "http:";
+    // Only allow http and https protocols. Explicitly reject javascript:, data:, file:, etc.
+    // This prevents XSS attacks through malicious artifact URLs.
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return false;
+    }
+    // Additional safety: reject URLs with embedded credentials
+    if (parsed.username || parsed.password) {
+      return false;
+    }
+    return true;
   } catch {
+    // Invalid URL format
     return false;
   }
 }
