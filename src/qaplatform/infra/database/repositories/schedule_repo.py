@@ -27,6 +27,20 @@ class ScheduleRepository(BaseRepository[Schedule]):
             filters=[Schedule.project_id == project_id],
         )
 
+    async def get_for_project(self, id: UUID, project_id: UUID) -> Schedule | None:
+        """Fetch schedule by ID, scoped to a project.
+
+        Returns None when the schedule does not exist OR exists in another project.
+        This prevents cross-tenant information leakage through timing attacks.
+        """
+        stmt = select(Schedule).where(
+            Schedule.id == id,
+            Schedule.project_id == project_id,
+            Schedule.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def find_due_schedules(self, now: datetime, *, limit: int = 50) -> list[Schedule]:
         """Find enabled schedules where next_run_at <= now."""
         stmt = (

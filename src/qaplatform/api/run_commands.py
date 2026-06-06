@@ -53,8 +53,8 @@ async def resolve_project_run_environment_id(
     requested_environment_id: UUID | None = None,
 ) -> UUID:
     if requested_environment_id is not None:
-        environment = await repos.environment.get_by_id(requested_environment_id)
-        if environment is None or environment.project_id != project.id:
+        environment = await repos.environment.get_for_project(requested_environment_id, project.id)
+        if environment is None:
             raise HTTPException(status_code=404, detail="Environment not found")
         return requested_environment_id
 

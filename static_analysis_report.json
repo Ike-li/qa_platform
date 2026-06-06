@@ -1,0 +1,74 @@
+[
+  {
+    "file": "frontend/src/hooks/use-sse.ts",
+    "line": 43,
+    "summary": "SSE连接重试时可能创建多个EventSource实例导致内存泄漏",
+    "failure_scenario": "retry定时器触发时上一个连接还在打开 → 多个EventSource并存 → 内存泄漏和重复事件处理"
+  },
+  {
+    "file": "frontend/src/components/runs/log-viewer.tsx",
+    "line": 49,
+    "summary": "日志查看器无限制累积日志条目可能导致内存耗尽",
+    "failure_scenario": "长时间运行的测试产生10万+日志 → React state累积所有条目 → 浏览器内存耗尽，UI卡顿"
+  },
+  {
+    "file": "frontend/src/pages/runs/detail.tsx",
+    "line": 411,
+    "summary": "异步onClick处理器中的错误可能未被捕获",
+    "failure_scenario": "getArtifactPreviewUrl在try之前抛出异常 → Promise rejection未处理 → 静默失败"
+  },
+  {
+    "file": "frontend/src/pages/runs/detail.tsx",
+    "line": 85,
+    "summary": "URL安全验证不足，仅检查协议可能被绕过",
+    "failure_scenario": "攻击者构造特殊URL（如javascript:、data:）→ isSafeArtifactUrl检查不足 → XSS风险"
+  },
+  {
+    "file": "frontend/src/components/test-results-table.tsx",
+    "line": 74,
+    "summary": "键盘事件处理未preventDefault导致空格键滚动页面",
+    "failure_scenario": "用户用空格键展开测试结果 → 页面同时滚动 → 用户体验差"
+  },
+  {
+    "file": "src/qaplatform/api/run_commands.py",
+    "line": 56,
+    "summary": "environment查询使用get_by_id而非get_for_tenant可能绕过租户隔离",
+    "failure_scenario": "攻击者猜测其他租户的environment UUID → 未检查tenant_id → 跨租户访问environment配置"
+  },
+  {
+    "file": "src/qaplatform/api/v1/environments.py",
+    "line": 292,
+    "summary": "多处使用get_by_id查询资源未验证tenant_id",
+    "failure_scenario": "用户提供其他租户的资源ID → get_by_id直接返回 → 跨租户数据泄露"
+  },
+  {
+    "file": "src/qaplatform/api/v1/pipelines.py",
+    "line": 183,
+    "summary": "pipeline查询使用get_by_id可能绕过租户隔离",
+    "failure_scenario": "攻击者枚举pipeline UUID → 访问其他租户的pipeline配置 → 敏感信息泄露（git凭据等）"
+  },
+  {
+    "file": "src/qaplatform/api/v1/artifacts.py",
+    "line": 60,
+    "summary": "artifact查询使用get_by_id未验证所属关系",
+    "failure_scenario": "攻击者获取其他租户的artifact UUID → 下载其他租户的测试产物 → 数据泄露"
+  },
+  {
+    "file": "src/qaplatform/api/v1/notifications.py",
+    "line": 179,
+    "summary": "通知规则查询使用get_by_id可能跨租户访问",
+    "failure_scenario": "用户访问其他租户的通知规则ID → 读取或修改其他租户的通知配置 → 权限绕过"
+  },
+  {
+    "file": "src/qaplatform/api/v1/schedules.py",
+    "line": 129,
+    "summary": "定时任务查询使用get_by_id未验证租户所属",
+    "failure_scenario": "攻击者修改其他租户的schedule → 触发未授权的测试执行 → 资源滥用"
+  },
+  {
+    "file": "src/qaplatform/plugins/builtin/_paths.py",
+    "line": 29,
+    "summary": "可变默认参数default=[] 可能在多次调用间共享状态",
+    "failure_scenario": "第一次调用修改返回的default列表 → 第二次调用看到被修改的列表 → 意外的状态共享"
+  }
+]

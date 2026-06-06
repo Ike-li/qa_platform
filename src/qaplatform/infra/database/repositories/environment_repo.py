@@ -34,3 +34,17 @@ class EnvironmentRepository(BaseRepository[Environment]):
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_for_project(self, id: UUID, project_id: UUID) -> Environment | None:
+        """Fetch environment by ID, scoped to a project.
+
+        Returns None when the environment does not exist OR exists in another project.
+        This prevents cross-tenant information leakage through timing attacks.
+        """
+        stmt = select(Environment).where(
+            Environment.id == id,
+            Environment.project_id == project_id,
+            Environment.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()

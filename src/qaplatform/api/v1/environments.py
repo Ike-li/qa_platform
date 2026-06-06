@@ -289,8 +289,8 @@ async def get_environment(
 ):
     await _verify_project_access(project_id, repos, user)
 
-    env = await repos.environment.get_by_id(env_id)
-    if env is None or env.project_id != project_id:
+    env = await repos.environment.get_for_project(env_id, project_id)
+    if env is None:
         raise HTTPException(status_code=404, detail="Environment not found")
     return await _safe_to_response(
         env,
@@ -318,8 +318,8 @@ async def update_environment(
 ):
     await _verify_project_access(project_id, repos, user)
 
-    env = await repos.environment.get_by_id(env_id)
-    if env is None or env.project_id != project_id:
+    env = await repos.environment.get_for_project(env_id, project_id)
+    if env is None:
         raise HTTPException(status_code=404, detail="Environment not found")
 
     crypto = _get_crypto(request)
@@ -386,8 +386,8 @@ async def delete_environment(
 ):
     await _verify_project_access(project_id, repos, user)
 
-    env = await repos.environment.get_by_id(env_id)
-    if env is None or env.project_id != project_id:
+    env = await repos.environment.get_for_project(env_id, project_id)
+    if env is None:
         raise HTTPException(status_code=404, detail="Environment not found")
 
     before = await _safe_to_response(

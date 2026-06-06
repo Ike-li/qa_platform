@@ -36,6 +36,20 @@ class NotificationRuleRepository(BaseRepository[NotificationRule]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_for_project(self, id: UUID, project_id: UUID) -> NotificationRule | None:
+        """Fetch notification rule by ID, scoped to a project.
+
+        Returns None when the rule does not exist OR exists in another project.
+        This prevents cross-tenant information leakage through timing attacks.
+        """
+        stmt = select(NotificationRule).where(
+            NotificationRule.id == id,
+            NotificationRule.project_id == project_id,
+            NotificationRule.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
 
 class NotificationLogRepository(BaseRepository[NotificationLog]):
     model = NotificationLog

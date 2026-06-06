@@ -126,8 +126,8 @@ async def get_schedule(
         raise HTTPException(status_code=404, detail="Project not found")
     await enforce_project_action(session, user, project.id, Action.SCHEDULE_READ)
 
-    schedule = await repos.schedule.get_by_id(schedule_id)
-    if schedule is None or schedule.project_id != project.id:
+    schedule = await repos.schedule.get_for_project(schedule_id, project.id)
+    if schedule is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
     return _to_response(schedule)
 
@@ -151,8 +151,8 @@ async def update_schedule(
         raise HTTPException(status_code=404, detail="Project not found")
     await enforce_project_action(session, user, project.id, Action.SCHEDULE_EDIT)
 
-    schedule = await repos.schedule.get_by_id(schedule_id)
-    if schedule is None or schedule.project_id != project.id:
+    schedule = await repos.schedule.get_for_project(schedule_id, project.id)
+    if schedule is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
     before = _to_response(schedule)
@@ -196,8 +196,8 @@ async def delete_schedule(
         raise HTTPException(status_code=404, detail="Project not found")
     await enforce_project_action(session, user, project.id, Action.SCHEDULE_EDIT)
 
-    schedule = await repos.schedule.get_by_id(schedule_id)
-    if schedule is None or schedule.project_id != project.id:
+    schedule = await repos.schedule.get_for_project(schedule_id, project.id)
+    if schedule is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
     before = _to_response(schedule)

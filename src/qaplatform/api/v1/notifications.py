@@ -176,8 +176,8 @@ async def get_notification_rule(
         raise HTTPException(status_code=404, detail="Project not found")
     await enforce_project_action(session, user, project.id, Action.NOTIFICATION_READ)
 
-    rule = await repos.notification_rule.get_by_id(rule_id)
-    if rule is None or rule.project_id != project.id:
+    rule = await repos.notification_rule.get_for_project(rule_id, project.id)
+    if rule is None:
         raise HTTPException(status_code=404, detail="Notification rule not found")
     return _to_rule_response(rule)
 
@@ -201,8 +201,8 @@ async def update_notification_rule(
         raise HTTPException(status_code=404, detail="Project not found")
     await enforce_project_action(session, user, project.id, Action.NOTIFICATION_EDIT)
 
-    rule = await repos.notification_rule.get_by_id(rule_id)
-    if rule is None or rule.project_id != project.id:
+    rule = await repos.notification_rule.get_for_project(rule_id, project.id)
+    if rule is None:
         raise HTTPException(status_code=404, detail="Notification rule not found")
 
     before = _to_rule_response(rule)
@@ -251,8 +251,8 @@ async def delete_notification_rule(
         raise HTTPException(status_code=404, detail="Project not found")
     await enforce_project_action(session, user, project.id, Action.NOTIFICATION_EDIT)
 
-    rule = await repos.notification_rule.get_by_id(rule_id)
-    if rule is None or rule.project_id != project.id:
+    rule = await repos.notification_rule.get_for_project(rule_id, project.id)
+    if rule is None:
         raise HTTPException(status_code=404, detail="Notification rule not found")
 
     before = _to_rule_response(rule)

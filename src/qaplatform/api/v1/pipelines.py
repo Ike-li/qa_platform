@@ -180,8 +180,8 @@ async def get_pipeline(
 ):
     await _verify_project_access(project_id, repos, user)
 
-    pipeline = await repos.pipeline.get_by_id(pipeline_id)
-    if pipeline is None or pipeline.project_id != project_id:
+    pipeline = await repos.pipeline.get_for_project(pipeline_id, project_id)
+    if pipeline is None:
         raise HTTPException(status_code=404, detail="Pipeline not found")
     return _to_response(pipeline)
 
@@ -202,8 +202,8 @@ async def update_pipeline(
 ):
     await _verify_project_access(project_id, repos, user)
 
-    pipeline = await repos.pipeline.get_by_id(pipeline_id)
-    if pipeline is None or pipeline.project_id != project_id:
+    pipeline = await repos.pipeline.get_for_project(pipeline_id, project_id)
+    if pipeline is None:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
     before = _to_response(pipeline)
@@ -250,8 +250,8 @@ async def delete_pipeline(
 ):
     await _verify_project_access(project_id, repos, user)
 
-    pipeline = await repos.pipeline.get_by_id(pipeline_id)
-    if pipeline is None or pipeline.project_id != project_id:
+    pipeline = await repos.pipeline.get_for_project(pipeline_id, project_id)
+    if pipeline is None:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
     before = _to_response(pipeline)

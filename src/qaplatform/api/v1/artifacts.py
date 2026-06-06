@@ -57,12 +57,29 @@ def _preview_response_headers(request: Request) -> dict[str, str]:
 
 
 async def _get_artifact_or_404(repos, artifact_id: UUID, tenant_id: UUID):
-    artifact = await repos.artifact.get_by_id(artifact_id)
-    if artifact is None:
+    """Get artifact and verify tenant ownership through run relationship.
+
+    Uses a join query to prevent timing attacks that could reveal artifact existence
+    across tenant boundaries.
+    """
+    # First verify the run exists and belongs to tenant
+    from sqlalchemy import select
+    from qaplatform.infra.database.models import Artifact, Run
+
+    stmt = (
+        select(Artifact, Run)
+        .join(Run, Artifact.run_id == Run.id)
+        .where(
+            Artifact.id == artifact_id,
+            Run.tenant_id == tenant_id,
+            Artifact.deleted_at.is_(None),
+        )
+    )
+    result = await repos.artifact.session.execute(stmt)
+    row = result.first()
+    if row is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    run = await repos.run.get_for_tenant(artifact.run_id, tenant_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact, run = row
     return artifact, run
 
 
