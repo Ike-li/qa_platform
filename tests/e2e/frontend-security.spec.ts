@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { APIRequestContext, Page } from "@playwright/test";
 import {
   createProject,
   createRunWithArchivedEvidenceViaDb,
@@ -9,37 +10,46 @@ import {
   uniqueSuffix,
 } from "./helpers";
 
+async function setupTestRun(request: APIRequestContext, testName: string) {
+  const suffix = uniqueSuffix();
+  const { token, user } = await loginViaApi(request);
+  const project = await createProject(request, token, {
+    name: `E2E ${testName} ${suffix}`,
+    slug: `e2e-${testName.toLowerCase()}-${suffix}`,
+  });
+  const environment = await ensureEnvironment(request, token, project.id);
+  const pipeline = await ensurePipeline(request, token, project.id);
+
+  const artifactName = `report-${suffix}.html`;
+  const run = createRunWithArchivedEvidenceViaDb({
+    tenantId: user.tenant_id,
+    userId: user.id,
+    projectId: project.id,
+    pipelineId: pipeline.id,
+    environmentId: environment.id,
+    branch: `${testName.toLowerCase()}-${suffix}`,
+    gitSha: `${testName.toLowerCase()}-sha-${suffix}`,
+    logs: [{ stream: "stdout", line: `Test ${testName} ${suffix}` }],
+    artifactName,
+    artifactHtml: `<html><body><h1>Test ${suffix}</h1></body></html>`,
+  });
+
+  return { run, suffix };
+}
+
+async function navigateToRun(page: Page, runId: string) {
+  await loginViaUi(page);
+  await page.goto(`/runs/${runId}`);
+  await page.waitForLoadState("networkidle");
+}
+
 test.describe("frontend security invariants", () => {
   test("artifact preview iframe has sandbox without allow-same-origin", async ({
     page,
     request,
   }) => {
-    const suffix = uniqueSuffix();
-    const { token, user } = await loginViaApi(request);
-    const project = await createProject(request, token, {
-      name: `E2E Sec ${suffix}`,
-      slug: `e2e-sec-${suffix}`,
-    });
-    const environment = await ensureEnvironment(request, token, project.id);
-    const pipeline = await ensurePipeline(request, token, project.id);
-
-    const artifactName = `allure-report/index-${suffix}.html`;
-    const run = createRunWithArchivedEvidenceViaDb({
-      tenantId: user.tenant_id,
-      userId: user.id,
-      projectId: project.id,
-      pipelineId: pipeline.id,
-      environmentId: environment.id,
-      branch: `sec-${suffix}`,
-      gitSha: `sec-sha-${suffix}`,
-      logs: [{ stream: "stdout", line: `Test artifact security ${suffix}` }],
-      artifactName,
-      artifactHtml: `<html><body><h1>Security test ${suffix}</h1></body></html>`,
-    });
-
-    await loginViaUi(page);
-    await page.goto(`/runs/${run.id}`);
-    await page.waitForLoadState("networkidle");
+    const { run } = await setupTestRun(request, "Sec");
+    await navigateToRun(page, run.id);
 
     // Open artifact preview
     await page.getByRole("button", { name: /preview/i }).first().click();
@@ -60,34 +70,11 @@ test.describe("frontend security invariants", () => {
     page,
     request,
   }) => {
-    const suffix = uniqueSuffix();
-    const { token, user } = await loginViaApi(request);
-    const project = await createProject(request, token, {
-      name: `E2E JSUrl ${suffix}`,
-      slug: `e2e-jsurl-${suffix}`,
-    });
-    const environment = await ensureEnvironment(request, token, project.id);
-    const pipeline = await ensurePipeline(request, token, project.id);
-
-    const artifactName = `report-${suffix}.html`;
-    const run = createRunWithArchivedEvidenceViaDb({
-      tenantId: user.tenant_id,
-      userId: user.id,
-      projectId: project.id,
-      pipelineId: pipeline.id,
-      environmentId: environment.id,
-      branch: `jsurl-${suffix}`,
-      gitSha: `jsurl-sha-${suffix}`,
-      logs: [{ stream: "stdout", line: `Test JS URL ${suffix}` }],
-      artifactName,
-      artifactHtml: `<html><body><h1>Test ${suffix}</h1></body></html>`,
-    });
+    const { run } = await setupTestRun(request, "JSUrl");
 
     await loginViaUi(page);
-    await page.goto(`/runs/${run.id}`);
-    await page.waitForLoadState("networkidle");
 
-    // Mock artifact preview URL API to return javascript: URL
+    // Mock artifact preview URL API to return javascript: URL (set before navigation)
     await page.route("**/api/v1/artifacts/*/preview-url", async (route) => {
       await route.fulfill({
         status: 200,
@@ -96,52 +83,29 @@ test.describe("frontend security invariants", () => {
       });
     });
 
+    await page.goto(`/runs/${run.id}`);
+    await page.waitForLoadState("networkidle");
+
     // Try to preview artifact
     await page.getByRole("button", { name: /preview/i }).first().click();
 
-    // Wait a bit to ensure no iframe is created
-    await page.waitForTimeout(1000);
-
     // Verify no iframe appeared (preview was blocked)
     const iframes = page.locator("iframe");
-    await expect(iframes).toHaveCount(0);
+    await expect(iframes).toHaveCount(0, { timeout: 2000 });
 
-    // Verify error toast appeared
-    await expect(page.getByText(/failed/i)).toBeVisible({ timeout: 2000 });
+    // Verify error toast appeared with specific message
+    await expect(page.getByText("Failed to load preview")).toBeVisible({ timeout: 2000 });
   });
 
   test("artifact download rejects file: protocol URLs", async ({
     page,
     request,
   }) => {
-    const suffix = uniqueSuffix();
-    const { token, user } = await loginViaApi(request);
-    const project = await createProject(request, token, {
-      name: `E2E FileUrl ${suffix}`,
-      slug: `e2e-fileurl-${suffix}`,
-    });
-    const environment = await ensureEnvironment(request, token, project.id);
-    const pipeline = await ensurePipeline(request, token, project.id);
-
-    const artifactName = `report-${suffix}.html`;
-    const run = createRunWithArchivedEvidenceViaDb({
-      tenantId: user.tenant_id,
-      userId: user.id,
-      projectId: project.id,
-      pipelineId: pipeline.id,
-      environmentId: environment.id,
-      branch: `fileurl-${suffix}`,
-      gitSha: `fileurl-sha-${suffix}`,
-      logs: [{ stream: "stdout", line: `Test file URL ${suffix}` }],
-      artifactName,
-      artifactHtml: `<html><body><h1>Test ${suffix}</h1></body></html>`,
-    });
+    const { run } = await setupTestRun(request, "FileUrl");
 
     await loginViaUi(page);
-    await page.goto(`/runs/${run.id}`);
-    await page.waitForLoadState("networkidle");
 
-    // Mock artifact download URL API to return file: URL
+    // Mock artifact download URL API to return file: URL (set before navigation)
     await page.route("**/api/v1/artifacts/*/download-url", async (route) => {
       await route.fulfill({
         status: 200,
@@ -150,21 +114,22 @@ test.describe("frontend security invariants", () => {
       });
     });
 
+    await page.goto(`/runs/${run.id}`);
+    await page.waitForLoadState("networkidle");
+
     // Listen for window.open calls (should not happen)
     let windowOpened = false;
-    page.on("popup", () => {
+    page.once("popup", () => {
       windowOpened = true;
     });
 
     // Try to download artifact
     await page.getByRole("button", { name: /download/i }).first().click();
 
-    // Wait to ensure no window.open happened
-    await page.waitForTimeout(1000);
+    // Wait for error toast to confirm the download was blocked
+    await expect(page.getByText("Failed to download artifact")).toBeVisible({ timeout: 2000 });
 
+    // Verify no window.open happened
     expect(windowOpened).toBe(false);
-
-    // Verify error toast appeared
-    await expect(page.getByText(/failed/i)).toBeVisible({ timeout: 2000 });
   });
 });

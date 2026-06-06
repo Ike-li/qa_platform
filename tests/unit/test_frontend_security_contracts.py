@@ -23,6 +23,7 @@ def test_artifact_preview_iframe_has_sandbox_attribute():
 
     assert 'sandbox="allow-scripts"' in source
     assert "allow-same-origin" not in source
+    assert 'referrerPolicy="no-referrer"' in source
 
 
 def test_artifact_url_validation_function_exists():
@@ -31,3 +32,8 @@ def test_artifact_url_validation_function_exists():
 
     assert "function isSafeArtifactUrl(url: string): boolean" in source
     assert 'parsed.protocol === "https:" || parsed.protocol === "http:"' in source
+
+    # Verify isSafeArtifactUrl is called before using URLs in preview/download
+    assert source.count("if (!isSafeArtifactUrl(") >= 2, (
+        "Expected at least 2 calls to isSafeArtifactUrl (preview and download handlers)"
+    )
