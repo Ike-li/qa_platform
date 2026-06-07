@@ -81,7 +81,7 @@ def _assert_token_revoke_warning(caplog, jti: str) -> None:
     records = [
         record
         for record in caplog.records
-        if record.name == "qaplatform.api.v1.auth"
+        if record.name == "qaplatform.api.auth.commands"
         and record.levelno == logging.WARNING
         and getattr(record, "jti", None) == jti
     ]
@@ -876,7 +876,7 @@ async def test_refresh_survives_refresh_token_revoke_outage(
 
     revoke_spy = AsyncMock(side_effect=RuntimeError("redis revoke unavailable"))
     monkeypatch.setattr(redis, "set", revoke_spy)
-    caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+    caplog.set_level(logging.WARNING, logger="qaplatform.api.auth.commands")
 
     resp = await real_auth_client.post("/api/v1/auth/refresh")
 
