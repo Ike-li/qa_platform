@@ -58,10 +58,16 @@ export function LogViewer({ runId, archivedEnabled = false }: { runId: string; a
   useEffect(() => {
     if (data) {
       if (lastEventId) {
-        if (seenEventIdsRef.current.has(lastEventId)) {
+        const seen = seenEventIdsRef.current;
+        if (seen.has(lastEventId)) {
           return;
         }
-        seenEventIdsRef.current.add(lastEventId);
+        seen.add(lastEventId);
+        // Bound the dedup set in lockstep with the logs array. A Set keeps
+        // insertion order, so the first value is the oldest ID to evict.
+        if (seen.size > MAX_LOG_ENTRIES) {
+          seen.delete(seen.values().next().value as string);
+        }
       }
 
       const logEntry: LogMessage | null = typeof data === 'string'
@@ -75,12 +81,7 @@ export function LogViewer({ runId, archivedEnabled = false }: { runId: string; a
           : null;
       if (!logEntry) return;
       setLogs((prev) => {
-        const updated = [...prev, logEntry];
-        // Keep only the most recent MAX_LOG_ENTRIES to prevent memory exhaustion
-        if (updated.length > MAX_LOG_ENTRIES) {
-          return updated.slice(updated.length - MAX_LOG_ENTRIES);
-        }
-        return updated;
+        return [...prev, logEntry].slice(-MAX_LOG_ENTRIES);
       });
     }
   }, [data, lastEventId]);
