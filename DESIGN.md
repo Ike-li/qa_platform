@@ -53,12 +53,12 @@ QA Platform 是工程协作工具。界面文案应短、具体、可操作。
 
 | 状态 | Token | 用途 |
 | --- | --- | --- |
-| 通过 | `--status-passed` | 成功运行、健康检查通过 |
-| 失败 | `--status-failed` | 测试失败、通知失败、阻断错误 |
-| 运行中 | `--status-running` | 当前执行、队列处理中 |
-| 排队 | `--status-queued` | 等待执行 |
-| 取消 | `--status-cancelled` | 用户取消或系统取消 |
-| 跳过 | `--status-skipped` | 静默窗口、分支过滤、条件未命中 |
+| 通过 | `--color-status-passed` | 成功运行、健康检查通过 |
+| 失败 | `--color-status-failed` | 测试失败、通知失败、阻断错误 |
+| 运行中 | `--color-status-running` | 当前执行、队列处理中 |
+| 排队 | `--color-status-queued` | 等待执行 |
+| 取消 | `--color-status-cancelled` | 用户取消或系统取消 |
+| 跳过 | `--color-status-skipped` | 静默窗口、分支过滤、条件未命中 |
 
 不要新增大面积渐变、光斑、装饰色块或单一紫蓝色主题页面。主色是交互信号，不是背景装饰。
 

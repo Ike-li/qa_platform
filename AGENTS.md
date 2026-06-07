@@ -17,7 +17,7 @@ Backend code lives in `src/qaplatform/`: FastAPI routes in `api/v1/`, domain log
 
 ## Coding Style & Naming Conventions
 
-Use Python 3.12+ with 4-space indentation, type hints, and async APIs where surrounding code is async. Keep FastAPI schemas in `api/schemas.py` or local route modules when narrowly scoped. Prefer repository/service helpers over direct SQL in routes. Frontend files generally use kebab-case filenames; React components use PascalCase. Keep generated artifacts out of commits unless intentional.
+Use Python 3.12+ with 4-space indentation, type hints, and async APIs where surrounding code is async. Keep FastAPI schemas in the `api/schemas/` package (one module per resource) or local route modules when narrowly scoped. Prefer repository/service helpers over direct SQL in routes. Frontend files generally use kebab-case filenames; React components use PascalCase. Keep generated artifacts out of commits unless intentional.
 
 ## Testing Guidelines
 

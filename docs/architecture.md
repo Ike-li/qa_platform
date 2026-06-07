@@ -474,11 +474,12 @@ Run 1──N NotificationLog
 
 ### 11.2 关键指标
 
-- `run_queue_duration_seconds` — 排队等待时间
-- `run_execution_duration_seconds` — 执行耗时
-- `run_status_total` — 按状态计数
-- `worker_active_containers` — 当前活跃容器数
-- `api_request_duration_seconds` — API 延迟
+定义见 `src/qaplatform/observability/metrics.py`：
+
+- `qap_runs_in_flight`（Gauge）— 处于 preparing/running/collecting 的 Run 数
+- `qap_run_queue_depth`（Gauge）— 处于 queued 等待派发的 Run 数
+- `qap_http_request_duration_seconds`（Histogram，labels：method/route/status_code）— HTTP 请求延迟
+- `qap_run_terminal_total`（Counter，label：status）— 进入终态的 Run 累计数
 
 ### 11.3 健康检查
 
