@@ -456,7 +456,7 @@ async def test_environment_routes_reject_empty_name_or_cache_key_without_side_ef
         ]
     mock_repos.project.get_for_tenant.assert_not_awaited()
     mock_repos.environment.list_by_project.assert_not_awaited()
-    mock_repos.environment.get_by_id.assert_not_awaited()
+    mock_repos.environment.get_for_project.assert_not_awaited()
     mock_repos.environment.create.assert_not_awaited()
     mock_repos.environment.update.assert_not_awaited()
     mock_repos.environment.delete.assert_not_awaited()
@@ -683,7 +683,7 @@ async def test_update_environment_updates_and_clears_disk_limit(
 ):
     env = _make_orm_environment(project.id)
     env.created_at = datetime(2026, 5, 31, 21, 22, 23, tzinfo=timezone.utc)
-    mock_repos.environment.get_by_id.return_value = env
+    mock_repos.environment.get_for_project.return_value = env
 
     async def _update(instance, **kwargs):
         for key, value in kwargs.items():
@@ -742,9 +742,11 @@ async def test_update_environment_updates_and_clears_disk_limit(
         (project.id, mock_user.tenant_id),
         (project.id, mock_user.tenant_id),
     ]
-    assert [call.args for call in mock_repos.environment.get_by_id.await_args_list] == [
-        (env.id,),
-        (env.id,),
+    assert [
+        call.args for call in mock_repos.environment.get_for_project.await_args_list
+    ] == [
+        (env.id, project.id),
+        (env.id, project.id),
     ]
     assert [call.args for call in mock_repos.environment.update.await_args_list] == [
         (env,),
@@ -821,7 +823,7 @@ async def test_update_environment_reencrypts_env_vars_and_redacts_audit(
         environment_id=env.id,
         crypto=crypto,
     )
-    mock_repos.environment.get_by_id.return_value = env
+    mock_repos.environment.get_for_project.return_value = env
 
     async def _update(instance, **kwargs):
         for key, value in kwargs.items():
@@ -861,7 +863,7 @@ async def test_update_environment_reencrypts_env_vars_and_redacts_audit(
         project.id,
         mock_user.tenant_id,
     )
-    mock_repos.environment.get_by_id.assert_awaited_once_with(env.id)
+    mock_repos.environment.get_for_project.assert_awaited_once_with(env.id, project.id)
     mock_repos.environment.update.assert_awaited_once()
     assert mock_repos.environment.update.await_args.args == (env,)
     update_kwargs = mock_repos.environment.update.await_args.kwargs
@@ -913,7 +915,7 @@ async def test_delete_environment_removes_existing_environment_and_audits(
         environment_id=env.id,
         crypto=crypto,
     )
-    mock_repos.environment.get_by_id.return_value = env
+    mock_repos.environment.get_for_project.return_value = env
 
     async with await _make_client(app) as ac:
         resp = await ac.delete(
@@ -923,7 +925,7 @@ async def test_delete_environment_removes_existing_environment_and_audits(
 
     assert resp.status_code == 204, resp.text
     assert resp.content == b""
-    mock_repos.environment.get_by_id.assert_awaited_once_with(env.id)
+    mock_repos.environment.get_for_project.assert_awaited_once_with(env.id, project.id)
     mock_repos.environment.delete.assert_awaited_once_with(env)
     mock_repos.audit.create.assert_awaited_once()
     audit_kwargs = mock_repos.audit.create.await_args.kwargs
@@ -949,7 +951,7 @@ async def test_get_environment_returns_same_404_for_missing_or_other_project(
     mock_repos,
 ):
     missing_id = uuid.uuid4()
-    mock_repos.environment.get_by_id.return_value = None
+    mock_repos.environment.get_for_project.return_value = None
 
     async with await _make_client(app) as ac:
         missing = await ac.get(
@@ -958,22 +960,25 @@ async def test_get_environment_returns_same_404_for_missing_or_other_project(
         )
 
     assert missing.status_code == 404, missing.text
-    mock_repos.environment.get_by_id.assert_awaited_once_with(missing_id)
-
-    other_project_env = _make_orm_environment(
-        uuid.uuid4(),
-        env_vars={"__encrypted__": "qaplatform.env_vars.v1", "ciphertext": "not-base64"},
+    mock_repos.environment.get_for_project.assert_awaited_once_with(
+        missing_id, project.id
     )
-    mock_repos.environment.get_by_id = AsyncMock(return_value=other_project_env)
+
+    # An environment owned by another project is invisible to the scoped query,
+    # so get_for_project returns None exactly as for a missing id.
+    other_project_env_id = uuid.uuid4()
+    mock_repos.environment.get_for_project = AsyncMock(return_value=None)
 
     async with await _make_client(app) as ac:
         wrong_project = await ac.get(
-            f"/api/v1/projects/{project.id}/environments/{other_project_env.id}",
+            f"/api/v1/projects/{project.id}/environments/{other_project_env_id}",
             headers={"Authorization": "Bearer fake"},
         )
 
     assert wrong_project.status_code == 404, wrong_project.text
-    mock_repos.environment.get_by_id.assert_awaited_once_with(other_project_env.id)
+    mock_repos.environment.get_for_project.assert_awaited_once_with(
+        other_project_env_id, project.id
+    )
     missing_body = missing.json()
     wrong_project_body = wrong_project.json()
     assert wrong_project_body == missing_body
@@ -992,15 +997,14 @@ async def test_update_delete_environment_return_same_404_without_side_effects(
     mock_repos,
 ):
     missing_id = uuid.uuid4()
-    other_project_env = _make_orm_environment(
-        uuid.uuid4(),
-        env_vars={"__encrypted__": "qaplatform.env_vars.v1", "ciphertext": "not-base64"},
-    )
-    mock_repos.environment.get_by_id.side_effect = [
+    # Both a missing id and an environment owned by another project resolve to
+    # None through the project-scoped query, so all four lookups return None.
+    other_project_env_id = uuid.uuid4()
+    mock_repos.environment.get_for_project.side_effect = [
         None,
         None,
-        other_project_env,
-        other_project_env,
+        None,
+        None,
     ]
 
     async with await _make_client(app) as ac:
@@ -1015,12 +1019,12 @@ async def test_update_delete_environment_return_same_404_without_side_effects(
                 headers={"Authorization": "Bearer fake"},
             ),
             await ac.put(
-                f"/api/v1/projects/{project.id}/environments/{other_project_env.id}",
+                f"/api/v1/projects/{project.id}/environments/{other_project_env_id}",
                 json={"env_vars": {"NEW_TOKEN": "should-not-encrypt"}},
                 headers={"Authorization": "Bearer fake"},
             ),
             await ac.delete(
-                f"/api/v1/projects/{project.id}/environments/{other_project_env.id}",
+                f"/api/v1/projects/{project.id}/environments/{other_project_env_id}",
                 headers={"Authorization": "Bearer fake"},
             ),
         ]
@@ -1035,11 +1039,13 @@ async def test_update_delete_environment_return_same_404_without_side_effects(
         }
     }
     assert bodies == [expected_body] * 4
-    assert [args.args for args in mock_repos.environment.get_by_id.await_args_list] == [
-        (missing_id,),
-        (missing_id,),
-        (other_project_env.id,),
-        (other_project_env.id,),
+    assert [
+        args.args for args in mock_repos.environment.get_for_project.await_args_list
+    ] == [
+        (missing_id, project.id),
+        (missing_id, project.id),
+        (other_project_env_id, project.id),
+        (other_project_env_id, project.id),
     ]
     mock_repos.environment.create.assert_not_awaited()
     mock_repos.environment.update.assert_not_awaited()
@@ -1104,7 +1110,7 @@ async def test_environment_routes_hide_missing_project_without_side_effects(
         (project.id, mock_user.tenant_id),
     ]
     mock_repos.environment.list_by_project.assert_not_awaited()
-    mock_repos.environment.get_by_id.assert_not_awaited()
+    mock_repos.environment.get_for_project.assert_not_awaited()
     mock_repos.environment.create.assert_not_awaited()
     mock_repos.environment.update.assert_not_awaited()
     mock_repos.environment.delete.assert_not_awaited()
@@ -1120,7 +1126,7 @@ async def test_environment_routes_return_503_when_crypto_unavailable(
 ):
     app.state.container.crypto_service = None
     env = _make_orm_environment(project.id)
-    mock_repos.environment.get_by_id.return_value = env
+    mock_repos.environment.get_for_project.return_value = env
 
     async with await _make_client(app) as ac:
         list_resp = await ac.get(
@@ -1152,10 +1158,12 @@ async def test_environment_routes_return_503_when_crypto_unavailable(
         {"detail": "Crypto service not initialised"}
     ] * 5
     mock_repos.environment.list_by_project.assert_not_awaited()
-    assert [args.args for args in mock_repos.environment.get_by_id.await_args_list] == [
-        (env.id,),
-        (env.id,),
-        (env.id,),
+    assert [
+        args.args for args in mock_repos.environment.get_for_project.await_args_list
+    ] == [
+        (env.id, project.id),
+        (env.id, project.id),
+        (env.id, project.id),
     ]
     mock_repos.environment.create.assert_not_awaited()
     mock_repos.environment.update.assert_not_awaited()
@@ -1193,7 +1201,7 @@ async def test_get_environment_decrypt_failure_returns_500_and_writes_audit(
             crypto=crypto,
         ),
     )
-    mock_repos.environment.get_by_id.return_value = env
+    mock_repos.environment.get_for_project.return_value = env
 
     async with await _make_client(app) as ac:
         resp = await ac.get(

@@ -26,14 +26,7 @@ def test_artifact_preview_iframe_has_sandbox_attribute():
     assert 'referrerPolicy="no-referrer"' in source
 
 
-def test_artifact_url_validation_function_exists():
-    """Verify isSafeArtifactUrl function exists and checks protocol."""
-    source = RUN_DETAIL_PAGE.read_text(encoding="utf-8")
-
-    assert "function isSafeArtifactUrl(url: string): boolean" in source
-    assert 'parsed.protocol === "https:" || parsed.protocol === "http:"' in source
-
-    # Verify isSafeArtifactUrl is called before using URLs in preview/download
-    assert source.count("if (!isSafeArtifactUrl(") >= 2, (
-        "Expected at least 2 calls to isSafeArtifactUrl (preview and download handlers)"
-    )
+# Removed test_artifact_url_validation_function_exists: it grepped detail.tsx
+# source text, which AGENTS.md bans as a meta-test and which broke when
+# isSafeArtifactUrl moved to lib/utils. The URL-safety behavior (javascript:/
+# file: rejection) is verified end-to-end in tests/e2e/frontend-security.spec.ts.

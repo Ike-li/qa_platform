@@ -758,12 +758,12 @@ async def test_trigger_run_hides_missing_or_other_project_environment_without_si
     app.state.container.arq_pool = AsyncMock()
 
     missing_environment_id = uuid.uuid4()
-    other_project_environment = MagicMock()
-    other_project_environment.id = uuid.uuid4()
-    other_project_environment.project_id = uuid.uuid4()
-    mock_environment_repo.get_by_id.side_effect = [
+    # A missing environment and one owned by another project both resolve to
+    # None through the project-scoped query, yielding an identical 404.
+    other_project_environment_id = uuid.uuid4()
+    mock_environment_repo.get_for_project.side_effect = [
         None,
-        other_project_environment,
+        None,
     ]
 
     missing_resp = await client.post(
@@ -778,7 +778,7 @@ async def test_trigger_run_hides_missing_or_other_project_environment_without_si
         "/api/v1/runs",
         json={
             "pipeline_id": str(pipeline.id),
-            "environment_id": str(other_project_environment.id),
+            "environment_id": str(other_project_environment_id),
         },
         headers={"Authorization": "Bearer fake"},
     )
@@ -793,7 +793,6 @@ async def test_trigger_run_hides_missing_or_other_project_environment_without_si
             }
         }
     assert missing_resp.json() == wrong_project_resp.json()
-    assert str(other_project_environment.project_id) not in wrong_project_resp.text
     assert mock_pipeline_repo.get_by_id.await_args_list == [
         call(pipeline.id),
         call(pipeline.id),
@@ -802,9 +801,9 @@ async def test_trigger_run_hides_missing_or_other_project_environment_without_si
         call(project_id, tenant_id),
         call(project_id, tenant_id),
     ]
-    assert mock_environment_repo.get_by_id.await_args_list == [
-        call(missing_environment_id),
-        call(other_project_environment.id),
+    assert mock_environment_repo.get_for_project.await_args_list == [
+        call(missing_environment_id, project_id),
+        call(other_project_environment_id, project_id),
     ]
     mock_environment_repo.list_by_project.assert_not_awaited()
     mock_run_repo.create.assert_not_awaited()

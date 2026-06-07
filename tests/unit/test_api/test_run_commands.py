@@ -61,7 +61,7 @@ async def test_resolve_project_run_environment_id_uses_default_without_lookup():
     )
 
     assert environment_id == project.default_env_id
-    repos.environment.get_by_id.assert_not_called()
+    repos.environment.get_for_project.assert_not_called()
     repos.environment.list_by_project.assert_not_called()
 
 
@@ -71,7 +71,7 @@ async def test_resolve_project_run_environment_id_validates_requested_environmen
     requested_environment_id = uuid4()
     environment = SimpleNamespace(id=requested_environment_id, project_id=project.id)
     repos = MagicMock()
-    repos.environment.get_by_id = AsyncMock(return_value=environment)
+    repos.environment.get_for_project = AsyncMock(return_value=environment)
 
     environment_id = await resolve_project_run_environment_id(
         repos=repos,
@@ -80,7 +80,9 @@ async def test_resolve_project_run_environment_id_validates_requested_environmen
     )
 
     assert environment_id == requested_environment_id
-    repos.environment.get_by_id.assert_awaited_once_with(requested_environment_id)
+    repos.environment.get_for_project.assert_awaited_once_with(
+        requested_environment_id, project.id
+    )
 
 
 @pytest.mark.asyncio

@@ -117,7 +117,7 @@ def mock_repos(mock_project, mock_pipeline):
     repos.pipeline.get_by_id = AsyncMock(return_value=mock_pipeline)
     repos.schedule = AsyncMock()
     repos.schedule.list_by_project = AsyncMock(return_value=([], 0))
-    repos.schedule.get_by_id = AsyncMock(return_value=None)
+    repos.schedule.get_for_project = AsyncMock(return_value=None)
     repos.schedule.create = AsyncMock()
     repos.schedule.update = AsyncMock()
     repos.schedule.delete = AsyncMock()
@@ -351,7 +351,7 @@ async def test_create_schedule_rejects_pipeline_outside_project_without_side_eff
     }
     compute_next.assert_not_called()
     mock_repos.schedule.list_by_project.assert_not_awaited()
-    mock_repos.schedule.get_by_id.assert_not_awaited()
+    mock_repos.schedule.get_for_project.assert_not_awaited()
     mock_repos.schedule.create.assert_not_awaited()
     mock_repos.schedule.update.assert_not_awaited()
     mock_repos.schedule.delete.assert_not_awaited()
@@ -390,7 +390,7 @@ async def test_schedule_routes_reject_invalid_cron_before_side_effects(
     mock_repos.project.get_for_tenant.assert_not_awaited()
     mock_repos.pipeline.get_by_id.assert_not_awaited()
     mock_repos.schedule.list_by_project.assert_not_awaited()
-    mock_repos.schedule.get_by_id.assert_not_awaited()
+    mock_repos.schedule.get_for_project.assert_not_awaited()
     mock_repos.schedule.create.assert_not_awaited()
     mock_repos.schedule.update.assert_not_awaited()
     mock_repos.schedule.delete.assert_not_awaited()
@@ -430,7 +430,7 @@ async def test_schedule_routes_reject_invalid_timezone_before_side_effects(
     mock_repos.project.get_for_tenant.assert_not_awaited()
     mock_repos.pipeline.get_by_id.assert_not_awaited()
     mock_repos.schedule.list_by_project.assert_not_awaited()
-    mock_repos.schedule.get_by_id.assert_not_awaited()
+    mock_repos.schedule.get_for_project.assert_not_awaited()
     mock_repos.schedule.create.assert_not_awaited()
     mock_repos.schedule.update.assert_not_awaited()
     mock_repos.schedule.delete.assert_not_awaited()
@@ -487,7 +487,7 @@ async def test_schedule_routes_reject_invalid_quiet_windows_before_side_effects(
     mock_repos.project.get_for_tenant.assert_not_awaited()
     mock_repos.pipeline.get_by_id.assert_not_awaited()
     mock_repos.schedule.list_by_project.assert_not_awaited()
-    mock_repos.schedule.get_by_id.assert_not_awaited()
+    mock_repos.schedule.get_for_project.assert_not_awaited()
     mock_repos.schedule.create.assert_not_awaited()
     mock_repos.schedule.update.assert_not_awaited()
     mock_repos.schedule.delete.assert_not_awaited()
@@ -517,7 +517,7 @@ async def test_get_schedule_not_found_has_no_write_side_effects(
         }
     }
     compute_next.assert_not_called()
-    mock_repos.schedule.get_by_id.assert_awaited_once_with(schedule_id)
+    mock_repos.schedule.get_for_project.assert_awaited_once_with(schedule_id, project_id)
     mock_repos.schedule.list_by_project.assert_not_awaited()
     mock_repos.schedule.create.assert_not_awaited()
     mock_repos.schedule.update.assert_not_awaited()
@@ -533,21 +533,21 @@ async def test_schedule_item_routes_hide_other_project_schedule_without_side_eff
     project_id,
     pipeline_id,
 ):
-    schedule = _make_orm_schedule(uuid.uuid4(), pipeline_id)
-    mock_repos.schedule.get_by_id = AsyncMock(return_value=schedule)
+    schedule_id = uuid.uuid4()
+    mock_repos.schedule.get_for_project = AsyncMock(return_value=None)
 
     with patch("qaplatform.api.v1.schedules.compute_next_run_at") as compute_next:
         async with await _make_client(app) as client:
             responses = [
                 await client.get(
-                    f"/api/v1/projects/{project_id}/schedules/{schedule.id}",
+                    f"/api/v1/projects/{project_id}/schedules/{schedule_id}",
                 ),
                 await client.put(
-                    f"/api/v1/projects/{project_id}/schedules/{schedule.id}",
+                    f"/api/v1/projects/{project_id}/schedules/{schedule_id}",
                     json={"enabled": False},
                 ),
                 await client.delete(
-                    f"/api/v1/projects/{project_id}/schedules/{schedule.id}",
+                    f"/api/v1/projects/{project_id}/schedules/{schedule_id}",
                 ),
             ]
 
@@ -560,17 +560,16 @@ async def test_schedule_item_routes_hide_other_project_schedule_without_side_eff
                 "details": [],
             }
         }
-        assert str(schedule.project_id) not in resp.text
 
     assert mock_repos.project.get_for_tenant.await_args_list == [
         call(project_id, mock_user.tenant_id),
         call(project_id, mock_user.tenant_id),
         call(project_id, mock_user.tenant_id),
     ]
-    assert mock_repos.schedule.get_by_id.await_args_list == [
-        call(schedule.id),
-        call(schedule.id),
-        call(schedule.id),
+    assert mock_repos.schedule.get_for_project.await_args_list == [
+        call(schedule_id, project_id),
+        call(schedule_id, project_id),
+        call(schedule_id, project_id),
     ]
     compute_next.assert_not_called()
     mock_repos.schedule.list_by_project.assert_not_awaited()
@@ -630,7 +629,7 @@ async def test_schedule_routes_hide_missing_project_without_side_effects(
     ]
     mock_repos.pipeline.get_by_id.assert_not_awaited()
     mock_repos.schedule.list_by_project.assert_not_awaited()
-    mock_repos.schedule.get_by_id.assert_not_awaited()
+    mock_repos.schedule.get_for_project.assert_not_awaited()
     mock_repos.schedule.create.assert_not_awaited()
     mock_repos.schedule.update.assert_not_awaited()
     mock_repos.schedule.delete.assert_not_awaited()
@@ -646,7 +645,7 @@ async def test_delete_schedule(app, mock_repos, mock_user, project_id, pipeline_
     schedule.next_run_at = datetime(2026, 5, 31, 21, 22, 23, tzinfo=timezone.utc)
     schedule.created_at = datetime(2026, 5, 31, 22, 23, 24, tzinfo=timezone.utc)
     before_state = _expected_schedule_response(schedule)
-    mock_repos.schedule.get_by_id = AsyncMock(return_value=schedule)
+    mock_repos.schedule.get_for_project = AsyncMock(return_value=schedule)
     mock_repos.schedule.delete = AsyncMock()
 
     with patch(
@@ -668,7 +667,7 @@ async def test_delete_schedule(app, mock_repos, mock_user, project_id, pipeline_
         project_id,
         mock_user.tenant_id,
     )
-    mock_repos.schedule.get_by_id.assert_awaited_once_with(schedule.id)
+    mock_repos.schedule.get_for_project.assert_awaited_once_with(schedule.id, project_id)
     mock_repos.schedule.delete.assert_awaited_once_with(schedule)
     mock_repos.audit.create.assert_awaited_once()
     audit_kwargs = mock_repos.audit.create.await_args.kwargs
@@ -697,7 +696,7 @@ async def test_update_schedule_recomputes_next_run(
     schedule.next_run_at = datetime(2026, 5, 31, 23, 24, 25, tzinfo=timezone.utc)
     schedule.created_at = datetime(2026, 6, 1, 1, 2, 3, tzinfo=timezone.utc)
     before_state = _expected_schedule_response(schedule)
-    mock_repos.schedule.get_by_id = AsyncMock(return_value=schedule)
+    mock_repos.schedule.get_for_project = AsyncMock(return_value=schedule)
 
     async def update_schedule(instance, **kwargs):
         for key, value in kwargs.items():
@@ -735,7 +734,7 @@ async def test_update_schedule_recomputes_next_run(
         project_id,
         mock_user.tenant_id,
     )
-    mock_repos.schedule.get_by_id.assert_awaited_once_with(schedule.id)
+    mock_repos.schedule.get_for_project.assert_awaited_once_with(schedule.id, project_id)
     mock_repos.schedule.update.assert_awaited_once_with(
         schedule,
         cron_expr="30 2 * * *",

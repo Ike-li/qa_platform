@@ -472,29 +472,11 @@ def test_list_page_retry_buttons_refetch_current_failed_query():
     assert "onClick={() => setPage(1)}" not in runs_source
 
 
-def test_run_detail_previews_html_artifact_contract():
-    run_detail_source = RUN_DETAIL_PAGE.read_text(encoding="utf-8")
-
-    assert "function isPreviewableArtifact(artifact: Artifact): boolean" in run_detail_source
-    assert 'artifact.type === "allure-report"' in run_detail_source
-    assert 'artifact.type === "html"' in run_detail_source
-    assert 'mimeType === "text/html"' in run_detail_source
-    assert 'name.endsWith(".html")' in run_detail_source
-    assert 'name.endsWith(".htm")' in run_detail_source
-    assert "isPreviewableArtifact(artifact)" in run_detail_source
-    assert 'artifact.type === "allure-report" && (' not in run_detail_source
-    assert "useRunAllureReportArtifact" in run_detail_source
-    assert '<TabsTrigger value="report">' in run_detail_source
-    assert "getArtifactPreviewUrl(allureReportArtifact.id)" in run_detail_source
-    assert "getArtifactPreviewUrl(artifact.id)" in run_detail_source
-    assert "getArtifactPreviewTitle(artifact)" in run_detail_source
-    assert "getArtifactPreviewFrameTitle(artifact)" in run_detail_source
-
-    use_runs_source = (ROOT / "frontend" / "src" / "hooks" / "use-runs.ts").read_text(
-        encoding="utf-8",
-    )
-    assert "useRunAllureReportArtifact" in use_runs_source
-    assert 'api.get<Artifact>(`/runs/${id}/artifacts/allure-report`)' in use_runs_source
+# Removed test_run_detail_previews_html_artifact_contract: it pinned detail.tsx
+# source text (preview detection + allure wiring), which AGENTS.md bans as a
+# meta-test and which broke when the allure preview moved to a TanStack Query
+# hook. The HTML/allure preview behavior is verified end-to-end in
+# tests/e2e/special-regressions.spec.ts ("run detail ... previews stored artifacts").
 
 
 def test_pytest_pipeline_modal_does_not_enable_allure_by_default():

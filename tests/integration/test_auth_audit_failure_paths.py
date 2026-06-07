@@ -214,7 +214,7 @@ def _assert_auth_audit_warning(caplog, action: str) -> None:
     records = [
         record
         for record in caplog.records
-        if record.name == "qaplatform.api.v1.auth"
+        if record.name == "qaplatform.api.auth.commands"
         and record.levelno == logging.WARNING
         and getattr(record, "action", None) == action
     ]
@@ -620,7 +620,7 @@ async def test_login_nonexistent_user_returns_401_when_audit_write_fails(
 ):
     """Audit storage outage must not turn auth failure into a 500."""
     _force_auth_audit_writes_to_fail(monkeypatch)
-    caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+    caplog.set_level(logging.WARNING, logger="qaplatform.api.auth.commands")
     before_count = await _audit_count(integration_db_engine, "auth.login_failed")
 
     resp = await auth_client.post(
@@ -698,7 +698,7 @@ async def test_refresh_invalid_token_returns_401_when_audit_write_fails(
 ):
     """Invalid refresh tokens stay 401 even if failure audit cannot be written."""
     _force_auth_audit_writes_to_fail(monkeypatch)
-    caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+    caplog.set_level(logging.WARNING, logger="qaplatform.api.auth.commands")
     before_count = await _audit_count(integration_db_engine, "auth.refresh_failed")
     auth_client.cookies.set(
         "refresh_token",
@@ -744,7 +744,7 @@ async def test_logout_without_authorization_returns_204_when_audit_write_fails(
 ):
     """Logout is idempotent and must survive an audit write outage."""
     _force_auth_audit_writes_to_fail(monkeypatch)
-    caplog.set_level(logging.WARNING, logger="qaplatform.api.v1.auth")
+    caplog.set_level(logging.WARNING, logger="qaplatform.api.auth.commands")
     before_count = await _audit_count(integration_db_engine, "auth.logout")
 
     resp = await auth_client.post("/api/v1/auth/logout")

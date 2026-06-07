@@ -74,7 +74,7 @@ def mock_repos(mock_project, project_id):
     repos = MagicMock()
     repos.project.get_for_tenant = AsyncMock(return_value=mock_project)
     repos.pipeline.list_by_project = AsyncMock(return_value=([pipeline], 1))
-    repos.pipeline.get_by_id = AsyncMock(return_value=None)
+    repos.pipeline.get_for_project = AsyncMock(return_value=None)
     repos.pipeline.create = AsyncMock(side_effect=lambda **kw: _apply(pipeline, kw))
     repos.pipeline.update = AsyncMock(side_effect=lambda obj, **kw: _apply(obj, kw))
     repos.pipeline.delete = AsyncMock()
@@ -405,7 +405,7 @@ async def test_pipeline_routes_reject_invalid_schema_before_side_effects(
         assert _validation_detail_lines(response) == [expected_detail]
     mock_repos.project.get_for_tenant.assert_not_awaited()
     mock_repos.pipeline.list_by_project.assert_not_awaited()
-    mock_repos.pipeline.get_by_id.assert_not_awaited()
+    mock_repos.pipeline.get_for_project.assert_not_awaited()
     mock_repos.pipeline.create.assert_not_awaited()
     mock_repos.pipeline.update.assert_not_awaited()
     mock_repos.pipeline.delete.assert_not_awaited()
@@ -471,7 +471,7 @@ async def test_pipeline_routes_reject_invalid_selector_before_side_effects(
         assert _validation_detail_lines(response) == [expected_detail]
     mock_repos.project.get_for_tenant.assert_not_awaited()
     mock_repos.pipeline.list_by_project.assert_not_awaited()
-    mock_repos.pipeline.get_by_id.assert_not_awaited()
+    mock_repos.pipeline.get_for_project.assert_not_awaited()
     mock_repos.pipeline.create.assert_not_awaited()
     mock_repos.pipeline.update.assert_not_awaited()
     mock_repos.pipeline.delete.assert_not_awaited()
@@ -521,7 +521,7 @@ async def test_pipeline_routes_reject_invalid_retry_policy_before_side_effects(
         assert _validation_detail_lines(response) == [expected_detail]
     mock_repos.project.get_for_tenant.assert_not_awaited()
     mock_repos.pipeline.list_by_project.assert_not_awaited()
-    mock_repos.pipeline.get_by_id.assert_not_awaited()
+    mock_repos.pipeline.get_for_project.assert_not_awaited()
     mock_repos.pipeline.create.assert_not_awaited()
     mock_repos.pipeline.update.assert_not_awaited()
     mock_repos.pipeline.delete.assert_not_awaited()
@@ -571,7 +571,7 @@ async def test_pipeline_routes_reject_invalid_trigger_config_before_side_effects
         assert _validation_detail_lines(response) == [expected_detail]
     mock_repos.project.get_for_tenant.assert_not_awaited()
     mock_repos.pipeline.list_by_project.assert_not_awaited()
-    mock_repos.pipeline.get_by_id.assert_not_awaited()
+    mock_repos.pipeline.get_for_project.assert_not_awaited()
     mock_repos.pipeline.create.assert_not_awaited()
     mock_repos.pipeline.update.assert_not_awaited()
     mock_repos.pipeline.delete.assert_not_awaited()
@@ -583,22 +583,24 @@ async def test_get_pipeline_returns_404_for_missing_or_other_project(
     app, mock_repos, mock_user, project_id
 ):
     missing_id = uuid.uuid4()
-    mock_repos.pipeline.get_by_id = AsyncMock(return_value=None)
+    mock_repos.pipeline.get_for_project = AsyncMock(return_value=None)
     async with await _make_client(app) as client:
         missing = await client.get(f"/api/v1/projects/{project_id}/pipelines/{missing_id}")
 
     assert missing.status_code == 404
-    mock_repos.pipeline.get_by_id.assert_awaited_once_with(missing_id)
+    mock_repos.pipeline.get_for_project.assert_awaited_once_with(missing_id, project_id)
 
-    other = _make_orm_pipeline(uuid.uuid4())
-    mock_repos.pipeline.get_by_id = AsyncMock(return_value=other)
+    # An pipeline owned by another project is invisible to the scoped query,
+    # so get_for_project returns None exactly as for a missing id.
+    other_id = uuid.uuid4()
+    mock_repos.pipeline.get_for_project = AsyncMock(return_value=None)
     async with await _make_client(app) as client:
         wrong_project = await client.get(
-            f"/api/v1/projects/{project_id}/pipelines/{other.id}"
+            f"/api/v1/projects/{project_id}/pipelines/{other_id}"
         )
 
     assert wrong_project.status_code == 404
-    mock_repos.pipeline.get_by_id.assert_awaited_once_with(other.id)
+    mock_repos.pipeline.get_for_project.assert_awaited_once_with(other_id, project_id)
     missing_body = missing.json()
     wrong_project_body = wrong_project.json()
     assert missing_body == wrong_project_body == {
@@ -608,7 +610,6 @@ async def test_get_pipeline_returns_404_for_missing_or_other_project(
             "details": [],
         }
     }
-    assert str(other.project_id) not in wrong_project.text
     assert [args.args for args in mock_repos.project.get_for_tenant.await_args_list] == [
         (project_id, mock_user.tenant_id),
         (project_id, mock_user.tenant_id),
@@ -627,18 +628,18 @@ async def test_pipeline_item_routes_hide_other_project_pipeline_without_side_eff
     mock_user,
     project_id,
 ):
-    pipeline = _make_orm_pipeline(uuid.uuid4())
-    mock_repos.pipeline.get_by_id = AsyncMock(return_value=pipeline)
+    pipeline_id = uuid.uuid4()
+    mock_repos.pipeline.get_for_project = AsyncMock(return_value=None)
 
     async with await _make_client(app) as client:
         responses = [
-            await client.get(f"/api/v1/projects/{project_id}/pipelines/{pipeline.id}"),
+            await client.get(f"/api/v1/projects/{project_id}/pipelines/{pipeline_id}"),
             await client.put(
-                f"/api/v1/projects/{project_id}/pipelines/{pipeline.id}",
+                f"/api/v1/projects/{project_id}/pipelines/{pipeline_id}",
                 json={"name": "Updated"},
             ),
             await client.delete(
-                f"/api/v1/projects/{project_id}/pipelines/{pipeline.id}",
+                f"/api/v1/projects/{project_id}/pipelines/{pipeline_id}",
             ),
         ]
 
@@ -651,17 +652,16 @@ async def test_pipeline_item_routes_hide_other_project_pipeline_without_side_eff
                 "details": [],
             }
         }
-        assert str(pipeline.project_id) not in resp.text
 
     assert mock_repos.project.get_for_tenant.await_args_list == [
         call(project_id, mock_user.tenant_id),
         call(project_id, mock_user.tenant_id),
         call(project_id, mock_user.tenant_id),
     ]
-    assert mock_repos.pipeline.get_by_id.await_args_list == [
-        call(pipeline.id),
-        call(pipeline.id),
-        call(pipeline.id),
+    assert mock_repos.pipeline.get_for_project.await_args_list == [
+        call(pipeline_id, project_id),
+        call(pipeline_id, project_id),
+        call(pipeline_id, project_id),
     ]
     mock_repos.pipeline.list_by_project.assert_not_awaited()
     mock_repos.pipeline.create.assert_not_awaited()
@@ -675,7 +675,7 @@ async def test_update_pipeline_translates_partial_nested_updates(
     app, mock_repos, mock_user, project_id
 ):
     pipeline = _make_orm_pipeline(project_id)
-    mock_repos.pipeline.get_by_id = AsyncMock(return_value=pipeline)
+    mock_repos.pipeline.get_for_project = AsyncMock(return_value=pipeline)
     raw_token = "pipeline-token-should-not-enter-audit"
     raw_clone_url = f"https://x-access-token:{raw_token}@git.example/repo.git"
 
@@ -821,7 +821,7 @@ async def test_delete_pipeline_removes_existing_pipeline_and_audits(
     app, mock_repos, project_id
 ):
     pipeline = _make_orm_pipeline(project_id)
-    mock_repos.pipeline.get_by_id = AsyncMock(return_value=pipeline)
+    mock_repos.pipeline.get_for_project = AsyncMock(return_value=pipeline)
 
     async with await _make_client(app) as client:
         resp = await client.delete(f"/api/v1/projects/{project_id}/pipelines/{pipeline.id}")
@@ -900,7 +900,7 @@ async def test_pipeline_routes_hide_missing_project(app, mock_repos, mock_user, 
         (project_id, mock_user.tenant_id),
     ]
     mock_repos.pipeline.list_by_project.assert_not_awaited()
-    mock_repos.pipeline.get_by_id.assert_not_awaited()
+    mock_repos.pipeline.get_for_project.assert_not_awaited()
     mock_repos.pipeline.create.assert_not_awaited()
     mock_repos.pipeline.update.assert_not_awaited()
     mock_repos.pipeline.delete.assert_not_awaited()

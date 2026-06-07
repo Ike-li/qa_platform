@@ -111,7 +111,7 @@ def mock_repos(mock_project):
     repos.project.get_for_tenant = AsyncMock(return_value=mock_project)
     repos.notification_rule = AsyncMock()
     repos.notification_rule.list_by_project = AsyncMock(return_value=([], 0))
-    repos.notification_rule.get_by_id = AsyncMock(return_value=None)
+    repos.notification_rule.get_for_project = AsyncMock(return_value=None)
     repos.notification_rule.create = AsyncMock()
     repos.notification_rule.update = AsyncMock()
     repos.notification_rule.delete = AsyncMock()
@@ -164,7 +164,7 @@ def _validation_error_projection(errors) -> list[dict]:
 def _assert_notification_validation_short_circuited(mock_repos) -> None:
     mock_repos.project.get_for_tenant.assert_not_awaited()
     mock_repos.notification_rule.list_by_project.assert_not_awaited()
-    mock_repos.notification_rule.get_by_id.assert_not_awaited()
+    mock_repos.notification_rule.get_for_project.assert_not_awaited()
     mock_repos.notification_rule.create.assert_not_awaited()
     mock_repos.notification_rule.update.assert_not_awaited()
     mock_repos.notification_rule.delete.assert_not_awaited()
@@ -632,7 +632,9 @@ async def test_get_rule_not_found(app, mock_repos, project_id, tenant_id):
         }
     }
     mock_repos.project.get_for_tenant.assert_awaited_once_with(project_id, tenant_id)
-    mock_repos.notification_rule.get_by_id.assert_awaited_once_with(rule_id)
+    mock_repos.notification_rule.get_for_project.assert_awaited_once_with(
+        rule_id, project_id
+    )
     mock_repos.notification_rule.update.assert_not_awaited()
     mock_repos.notification_rule.delete.assert_not_awaited()
     mock_repos.audit.create.assert_not_awaited()
@@ -645,20 +647,20 @@ async def test_notification_rule_item_routes_hide_other_project_rule_without_sid
     mock_user,
     project_id,
 ):
-    rule = _make_orm_rule(uuid.uuid4())
-    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+    rule_id = uuid.uuid4()
+    mock_repos.notification_rule.get_for_project = AsyncMock(return_value=None)
 
     async with await _make_client(app) as client:
         responses = [
             await client.get(
-                f"/api/v1/projects/{project_id}/notification-rules/{rule.id}"
+                f"/api/v1/projects/{project_id}/notification-rules/{rule_id}"
             ),
             await client.put(
-                f"/api/v1/projects/{project_id}/notification-rules/{rule.id}",
+                f"/api/v1/projects/{project_id}/notification-rules/{rule_id}",
                 json={"name": "Updated Rule"},
             ),
             await client.delete(
-                f"/api/v1/projects/{project_id}/notification-rules/{rule.id}"
+                f"/api/v1/projects/{project_id}/notification-rules/{rule_id}"
             ),
         ]
 
@@ -671,17 +673,16 @@ async def test_notification_rule_item_routes_hide_other_project_rule_without_sid
                 "details": [],
             }
         }
-        assert str(rule.project_id) not in resp.text
 
     assert mock_repos.project.get_for_tenant.await_args_list == [
         call(project_id, mock_user.tenant_id),
         call(project_id, mock_user.tenant_id),
         call(project_id, mock_user.tenant_id),
     ]
-    assert mock_repos.notification_rule.get_by_id.await_args_list == [
-        call(rule.id),
-        call(rule.id),
-        call(rule.id),
+    assert mock_repos.notification_rule.get_for_project.await_args_list == [
+        call(rule_id, project_id),
+        call(rule_id, project_id),
+        call(rule_id, project_id),
     ]
     mock_repos.notification_rule.list_by_project.assert_not_awaited()
     mock_repos.notification_rule.create.assert_not_awaited()
@@ -697,7 +698,7 @@ async def test_delete_rule(app, mock_repos, mock_user, project_id):
     rule = _make_orm_rule(project_id)
     rule.created_at = datetime(2026, 5, 31, 21, 22, 23, tzinfo=timezone.utc)
     before_state = _expected_rule_audit_state(rule)
-    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+    mock_repos.notification_rule.get_for_project = AsyncMock(return_value=rule)
     mock_repos.notification_rule.delete = AsyncMock()
 
     with patch(
@@ -719,7 +720,9 @@ async def test_delete_rule(app, mock_repos, mock_user, project_id):
         project_id,
         mock_user.tenant_id,
     )
-    mock_repos.notification_rule.get_by_id.assert_awaited_once_with(rule.id)
+    mock_repos.notification_rule.get_for_project.assert_awaited_once_with(
+        rule.id, project_id
+    )
     mock_repos.notification_rule.delete.assert_awaited_once_with(rule)
     mock_repos.audit.create.assert_awaited_once()
     audit_kwargs = mock_repos.audit.create.await_args.kwargs
@@ -743,7 +746,7 @@ async def test_update_rule(app, mock_repos, mock_user, project_id):
     rule = _make_orm_rule(project_id)
     rule.created_at = datetime(2026, 5, 31, 22, 23, 24, tzinfo=timezone.utc)
     before_state = _expected_rule_audit_state(rule)
-    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+    mock_repos.notification_rule.get_for_project = AsyncMock(return_value=rule)
     mock_repos.notification_rule.update = AsyncMock(side_effect=_apply_rule_update)
 
     with patch(
@@ -767,7 +770,9 @@ async def test_update_rule(app, mock_repos, mock_user, project_id):
         project_id,
         mock_user.tenant_id,
     )
-    mock_repos.notification_rule.get_by_id.assert_awaited_once_with(rule.id)
+    mock_repos.notification_rule.get_for_project.assert_awaited_once_with(
+        rule.id, project_id
+    )
     mock_repos.notification_rule.update.assert_awaited_once_with(
         rule,
         name="Updated Rule",
@@ -797,7 +802,7 @@ async def test_update_rule_normalizes_conditions_channels_and_redacts_audit(
     from qaplatform.api.auth.permissions import Action
 
     rule = _make_orm_rule(project_id)
-    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+    mock_repos.notification_rule.get_for_project = AsyncMock(return_value=rule)
     mock_repos.notification_rule.update = AsyncMock(side_effect=_apply_rule_update)
 
     with patch(
@@ -840,7 +845,9 @@ async def test_update_rule_normalizes_conditions_channels_and_redacts_audit(
         project_id,
         mock_user.tenant_id,
     )
-    mock_repos.notification_rule.get_by_id.assert_awaited_once_with(rule.id)
+    mock_repos.notification_rule.get_for_project.assert_awaited_once_with(
+        rule.id, project_id
+    )
     mock_repos.notification_rule.update.assert_awaited_once()
     update_kwargs = mock_repos.notification_rule.update.await_args.kwargs
     assert update_kwargs["conditions"] == [
@@ -904,7 +911,7 @@ async def test_update_rule_normalizes_conditions_channels_and_redacts_audit(
 @pytest.mark.asyncio
 async def test_update_rule_rejects_empty_channels(app, mock_repos, project_id):
     rule = _make_orm_rule(project_id)
-    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+    mock_repos.notification_rule.get_for_project = AsyncMock(return_value=rule)
 
     async with await _make_client(app) as client:
         resp = await client.put(
@@ -954,7 +961,7 @@ async def test_update_rule_rejects_invalid_conditions_before_side_effects(
 @pytest.mark.asyncio
 async def test_update_rule_rejects_duplicate_channel_types(app, mock_repos, project_id):
     rule = _make_orm_rule(project_id)
-    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+    mock_repos.notification_rule.get_for_project = AsyncMock(return_value=rule)
     channels = [
         {"type": "email", "config": {"to_addresses": ["qa@example.com"]}},
         {"type": "email", "config": {"to_addresses": ["owner@example.com"]}},
@@ -983,7 +990,7 @@ async def test_update_rule_clears_template_when_null_submitted(
 
     rule = _make_orm_rule(project_id)
     before_state = _expected_rule_audit_state(rule)
-    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+    mock_repos.notification_rule.get_for_project = AsyncMock(return_value=rule)
     mock_repos.notification_rule.update = AsyncMock(side_effect=_apply_rule_update)
 
     with patch(
@@ -1007,7 +1014,9 @@ async def test_update_rule_clears_template_when_null_submitted(
         project_id,
         mock_user.tenant_id,
     )
-    mock_repos.notification_rule.get_by_id.assert_awaited_once_with(rule.id)
+    mock_repos.notification_rule.get_for_project.assert_awaited_once_with(
+        rule.id, project_id
+    )
     mock_repos.notification_rule.update.assert_awaited_once_with(
         rule,
         template=None,
@@ -1046,7 +1055,7 @@ async def test_update_rule_keeps_template_when_omitted(
     rule = _make_orm_rule(project_id)
     original_template = rule.template
     before_state = _expected_rule_audit_state(rule)
-    mock_repos.notification_rule.get_by_id = AsyncMock(return_value=rule)
+    mock_repos.notification_rule.get_for_project = AsyncMock(return_value=rule)
     mock_repos.notification_rule.update = AsyncMock(side_effect=_apply_rule_update)
 
     with patch(
@@ -1070,7 +1079,9 @@ async def test_update_rule_keeps_template_when_omitted(
         project_id,
         mock_user.tenant_id,
     )
-    mock_repos.notification_rule.get_by_id.assert_awaited_once_with(rule.id)
+    mock_repos.notification_rule.get_for_project.assert_awaited_once_with(
+        rule.id, project_id
+    )
     mock_repos.notification_rule.update.assert_awaited_once_with(
         rule,
         name="Updated Rule",
@@ -1143,7 +1154,7 @@ async def test_notification_rule_routes_hide_missing_project_without_side_effect
         (project_id, tenant_id)
     ] * 5
     mock_repos.notification_rule.list_by_project.assert_not_awaited()
-    mock_repos.notification_rule.get_by_id.assert_not_awaited()
+    mock_repos.notification_rule.get_for_project.assert_not_awaited()
     mock_repos.notification_rule.create.assert_not_awaited()
     mock_repos.notification_rule.update.assert_not_awaited()
     mock_repos.notification_rule.delete.assert_not_awaited()
