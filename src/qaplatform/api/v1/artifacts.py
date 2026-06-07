@@ -120,6 +120,7 @@ def _allows_relative_preview_assets(artifact) -> bool:
 def _create_preview_token(
     secret: str,
     artifact_id: UUID,
+    tenant_id: UUID,
     expires_in: int,
     *,
     storage_prefix: str,
@@ -130,6 +131,7 @@ def _create_preview_token(
         {
             "aud": _PREVIEW_TOKEN_AUDIENCE,
             "sub": str(artifact_id),
+            "tenant": str(tenant_id),
             "prefix": storage_prefix,
             "assets": allow_relative_assets,
             "exp": now + timedelta(seconds=expires_in),
@@ -269,6 +271,7 @@ async def get_artifact_preview_url(
     token = _create_preview_token(
         container.settings.jwt_secret,
         artifact_id,
+        run.tenant_id,
         ttl,
         storage_prefix=_artifact_storage_prefix(artifact.storage_path),
         allow_relative_assets=_allows_relative_preview_assets(artifact),
@@ -306,9 +309,30 @@ async def preview_artifact_file(
         )
 
     payload = _verify_preview_token(container.settings.jwt_secret, token, artifact_id)
-    artifact = await repos.artifact.get_by_id(artifact_id)
-    if artifact is None:
+
+    # Verify tenant ownership through run relationship using JOIN query
+    # to prevent timing attacks and cross-tenant artifact access
+    from sqlalchemy import select
+    from qaplatform.infra.database.models import Artifact, Run
+
+    stmt = (
+        select(Artifact, Run)
+        .join(Run, Artifact.run_id == Run.id)
+        .where(
+            Artifact.id == artifact_id,
+            Artifact.deleted_at.is_(None),
+        )
+    )
+    result = await repos.artifact.session.execute(stmt)
+    row = result.first()
+    if row is None:
         raise HTTPException(status_code=404, detail="Artifact preview file not found")
+    artifact, run = row
+
+    # Verify tenant_id from token matches the run's tenant
+    if payload.get("tenant") != str(run.tenant_id):
+        raise HTTPException(status_code=403, detail="Artifact preview link is invalid")
+
     if payload.get("prefix") != _artifact_storage_prefix(artifact.storage_path):
         raise HTTPException(status_code=403, detail="Artifact preview link is invalid")
 
