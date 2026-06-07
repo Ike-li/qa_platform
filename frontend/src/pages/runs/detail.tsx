@@ -19,6 +19,7 @@ import {
   useRunAllureReportArtifact,
   useCancelRun,
   useTriggerRun,
+  useArtifactPreviewUrl,
 } from "../../hooks/use-runs";
 import { RunStatusBadge } from "../../components/run-status-badge";
 import { BranchBadge } from "../../components/branch-badge";
@@ -41,22 +42,17 @@ import {
   AlertDialogTrigger
 } from "../../components/ui/alert-dialog";
 import { toast } from "sonner";
-import { cn } from "../../lib/utils";
+import { cn, isSafeArtifactUrl } from "../../lib/utils";
 
 import { usePageTitle } from "../../hooks/use-page-title";
 import { getArtifactDownloadUrl, getArtifactPreviewUrl } from "../../lib/api";
 import { ArtifactPreview } from "../../components/runs/artifact-preview";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 type PreviewState = {
   url: string;
   title: string;
   iframeTitle: string;
-};
-
-type AllurePreviewState = {
-  artifactId: string;
-  url: string | null;
 };
 
 function isPreviewableArtifact(artifact: Artifact): boolean {
@@ -82,25 +78,6 @@ function getArtifactPreviewFrameTitle(artifact: Artifact): string {
     : `${artifact.name} Preview`;
 }
 
-function isSafeArtifactUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    // Only allow http and https protocols. Explicitly reject javascript:, data:, file:, etc.
-    // This prevents XSS attacks through malicious artifact URLs.
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-      return false;
-    }
-    // Additional safety: reject URLs with embedded credentials
-    if (parsed.username || parsed.password) {
-      return false;
-    }
-    return true;
-  } catch {
-    // Invalid URL format
-    return false;
-  }
-}
-
 function testResultSortPriority(result: TestResult): number {
   if (result.status === "failed") return 0;
   if (result.status === "error") return 1;
@@ -110,7 +87,6 @@ function testResultSortPriority(result: TestResult): number {
 
 export default function RunDetail() {
   const [preview, setPreview] = useState<PreviewState | null>(null);
-  const [allurePreview, setAllurePreview] = useState<AllurePreviewState | null>(null);
   const [activeTab, setActiveTab] = useState("results");
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -122,15 +98,18 @@ export default function RunDetail() {
 
   const { mutateAsync: cancelRun, isPending: isCancelling } = useCancelRun(id!);
   const { mutateAsync: triggerRun, isPending: isReRunning } = useTriggerRun();
+
+  // Allure report preview — auto-fetched via TanStack Query when the
+  // artifact is available.  Replaces the previous useEffect +
+  // setAllurePreview pattern.
+  const {
+    data: allureReportUrl,
+    isLoading: isAllureReportLoading,
+    isError: allureReportPreviewFailed,
+  } = useArtifactPreviewUrl(allureReportArtifact?.id);
+
   const hasAllureReport = Boolean(allureReportArtifact);
-  const matchingAllurePreview = allurePreview?.artifactId === allureReportArtifact?.id
-    ? allurePreview
-    : null;
-  const allureReportUrl = matchingAllurePreview?.url ?? null;
-  const isAllureReportLoading = Boolean(
-    allureReportArtifact && allurePreview?.artifactId !== allureReportArtifact.id,
-  );
-  const allureReportPreviewFailed = Boolean(matchingAllurePreview && !allureReportUrl);
+
   const orderedResults = [...(results?.data ?? [])].sort((a, b) => (
     testResultSortPriority(a) - testResultSortPriority(b)
   ));
@@ -139,32 +118,6 @@ export default function RunDetail() {
   ));
 
   usePageTitle(run ? `Run ${run.pipeline_name}` : t('runs.notFound'));
-
-  useEffect(() => {
-    if (!allureReportArtifact) return;
-
-    let cancelled = false;
-    getArtifactPreviewUrl(allureReportArtifact.id)
-      .then((url) => {
-        if (cancelled) return;
-        if (!isSafeArtifactUrl(url)) {
-          setAllurePreview({ artifactId: allureReportArtifact.id, url: null });
-          toast.error(t('runs.artifacts.previewFailed'));
-          return;
-        }
-        setAllurePreview({ artifactId: allureReportArtifact.id, url });
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAllurePreview({ artifactId: allureReportArtifact.id, url: null });
-          toast.error(t('runs.artifacts.previewFailed'));
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [allureReportArtifact, t]);
 
   const onCancelRun = async () => {
     try {

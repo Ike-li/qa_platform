@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider } from "./hooks/use-auth";
+import { BreadcrumbProvider } from "./hooks/use-breadcrumb";
 import { AppLayout } from "./components/layout/app-layout";
 import { ProtectedRoute } from "./components/layout/protected-route";
 import { ErrorBoundary } from "./components/error-boundary";
@@ -40,6 +41,7 @@ export default function App() {
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <AuthProvider>
+            <BreadcrumbProvider>
             <Suspense fallback={<PageLoader />}>
               <Routes>
                 <Route path="/login" element={<Login />} />
@@ -58,6 +60,7 @@ export default function App() {
                 </Route>
               </Routes>
             </Suspense>
+            </BreadcrumbProvider>
             <Toaster theme="dark" position="bottom-right" closeButton />
           </AuthProvider>
         </BrowserRouter>

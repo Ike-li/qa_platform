@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Outlet, NavLink } from "react-router-dom";
+import { useState, useEffect, useCallback } from "react";
+import { Outlet, NavLink, Link } from "react-router-dom";
 import {
   FolderGit2,
   PlayCircle,
@@ -7,19 +7,40 @@ import {
   Menu,
   LogOut,
   ChevronLeft,
+  ChevronRight,
   Search
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../hooks/use-auth";
+import { useBreadcrumbs } from "../../hooks/use-breadcrumb";
 import { CommandPalette } from "./command-palette";
 import { LanguageSwitcher } from "../language-switcher";
 import { cn } from "../../lib/utils";
 
+const SIDEBAR_KEY = "qa-sidebar-open";
+
+function loadSidebarPreference(): boolean {
+  try {
+    const stored = localStorage.getItem(SIDEBAR_KEY);
+    if (stored !== null) return stored === "true";
+  } catch { /* localStorage unavailable */ }
+  return window.innerWidth >= 1024;
+}
+
 export function AppLayout() {
   const { t } = useTranslation();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(loadSidebarPreference);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { logout } = useAuth();
+  const { items: breadcrumbs } = useBreadcrumbs();
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      try { localStorage.setItem(SIDEBAR_KEY, String(next)); } catch { /* noop */ }
+      return next;
+    });
+  }, []);
 
   // Auto collapse sidebar on small screens
   useEffect(() => {
@@ -27,12 +48,11 @@ export function AppLayout() {
       if (window.innerWidth < 1024) {
         setSidebarOpen(false);
       } else {
-        setSidebarOpen(true);
+        setSidebarOpen(loadSidebarPreference());
       }
     };
 
     window.addEventListener("resize", handleResize);
-    handleResize(); // Init
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
@@ -61,7 +81,7 @@ export function AppLayout() {
               if (window.innerWidth < 768) {
                 setMobileMenuOpen(false);
               } else {
-                setSidebarOpen(!sidebarOpen);
+                toggleSidebar();
               }
             }}
             className="flex h-8 w-8 items-center justify-center rounded-md text-ink-subtle hover:bg-surface-1 hover:text-ink md:flex"
@@ -105,8 +125,22 @@ export function AppLayout() {
               <Menu className="h-5 w-5" />
             </button>
             <div className="flex items-center gap-2 text-sm text-ink-muted hidden sm:flex">
-              {/* Breadcrumbs can go here */}
-              <span>{t('common.overview')}</span>
+              {breadcrumbs.length > 0 ? (
+                breadcrumbs.map((crumb, i) => (
+                  <span key={i} className="flex items-center gap-2">
+                    {i > 0 && <ChevronRight className="h-3 w-3 text-ink-tertiary" />}
+                    {crumb.href ? (
+                      <Link to={crumb.href} className="hover:text-ink transition-colors">
+                        {crumb.label}
+                      </Link>
+                    ) : (
+                      <span className="text-ink">{crumb.label}</span>
+                    )}
+                  </span>
+                ))
+              ) : (
+                <span>{t('common.overview')}</span>
+              )}
             </div>
           </div>
 

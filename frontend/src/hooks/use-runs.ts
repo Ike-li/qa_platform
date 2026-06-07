@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import api from "../lib/api";
+import api, { getArtifactPreviewUrl } from "../lib/api";
+import { isSafeArtifactUrl } from "../lib/utils";
 import type {
   Run,
   RunStatus,
@@ -205,5 +206,21 @@ export function useArchivedRunLogs(id: string, enabled: boolean) {
     enabled: !!id && enabled,
     retry: false,
     staleTime: 30_000,
+  });
+}
+
+export function useArtifactPreviewUrl(artifactId: string | undefined) {
+  return useQuery({
+    queryKey: ["artifacts", artifactId, "preview-url"],
+    queryFn: async () => {
+      const url = await getArtifactPreviewUrl(artifactId!);
+      if (!isSafeArtifactUrl(url)) {
+        throw new Error("Unsafe artifact preview URL");
+      }
+      return url;
+    },
+    enabled: !!artifactId,
+    retry: false,
+    staleTime: 5 * 60 * 1000, // preview URLs are stable for the session
   });
 }
