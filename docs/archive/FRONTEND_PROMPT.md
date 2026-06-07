@@ -1,10 +1,10 @@
 # QA Platform Frontend Implementation Prompt
 
-> Historical prompt: this file captured the initial frontend implementation brief. It is not the current API contract and must not be used as implementation input without checking current source. Prefer backend OpenAPI/schemas, `frontend/README.md`, and `docs/archive/doc-conflict-audit.md` when maintaining the app.
+> Historical prompt (archived): this file captured the initial frontend implementation brief. It is not the current API contract and must not be used as implementation input without checking current source. Prefer backend OpenAPI/schemas, `frontend/README.md`, and `doc-conflict-audit.md` when maintaining the app.
 
 ## Project Overview
 
-Build a complete frontend SPA for a QA Automation Execution Platform. The backend API is already implemented (FastAPI). The original brief referenced a Linear-like dark developer tool; current visual decisions are maintained in `../DESIGN.md`.
+Build a complete frontend SPA for a QA Automation Execution Platform. The backend API is already implemented (FastAPI). The original brief referenced a Linear-like dark developer tool; current visual decisions are maintained in `../../DESIGN.md`.
 
 ## Tech Stack
 

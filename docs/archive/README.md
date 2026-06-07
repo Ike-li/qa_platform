@@ -8,5 +8,6 @@ Historical records live here so current-source docs stay focused on the implemen
 | [release-quality-review-slices.md](release-quality-review-slices.md) | Release-quality evidence slices and sign-off checklist for the release-candidate gate branch. |
 | [doc-conflict-audit.md](doc-conflict-audit.md) | Historical document conflict audit and fix trail. |
 | [fix-roadmap.md](fix-roadmap.md) | Historical review consolidation and decisions. |
+| [FRONTEND_PROMPT.md](FRONTEND_PROMPT.md) | Initial frontend implementation brief; superseded by `../../frontend/README.md` (API contract) and `../../DESIGN.md` (design system). |
 
 Do not use archived files as live status without checking `../architecture.md`, `../feature-catalog.md`, `../TODO.md`, and current test evidence first.

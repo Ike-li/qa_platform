@@ -40,6 +40,7 @@ These files are retained as historical evidence. Do not use them as live impleme
 | [archive/release-quality-review-slices.md](archive/release-quality-review-slices.md) | Release-quality evidence slices and sign-off checklist for the release-candidate gate branch. |
 | [archive/doc-conflict-audit.md](archive/doc-conflict-audit.md) | Historical document conflict audit and fix trail. |
 | [archive/fix-roadmap.md](archive/fix-roadmap.md) | Historical review consolidation and decisions. Do not use as active backlog without checking `TODO.md`. |
+| [archive/FRONTEND_PROMPT.md](archive/FRONTEND_PROMPT.md) | Initial frontend implementation brief; superseded by `../frontend/README.md` and `../DESIGN.md`. |
 
 ## Maintenance Rules
 
