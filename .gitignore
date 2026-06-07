@@ -8,6 +8,7 @@
 .claude/
 .omc/
 .omx/
+.antigravitycli/
 
 # Python
 __pycache__/
