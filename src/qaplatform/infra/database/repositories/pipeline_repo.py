@@ -34,17 +34,3 @@ class PipelineRepository(BaseRepository[Pipeline]):
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
-
-    async def get_for_project(self, id: UUID, project_id: UUID) -> Pipeline | None:
-        """Fetch pipeline by ID, scoped to a project.
-
-        Returns None when the pipeline does not exist OR exists in another project.
-        This prevents cross-tenant information leakage through timing attacks.
-        """
-        stmt = select(Pipeline).where(
-            Pipeline.id == id,
-            Pipeline.project_id == project_id,
-            Pipeline.deleted_at.is_(None),
-        )
-        result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()

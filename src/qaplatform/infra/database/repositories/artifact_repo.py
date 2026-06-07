@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qaplatform.infra.database.models import Artifact
+from qaplatform.infra.database.models import Artifact, Run
 from qaplatform.infra.database.repositories.base import BaseRepository
 
 
@@ -23,6 +24,24 @@ class ArtifactRepository(BaseRepository[Artifact]):
             filters=[Artifact.run_id == run_id],
         )
 
+    async def get_with_run(self, artifact_id: UUID) -> tuple[Artifact, Run] | None:
+        """Fetch artifact joined with its run, or None if not found.
+
+        Returns an (Artifact, Run) tuple. The caller is responsible for any
+        tenant or ownership verification.
+        """
+        stmt = (
+            select(Artifact, Run)
+            .join(Run, Artifact.run_id == Run.id)
+            .where(
+                Artifact.id == artifact_id,
+                Artifact.deleted_at.is_(None),
+            )
+        )
+        result = await self.session.execute(stmt)
+        row = result.first()
+        return row if row is not None else None
+
     async def get_for_run(self, id: UUID, run_id: UUID) -> Artifact | None:
         """Fetch artifact by ID, scoped to a run.
 
@@ -30,8 +49,6 @@ class ArtifactRepository(BaseRepository[Artifact]):
         Since Artifact has no tenant_id, we verify via run_id relationship.
         The caller must verify run ownership separately.
         """
-        from sqlalchemy import select
-
         stmt = select(Artifact).where(
             Artifact.id == id,
             Artifact.run_id == run_id,

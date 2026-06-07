@@ -50,6 +50,31 @@ class BaseRepository(Generic[ModelT]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def _get_scoped(self, id: UUID, **scopes: UUID) -> ModelT | None:
+        """Fetch by primary key, scoped by additional column-equals-value filters.
+
+        Each keyword argument adds a ``column == value`` condition.  Raises
+        :class:`TypeError` when the model lacks a requested column — the
+        caller should use a join-based lookup (e.g. Artifact via Run) instead.
+
+        Returns ``None`` when the row does not exist OR matches a different
+        scope, so the API layer can map both cases to 404 without leaking
+        existence across tenants.
+        """
+        conditions = [self.model.id == id]  # type: ignore[attr-defined]
+        for col, value in scopes.items():
+            if not hasattr(self.model, col):
+                raise TypeError(
+                    f"{self.model.__name__} has no {col} column; "
+                    "use a join-based lookup instead"
+                )
+            conditions.append(getattr(self.model, col) == value)
+        stmt = select(self.model).where(*conditions)
+        for f in self._soft_delete_filter():
+            stmt = stmt.where(f)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_for_tenant(self, id: UUID, tenant_id: UUID) -> ModelT | None:
         """Fetch by primary key, scoped to a tenant.
 
@@ -58,19 +83,17 @@ class BaseRepository(Generic[ModelT]):
         tenants. Models without a ``tenant_id`` column must use a join-based
         repo method (e.g. Artifact via Run.tenant_id) and not call this.
         """
-        if not hasattr(self.model, "tenant_id"):
-            raise TypeError(
-                f"{self.model.__name__} has no tenant_id column; "
-                "use a join-based lookup instead of get_for_tenant"
-            )
-        stmt = select(self.model).where(
-            self.model.id == id,  # type: ignore[attr-defined]
-            self.model.tenant_id == tenant_id,  # type: ignore[attr-defined]
-        )
-        for f in self._soft_delete_filter():
-            stmt = stmt.where(f)
-        result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        return await self._get_scoped(id, tenant_id=tenant_id)
+
+    async def get_for_project(self, id: UUID, project_id: UUID) -> ModelT | None:
+        """Fetch by primary key, scoped to a project.
+
+        Returns None when the row does not exist OR exists in another project —
+        the API layer maps both to 404 to avoid leaking existence across
+        tenants. Models without a ``project_id`` column must use a join-based
+        lookup and not call this.
+        """
+        return await self._get_scoped(id, project_id=project_id)
 
     async def list(
         self,

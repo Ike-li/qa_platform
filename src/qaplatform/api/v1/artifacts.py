@@ -56,30 +56,32 @@ def _preview_response_headers(request: Request) -> dict[str, str]:
     }
 
 
+async def _get_artifact_with_run_or_404(repos, artifact_id: UUID):
+    """Fetch artifact and its run via repository JOIN, or raise 404.
+
+    Returns an (Artifact, Run) tuple. The caller must perform any
+    additional ownership or tenant verification.
+    """
+    row = await repos.artifact.get_with_run(artifact_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return row
+
+
 async def _get_artifact_or_404(repos, artifact_id: UUID, tenant_id: UUID):
     """Get artifact and verify tenant ownership through run relationship.
 
-    Uses a join query to prevent timing attacks that could reveal artifact existence
-    across tenant boundaries.
-    """
-    # First verify the run exists and belongs to tenant
-    from sqlalchemy import select
-    from qaplatform.infra.database.models import Artifact, Run
+    Uses a join query to prevent timing attacks that could reveal artifact
+    existence across tenant boundaries.
 
-    stmt = (
-        select(Artifact, Run)
-        .join(Run, Artifact.run_id == Run.id)
-        .where(
-            Artifact.id == artifact_id,
-            Run.tenant_id == tenant_id,
-            Artifact.deleted_at.is_(None),
-        )
-    )
-    result = await repos.artifact.session.execute(stmt)
-    row = result.first()
-    if row is None:
+    Returns 404 for BOTH "not found" and "wrong tenant" — this prevents
+    attackers from probing artifact existence across tenants via response
+    status (404 vs 403).  Contrast with :func:`preview_artifact_file` which
+    uses 403 because its JWT token already proves the caller received a link.
+    """
+    artifact, run = await _get_artifact_with_run_or_404(repos, artifact_id)
+    if str(run.tenant_id) != str(tenant_id):
         raise HTTPException(status_code=404, detail="Artifact not found")
-    artifact, run = row
     return artifact, run
 
 
@@ -310,26 +312,18 @@ async def preview_artifact_file(
 
     payload = _verify_preview_token(container.settings.jwt_secret, token, artifact_id)
 
-    # Verify tenant ownership through run relationship using JOIN query
-    # to prevent timing attacks and cross-tenant artifact access
-    from sqlalchemy import select
-    from qaplatform.infra.database.models import Artifact, Run
+    artifact, run = await _get_artifact_with_run_or_404(repos, artifact_id)
 
-    stmt = (
-        select(Artifact, Run)
-        .join(Run, Artifact.run_id == Run.id)
-        .where(
-            Artifact.id == artifact_id,
-            Artifact.deleted_at.is_(None),
-        )
-    )
-    result = await repos.artifact.session.execute(stmt)
-    row = result.first()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Artifact preview file not found")
-    artifact, run = row
-
-    # Verify tenant_id from token matches the run's tenant
+    # Verify tenant_id from token matches the run's tenant.
+    #
+    # NOTE: we return 403 here, not 404 like _get_artifact_or_404 does.
+    # This endpoint is unauthenticated (no user session) — the JWT *is* the
+    # credential.  A 403 tells the caller "your preview link is invalid"
+    # without ambiguity, while a 404 could be confused with a genuinely
+    # missing artifact and trigger retry/debugging loops.  The authenticated
+    # endpoints use 404 for cross-tenant lookups to avoid leaking existence
+    # (timing-attack defence); here the token already proves the caller was
+    # given a link, so we can be explicit.
     if payload.get("tenant") != str(run.tenant_id):
         raise HTTPException(status_code=403, detail="Artifact preview link is invalid")
 
