@@ -181,6 +181,13 @@ async function mockApi(page: Page) {
     }
 
     if (method === "GET" && path === "/api/v1/runs") {
+      // The project detail Runs tab scopes the query with ?project_id=...;
+      // this fixture's project has no runs, so it must render the empty state.
+      // The global runs list (no project_id) returns the three seeded runs.
+      if (url.searchParams.has("project_id")) {
+        await fulfillJson(route, { data: [], page: 1, per_page: 5, total: 0 });
+        return;
+      }
       await fulfillJson(route, {
         data: [run, zeroResultRun, legacySummaryRun],
         page: 1,

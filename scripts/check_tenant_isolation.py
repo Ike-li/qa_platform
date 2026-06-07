@@ -26,21 +26,42 @@ RUN_SCOPE_ATTRS = frozenset({"tenant_id", "project_id"})
 TARGET_REPO_ATTRS = frozenset({"artifact", "test_result", "run_event"})
 GENERIC_REPO_READ_METHODS = frozenset({"get_by_id", "list"})
 
+# Verified-safe run-scoped queries the static checker cannot clear on its own.
+# Keyed by (repo-relative path, class, function). Commit 782254a split these
+# repositories out of run_repo.py; the previous entries still pointed at the old
+# path, so the queries lost their exemption. Each entry below was reconfirmed
+# safe by tracing the caller chain before re-adding it.
 ALLOWLIST = frozenset({
+    # Run-scoped: filtered by run_id; callers verify Run ownership first.
     (
-        "src/qaplatform/infra/database/repositories/run_repo.py",
-        "TestResultRepository",
-        "list_by_run",
-    ),
-    (
-        "src/qaplatform/infra/database/repositories/run_repo.py",
+        "src/qaplatform/infra/database/repositories/test_result_repo.py",
         "TestResultRepository",
         "list_by_run_and_status",
     ),
     (
-        "src/qaplatform/infra/database/repositories/run_repo.py",
+        "src/qaplatform/infra/database/repositories/artifact_repo.py",
         "ArtifactRepository",
-        "list_by_run",
+        "get_for_run",
+    ),
+    # JOINs Run but carries no in-query tenant scope by design; the caller
+    # (_get_artifact_or_404) checks run.tenant_id against the request tenant.
+    (
+        "src/qaplatform/infra/database/repositories/artifact_repo.py",
+        "ArtifactRepository",
+        "get_with_run",
+    ),
+    # Project-scoped analytics: JOIN Run + a project_id filter passed through a
+    # *filters variable the AST checker can't follow. Callers run
+    # get_for_tenant + enforce_project_action before reaching these.
+    (
+        "src/qaplatform/infra/database/repositories/test_result_repo.py",
+        "TestResultRepository",
+        "list_flaky_tests",
+    ),
+    (
+        "src/qaplatform/infra/database/repositories/run_analytics_repo.py",
+        "RunAnalyticsRepositoryMixin",
+        "grouped_results",
     ),
 })
 

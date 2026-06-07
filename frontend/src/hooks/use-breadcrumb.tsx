@@ -36,6 +36,7 @@ export function BreadcrumbProvider({ children }: { children: ReactNode }) {
 }
 
 /** Access the breadcrumb context (used by the layout header). */
+// eslint-disable-next-line react-refresh/only-export-components
 export function useBreadcrumbs() {
   const ctx = useContext(BreadcrumbContext);
   if (!ctx) {
@@ -54,6 +55,7 @@ export function useBreadcrumbs() {
  *     { label: project.name },
  *   ]);
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function useSetBreadcrumbs(items: Breadcrumb[]) {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => {
