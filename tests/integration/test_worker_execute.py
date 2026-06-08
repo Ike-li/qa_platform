@@ -768,6 +768,8 @@ async def test_trigger_run_completes_terminal_state(
     setup_script = (
         "export HOME=/workspace && "
         "python -m pip install --user --no-cache-dir pytest && "
+        "export PATH=/workspace/.local/bin:$PATH && "
+        "export PYTHONPATH=/workspace/.local/lib/python3.12/site-packages:$PYTHONPATH && "
         "python - <<'PY'\n"
         "from pathlib import Path\n"
         "workspace = Path('/workspace')\n"
@@ -802,7 +804,11 @@ async def test_trigger_run_completes_terminal_state(
             "memory_mb": 512,
             "cpu_cores": 1.0,
             "network_policy": "allow",  # 测试容器需要安装 pytest
-            "env_vars": {},
+            "env_vars": {
+                "HOME": "/workspace",
+                "PATH": "/workspace/.local/bin:/usr/local/bin:/usr/bin:/bin",
+                "PYTHONPATH": "/workspace/.local/lib/python3.12/site-packages",
+            },
             "setup_script": setup_script,
             "max_artifact_size_mb": 10,
             "max_artifacts_count": 5,
