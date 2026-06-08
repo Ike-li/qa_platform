@@ -1,7 +1,7 @@
 import ipaddress
 from typing import Annotated
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
 
 
@@ -216,5 +216,40 @@ class Settings(BaseSettings):
                 raise ValueError(f"cors_origins[{index}] must not be blank")
             normalized.append(stripped)
         return normalized
+
+    @model_validator(mode="after")
+    def _production_security_hardening(self):
+        """Reject insecure defaults in production (P1-1 mitigation)."""
+        if self.environment.lower() != "production":
+            return self
+
+        # Reject debug=True in production
+        if self.debug:
+            raise ValueError(
+                "Production environment must not run with debug=True "
+                "(exposes /docs and /redoc API documentation)"
+            )
+
+        # Reject known placeholder JWT secrets
+        _PLACEHOLDER_JWT_SECRETS = {
+            "dev-jwt-secret-change-me-32-bytes-minimum",
+            "change-me-in-production-at-least-32bytes",
+            "test-jwt-secret-at-least-32bytes!",
+            "placeholder-secret-change-me-in-production",
+        }
+        if self.jwt_secret in _PLACEHOLDER_JWT_SECRETS:
+            raise ValueError(
+                "Production environment must not use placeholder jwt_secret. "
+                "Generate a strong secret with: openssl rand -hex 32"
+            )
+
+        # Reject all-zero encryption key
+        if self.encryption_key == "0" * 64:
+            raise ValueError(
+                "Production environment must not use all-zero encryption_key. "
+                "Generate a strong key with: openssl rand -hex 32"
+            )
+
+        return self
 
     model_config = {"env_file": ".env", "env_prefix": "QAP_", "extra": "ignore"}

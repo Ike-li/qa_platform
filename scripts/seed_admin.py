@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import sys
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -15,8 +16,17 @@ DATABASE_URL = os.environ.get(
 
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@qaplatform.local")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 TENANT_NAME = os.environ.get("TENANT_NAME", "default")
+
+if ADMIN_PASSWORD is None:
+    print("ERROR: ADMIN_PASSWORD environment variable is required", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Security: This script no longer provides a default password.", file=sys.stderr)
+    print("Set a strong password via environment variable:", file=sys.stderr)
+    print("  export ADMIN_PASSWORD='your-strong-password-here'", file=sys.stderr)
+    print("  python scripts/seed_admin.py", file=sys.stderr)
+    sys.exit(1)
 
 
 async def main():

@@ -72,12 +72,12 @@ def test_env_prefix_parsing(monkeypatch: pytest.MonkeyPatch):
     _set_required(monkeypatch)
     monkeypatch.setenv("QAP_APP_NAME", "CustomApp")
     monkeypatch.setenv("QAP_DEBUG", "true")
-    monkeypatch.setenv("QAP_ENVIRONMENT", "production")
+    monkeypatch.setenv("QAP_ENVIRONMENT", "staging")
 
     s = Settings(_env_file=None)
     assert s.app_name == "CustomApp"
     assert s.debug is True
-    assert s.environment == "production"
+    assert s.environment == "staging"
 
 
 def test_database_url_from_env(monkeypatch: pytest.MonkeyPatch):
@@ -672,3 +672,93 @@ def test_log_configuration_rejects_invalid_values(
             "input": raw_value,
         }
     ]
+
+
+# --- Production environment hardening (P1-1) ---
+
+
+def test_production_rejects_debug_enabled(monkeypatch: pytest.MonkeyPatch):
+    """Production environment must not allow debug=True."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_ENVIRONMENT", "production")
+    monkeypatch.setenv("QAP_DEBUG", "true")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["type"] == "value_error"
+    assert "production" in errors[0]["msg"].lower()
+    assert "debug" in errors[0]["msg"].lower()
+
+
+@pytest.mark.parametrize(
+    "weak_secret",
+    [
+        "dev-jwt-secret-change-me-32-bytes-minimum",
+        "change-me-in-production-at-least-32bytes",
+        "test-jwt-secret-at-least-32bytes!",
+        "placeholder-secret-change-me-in-production",
+    ],
+)
+def test_production_rejects_placeholder_jwt_secret(
+    monkeypatch: pytest.MonkeyPatch, weak_secret: str
+):
+    """Production must reject known placeholder JWT secrets."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_ENVIRONMENT", "production")
+    monkeypatch.setenv("QAP_DEBUG", "false")
+    monkeypatch.setenv("QAP_JWT_SECRET", weak_secret)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["type"] == "value_error"
+    assert "production" in errors[0]["msg"].lower()
+    assert "jwt_secret" in errors[0]["msg"].lower() or "placeholder" in errors[0]["msg"].lower()
+
+
+def test_production_rejects_all_zero_encryption_key(monkeypatch: pytest.MonkeyPatch):
+    """Production must reject all-zero encryption key."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_ENVIRONMENT", "production")
+    monkeypatch.setenv("QAP_DEBUG", "false")
+    monkeypatch.setenv("QAP_JWT_SECRET", "strong-production-secret-567890abcdef")
+    monkeypatch.setenv("QAP_ENCRYPTION_KEY", "0" * 64)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["type"] == "value_error"
+    assert "production" in errors[0]["msg"].lower()
+    assert "encryption_key" in errors[0]["msg"].lower()
+
+
+def test_production_accepts_strong_secrets(monkeypatch: pytest.MonkeyPatch):
+    """Production with strong secrets should succeed."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_ENVIRONMENT", "production")
+    monkeypatch.setenv("QAP_DEBUG", "false")
+    monkeypatch.setenv("QAP_JWT_SECRET", "production-strong-jwt-secret-987654321-abcdef")
+    monkeypatch.setenv("QAP_ENCRYPTION_KEY", "a" * 64)
+
+    s = Settings(_env_file=None)
+    assert s.environment == "production"
+    assert s.debug is False
+
+
+def test_development_allows_placeholder_secrets(monkeypatch: pytest.MonkeyPatch):
+    """Development/staging can use placeholder secrets."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_ENVIRONMENT", "development")
+    monkeypatch.setenv("QAP_DEBUG", "true")
+    # Uses default REQUIRED_ENV placeholders
+
+    s = Settings(_env_file=None)
+    assert s.environment == "development"
+    assert s.debug is True
