@@ -260,7 +260,9 @@ test("trigger a run through the UI and verify the real worker evidence", async (
   await expect(page.getByRole("heading", { level: 1, name: project.name })).toBeVisible({
     timeout: 10_000,
   });
-  await page.getByRole("button", { name: "Trigger Run" }).click();
+  // Use .first() to avoid strict mode violation when multiple "Trigger Run" buttons exist
+  // (one in page header, one in setup checklist)
+  await page.getByRole("button", { name: "Trigger Run" }).first().click();
   await expect(page.getByRole("heading", { name: "Trigger Run" })).toBeVisible();
 
   const comboboxes = page.getByRole("combobox");

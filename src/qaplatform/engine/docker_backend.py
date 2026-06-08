@@ -161,10 +161,29 @@ class DockerBackend:
 
         run_id = spec.labels.get("run_id", "unknown")
         name = f"qap-run-{run_id}"
-        container = await self.client.containers.create_or_replace(
-            name=name,
-            config=container_config,
-        )
+
+        # Try creating container with storage-opt; if unsupported, retry without it
+        try:
+            container = await self.client.containers.create_or_replace(
+                name=name,
+                config=container_config,
+            )
+        except aiodocker.exceptions.DockerError as e:
+            if storage_opt and "storage-opt" in str(e).lower():
+                log.warning(
+                    "Docker storage-opt not supported on this system (run %s); "
+                    "proceeding without disk quota enforcement: %s",
+                    run_id,
+                    e,
+                )
+                del container_config["HostConfig"]["StorageOpt"]
+                container = await self.client.containers.create_or_replace(
+                    name=name,
+                    config=container_config,
+                )
+            else:
+                raise
+
         log.info("created container %s for run %s", container.id[:12], run_id)
         return container.id
 
