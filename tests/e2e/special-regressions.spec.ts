@@ -537,8 +537,9 @@ test.describe("special regression coverage against the real app", () => {
     expect(previewBody.preview_url.length).toBeGreaterThan(0);
 
     await expect(page.locator('iframe[title="Allure Report Preview"]')).toBeVisible();
-    await expect(
-      page.frameLocator('iframe[title="Allure Report Preview"]').getByText(`Artifact preview ${suffix}`),
-    ).toBeVisible();
+
+    // Wait for iframe content to load
+    const iframe = page.frameLocator('iframe[title="Allure Report Preview"]');
+    await expect(iframe.getByText(`Artifact preview ${suffix}`)).toBeVisible({ timeout: 10000 });
   });
 });
