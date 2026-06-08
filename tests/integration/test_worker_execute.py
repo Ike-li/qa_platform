@@ -766,6 +766,7 @@ async def test_trigger_run_completes_terminal_state(
         f"    assert Path('qap-real-pytest-marker.txt').read_text() == {marker!r}\n"
     )
     setup_script = (
+        "export HOME=/workspace && "
         "python -m pip install --user --no-cache-dir pytest && "
         "python - <<'PY'\n"
         "from pathlib import Path\n"
