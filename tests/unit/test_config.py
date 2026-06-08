@@ -762,3 +762,27 @@ def test_development_allows_placeholder_secrets(monkeypatch: pytest.MonkeyPatch)
     s = Settings(_env_file=None)
     assert s.environment == "development"
     assert s.debug is True
+
+
+def test_cors_origins_rejects_wildcard(monkeypatch: pytest.MonkeyPatch):
+    """CORS origins must not contain '*' wildcard (P2-A security hardening)."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_CORS_ORIGINS", '["*"]')
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["type"] == "value_error"
+    assert "wildcard" in errors[0]["msg"].lower()
+    assert "credentials" in errors[0]["msg"].lower()
+
+
+def test_cors_origins_accepts_specific_origins(monkeypatch: pytest.MonkeyPatch):
+    """CORS origins accepts specific origin URLs."""
+    _set_required(monkeypatch)
+    monkeypatch.setenv("QAP_CORS_ORIGINS", '["https://app.example.com", "https://staging.example.com"]')
+
+    s = Settings(_env_file=None)
+    assert s.cors_origins == ["https://app.example.com", "https://staging.example.com"]

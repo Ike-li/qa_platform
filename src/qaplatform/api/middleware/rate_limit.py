@@ -17,18 +17,27 @@ logger = structlog.get_logger(__name__)
 _IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
 # P1-3: Strict rate limit paths (auth endpoints with elevated abuse risk)
-# P1-7: Added /auth/refresh and /auth/sse-ticket (token rotation and SSE auth)
+# P1-7: Added /auth/refresh (token rotation)
+# P2-B: Removed /auth/sse-ticket from strict paths (now uses moderate limit)
 _STRICT_PATHS = (
     "/auth/login",
     "/auth/token",
     "/auth/register",
     "/auth/refresh",
+)
+
+# P2-B: Moderate rate limit paths (higher limit than strict, lower than general API)
+_MODERATE_PATHS = (
     "/auth/sse-ticket",
 )
 
 
 def _is_strict_path(path: str) -> bool:
     return any(strict_path in path for strict_path in _STRICT_PATHS)
+
+
+def _is_moderate_path(path: str) -> bool:
+    return any(moderate_path in path for moderate_path in _MODERATE_PATHS)
 
 
 def _rate_limit_unavailable_response() -> JSONResponse:
@@ -152,7 +161,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 redis = getattr(container, "redis_client", None)
 
         if redis is None:
-            if _is_strict_path(path):
+            if _is_strict_path(path) or _is_moderate_path(path):
                 logger.error("rate_limit_unavailable", path=path)
                 return _rate_limit_unavailable_response()
             return await call_next(request)
@@ -167,6 +176,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if _is_strict_path(path):
             limit = self.settings.rate_limit_auth_failure
             window = self.settings.rate_limit_auth_failure_window
+        elif _is_moderate_path(path):
+            limit = self.settings.rate_limit_sse_ticket
+            window = self.settings.rate_limit_sse_ticket_window
 
         # Normalize UUIDs in path to prevent per-resource rate limit bypass
         normalized_path = re.sub(
@@ -211,7 +223,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             logger.error("rate_limit_error", error=str(e))
             # Fail-closed for auth endpoints during Redis outage
-            if _is_strict_path(path):
+            if _is_strict_path(path) or _is_moderate_path(path):
                 return _rate_limit_unavailable_response()
             return await call_next(request)
 

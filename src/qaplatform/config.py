@@ -144,6 +144,9 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = Field(default=60, ge=1)
     rate_limit_auth_failure: int = Field(default=5, ge=1)
     rate_limit_auth_failure_window: int = Field(default=60, ge=1)
+    # P2-B: Moderate limit for SSE ticket creation (higher than auth failures, lower than general API)
+    rate_limit_sse_ticket: int = Field(default=30, ge=1)
+    rate_limit_sse_ticket_window: int = Field(default=60, ge=1)
     # CIDR blocks of trusted reverse proxies (e.g. ["10.0.0.0/8", "172.16.0.0/12"]).
     # Empty list (default) means no proxy is trusted; client.host is always used directly.
     trusted_proxies: list[str] = []
@@ -214,6 +217,13 @@ class Settings(BaseSettings):
             stripped = origin.strip()
             if not stripped:
                 raise ValueError(f"cors_origins[{index}] must not be blank")
+            if stripped == "*":
+                raise ValueError(
+                    "cors_origins must not contain '*' wildcard. "
+                    "Wildcard origins with credentials=True allow any site to make "
+                    "authenticated requests, bypassing CORS protection. "
+                    "List specific origins instead (e.g., https://app.example.com)."
+                )
             normalized.append(stripped)
         return normalized
 

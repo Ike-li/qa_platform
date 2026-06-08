@@ -287,14 +287,23 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
             # FAILED and must not be retried.
 
         except Exception as exc:
-            log.exception("execute_run failed for run %s", run_id)
+            # P2-C: Redact sensitive info (URLs, connection strings) from logs
             from qaplatform.engine.redact import redact_url_userinfo
+            redacted_msg = redact_url_userinfo(str(exc))
+            log.error(
+                "execute_run failed for run %s: %s (type: %s)",
+                run_id,
+                redacted_msg,
+                type(exc).__name__,
+                # Do not include exc_info=True here to avoid logging full traceback
+                # with potentially sensitive connection strings or credentials
+            )
             updated = await run_repo.fail_if_current(
                 run.id,
-                message=redact_url_userinfo(str(exc)),
+                message=redacted_msg,
             )
             if updated:
-                log.info("run %s marked as failed: %s", run_id, exc)
+                log.info("run %s marked as failed", run_id)
 
             # Release the failed-row update before the retry scheduler opens a
             # fresh session to inspect the original run and create the child

@@ -500,20 +500,20 @@ class TestRateLimitMiddlewareDispatch:
         )
 
     @pytest.mark.asyncio
-    async def test_sse_ticket_endpoint_uses_strict_limit(self):
-        """P1-7: /auth/sse-ticket is an SSE authentication entry point and must
-        use strict rate limiting to prevent abuse."""
-        # Simulate a request to /auth/sse-ticket with count=6 (exceeds strict limit of 5)
-        redis = self._make_redis_mock({"/auth/sse-ticket": 6})
+    async def test_sse_ticket_endpoint_uses_moderate_limit(self):
+        """P2-B: /auth/sse-ticket uses moderate rate limiting (30/min) to allow
+        frequent reconnections while still preventing abuse."""
+        # Simulate a request to /auth/sse-ticket with count=31 (exceeds moderate limit of 30)
+        redis = self._make_redis_mock({"/auth/sse-ticket": 31})
         mw = self._make_middleware(redis)
 
         call_next = AsyncMock(return_value=MagicMock(status_code=200))
         req = _make_request(path="/auth/sse-ticket")
         resp = await mw.dispatch(req, call_next)
 
-        _assert_rate_limited_response(resp, mw.settings.rate_limit_auth_failure_window)
+        _assert_rate_limited_response(resp, mw.settings.rate_limit_sse_ticket_window)
         call_next.assert_not_awaited()
         redis.pipeline.return_value.expire.assert_called_with(
             "rate_limit:ip:1.2.3.4:/auth/sse-ticket",
-            mw.settings.rate_limit_auth_failure_window,
+            mw.settings.rate_limit_sse_ticket_window,
         )
