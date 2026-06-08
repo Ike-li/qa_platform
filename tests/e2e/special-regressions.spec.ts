@@ -531,7 +531,7 @@ test.describe("special regression coverage against the real app", () => {
     await page.getByRole("button", { name: `Preview ${artifactName}` }).click();
     const previewResponse = await previewResponsePromise;
     const previewBody = await previewResponse.json();
-    expect(previewBody.url).toContain(`/reports/${run.id}/`);
+    expect(previewBody.preview_url).toContain(`/reports/${run.id}/`);
 
     await expect(page.locator('iframe[title="Allure Report Preview"]')).toBeVisible();
     await expect(
