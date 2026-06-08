@@ -117,12 +117,15 @@ export default async function globalSetup(_config: FullConfig) {
   const env = applyQapE2eEnv();
   await ensureInfrastructure();
 
-  run(PYTHON, ["-m", "alembic", "upgrade", "head"], env);
-  run(PYTHON, ["scripts/seed_admin.py"], {
-    ...env,
-    ADMIN_USERNAME: "admin",
-    ADMIN_PASSWORD: process.env.E2E_ADMIN_PASSWORD || "admin123",
-    ADMIN_EMAIL: "admin@qaplatform.local",
-  });
+  // RC gate: external stack (docker-compose) already ran migrations and seed_admin
+  if (process.env.QAP_E2E_EXTERNAL_STACK !== "1") {
+    run(PYTHON, ["-m", "alembic", "upgrade", "head"], env);
+    run(PYTHON, ["scripts/seed_admin.py"], {
+      ...env,
+      ADMIN_USERNAME: "admin",
+      ADMIN_PASSWORD: process.env.E2E_ADMIN_PASSWORD || "admin123",
+      ADMIN_EMAIL: "admin@qaplatform.local",
+    });
+  }
   await startWorkerIfRequested();
 }
