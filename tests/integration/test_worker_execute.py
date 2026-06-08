@@ -766,10 +766,13 @@ async def test_trigger_run_completes_terminal_state(
         f"    assert Path('qap-real-pytest-marker.txt').read_text() == {marker!r}\n"
     )
     setup_script = (
-        "export HOME=/workspace && "
-        "python -m pip install --user --no-cache-dir pytest && "
-        "export PATH=/workspace/.local/bin:$PATH && "
-        "export PYTHONPATH=/workspace/.local/lib/python3.12/site-packages:$PYTHONPATH && "
+        "python -m pip install --target=/workspace/.packages --no-cache-dir pytest && "
+        "cat > /workspace/python-with-packages <<'WRAPPER'\n"
+        "#!/bin/sh\n"
+        "export PYTHONPATH=/workspace/.packages:$PYTHONPATH\n"
+        "exec python \"$@\"\n"
+        "WRAPPER\n"
+        "chmod +x /workspace/python-with-packages && "
         "python - <<'PY'\n"
         "from pathlib import Path\n"
         "workspace = Path('/workspace')\n"
@@ -804,25 +807,29 @@ async def test_trigger_run_completes_terminal_state(
             "memory_mb": 512,
             "cpu_cores": 1.0,
             "network_policy": "allow",  # 测试容器需要安装 pytest
-            "env_vars": {
-                "HOME": "/workspace",
-                "PATH": "/workspace/.local/bin:/usr/local/bin:/usr/bin:/bin",
-                "PYTHONPATH": "/workspace/.local/lib/python3.12/site-packages",
-            },
+            "env_vars": {},
             "setup_script": setup_script,
             "max_artifact_size_mb": 10,
             "max_artifacts_count": 5,
         },
     )
     assert env_resp.status_code == 201, env_resp.text
-    # 3. 创建 pipeline（用 pytest plugin）
+    # 3. 创建 pipeline（用 pytest plugin，使用自定义 executable）
     pipeline_resp = await api_client.post(
         f"/api/v1/projects/{project_id}/pipelines",
         headers=headers,
         json={
             "name": "Smoke Pipeline",
             "stages": [
-                {"name": "test", "plugin": "pytest", "phase": "execute", "config": {"test_path": "tests/"}}
+                {
+                    "name": "test",
+                    "plugin": "pytest",
+                    "phase": "execute",
+                    "config": {
+                        "test_path": "tests/",
+                        "executable": "/workspace/python-with-packages",
+                    },
+                }
             ],
             "timeout_seconds": 300,
             "selector": {"include_paths": ["tests"], "on_empty": "warn"},
