@@ -51,6 +51,9 @@ test.describe("frontend security invariants", () => {
     const { run } = await setupTestRun(request, "Sec");
     await navigateToRun(page, run.id);
 
+    // Switch to Artifacts tab
+    await page.getByRole("tab", { name: /Artifacts/i }).click();
+
     // Open artifact preview
     await page.getByRole("button", { name: /preview/i }).first().click();
     await page.waitForSelector("iframe", { timeout: 5000 });
@@ -86,6 +89,9 @@ test.describe("frontend security invariants", () => {
     await page.goto(`/runs/${run.id}`);
     await page.waitForLoadState("networkidle");
 
+    // Switch to Artifacts tab
+    await page.getByRole("tab", { name: /Artifacts/i }).click();
+
     // Try to preview artifact
     await page.getByRole("button", { name: /preview/i }).first().click();
 
@@ -116,6 +122,9 @@ test.describe("frontend security invariants", () => {
 
     await page.goto(`/runs/${run.id}`);
     await page.waitForLoadState("networkidle");
+
+    // Switch to Artifacts tab
+    await page.getByRole("tab", { name: /Artifacts/i }).click();
 
     // Listen for window.open calls (should not happen)
     let windowOpened = false;
