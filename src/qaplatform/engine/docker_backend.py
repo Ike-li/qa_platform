@@ -247,8 +247,10 @@ class DockerBackend:
         exit_code: int,
     ) -> bool:
         # Docker /containers/{id}/wait only returns {StatusCode, Error}; OOMKilled
-        # lives on the container State, which can lag briefly after a SIGKILL 137.
-        attempts = 20 if exit_code == 137 else 1
+        # lives on the container State, which can lag briefly after a SIGKILL.
+        # OOM can manifest with various exit codes (137, 1, etc.), so retry for
+        # all non-zero exits to catch Docker state update lag.
+        attempts = 20 if exit_code != 0 else 1
         for attempt in range(attempts):
             try:
                 info = await container.show()
