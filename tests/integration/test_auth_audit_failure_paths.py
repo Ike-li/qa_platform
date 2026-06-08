@@ -557,7 +557,11 @@ async def test_auth_sse_ticket_rate_limit_uses_real_redis_token_hash_bucket(
     auth_client,
     integration_db_engine,
 ):
-    """SSE ticket abuse protection uses real JWT auth, Redis, and audit rows."""
+    """SSE ticket abuse protection uses real JWT auth, Redis, and audit rows.
+
+    P2-B: SSE ticket uses moderate rate limiting (30/min by default) to allow
+    frequent reconnections while still preventing abuse.
+    """
     registered = await _register_auth_user(auth_client, prefix="sse_limit")
     access_token = registered["access_token"]
     user_id = registered["user"]["id"]
@@ -574,7 +578,9 @@ async def test_auth_sse_ticket_rate_limit_uses_real_redis_token_hash_bucket(
     )
     headers = {"Authorization": f"Bearer {access_token}"}
     issued_tickets: set[str] = set()
-    for _ in range(5):
+    # P2-B: Use moderate limit (default 30) instead of strict limit (5)
+    limit = auth_app.state.container.settings.rate_limit_sse_ticket
+    for _ in range(limit):
         resp = await auth_client.post(
             "/api/v1/auth/sse-ticket",
             headers=headers,
@@ -591,7 +597,7 @@ async def test_auth_sse_ticket_rate_limit_uses_real_redis_token_hash_bucket(
     )
     _assert_rate_limited_response(
         limited,
-        auth_app.state.container.settings.rate_limit_auth_failure_window,
+        auth_app.state.container.settings.rate_limit_sse_ticket_window,
     )
 
     keys = [
@@ -601,14 +607,14 @@ async def test_auth_sse_ticket_rate_limit_uses_real_redis_token_hash_bucket(
     ]
     assert keys == [bucket_key]
     assert access_token not in keys[0]
-    assert await redis.zcard(bucket_key) == 6
+    assert await redis.zcard(bucket_key) == limit + 1
 
     after_count = await _audit_count_for_user(
         integration_db_engine,
         "auth.sse_ticket_create",
         user_id,
     )
-    assert after_count - before_count == 5
+    assert after_count - before_count == limit
 
 
 @pytest.mark.asyncio

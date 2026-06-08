@@ -1074,6 +1074,7 @@ jobs:
             export QAP_WORKER_MAX_JOBS=1
             export QAP_EXTERNAL_STACK_GIT_URL=https://github.com/octocat/Hello-World.git
             export QAP_EXTERNAL_STACK_GIT_REF=master
+            export QAP_E2E_EXTERNAL_STACK=1
             find tests/e2e -maxdepth 1 -name '*.spec.ts' -print | sort > artifacts/e2e/e2e-specs.txt
             npx playwright test --list --reporter=json > artifacts/e2e/e2e-tests.json
             npx playwright test --list | tee artifacts/e2e/e2e-tests.txt
