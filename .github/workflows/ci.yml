@@ -1033,6 +1033,29 @@ jobs:
           echo "QAP_RUN_WORKSPACE_DIR=$PWD/.qap-workspaces" >> .env
           mkdir -p artifacts/e2e
 
+      - name: Start external stack for E2E (release candidate)
+        if: github.event_name == 'workflow_dispatch' && inputs.gate == 'release_candidate'
+        run: |
+          docker compose up -d --build postgres redis minio minio-init api worker
+          for attempt in {1..36}; do
+            if curl -fsS http://localhost:8000/ready; then
+              docker compose exec -T api python -m alembic upgrade head
+              docker compose exec -T \
+                -e ADMIN_USERNAME=admin \
+                -e ADMIN_PASSWORD=admin123 \
+                -e ADMIN_EMAIL=admin@qaplatform.local \
+                api python scripts/seed_admin.py
+              exit 0
+            fi
+            docker compose ps
+            sleep 5
+          done
+          docker compose ps > artifacts/e2e/external-stack-startup-ps.txt 2>&1 || true
+          docker compose logs --no-color --timestamps --tail=200 \
+            postgres redis minio minio-init api worker \
+            2>&1 | tee artifacts/e2e/external-stack-startup.log
+          exit 1
+
       - name: Run E2E tests
         env:
           E2E_ADMIN_PASSWORD: admin123
@@ -1413,6 +1436,14 @@ jobs:
             sed 's/^/- /' "$tests_list"
           } >> "$manifest"
           cat "$manifest"
+
+      - name: Collect external stack logs (release candidate)
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.gate == 'release_candidate'
+        run: |
+          docker compose ps > artifacts/e2e/external-stack-ps.txt 2>&1 || true
+          docker compose logs --no-color --timestamps --tail=500 \
+            postgres redis minio minio-init api worker \
+            > artifacts/e2e/external-stack-docker.log 2>&1 || true
 
       - name: Upload E2E artifacts
         if: always()
