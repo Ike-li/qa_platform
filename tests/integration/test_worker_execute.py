@@ -766,7 +766,7 @@ async def test_trigger_run_completes_terminal_state(
         f"    assert Path('qap-real-pytest-marker.txt').read_text() == {marker!r}\n"
     )
     setup_script = (
-        "python -m pip install pytest && "
+        "python -m pip install --no-cache-dir pytest && "
         "python - <<'PY'\n"
         "from pathlib import Path\n"
         "workspace = Path('/workspace')\n"
@@ -850,6 +850,33 @@ async def test_trigger_run_completes_terminal_state(
     final_status = await _wait_for_terminal(
         api_client, headers, run_id, timeout_seconds=180
     )
+
+    # 如果失败，收集详细错误信息用于诊断
+    if final_status != "done":
+        detail_resp = await api_client.get(f"/api/v1/runs/{run_id}", headers=headers)
+        detail = detail_resp.json() if detail_resp.status_code == 200 else {}
+        error_message = detail.get("error_message", "no error message")
+
+        # 尝试获取日志以了解失败原因
+        try:
+            archive_resp = await api_client.get(
+                f"/api/v1/runs/{run_id}/logs/archive?per_page=100",
+                headers=headers,
+            )
+            if archive_resp.status_code == 200:
+                archive_body = archive_resp.json()
+                last_logs = [entry["line"] for entry in archive_body["data"][-20:]]
+                error_context = "\n".join(last_logs)
+            else:
+                error_context = "logs not available"
+        except Exception:
+            error_context = "failed to fetch logs"
+
+        pytest.fail(
+            f"run did not complete successfully: {final_status}\n"
+            f"error_message: {error_message}\n"
+            f"last logs:\n{error_context}"
+        )
 
     assert final_status == "done", f"run did not complete successfully: {final_status}"
 
