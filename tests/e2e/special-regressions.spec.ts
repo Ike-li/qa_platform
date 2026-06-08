@@ -523,15 +523,15 @@ test.describe("special regression coverage against the real app", () => {
     await page.getByRole("tab", { name: /Artifacts/ }).click();
     await expect(page.getByText(artifactName)).toBeVisible();
 
-    const downloadResponsePromise = page.waitForResponse(
+    const previewResponsePromise = page.waitForResponse(
       (response) =>
-        response.url().includes(`/api/v1/artifacts/${run.artifactId}/download`) &&
+        response.url().includes(`/api/v1/artifacts/${run.artifactId}/preview-url`) &&
         response.status() === 200,
     );
     await page.getByRole("button", { name: `Preview ${artifactName}` }).click();
-    const downloadResponse = await downloadResponsePromise;
-    const downloadBody = await downloadResponse.json();
-    expect(downloadBody.download_url).toContain(`/reports/${run.id}/`);
+    const previewResponse = await previewResponsePromise;
+    const previewBody = await previewResponse.json();
+    expect(previewBody.url).toContain(`/reports/${run.id}/`);
 
     await expect(page.locator('iframe[title="Allure Report Preview"]')).toBeVisible();
     await expect(
