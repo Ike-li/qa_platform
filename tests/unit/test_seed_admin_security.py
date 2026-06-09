@@ -4,7 +4,6 @@ Tests the P1-2 security fix that prevents empty and weak passwords.
 """
 import subprocess
 import sys
-from pathlib import Path
 
 
 def test_seed_admin_rejects_empty_password():
