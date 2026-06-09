@@ -19,13 +19,23 @@ ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@qaplatform.local")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 TENANT_NAME = os.environ.get("TENANT_NAME", "default")
 
-if ADMIN_PASSWORD is None:
-    print("ERROR: ADMIN_PASSWORD environment variable is required", file=sys.stderr)
+# P1-2 Security: Validate admin password (not just check for None)
+if not ADMIN_PASSWORD:
+    print("ERROR: ADMIN_PASSWORD environment variable is required and must not be empty", file=sys.stderr)
     print("", file=sys.stderr)
     print("Security: This script no longer provides a default password.", file=sys.stderr)
     print("Set a strong password via environment variable:", file=sys.stderr)
     print("  export ADMIN_PASSWORD='your-strong-password-here'", file=sys.stderr)
     print("  python scripts/seed_admin.py", file=sys.stderr)
+    sys.exit(1)
+
+# Enforce minimum password length (defense in depth)
+if len(ADMIN_PASSWORD) < 8:
+    print("ERROR: ADMIN_PASSWORD must be at least 8 characters", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("For production use, choose a strong password with:", file=sys.stderr)
+    print("  - At least 8 characters (12+ recommended)", file=sys.stderr)
+    print("  - Mix of letters, numbers, and symbols", file=sys.stderr)
     sys.exit(1)
 
 
