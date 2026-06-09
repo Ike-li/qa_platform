@@ -39,11 +39,11 @@ def test_api_test_quality_report_writes_summary_and_dashboard(tmp_path: Path) ->
 
     assert written_summary == summary
     assert summary["quality_gate"]["passed"] is True
-    assert summary["metrics"]["operation_count"] == 70
-    assert summary["metrics"]["operation_covered"] == 70
+    assert summary["metrics"]["operation_count"] == 72
+    assert summary["metrics"]["operation_covered"] == 72
     assert summary["metrics"]["operation_covered_pct"] == 100.0
-    assert summary["metrics"]["case_count"] == 420
-    assert summary["metrics"]["case_covered"] == 420
+    assert summary["metrics"]["case_count"] == 432
+    assert summary["metrics"]["case_covered"] == 432
     assert summary["metrics"]["case_covered_pct"] == 100.0
     assert summary["metrics"]["blocked_case_count"] == 0
     assert summary["metrics"]["missing_case_count"] == 0
@@ -89,8 +89,8 @@ def test_api_test_quality_report_computes_previous_summary_deltas(
     )
 
     assert summary["trend"]["delta_from_previous"] == {
-        "operation_covered": 2,
+        "operation_covered": 4,
         "operation_covered_pct": 2.86,
-        "case_covered": 10,
+        "case_covered": 22,
         "case_covered_pct": 2.38,
     }

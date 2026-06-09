@@ -47,8 +47,8 @@ def test_api_test_matrix_matches_current_openapi(openapi: dict[str, Any]) -> Non
     summary = validator.validate_matrix(MATRIX_PATH, openapi=openapi)
 
     assert summary == {
-        "operations": 70,
-        "covered": 70,
+        "operations": 72,
+        "covered": 72,
         "partial": 0,
         "blocked": 0,
     }
