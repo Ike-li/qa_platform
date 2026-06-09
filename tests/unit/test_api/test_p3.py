@@ -540,14 +540,14 @@ def test_webhook_routes_document_actual_non_run_responses(app):
     _assert_error_response_ref(project_responses["404"])
     _assert_detail_openapi_response(project_responses["409"])
 
-    for path in ("/webhooks/{provider}", "/api/v1/webhooks/{provider}"):
-        provider_responses = openapi_paths[path]["post"]["responses"]
-        _assert_webhook_decision_openapi_response(provider_responses["200"])
-        _assert_detail_openapi_response(provider_responses["202"])
-        _assert_detail_openapi_response(provider_responses["400"])
-        _assert_detail_openapi_response(provider_responses["401"])
-        _assert_error_response_ref(provider_responses["404"])
-        _assert_detail_openapi_response(provider_responses["409"])
+    # Only check /api/v1/webhooks/{provider} as /webhooks/{provider} was removed
+    provider_responses = openapi_paths["/api/v1/webhooks/{provider}"]["post"]["responses"]
+    _assert_webhook_decision_openapi_response(provider_responses["200"])
+    _assert_detail_openapi_response(provider_responses["202"])
+    _assert_detail_openapi_response(provider_responses["400"])
+    _assert_detail_openapi_response(provider_responses["401"])
+    _assert_error_response_ref(provider_responses["404"])
+    _assert_detail_openapi_response(provider_responses["409"])
 
 
 class TestWebhookTrigger:
