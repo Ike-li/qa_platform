@@ -60,7 +60,7 @@ def test_api_test_quality_report_writes_summary_and_dashboard(tmp_path: Path) ->
     }
     assert "# API Test Quality Dashboard" in dashboard
     assert "- quality_gate: PASS" in dashboard
-    assert "| auth | 70 | 0 | 0 |" in dashboard
+    assert "| auth | 72 | 0 | 0 |" in dashboard
     assert "| webhooks | 3 | 3 | 0 | 0 |" in dashboard
 
 

@@ -70,6 +70,7 @@ def test_ci_workflow_yaml_has_no_duplicate_mapping_keys():
 
     assert isinstance(workflow.get("jobs"), dict)
     assert set(workflow["jobs"]) == {
+        "doc-health-check",
         "lint-and-type-check",
         "backend-test",
         "backend-integration-test",
