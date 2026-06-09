@@ -47,6 +47,7 @@ import { cn, isSafeArtifactUrl } from "../../lib/utils";
 import { usePageTitle } from "../../hooks/use-page-title";
 import { getArtifactDownloadUrl, getArtifactPreviewUrl } from "../../lib/api";
 import { ArtifactPreview } from "../../components/runs/artifact-preview";
+import { ShareReportDialog } from "../../components/runs/share-report-dialog";
 import { useState } from "react";
 
 type PreviewState = {
@@ -207,6 +208,11 @@ export default function RunDetail() {
         </div>
 
         <div className="flex gap-2">
+          {/* Share Report Button (only show when Allure report exists) */}
+          {hasAllureReport && run.is_terminal && (
+            <ShareReportDialog runId={run.id} />
+          )}
+
           {run.status === "running" || run.status === "queued" || run.status === "preparing" || run.status === "collecting" ? (
             <AlertDialog>
               <AlertDialogTrigger asChild>

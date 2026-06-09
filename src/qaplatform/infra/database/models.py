@@ -450,6 +450,7 @@ class Run(Base):
     test_results: Mapped[list[TestResult]] = relationship("TestResult", back_populates="run", lazy="noload")
     artifacts: Mapped[list[Artifact]] = relationship("Artifact", back_populates="run", lazy="noload")
     run_events: Mapped[list[RunEvent]] = relationship("RunEvent", back_populates="run", lazy="noload")
+    share_tokens: Mapped[list["ReportShareToken"]] = relationship("ReportShareToken", back_populates="run", lazy="noload")
 
 
 class TestResult(Base):
@@ -690,3 +691,44 @@ class AuditEvent(AuditBase):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+
+
+# ---------- Report Share Token ----------
+
+
+class ReportShareToken(Base):
+    """Token for temporary public access to Allure reports."""
+
+    __tablename__ = "report_share_token"
+    __table_args__ = (
+        Index("idx_report_share_token_token", "token"),
+        Index("idx_report_share_token_run_id", "run_id"),
+        Index("idx_report_share_token_expires_at", "expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text(_gen_uuid())
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("run.id", ondelete="CASCADE"), nullable=False
+    )
+    token: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_by: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    access_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    max_access_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    run: Mapped[Run] = relationship("Run", back_populates="share_tokens")
+    creator: Mapped[AppUser] = relationship("AppUser")

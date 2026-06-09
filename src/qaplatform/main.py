@@ -192,6 +192,8 @@ def create_app(
     from qaplatform.api.v1.pipelines import router as pipeline_router
     from qaplatform.api.v1.project_members import router as project_member_router
     from qaplatform.api.v1.projects import router as project_router
+    from qaplatform.api.v1.public_reports import router as public_reports_router
+    from qaplatform.api.v1.report_shares import router as report_shares_router
     from qaplatform.api.v1.runs import router as run_router
     from qaplatform.api.v1.schedules import router as schedule_router
     from qaplatform.api.v1.sse import router as sse_router
@@ -210,12 +212,14 @@ def create_app(
     app.include_router(pipeline_router, prefix=api_prefix)
     app.include_router(notification_router, prefix=api_prefix)
     app.include_router(run_router, prefix=api_prefix)
+    app.include_router(report_shares_router, prefix=api_prefix)
     app.include_router(schedule_router, prefix=api_prefix)
     app.include_router(artifact_router, prefix=api_prefix)
     app.include_router(sse_router, prefix=api_prefix)
     app.include_router(webhook_router, prefix=api_prefix)
     app.include_router(webhook_provider_router, prefix=api_prefix)
-    app.include_router(webhook_provider_router)
+    # Public endpoints (no /api/v1 prefix, no auth required)
+    app.include_router(public_reports_router)
 
     # ── Health checks ────────────────────────────────────────────────────
     app.add_route(
@@ -319,3 +323,10 @@ def _register_error_handlers(app: FastAPI) -> None:
             )
         )
         return JSONResponse(status_code=422, content=body.model_dump())
+
+    return app
+
+
+# Create default app instance for uvicorn
+app = create_app()
+

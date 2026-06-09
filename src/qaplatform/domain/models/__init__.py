@@ -18,6 +18,11 @@ from qaplatform.domain.models.project import (
     TestSelector,
     TriggerConfig,
 )
+from qaplatform.domain.models.report_share import (
+    CreateReportShareTokenRequest,
+    ReportShareToken,
+    ReportShareTokenResponse,
+)
 from qaplatform.domain.models.run import (
     Artifact,
     Run,
@@ -34,6 +39,7 @@ __all__ = [
     "Artifact",
     "ChannelConfig",
     "Condition",
+    "CreateReportShareTokenRequest",
     "Credential",
     "Environment",
     "Notification",
@@ -43,6 +49,8 @@ __all__ = [
     "Pipeline",
     "Project",
     "QuietWindow",
+    "ReportShareToken",
+    "ReportShareTokenResponse",
     "ResourceLimits",
     "RetryPolicy",
     "Run",
