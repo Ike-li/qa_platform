@@ -22,11 +22,14 @@
 
 ---
 
-## 🚨 本周重点 (3 项)
+## 🚨 本周重点 (6 项)
 
 - [x] ✅ 代码质量修复 (已完成 2026-06-09)
 - [x] ✅ Review 报告分享功能 → 提交 (已完成 2026-06-09)
-- [ ] ⏳ 更新前端依赖 (估时 30min)
+- [x] ✅ 更新前端依赖 (已完成 2026-06-09)
+- [x] ✅ 修复 CI 环境变量问题 (已完成 2026-06-09)
+- [x] ✅ 更新 API test matrix (已完成 2026-06-09)
+- [x] ✅ 文档管理系统改进 (已完成 2026-06-09)
 
 ---
 
@@ -35,8 +38,8 @@
 [docs/BACKLOG.md](docs/BACKLOG.md)
 
 ```
-高优先级: 1 项  (报告分享功能)
-中优先级: 3 项  (前端测试、OpenTelemetry、覆盖率)
+高优先级: 6 项已完成  (CI 修复、代码质量、文档管理)
+中优先级: 4 项  (前端测试、OpenTelemetry、覆盖率、Doc Health Skill)
 低优先级: 9 项  (文档、性能、CI/CD)
 ```
 
@@ -60,7 +63,7 @@
 | 📈 状态总览 | [STATUS.md](STATUS.md) - 完整状态仪表盘 |
 | 📝 技术改进 | [docs/BACKLOG.md](docs/BACKLOG.md) - 待办事项 ⭐ |
 | ✅ 功能开发 | [docs/TODO.md](docs/TODO.md) - PRD 验收 |
-| 📊 最新审查 | [PROJECT_REVIEW_REPORT.md](PROJECT_REVIEW_REPORT.md) |
+| 📜 变更记录 | [CHANGELOG.md](CHANGELOG.md) - 版本历史 |
 | 🏗️ 架构 | [docs/architecture.md](docs/architecture.md) |
 | 🧪 测试 | [docs/testing-strategy.md](docs/testing-strategy.md) |
 

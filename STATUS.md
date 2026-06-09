@@ -16,10 +16,10 @@
 - [docs/TODO.md](docs/TODO.md) - 功能开发任务
 - [docs/architecture.md](docs/architecture.md) - 架构设计
 
-### 最近审查
-- [PROJECT_REVIEW_REPORT.md](PROJECT_REVIEW_REPORT.md) - 2026-06-09 全面审查 (最新)
-- [CODE_QUALITY_FIXES.md](CODE_QUALITY_FIXES.md) - 代码质量修复记录
-- [ACTION_ITEMS.md](ACTION_ITEMS.md) - 快速行动清单
+### 项目历史
+- [CHANGELOG.md](CHANGELOG.md) - 版本变更记录
+- [docs/BACKLOG.md](docs/BACKLOG.md) - 本周工作进展
+- Memory: `~/.claude/projects/.../memory/` - AI 协作记忆
 
 ### 开发指南
 - [docs/development.md](docs/development.md) - 开发环境配置

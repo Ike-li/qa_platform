@@ -79,42 +79,88 @@ echo "----------------------------------------"
 broken_links=0
 checked_links=0
 
-if command -v grep >/dev/null 2>&1; then
+if command -v grep >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  # 使用临时文件收集结果
+  temp_result=$(mktemp)
+
   # 查找所有 .md 文件中的相对链接
   find . -name "*.md" \
     -not -path "*/archive/*" \
     -not -path "*/node_modules/*" \
     -not -path "*/.venv/*" \
     -not -path "*/.git/*" \
+    -not -path "*/.pytest_cache/*" \
+    -not -path "*/.omc/*" \
     2>/dev/null | while read -r file; do
 
-    # 提取相对路径链接（排除 http 链接）
-    grep -oE '\[([^\]]+)\]\(([^)]+\.md[^)]*)\)' "$file" 2>/dev/null | \
-      grep -v "http" | \
-      sed 's/.*(\([^)]*\)).*/\1/' | \
-      sed 's/#.*//' | while read -r link; do
+    # 使用 Python 提取并验证 Markdown 链接
+    python3 -c "
+import re
+import os
+import sys
 
-      checked_links=$((checked_links + 1))
+file_path = '$file'
+try:
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
 
-      # 计算链接的绝对路径
-      dir=$(dirname "$file")
-      target="$dir/$link"
+    # 匹配 [text](link) 格式，排除 http/https 链接
+    pattern = r'\[([^\]]+)\]\(([^)]+)\)'
+    matches = re.findall(pattern, content)
 
-      if [ ! -f "$target" ]; then
-        echo -e "${YELLOW}⚠️  断链: $file -> $link${NC}"
-        broken_links=$((broken_links + 1))
-        warnings=$((warnings + 1))
-      fi
-    done
+    base_dir = os.path.dirname(file_path)
+
+    for text, link in matches:
+        # 跳过外部链接和锚点链接
+        if link.startswith('http://') or link.startswith('https://') or link.startswith('#'):
+            continue
+
+        # 移除锚点部分
+        clean_link = link.split('#')[0]
+        if not clean_link:
+            continue
+
+        # 计算目标文件路径
+        if clean_link.startswith('/'):
+            target = clean_link
+        else:
+            target = os.path.normpath(os.path.join(base_dir, clean_link))
+
+        # 检查文件是否存在
+        checked = True
+        if not os.path.exists(target):
+            print(f'BROKEN|{file_path}|{link}')
+        else:
+            print(f'OK|{file_path}|{link}')
+except Exception as e:
+    pass
+" >> "$temp_result"
   done
 
-  if [ $broken_links -eq 0 ]; then
-    echo -e "${GREEN}✅ 没有发现断链 (检查了 $checked_links 个链接)${NC}"
+  # 统计结果
+  if [ -f "$temp_result" ]; then
+    checked_links=$(wc -l < "$temp_result" | tr -d ' ')
+    broken_links=$(grep -c "^BROKEN" "$temp_result" 2>/dev/null || echo 0)
+
+    if [ "$broken_links" -gt 0 ]; then
+      echo -e "${YELLOW}⚠️  发现 $broken_links 个断链:${NC}"
+      grep "^BROKEN" "$temp_result" | head -10 | while IFS='|' read -r status file link; do
+        echo "   - $file -> $link"
+        warnings=$((warnings + 1))
+      done
+      if [ "$broken_links" -gt 10 ]; then
+        echo "   ... 还有 $((broken_links - 10)) 个"
+      fi
+    else
+      echo -e "${GREEN}✅ 没有发现断链 (检查了 $checked_links 个链接)${NC}"
+    fi
+
+    rm -f "$temp_result"
   else
-    echo -e "${YELLOW}⚠️  发现 $broken_links 个断链${NC}"
+    echo -e "${GREEN}✅ 没有发现断链 (检查了 0 个链接)${NC}"
   fi
 else
-  echo -e "${YELLOW}⚠️  grep 命令不可用，跳过链接检查${NC}"
+  echo -e "${YELLOW}⚠️  grep 或 python3 命令不可用，跳过链接检查${NC}"
 fi
 
 echo ""

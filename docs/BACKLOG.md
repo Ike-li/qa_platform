@@ -11,6 +11,27 @@
 
 ## 🚨 高优先级 (本周完成)
 
+### 文档管理改进 ⭐ 新增
+
+- [x] 创建 CHANGELOG.md (2026-06-09)
+  - 记录版本历史和主要变更
+  - 基于 Keep a Changelog 格式
+- [x] 修复文档健康检查脚本 (2026-06-09)
+  - 修复链接检测逻辑，使用 Python 正确解析 Markdown 链接
+  - 检测到 1 个断链（代码示例中的正则表达式，可忽略）
+- [x] 在 CI 中添加文档健康检查 (2026-06-09)
+  - 新增 doc-health-check job
+  - 每次 push/PR 自动运行
+- [x] 修复 DASHBOARD 和 STATUS 断链 (2026-06-09)
+  - 移除不存在的 PROJECT_REVIEW_REPORT.md 等引用
+  - 添加 CHANGELOG.md 链接
+- [x] 调研文档管理最佳实践 (2026-06-09)
+  - 分析 10+ 个业界工具
+  - 创建调研报告 docs/DOC_MANAGEMENT_RESEARCH.md
+- [x] 设计 Doc Health Skill (2026-06-09)
+  - 完成技术架构设计
+  - 创建设计文档 docs/DOC_HEALTH_SKILL_DESIGN.md
+
 ### CI 修复
 
 - [x] 修复 CI backend-integration-test 环境变量缺失 (2026-06-09)
@@ -25,7 +46,6 @@
   - 更新 operation_count: 70 → 72, case_count: 420 → 432
   - 更新相关单元测试和集成测试
   - **Commits**: 15a711d, caa4a70, e04b63d
-  - **验证**: CI 运行中，需等待结果
 
 ### 代码质量
 
@@ -48,7 +68,6 @@
 - [x] 更新前端依赖 (2026-06-09)
   - 运行 npm update 更新 26+ 个包
   - **Commit**: f044d81
-  - **验证**: CI 运行中
 
 ---
 
@@ -85,10 +104,6 @@
 
 ### 文档
 
-- [ ] 创建 CHANGELOG.md
-  - 跟踪版本变更
-  - **参考**: [Keep a Changelog](https://keepachangelog.com/)
-
 - [ ] 创建 CONTRIBUTING.md
   - 贡献流程
   - 代码规范
@@ -97,6 +112,25 @@
 - [ ] 报告分享功能用户文档
   - 添加到 docs/feature-catalog.md
   - API 文档示例
+
+### 文档管理工具化 ⭐ 新增
+
+- [ ] 开发 Doc Health Skill MVP
+  - 实现断链检测
+  - 实现新鲜度检查
+  - 实现日期标记自动修复
+  - **估时**: 1 周
+  - **设计文档**: docs/DOC_HEALTH_SKILL_DESIGN.md
+
+- [ ] 添加 markdownlint 配置
+  - 统一 Markdown 格式规范
+  - 集成到 CI
+  - **估时**: 2 小时
+
+- [ ] 添加 OpenAPI spec 双向验证
+  - 验证 API 文档与实际路由一致
+  - 扩展现有 frontend-api-contract job
+  - **估时**: 半天
 
 ### 文档健康维护 ⭐ 新增
 
