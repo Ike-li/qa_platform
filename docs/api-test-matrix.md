@@ -2,7 +2,7 @@
 
 ## 目标
 
-OpenAPI 是接口测试的唯一真源。当前目标范围为 `/api/v1/**`、`/health`、`/ready`、`/webhooks/{provider}`，共 70 个 operation。接口 operation 矩阵文件为 `tests/api_matrix/openapi_operation_matrix.yml`，由 `scripts/validate_api_test_matrix.py` 与运行时 OpenAPI 文档做一致性校验；原子测试点矩阵文件为 `tests/api_matrix/openapi_test_case_matrix.yml`，由 `scripts/validate_api_test_case_matrix.py` 从 operation 矩阵展开校验。
+OpenAPI 是接口测试的唯一真源。当前目标范围为 `/api/v1/**`、`/health`、`/ready`，共 72 个 operation。接口 operation 矩阵文件为 `tests/api_matrix/openapi_operation_matrix.yml`，由 `scripts/validate_api_test_matrix.py` 与运行时 OpenAPI 文档做一致性校验；原子测试点矩阵文件为 `tests/api_matrix/openapi_test_case_matrix.yml`，由 `scripts/validate_api_test_case_matrix.py` 从 operation 矩阵展开校验。
 
 本计划分三层执行：
 
@@ -27,7 +27,7 @@ Operation 覆盖状态：
 
 | 状态 | 数量 | 含义 |
 | --- | ---: | --- |
-| `covered` | 70 | `/health`、`/ready`、Auth、Project CRUD、project members、project resources CRUD、audit-events、公开 API 可构造的 runs/SSE/webhook operation、real-stack 可构造的 artifact/archived logs/analytics 有数据成功态，以及 seed-assisted admin/branches/member 写操作成功态已有黑盒行为测试。 |
+| `covered` | 72 | `/health`、`/ready`、Auth、Project CRUD、project members、project resources CRUD、audit-events、公开 API 可构造的 runs/SSE/webhook operation、report sharing、real-stack 可构造的 artifact/archived logs/analytics 有数据成功态，以及 seed-assisted admin/branches/member 写操作成功态已有黑盒行为测试。 |
 | `partial` | 0 | 不再保留未决 partial。 |
 | `blocked_by_missing_public_setup` | 0 | 当前无阻塞项；无法通过公开 API 创建的前置状态由测试环境 seed 工具显式覆盖。 |
 | `missing` | 0 | 不允许合入。新增 OpenAPI operation 未进入矩阵时校验失败。 |
@@ -36,8 +36,8 @@ Operation 覆盖状态：
 
 | 状态 | 数量 | 含义 |
 | --- | ---: | --- |
-| `total_cases` | 420 | 70 个 operation × `contract`、`auth`、`success`、`schema_negative`、`rbac_tenant`、`declared_responses` 6 个维度。 |
-| `covered` | 420 | 已由 contract smoke、黑盒行为测试、seed-assisted 黑盒行为测试、real-stack 行为测试或声明状态校验覆盖/守护的原子测试点。 |
+| `total_cases` | 432 | 72 个 operation × `contract`、`auth`、`success`、`schema_negative`、`rbac_tenant`、`declared_responses` 6 个维度。 |
+| `covered` | 432 | 已由 contract smoke、黑盒行为测试、seed-assisted 黑盒行为测试、real-stack 行为测试或声明状态校验覆盖/守护的原子测试点。 |
 | `blocked_by_missing_public_setup` | 0 | 当前无阻塞项。 |
 | `missing` | 0 | 不允许合入。新增 operation 或维度漂移会导致 case matrix validator 失败。 |
 
@@ -69,8 +69,9 @@ Seed-assisted 成功态：
 | Projects | 6 | CRUD、列表 search/status/filter/pagination、slug 冲突、git 字段校验、删除后不可见；seed-assisted 本地 HTTPS Git 仓库覆盖 `/projects/branches` success。 |
 | Project resources | 25 | environments、pipelines、schedules、credentials、notification rules 的 CRUD、分页、schema negative、跨租户不可见、加密/脱敏响应；seed-assisted 同租户用户覆盖 project members 写操作成功态。 |
 | Runs / Logs / Artifacts | 14 | 触发运行、批量取消/重试、查询运行、结果、通知、SSE、终态幂等、跨租户不可见已覆盖；real-stack 行为测试覆盖 artifact download、preview、Allure 入口与归档日志成功态。 |
+| Report Shares | 3 | 创建分享、列出分享、删除分享的 CRUD、schema negative、跨租户隔离、临时访问令牌验证。 |
 | Analytics / Audit | 4 | audit-events 的分页、actor/resource/time 过滤、schema negative、跨租户不可见已覆盖；analytics 的空结果、参数校验、跨租户隔离，以及 worker ingestion 后 trends/flaky/test-history/release-summary 有数据成功态已覆盖。 |
-| Webhooks | 3 | 非法 provider、缺签名、错误签名、签名与 body 篡改不匹配、空 body、非法 JSON、unsupported event、branch filtered、幂等重复事件、project/provider 两类入口成功态。 |
+| Webhooks | 2 | 非法 provider、缺签名、错误签名、签名与 body 篡改不匹配、空 body、非法 JSON、unsupported event、branch filtered、幂等重复事件、project/provider 两类入口成功态。 |
 | Admin | 1 | 普通 owner 403、未认证拒绝、seed-assisted platform admin 200。 |
 
 ## 执行命令
