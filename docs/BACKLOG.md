@@ -14,8 +14,17 @@
 ### CI 修复
 
 - [x] 修复 CI backend-integration-test 环境变量缺失 (2026-06-09)
-  - 添加 7 个基础环境变量
+  - 添加 7 个基础环境变量到 backend-integration-test job
   - **Commit**: ad720b0
+- [x] 修复 CI frontend-api-contract 环境变量缺失 (2026-06-09)
+  - 添加环境变量到 frontend-api-contract job
+  - 修复 export_openapi.py Settings 初始化失败
+  - **Commit**: 3aac17f
+- [x] 更新 API test matrix 以匹配报告分享功能 (2026-06-09)
+  - 添加 3 个报告分享端点，移除 1 个废弃 webhook 端点
+  - 更新 operation_count: 70 → 72, case_count: 420 → 432
+  - 更新相关单元测试和集成测试
+  - **Commits**: 15a711d, caa4a70, e04b63d
   - **验证**: CI 运行中，需等待结果
 
 ### 代码质量
@@ -36,12 +45,10 @@
 
 ### 依赖更新
 
-- [ ] 更新前端依赖 (26+ 个小版本过时)
-  ```bash
-  cd frontend && npm update && npm audit fix
-  ```
-  - **估时**: 30 分钟
-  - **风险**: 低 (小版本更新)
+- [x] 更新前端依赖 (2026-06-09)
+  - 运行 npm update 更新 26+ 个包
+  - **Commit**: f044d81
+  - **验证**: CI 运行中
 
 ---
 
@@ -156,8 +163,10 @@
 
 **本周目标**: 
 1. ✅ 修复代码质量问题 (已完成)
-2. ⏳ 提交报告分享功能
-3. ⏳ 更新前端依赖
+2. ✅ 提交报告分享功能 (已完成)
+3. ✅ 更新前端依赖 (已完成)
+4. ✅ 修复 CI 环境变量问题 (已完成)
+5. ✅ 更新 API test matrix (已完成)
 
 **下周预计**:
 1. 前端单元测试框架
