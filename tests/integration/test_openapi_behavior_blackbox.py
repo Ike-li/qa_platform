@@ -1475,14 +1475,6 @@ RESOURCE_SUCCESS_CASES: tuple[ResourceSuccessCase, ...] = (
         _resource_success_run_logs_stream,
     ),
     ResourceSuccessCase(
-        "post_webhooks_provider::success::signed_push",
-        _resource_success_provider_webhook,
-    ),
-    ResourceSuccessCase(
-        "post_webhooks_provider::success::duplicate_delivery",
-        _resource_success_provider_webhook_duplicate,
-    ),
-    ResourceSuccessCase(
         "post_api_v1_webhooks_provider::success::signed_push",
         _resource_success_api_v1_provider_webhook,
     ),
@@ -3148,7 +3140,7 @@ async def test_webhooks_blackbox_security_failures_and_duplicate_delivery(
         }
 
         missing_signature = await client.post(
-            "/webhooks/github",
+            "/api/v1/webhooks/github",
             content=raw_body,
             headers=provider_headers,
         )
@@ -3156,7 +3148,7 @@ async def test_webhooks_blackbox_security_failures_and_duplicate_delivery(
         _assert_error_body(missing_signature)
 
         wrong_signature = await client.post(
-            "/webhooks/github",
+            "/api/v1/webhooks/github",
             content=raw_body,
             headers={**provider_headers, "X-Hub-Signature-256": "sha256=bad"},
         )
@@ -3166,7 +3158,7 @@ async def test_webhooks_blackbox_security_failures_and_duplicate_delivery(
         tampered_payload = {**github_payload, "after": "e" * 40}
         tampered_raw_body = _canonical_json_bytes(tampered_payload)
         tampered_signature = await client.post(
-            "/webhooks/github",
+            "/api/v1/webhooks/github",
             content=tampered_raw_body,
             headers={
                 **provider_headers,
@@ -3178,7 +3170,7 @@ async def test_webhooks_blackbox_security_failures_and_duplicate_delivery(
         _assert_error_body(tampered_signature)
 
         signed_delivery = await client.post(
-            "/webhooks/github",
+            "/api/v1/webhooks/github",
             content=raw_body,
             headers={
                 **provider_headers,
@@ -3190,7 +3182,7 @@ async def test_webhooks_blackbox_security_failures_and_duplicate_delivery(
         assert signed_run["git_sha"] == FULL_SHA
 
         duplicate_delivery = await client.post(
-            "/webhooks/github",
+            "/api/v1/webhooks/github",
             content=raw_body,
             headers={
                 **provider_headers,
@@ -3215,7 +3207,7 @@ async def test_webhooks_blackbox_security_failures_and_duplicate_delivery(
         filtered_payload["ref"] = "refs/heads/feature/ignored"
         filtered_raw_body = _canonical_json_bytes(filtered_payload)
         filtered_delivery = await client.post(
-            "/webhooks/github",
+            "/api/v1/webhooks/github",
             content=filtered_raw_body,
             headers={
                 **provider_headers,
@@ -3230,7 +3222,7 @@ async def test_webhooks_blackbox_security_failures_and_duplicate_delivery(
         }
 
         ignored_event = await client.post(
-            "/webhooks/github",
+            "/api/v1/webhooks/github",
             json={"zen": "keep it logically precise"},
             headers={"X-GitHub-Event": "ping"},
         )

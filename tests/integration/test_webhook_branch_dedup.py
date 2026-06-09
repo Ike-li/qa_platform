@@ -131,7 +131,7 @@ async def test_provider_github_push_matches_repo_url_without_user_and_audits_sys
     signature = generate_webhook_signature(secret, raw_body)
 
     resp = await integration_client.post(
-        "/webhooks/github",
+        "/api/v1/webhooks/github",
         content=raw_body,
         headers={
             "Content-Type": "application/json",
@@ -198,7 +198,7 @@ async def test_provider_github_push_rejects_invalid_signature_without_run(
     raw_body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
     resp = await integration_client.post(
-        "/webhooks/github",
+        "/api/v1/webhooks/github",
         content=raw_body,
         headers={
             "Content-Type": "application/json",
