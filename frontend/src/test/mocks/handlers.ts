@@ -76,6 +76,15 @@ export const handlers = [
     return HttpResponse.json({ ...project, ...body });
   }),
 
+  http.put(`${API_BASE}/projects/:id`, async ({ params, request }) => {
+    const project = mockProjects.find((p) => p.id === params.id);
+    if (!project) {
+      return new HttpResponse(null, { status: 404 });
+    }
+    const body = await request.json() as any;
+    return HttpResponse.json({ ...project, ...body });
+  }),
+
   http.delete(`${API_BASE}/projects/:id`, ({ params }) => {
     const project = mockProjects.find((p) => p.id === params.id);
     if (!project) {
@@ -128,7 +137,11 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/runs/:id/cancel`, ({ params }) => {
-    return HttpResponse.json({ message: "Run cancelled" });
+    const cancelledRun = createMockRun({
+      id: params.id as string,
+      status: "cancelled",
+    });
+    return HttpResponse.json(cancelledRun);
   }),
 
   // Test results endpoints

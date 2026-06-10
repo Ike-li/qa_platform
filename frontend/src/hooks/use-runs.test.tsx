@@ -210,3 +210,142 @@ describe("useRun", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
   });
 });
+
+describe("useTriggerRun", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+  });
+
+  it("triggers run successfully", async () => {
+    const { useTriggerRun } = await import("./use-runs");
+    const { result } = renderHook(() => useTriggerRun(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    result.current.mutate({
+      pipeline_id: "pipe-1",
+      environment_id: "env-1",
+      priority: 1,
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeDefined();
+  });
+
+  it("invalidates queries on success", async () => {
+    const { useTriggerRun } = await import("./use-runs");
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useTriggerRun(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    result.current.mutate({ pipeline_id: "pipe-1" });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs"] });
+  });
+});
+
+describe("useCancelRun", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+  });
+
+  it("cancels run successfully", async () => {
+    const { useCancelRun } = await import("./use-runs");
+    const { result } = renderHook(() => useCancelRun("run-running"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  });
+
+  it("invalidates queries on success", async () => {
+    const { useCancelRun } = await import("./use-runs");
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useCancelRun("run-running"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-running"] });
+  });
+});
+
+describe("useRunResults", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+  });
+
+  it("fetches run results successfully", async () => {
+    const { useRunResults } = await import("./use-runs");
+    const { result } = renderHook(() => useRunResults("run-success"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeDefined();
+  });
+
+  it("handles pagination", async () => {
+    const { useRunResults } = await import("./use-runs");
+    const { result } = renderHook(
+      () => useRunResults("run-success", { page: 2, per_page: 10 }),
+      {
+        wrapper: createWrapper(queryClient),
+      }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  });
+});
+
+describe("useRunArtifacts", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+  });
+
+  it("fetches run artifacts successfully", async () => {
+    const { useRunArtifacts } = await import("./use-runs");
+    const { result } = renderHook(() => useRunArtifacts("run-success"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeDefined();
+  });
+});

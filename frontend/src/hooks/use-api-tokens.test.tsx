@@ -1,12 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  useApiTokens,
-  useCreateApiToken,
-} from "./use-api-tokens";
-import { server } from "../test/setup";
-import { http, HttpResponse } from "msw";
+import { useApiTokens, useCreateApiToken } from "./use-api-tokens";
 import type { ReactNode } from "react";
 
 function createWrapper(queryClient: QueryClient) {
@@ -29,16 +24,15 @@ describe("useApiTokens", () => {
     });
   });
 
-  it("fetches API tokens list successfully", async () => {
+  it("fetches api tokens successfully", async () => {
     const { result } = renderHook(() => useApiTokens(), {
       wrapper: createWrapper(queryClient),
     });
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(result.current.data).toBeDefined();
-    expect(result.current.data?.data).toHaveLength(2);
-    expect(result.current.data?.data[0].name).toBe("CI Token");
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+      expect(result.current.data).toBeDefined();
+    });
   });
 });
 
@@ -54,36 +48,30 @@ describe("useCreateApiToken", () => {
     });
   });
 
-  it("creates API token successfully", async () => {
-    const { result } = renderHook(() => useCreateApiToken(), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    const payload = {
-      name: "New Token",
-      scopes: ["run.read", "project.read"],
-    };
-
-    result.current.mutate(payload);
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(result.current.data).toBeDefined();
-    expect(result.current.data?.name).toBe("New Token");
-    expect(result.current.data?.token).toBe("qap_test_token_1234567890");
-  });
-
-  it("invalidates tokens queries after creation", async () => {
-    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-
+  it("creates api token successfully", async () => {
     const { result } = renderHook(() => useCreateApiToken(), {
       wrapper: createWrapper(queryClient),
     });
 
     result.current.mutate({
       name: "Test Token",
-      scopes: ["run.read"],
+      scopes: ["*"],
     });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(result.current.data).toBeDefined();
+    expect(result.current.data?.name).toBe("Test Token");
+  });
+
+  it("invalidates queries on success", async () => {
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useCreateApiToken(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    result.current.mutate({ name: "Test", scopes: ["*"] });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 

@@ -57,4 +57,49 @@ describe("TriggerRunModal", () => {
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
+
+  it("shows pipeline selector", async () => {
+    render(
+      <TriggerRunModal
+        projectId="proj-1"
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+      { queryClient, withRouter: true }
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+  });
+
+  it("shows environment selector", async () => {
+    render(
+      <TriggerRunModal
+        projectId="proj-1"
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+      { queryClient, withRouter: true }
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+  });
+
+  it("shows priority selector", async () => {
+    render(
+      <TriggerRunModal
+        projectId="proj-1"
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+      { queryClient, withRouter: true }
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+  });
 });

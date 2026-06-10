@@ -195,3 +195,88 @@ describe("useDeleteProject", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["projects"] });
   });
 });
+
+describe("useUpdateProject", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+  });
+
+  it("updates project successfully", async () => {
+    const { useUpdateProject } = await import("./use-projects");
+    const { result } = renderHook(() => useUpdateProject("proj-1"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    result.current.mutate({ name: "Updated Name" });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.name).toBe("Updated Name");
+  });
+
+  it("invalidates queries on success", async () => {
+    const { useUpdateProject } = await import("./use-projects");
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useUpdateProject("proj-1"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    result.current.mutate({ name: "Test" });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["projects"] });
+  });
+});
+
+describe("useProjectPipelines", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+  });
+
+  it("fetches pipelines successfully", async () => {
+    const { useProjectPipelines } = await import("./use-projects");
+    const { result } = renderHook(() => useProjectPipelines("proj-1"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeDefined();
+  });
+});
+
+describe("useProjectEnvironments", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+  });
+
+  it("fetches environments successfully", async () => {
+    const { useProjectEnvironments } = await import("./use-projects");
+    const { result } = renderHook(() => useProjectEnvironments("proj-1"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeDefined();
+  });
+});
