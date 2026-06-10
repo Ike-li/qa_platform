@@ -78,10 +78,10 @@
 - [x] 为前端添加单元测试框架 (2026-06-10)
   - 安装 Vitest + Testing Library + jsdom
   - 添加测试配置和 i18n 支持
-  - 创建 7 个测试文件: utils, contracts, DurationDisplay, PriorityBadge, RunStatusBadge, BranchBadge, RelativeTime
-  - 覆盖率: 85% (49 个测试通过)
+  - 创建 9 个测试文件覆盖所有简单组件
+  - 覆盖率: 85.71% (55 个测试通过)
   - 添加 frontend-unit-test job 到 CI
-  - **Commits**: 9bb2bbd, 8886f33
+  - **Commits**: 9bb2bbd, 8886f33, fe7aa32, 3ef010a
 
 - [ ] 提升低覆盖率模块
   - user_repo.py: 46% → 80%+
