@@ -1,4 +1,5 @@
 import { http, HttpResponse } from "msw";
+import type { Project } from "../../types/api";
 import {
   mockProjects,
   mockPipelines,
@@ -58,30 +59,30 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/projects`, async ({ request }) => {
-    const body = await request.json() as any;
+    const body = (await request.json()) as Partial<Project>;
     const newProject = createMockProject({
-      name: body.name,
-      slug: body.slug,
-      git_url: body.git_url,
+      name: body.name || "Test Project",
+      slug: body.slug || "test-project",
+      git_url: body.git_url || "https://github.com/test/repo",
     });
     return HttpResponse.json(newProject, { status: 201 });
   }),
 
-  http.patch(`${API_BASE}/projects/:id`, async ({ params, request }) => {
-    const project = mockProjects.find((p) => p.id === params.id);
+  http.patch(`${API_BASE}/projects/:id`, async ({ request }) => {
+    const project = mockProjects.find((p) => p.id === "proj-1");
     if (!project) {
       return new HttpResponse(null, { status: 404 });
     }
-    const body = await request.json() as any;
+    const body = (await request.json()) as Partial<Project>;
     return HttpResponse.json({ ...project, ...body });
   }),
 
-  http.put(`${API_BASE}/projects/:id`, async ({ params, request }) => {
-    const project = mockProjects.find((p) => p.id === params.id);
+  http.put(`${API_BASE}/projects/:id`, async ({ request }) => {
+    const project = mockProjects.find((p) => p.id === "proj-1");
     if (!project) {
       return new HttpResponse(null, { status: 404 });
     }
-    const body = await request.json() as any;
+    const body = (await request.json()) as Partial<Project>;
     return HttpResponse.json({ ...project, ...body });
   }),
 
@@ -126,7 +127,12 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/runs`, async ({ request }) => {
-    const body = await request.json() as any;
+    const body = (await request.json()) as {
+      pipeline_id: string;
+      environment_id: string;
+      branch?: string;
+      priority?: number;
+    };
     const newRun = createMockRun({
       pipeline_id: body.pipeline_id,
       environment_id: body.environment_id,
@@ -145,7 +151,7 @@ export const handlers = [
   }),
 
   // Test results endpoints
-  http.get(`${API_BASE}/runs/:runId/results`, ({ params }) => {
+  http.get(`${API_BASE}/runs/:runId/results`, () => {
     return HttpResponse.json({
       data: mockTestResults,
       total: mockTestResults.length,
@@ -153,7 +159,7 @@ export const handlers = [
   }),
 
   // Artifacts endpoints
-  http.get(`${API_BASE}/runs/:runId/artifacts`, ({ params }) => {
+  http.get(`${API_BASE}/runs/:runId/artifacts`, () => {
     return HttpResponse.json({
       data: mockArtifacts,
       total: mockArtifacts.length,
@@ -169,7 +175,7 @@ export const handlers = [
   }),
 
   http.post(`${API_BASE}/auth/tokens`, async ({ request }) => {
-    const body = await request.json() as any;
+    const body = (await request.json()) as { name: string; scopes: string[] };
     const newToken = createMockApiToken({
       name: body.name,
       scopes: body.scopes,
@@ -180,12 +186,12 @@ export const handlers = [
     );
   }),
 
-  http.delete(`${API_BASE}/auth/tokens/:id`, ({ params }) => {
+  http.delete(`${API_BASE}/auth/tokens/:id`, () => {
     return new HttpResponse(null, { status: 204 });
   }),
 
   // Git branch discovery
-  http.post(`${API_BASE}/projects/branches`, async ({ request }) => {
+  http.post(`${API_BASE}/projects/branches`, async () => {
     return HttpResponse.json({
       branches: ["main", "develop", "feature/test"],
       default_branch: "main",

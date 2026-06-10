@@ -5,7 +5,7 @@ import type {
   RunResponse,
   TestResult,
   Artifact,
-  ApiToken,
+  ApiTokenListItem,
 } from "../../types/api";
 
 // 辅助函数：生成唯一 ID
@@ -45,17 +45,26 @@ export const createMockPipeline = (overrides?: Partial<Pipeline>): Pipeline => (
   id: genId("pipe"),
   project_id: "proj-1",
   name: "Test Pipeline",
-  description: "A test pipeline",
   stages: [],
-  setup_script: null,
-  timeout_seconds: 3600,
-  max_parallelism: 1,
-  retention_days: 30,
-  triggers: [],
-  retry_policy: null,
-  selector: null,
+  selector: {
+    include_paths: [],
+    exclude_paths: [],
+    tags: [],
+    expression: null,
+    regex: null,
+    on_empty: "warn",
+  },
+  trigger_config: {
+    type: "manual",
+    dedup_window_seconds: null,
+    source: {},
+    conditions: {},
+    target: {},
+  },
   collectors: [],
-  notifications: [],
+  timeout_seconds: 3600,
+  retry_policy: null,
+  enabled: true,
   created_at: "2024-01-01T00:00:00Z",
   updated_at: "2024-01-01T00:00:00Z",
   ...overrides,
@@ -71,22 +80,24 @@ export const createMockEnvironment = (overrides?: Partial<Environment>): Environ
   id: genId("env"),
   project_id: "proj-1",
   name: "Test Environment",
-  slug: "test-env",
-  description: "A test environment",
-  variables: [],
-  docker_image: "python:3.11",
+  base_image: "python:3.11",
+  setup_script: null,
   memory_mb: 2048,
   cpu_cores: 2,
-  timeout_seconds: 3600,
+  disk_mb: null,
+  max_artifact_size_mb: 100,
   max_artifacts_count: 50,
+  network_policy: "allow",
+  variables: {},
+  cache_key: null,
   created_at: "2024-01-01T00:00:00Z",
   updated_at: "2024-01-01T00:00:00Z",
   ...overrides,
 });
 
 export const mockEnvironments: Environment[] = [
-  createMockEnvironment({ id: "env-1", name: "development", slug: "development" }),
-  createMockEnvironment({ id: "env-2", name: "staging", slug: "staging" }),
+  createMockEnvironment({ id: "env-1", name: "development" }),
+  createMockEnvironment({ id: "env-2", name: "staging" }),
 ];
 
 // Run fixtures
@@ -187,19 +198,18 @@ export const mockArtifacts: Artifact[] = [
 ];
 
 // ApiToken fixtures
-export const createMockApiToken = (overrides?: Partial<ApiToken>): ApiToken => ({
-  id: genId("token"),
+export const createMockApiToken = (overrides?: Partial<ApiTokenListItem>): ApiTokenListItem => ({
+  token_id: genId("token"),
   name: "Test Token",
   scopes: ["run.read"],
-  prefix: "qap_",
-  created_by: "user-1",
+  expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
   last_used_at: null,
-  expires_at: null,
+  is_revoked: false,
   created_at: "2024-01-01T00:00:00Z",
   ...overrides,
 });
 
-export const mockApiTokens: ApiToken[] = [
-  createMockApiToken({ id: "token-1", name: "CI Token", scopes: ["run.read", "run.write"] }),
-  createMockApiToken({ id: "token-2", name: "Read Only", scopes: ["run.read"] }),
+export const mockApiTokens: ApiTokenListItem[] = [
+  createMockApiToken({ token_id: "token-1", name: "CI Token", scopes: ["run.read", "run.write"] }),
+  createMockApiToken({ token_id: "token-2", name: "Read Only", scopes: ["run.read"] }),
 ];

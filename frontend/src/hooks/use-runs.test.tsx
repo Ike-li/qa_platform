@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useRuns, useRun } from "./use-runs";
@@ -272,7 +272,7 @@ describe("useCancelRun", () => {
       wrapper: createWrapper(queryClient),
     });
 
-    result.current.mutate();
+    result.current.mutate(undefined);
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
   });
@@ -285,7 +285,7 @@ describe("useCancelRun", () => {
       wrapper: createWrapper(queryClient),
     });
 
-    result.current.mutate();
+    result.current.mutate(undefined);
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-running"] });
