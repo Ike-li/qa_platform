@@ -155,4 +155,114 @@ describe("CreateProjectModal", () => {
       expect(screen.getByRole("dialog")).toBeInTheDocument();
     });
   });
+
+  it("discovers branches for public repo", async () => {
+    server.use(
+      http.post("/api/v1/projects/branches", async () => {
+        return HttpResponse.json({
+          branches: ["main", "develop", "feature/test"],
+          default_branch: "main",
+        });
+      })
+    );
+
+    const { user } = render(
+      <CreateProjectModal open={true} onOpenChange={vi.fn()} />,
+      { queryClient, withRouter: true }
+    );
+
+    const gitUrlInput = screen.getByPlaceholderText(/github.com/i);
+    await user.type(gitUrlInput, "https://github.com/test/repo.git");
+
+    await waitFor(() => {
+      expect(screen.getByText(/branches loaded/i)).toBeInTheDocument();
+    });
+  });
+
+  it("shows error when branch discovery fails", async () => {
+    server.use(
+      http.post("/api/v1/projects/branches", async () => {
+        return HttpResponse.json(
+          { detail: "Failed to fetch branches" },
+          { status: 400 }
+        );
+      })
+    );
+
+    const { user } = render(
+      <CreateProjectModal open={true} onOpenChange={vi.fn()} />,
+      { queryClient, withRouter: true }
+    );
+
+    const gitUrlInput = screen.getByPlaceholderText(/github.com/i);
+    await user.type(gitUrlInput, "https://github.com/test/repo.git");
+
+    await waitFor(() => {
+      expect(screen.getByText(/failed to fetch branches/i)).toBeInTheDocument();
+    });
+  });
+
+  it("shows message for no branches found", async () => {
+    server.use(
+      http.post("/api/v1/projects/branches", async () => {
+        return HttpResponse.json({
+          branches: [],
+          default_branch: null,
+        });
+      })
+    );
+
+    const { user } = render(
+      <CreateProjectModal open={true} onOpenChange={vi.fn()} />,
+      { queryClient, withRouter: true }
+    );
+
+    const gitUrlInput = screen.getByPlaceholderText(/github.com/i);
+    await user.type(gitUrlInput, "https://github.com/test/repo.git");
+
+    await waitFor(() => {
+      expect(screen.getByText(/no branches found/i)).toBeInTheDocument();
+    });
+  });
+
+  it("disables branch discovery for authenticated repos", async () => {
+    const { user } = render(
+      <CreateProjectModal open={true} onOpenChange={vi.fn()} />,
+      { queryClient, withRouter: true }
+    );
+
+    const gitUrlInput = screen.getByPlaceholderText(/github.com/i);
+    await user.type(gitUrlInput, "https://github.com/test/repo.git");
+
+    // Branches should be loaded for public repo (after 500ms debounce)
+    await waitFor(
+      () => {
+        expect(screen.getByText(/branches loaded/i)).toBeInTheDocument();
+      },
+      { timeout: 2000 }
+    );
+  });
+
+  it("auto-selects discovered default branch", async () => {
+    server.use(
+      http.post("/api/v1/projects/branches", async () => {
+        return HttpResponse.json({
+          branches: ["main", "develop", "feature/test"],
+          default_branch: "develop",
+        });
+      })
+    );
+
+    const { user } = render(
+      <CreateProjectModal open={true} onOpenChange={vi.fn()} />,
+      { queryClient, withRouter: true }
+    );
+
+    const gitUrlInput = screen.getByPlaceholderText(/github.com/i);
+    await user.type(gitUrlInput, "https://github.com/test/repo.git");
+
+    await waitFor(() => {
+      expect(screen.getByText(/3 branches loaded/i)).toBeInTheDocument();
+    });
+  });
 });
