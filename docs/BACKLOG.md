@@ -87,9 +87,12 @@
 
 - [x] 提升低覆盖率模块 (2026-06-10)
   - user_repo.py: 61% → 97% ✅
-  - 添加 13 个集成测试覆盖所有 repository 方法
-  - 总覆盖率: 89.53% → 90%
-  - **Commit**: 999953a
+  - report_share_service.py: 21% → 100% ✅
+  - report_share_token_repo.py: 44% → 97% ✅
+  - project_repo.py: 57% → 100% ✅
+  - 添加 32 个集成测试（13 user + 12 report_share + 7 project）
+  - 总覆盖率: 89.53% → 90.4%
+  - **Commits**: 999953a, 1e6e23e, 50788ca
 
 ### 可观测性
 
