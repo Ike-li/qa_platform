@@ -85,6 +85,13 @@
   - 添加 frontend-unit-test job 到 CI
   - **Commits**: 9bb2bbd, 8886f33, fe7aa32, 3ef010a, e08c325
 
+- [x] 前端测试覆盖率提升到 70%+ (2026-06-10)
+  - 122 个测试全部通过（100% 通过率）
+  - 覆盖率：Statements 69.38% | Branches 65.66% | Functions 65.66% | Lines 70.33%
+  - **测试统计**: 19 个文件，122 个测试用例
+  - **新增测试**: mutations (trigger/cancel/update)、queries (results/artifacts/pipelines/environments)、utils、api token 管理
+  - **Commit**: bdec52a
+
 - [x] 提升低覆盖率模块 (2026-06-10)
   - user_repo.py: 61% → 97% ✅
   - report_share_service.py: 21% → 100% ✅
