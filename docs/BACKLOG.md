@@ -241,3 +241,27 @@
 
 **最后更新**: 2026-06-09  
 **维护者**: @raylee
+
+### 前端测试覆盖 ⭐ 新完成
+
+- [x] 搭建前端测试基础设施 (2026-06-10)
+  - 安装 MSW (Mock Service Worker) 用于 API mocking
+  - 创建 test fixtures 和 handlers
+  - 扩展 test-utils 支持 QueryClient 和 Router
+  - **Commit**: ed88cee
+- [x] 添加 API Hooks 单元测试 (2026-06-10)
+  - use-runs: 9 个测试（查询、状态规范化）
+  - use-projects: 11 个测试（CRUD、分页、搜索）
+  - use-api-tokens: 3 个测试（创建、列表）
+  - 验证 Run 状态映射、cache invalidation、错误处理
+  - **Commit**: ed88cee
+- [x] 添加 Modal 组件单元测试 (2026-06-10)
+  - TriggerRunModal: 3 个测试
+  - CreateProjectModal: 3 个测试
+  - CreateApiTokenDialog: 4 个测试
+  - 验证表单渲染、默认值、提交流程
+  - **Commit**: ed88cee
+- [x] 前端测试覆盖率从 0% 提升到 59.84% (2026-06-10)
+  - 89 个测试全部通过（100% 通过率）
+  - CI 门禁已包含 frontend-unit-test job
+  - **测试统计**: 17 个文件，89 个测试用例
