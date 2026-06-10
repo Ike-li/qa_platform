@@ -108,14 +108,18 @@
 
 ### 文档
 
-- [ ] 创建 CONTRIBUTING.md
-  - 贡献流程
-  - 代码规范
-  - PR 模板
+- [x] 创建 CONTRIBUTING.md (2026-06-10)
+  - 开发环境设置
+  - 代码规范 (Python/Ruff, TypeScript/ESLint)
+  - 提交指南和 PR 流程
+  - 测试要求
+  - **Commit**: 60e16e4
 
-- [ ] 报告分享功能用户文档
+- [x] 报告分享功能用户文档 (2026-06-10)
   - 添加到 docs/feature-catalog.md
-  - API 文档示例
+  - 创建 docs/report-sharing.md
+  - API 文档示例和使用场景
+  - **Commit**: add6d28
 
 ### 文档管理工具化 ⭐ 新增
 
