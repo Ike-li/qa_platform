@@ -4,6 +4,8 @@ import { render, type RenderOptions } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { I18nextProvider } from 'react-i18next'
 import i18n from 'i18next'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { BrowserRouter } from 'react-router-dom'
 
 // 创建测试用的 i18n 实例
 i18n.init({
@@ -49,20 +51,60 @@ i18n.init({
   },
 })
 
+// 创建测试用的 QueryClient
+export function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        gcTime: Infinity,
+      },
+      mutations: {
+        retry: false,
+      },
+    },
+  })
+}
+
+interface CustomRenderOptions extends Omit<RenderOptions, 'wrapper'> {
+  queryClient?: QueryClient
+  withRouter?: boolean
+}
+
 function customRender(
   ui: ReactElement,
-  options?: Omit<RenderOptions, 'wrapper'>
+  options?: CustomRenderOptions
 ) {
+  const { queryClient = createTestQueryClient(), withRouter = false, ...renderOptions } = options || {}
+
+  const Wrapper = ({ children }: { children: React.ReactNode }) => {
+    let content = (
+      <QueryClientProvider client={queryClient}>
+        <I18nextProvider i18n={i18n}>
+          {children}
+        </I18nextProvider>
+      </QueryClientProvider>
+    )
+
+    if (withRouter) {
+      content = <BrowserRouter>{content}</BrowserRouter>
+    }
+
+    return content
+  }
+
   return {
     user: userEvent.setup(),
     ...render(ui, {
-      wrapper: ({ children }) => (
-        <I18nextProvider i18n={i18n}>{children}</I18nextProvider>
-      ),
-      ...options,
+      wrapper: Wrapper,
+      ...renderOptions,
     }),
   }
 }
+
+// 等待异步加载完成的辅助函数
+export const waitForLoadingToFinish = () =>
+  new Promise((resolve) => setTimeout(resolve, 0))
 
 // Re-export everything
 export * from '@testing-library/react'
