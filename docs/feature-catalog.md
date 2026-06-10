@@ -104,6 +104,7 @@
 | 项目成员管理 | P1 | ✅ | `api/v1/project_members.py` · 双层 RBAC 配套 |
 | 通知规则 CRUD | P1 | ✅ | `api/v1/notifications.py` |
 | SSE Ticket 鉴权 | P0 | ✅ | `api/v1/sse.py` · ticket 短期凭证防 EventSource 跨域 |
+| 报告分享（公开链接） | P2 | ✅ | `api/v1/report_shares.py` + `services/report_share_service.py` · 生成时间限制/访问次数限制的分享令牌，支持列表/撤销，公开访问无需登录 |
 | 冒烟测试框架 | P2 | ✅ | `scripts/smoke/run-all.sh` 聚合 `00-setup.sh`、`01-browser-bridge.sh` 和 6 个页面脚本；默认 skip 计失败，探索性运行才允许 `SMOKE_ALLOW_SKIPS=1`；父级 `RESULTS_DIR` 下保留汇总 report，子脚本证据落在 `${RESULTS_DIR}/<script-name>/`，具体检查点以脚本内 `log_step` 为准 |
 
 ---
