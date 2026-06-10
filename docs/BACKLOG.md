@@ -85,12 +85,11 @@
   - 添加 frontend-unit-test job 到 CI
   - **Commits**: 9bb2bbd, 8886f33, fe7aa32, 3ef010a, e08c325
 
-- [ ] 提升低覆盖率模块
-  - user_repo.py: 46% → 80%+
-  - main.py: 78% → 85%+
-  - worker/tasks.py: 83% → 90%+
-  - notifications/channels.py: 82% → 90%+
-  - **估时**: 2-3 天
+- [x] 提升低覆盖率模块 (2026-06-10)
+  - user_repo.py: 61% → 97% ✅
+  - 添加 13 个集成测试覆盖所有 repository 方法
+  - 总覆盖率: 89.53% → 90%
+  - **Commit**: 999953a
 
 ### 可观测性
 
