@@ -1,5 +1,6 @@
-import { ReactElement } from 'react'
-import { render, RenderOptions } from '@testing-library/react'
+/* eslint-disable react-refresh/only-export-components */
+import type { ReactElement } from 'react'
+import { render, type RenderOptions } from '@testing-library/react'
 import { I18nextProvider } from 'react-i18next'
 import i18n from 'i18next'
 
@@ -22,14 +23,9 @@ i18n.init({
   },
 })
 
-interface CustomRenderOptions extends Omit<RenderOptions, 'wrapper'> {
-  initialI18nStore?: Record<string, any>
-  initialLanguage?: string
-}
-
 function customRender(
   ui: ReactElement,
-  options?: CustomRenderOptions
+  options?: Omit<RenderOptions, 'wrapper'>
 ) {
   return render(ui, {
     wrapper: ({ children }) => (
@@ -39,5 +35,8 @@ function customRender(
   })
 }
 
+// Re-export everything
 export * from '@testing-library/react'
+
+// Override render method
 export { customRender as render }
