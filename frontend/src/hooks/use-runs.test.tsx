@@ -349,3 +349,98 @@ describe("useRunArtifacts", () => {
     expect(result.current.data).toBeDefined();
   });
 });
+
+describe("Run status normalization", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+  });
+
+  it("normalizes done with failures to failed", async () => {
+    server.use(
+      http.get("/api/v1/runs/:id", () => {
+        return HttpResponse.json(
+          createMockRun({
+            id: "run-1",
+            status: "done",
+            summary: { passed: 0, failed: 1, skipped: 0, error: 0, total: 1 },
+          })
+        );
+      })
+    );
+
+    const { result } = renderHook(() => useRun("run-1"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.status).toBe("failed");
+  });
+
+  it("normalizes done with all passed to passed", async () => {
+    server.use(
+      http.get("/api/v1/runs/:id", () => {
+        return HttpResponse.json(
+          createMockRun({
+            id: "run-2",
+            status: "done",
+            summary: { passed: 10, failed: 0, skipped: 0, error: 0, total: 10 },
+          })
+        );
+      })
+    );
+
+    const { result } = renderHook(() => useRun("run-2"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.status).toBe("passed");
+  });
+
+  it("normalizes timeout status", async () => {
+    server.use(
+      http.get("/api/v1/runs/:id", () => {
+        return HttpResponse.json(
+          createMockRun({
+            id: "run-3",
+            status: "timeout",
+          })
+        );
+      })
+    );
+
+    const { result } = renderHook(() => useRun("run-3"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.status).toBe("timed_out");
+  });
+
+  it("handles done with no tests as unknown", async () => {
+    server.use(
+      http.get("/api/v1/runs/:id", () => {
+        return HttpResponse.json(
+          createMockRun({
+            id: "run-4",
+            status: "done",
+            summary: { passed: 0, failed: 0, skipped: 0, error: 0, total: 0 },
+          })
+        );
+      })
+    );
+
+    const { result } = renderHook(() => useRun("run-4"), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.status).toBe("unknown");
+  });
+});
