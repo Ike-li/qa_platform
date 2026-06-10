@@ -75,13 +75,13 @@
 
 ### 测试改进
 
-- [ ] 为前端添加单元测试框架
-  - 当前: 0 个单元测试文件
-  - 目标: 引入 Vitest + Testing Library
-  - 优先测试: hooks, 表单验证, 工具函数
-  - 目标覆盖率: 50%+
-  - **估时**: 1-2 天
-  - **Context**: 前端仅有 E2E，缺少单元测试
+- [x] 为前端添加单元测试框架 (2026-06-10)
+  - 安装 Vitest + Testing Library + jsdom
+  - 添加测试配置和 i18n 支持
+  - 创建 4 个测试文件: utils, contracts, DurationDisplay, PriorityBadge
+  - 覆盖率: 97.43% (37 个测试通过)
+  - 添加 frontend-unit-test job 到 CI
+  - **Commit**: 9bb2bbd
 
 - [ ] 提升低覆盖率模块
   - user_repo.py: 46% → 80%+
