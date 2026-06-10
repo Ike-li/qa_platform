@@ -64,4 +64,27 @@ describe('Login', () => {
       expect(screen.getByText(/invalid credentials/i)).toBeInTheDocument();
     });
   });
-})
+
+  it("shows generic error when no detail provided", async () => {
+    server.use(
+      http.post("/api/v1/auth/login", () => {
+        return new HttpResponse(null, { status: 500 });
+      })
+    );
+
+    const { user } = render(
+      <BrowserRouter>
+        <Login />
+      </BrowserRouter>
+    );
+
+    await user.type(screen.getByLabelText(/username/i), "test");
+    await user.type(screen.getByLabelText(/password/i), "test");
+    await user.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => {
+      const errorText = screen.queryByText(/failed/i) || screen.queryByText(/error/i);
+      expect(errorText).toBeInTheDocument();
+    });
+  });
+});
