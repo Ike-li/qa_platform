@@ -9,7 +9,6 @@ import {
 } from "./use-projects";
 import { server } from "../test/setup";
 import { http, HttpResponse } from "msw";
-import { createMockProject } from "../test/mocks/fixtures";
 import type { ReactNode } from "react";
 
 function createWrapper(queryClient: QueryClient) {
