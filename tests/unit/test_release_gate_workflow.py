@@ -72,6 +72,7 @@ def test_ci_workflow_yaml_has_no_duplicate_mapping_keys():
     assert set(workflow["jobs"]) == {
         "doc-health-check",
         "lint-and-type-check",
+        "frontend-unit-test",
         "backend-test",
         "backend-integration-test",
         "frontend-api-contract",
