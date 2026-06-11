@@ -1,7 +1,7 @@
 version: 1
 metadata:
   source: openapi
-  operation_count: 73
+  operation_count: 74
   generated_from: create_app().openapi()["paths"]
   qa_owner: qa
 scope:
@@ -705,6 +705,16 @@ operations:
     auth_type: HTTPBearer
     request_schema: none
     declared_responses: ["204", "403", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: get_api_v1_runs_run_id_triage
+    method: GET
+    path: "/api/v1/runs/{run_id}/triage"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
     coverage_status: covered
     test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
     gap_notes: []

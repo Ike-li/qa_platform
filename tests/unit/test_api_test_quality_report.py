@@ -39,11 +39,11 @@ def test_api_test_quality_report_writes_summary_and_dashboard(tmp_path: Path) ->
 
     assert written_summary == summary
     assert summary["quality_gate"]["passed"] is True
-    assert summary["metrics"]["operation_count"] == 73
-    assert summary["metrics"]["operation_covered"] == 73
+    assert summary["metrics"]["operation_count"] == 74
+    assert summary["metrics"]["operation_covered"] == 74
     assert summary["metrics"]["operation_covered_pct"] == 100.0
-    assert summary["metrics"]["case_count"] == 438
-    assert summary["metrics"]["case_covered"] == 438
+    assert summary["metrics"]["case_count"] == 444
+    assert summary["metrics"]["case_covered"] == 444
     assert summary["metrics"]["case_covered_pct"] == 100.0
     assert summary["metrics"]["blocked_case_count"] == 0
     assert summary["metrics"]["missing_case_count"] == 0
@@ -60,7 +60,7 @@ def test_api_test_quality_report_writes_summary_and_dashboard(tmp_path: Path) ->
     }
     assert "# API Test Quality Dashboard" in dashboard
     assert "- quality_gate: PASS" in dashboard
-    assert "| auth | 73 | 0 | 0 |" in dashboard
+    assert "| auth | 74 | 0 | 0 |" in dashboard
     assert "| webhooks | 2 | 2 | 0 | 0 |" in dashboard
 
 
@@ -89,8 +89,8 @@ def test_api_test_quality_report_computes_previous_summary_deltas(
     )
 
     assert summary["trend"]["delta_from_previous"] == {
-        "operation_covered": 5,
+        "operation_covered": 6,
         "operation_covered_pct": 2.86,
-        "case_covered": 28,
+        "case_covered": 34,
         "case_covered_pct": 2.38,
     }
