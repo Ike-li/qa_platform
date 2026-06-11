@@ -165,9 +165,11 @@ async def test_retry_failed_creates_new_run_with_metadata():
         environment=Mock(),
     )
 
+    from types import SimpleNamespace
+
     failed_results = [
-        Mock(suite="tests.unit.test_x", name="test_a"),
-        Mock(suite="tests.unit.test_y.TestClass", name="test_b"),
+        SimpleNamespace(suite="tests.unit.test_x", name="test_a"),
+        SimpleNamespace(suite="tests.unit.test_y.TestClass", name="test_b"),
     ]
 
     new_run_mock = Mock(id=uuid4())

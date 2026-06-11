@@ -26,14 +26,34 @@ def reconstruct_nodeid(suite: str, name: str) -> str:
     """
     parts = suite.split(".")
 
-    # 末段判定：以大写字母开头视为类名
-    if parts and parts[-1] and parts[-1][0].isupper():
-        # 有类名：倒数第二段是模块
-        class_name = parts[-1]
-        module_parts = parts[:-1]
-        file_path = "/".join(module_parts) + ".py"
+    # 从后往前找测试文件（通常是 test_ 开头）
+    module_idx = -1
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].startswith("test_") or parts[i] == "test":
+            module_idx = i
+            break
+
+    # 如果没找到 test_ 模块，退化到旧逻辑（末段大写判定）
+    if module_idx == -1:
+        if parts and parts[-1] and parts[-1][0].isupper():
+            class_name = parts[-1]
+            module_parts = parts[:-1]
+            file_path = "/".join(module_parts) + ".py"
+            return f"{file_path}::{class_name}::{name}"
+        else:
+            file_path = "/".join(parts) + ".py"
+            return f"{file_path}::{name}"
+
+    # 找到测试文件，分割路径和类名
+    module_parts = parts[:module_idx + 1]
+    class_parts = parts[module_idx + 1:]
+
+    file_path = "/".join(module_parts) + ".py"
+
+    if class_parts:
+        # 有类名：用点号连接所有类名部分（支持嵌套类）
+        class_name = ".".join(class_parts)
         return f"{file_path}::{class_name}::{name}"
     else:
-        # 无类名：全段视为模块路径
-        file_path = "/".join(parts) + ".py"
+        # 无类名
         return f"{file_path}::{name}"

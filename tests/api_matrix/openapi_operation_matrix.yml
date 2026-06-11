@@ -1,7 +1,7 @@
 version: 1
 metadata:
   source: openapi
-  operation_count: 74
+  operation_count: 75
   generated_from: create_app().openapi()["paths"]
   qa_owner: qa
 scope:
@@ -594,7 +594,7 @@ operations:
     tag: runs
     auth_type: HTTPBearer
     request_schema: none
-    declared_responses: ["201", "404", "409", "422"]
+    declared_responses: ["200", "404", "409", "422"]
     coverage_status: covered
     test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
     gap_notes: []

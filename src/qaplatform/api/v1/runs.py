@@ -516,7 +516,7 @@ async def retry_failed_run(
 
     container = request.app.state.container
     try:
-        return await retry_failed_run_command(
+        result = await retry_failed_run_command(
             run_id=run_id,
             repos=repos,
             user=user,
@@ -524,6 +524,14 @@ async def retry_failed_run(
             arq_pool=getattr(container, "arq_pool", None),
             settings=container.settings,
         )
+        await write_audit(
+            repos, user,
+            action="run.retry_failed",
+            resource_type="run",
+            resource_id=result["new_run_id"],
+            after=result,
+        )
+        return result
     except RetryFailedError as e:
         raise HTTPException(status_code=e.status_code, detail=e.message)
 

@@ -45,10 +45,10 @@ def test_api_test_case_matrix_expands_operation_dimensions() -> None:
     summary = validator.validate_case_matrix(CASE_MATRIX_PATH, OPERATION_MATRIX_PATH)
 
     assert summary == {
-        "operations": 74,
+        "operations": 75,
         "dimensions": 6,
-        "cases": 444,
-        "covered": 444,
+        "cases": 450,
+        "covered": 450,
         "blocked": 0,
         "missing": 0,
     }
