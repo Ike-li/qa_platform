@@ -216,6 +216,13 @@
 3. ✅ 更新前端依赖 (已完成)
 4. ✅ 修复 CI 环境变量问题 (已完成)
 5. ✅ 更新 API test matrix (已完成)
+6. ✅ T11 外部结果导入 API (2026-06-10 完成)
+   - `POST /api/v1/projects/{project_id}/runs/import`：原始 JUnit XML 一次调用导入为终态 Run
+   - 解析复用 junit_collector（抽出内存版纯函数 `parse_junit_xml_content`），入库复用 `build_results_summary` + `build_test_result_rows` + `bulk_create`
+   - 占位 Pipeline（enabled=false）/Environment（import/none）get-or-create 并发安全；落库后补偿调用 `evaluate_and_notify`
+   - 注意：导入不去重，重复上传同一文件生成两条独立 Run（幂等性由调用方负责）
+   - 测试：30 个 API 单测 + 12 个解析单测 + 7 个集成测试（含 API token、跨租户 404、analytics 四端点可见性）
+   - 后续：T14 dogfooding 数据流依赖本接口
 
 **下周预计**:
 1. 前端单元测试框架
