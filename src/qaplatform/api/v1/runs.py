@@ -31,6 +31,13 @@ from qaplatform.api.run_presenters import (
     to_result_response,
     to_run_response,
 )
+from qaplatform.api.run_triage import (
+    TRIAGE_FLAKY_MIN_RUNS,
+    TRIAGE_FLAKY_SCAN_LIMIT,
+    TRIAGE_HISTORY_LENGTH,
+    build_run_triage,
+    triage_history_cutoff,
+)
 from qaplatform.api.schemas import (
     ArtifactResponse,
     BatchRunRequest,
@@ -42,6 +49,7 @@ from qaplatform.api.schemas import (
     RunLogEntryResponse,
     RunResponse,
     RunStatusValue,
+    RunTriageResponse,
     RunTrigger,
     TestResultResponse,
     TestResultStatusValue,
@@ -411,6 +419,66 @@ async def get_run_results(
         page=page,
         per_page=per_page,
         total=total,
+    )
+
+
+@router.get(
+    "/{run_id}/triage",
+    response_model=RunTriageResponse,
+    responses={404: {"model": ErrorResponse}},
+    summary="失败分诊",
+    description=(
+        "把 run 内每个 failed/error 用例归入 新增失败 / 已知 flaky / 持续失败"
+        "三类（优先级 known_flaky > persistent > new），同错误签名折叠为一组，"
+        "每项附最近 10 次观测履历与置信度（观测 <10 次为 observing）。"
+    ),
+)
+async def get_run_triage(
+    run_id: UUID,
+    repos: Repos,
+    user: CurrentUser,
+    session: AsyncSession = Depends(_get_db_session),
+):
+    run = await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.RUN_READ,
+        enforce_action=enforce_project_action,
+    )
+
+    failed_results = await repos.test_result.list_failed_by_run(run_id)
+    if not failed_results:
+        return RunTriageResponse(run_id=run_id, total_failed=0)
+
+    cutoff = triage_history_cutoff(run)
+    flaky_rows, _ = await repos.test_result.list_flaky_tests(
+        project_id=run.project_id,
+        cutoff=cutoff,
+        min_runs=TRIAGE_FLAKY_MIN_RUNS,
+        offset=0,
+        limit=TRIAGE_FLAKY_SCAN_LIMIT,
+    )
+    flaky_keys = {(row.suite, row.name) for row in flaky_rows}
+
+    prior_history, prior_counts = (
+        await repos.test_result.list_prior_observations_for_failed_cases(
+            run_id=run_id,
+            project_id=run.project_id,
+            cutoff=cutoff,
+            before_created_at=run.created_at,
+            before_run_id=run.id,
+            per_case_limit=TRIAGE_HISTORY_LENGTH - 1,
+        )
+    )
+
+    return build_run_triage(
+        run=run,
+        failed_results=failed_results,
+        flaky_keys=flaky_keys,
+        prior_history=prior_history,
+        prior_counts=prior_counts,
     )
 
 

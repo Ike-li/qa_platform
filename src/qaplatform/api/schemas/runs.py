@@ -151,6 +151,56 @@ class BatchRunResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+TriageCategoryValue = Literal["new", "known_flaky", "persistent"]
+TriageConfidenceValue = Literal["observing", "established"]
+
+
+class TriageObservation(BaseModel):
+    """履历迷你条的一格：该用例在某次 run 中的观测。"""
+
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    run_id: UUID
+    run_created_at: datetime
+    status: TestResultStatusValue
+
+
+class TriageItem(BaseModel):
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    suite: str
+    name: str
+    status: TestResultStatusValue
+    duration_ms: int = 0
+    error_message: str | None = None
+    stack_trace: str | None = None
+    category: TriageCategoryValue
+    confidence: TriageConfidenceValue
+    observation_count: int
+    # 最近最多 10 次观测（含本次），按时间升序（旧 → 新）。
+    recent_history: list[TriageObservation] = Field(default_factory=list)
+
+
+class TriageCluster(BaseModel):
+    """同错误签名折叠的一组失败。"""
+
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    signature: str
+    count: int
+    items: list[TriageItem]
+
+
+class RunTriageResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    run_id: UUID
+    total_failed: int
+    new: list[TriageCluster] = Field(default_factory=list)
+    known_flaky: list[TriageCluster] = Field(default_factory=list)
+    persistent: list[TriageCluster] = Field(default_factory=list)
+
+
 __all__ = [
     "ArtifactResponse",
     "BatchRunRequest",
@@ -160,8 +210,14 @@ __all__ = [
     "RunLogEntryResponse",
     "RunResponse",
     "RunStatusValue",
+    "RunTriageResponse",
     "RunTrigger",
     "TestResultResponse",
     "TestResultStatusValue",
+    "TriageCategoryValue",
+    "TriageCluster",
+    "TriageConfidenceValue",
+    "TriageItem",
+    "TriageObservation",
     "WebhookTriggerRequest",
 ]
