@@ -19,6 +19,81 @@ _STATUS_MAP = {
 }
 
 
+class JUnitParseError(ValueError):
+    """Raised when JUnit XML content is not well-formed XML."""
+
+
+def parse_junit_xml_content(content: bytes | str) -> list[TestResultData]:
+    """Parse in-memory JUnit XML content into TestResultData objects.
+
+    Accepts ``<testsuites>`` roots, bare ``<testsuite>`` roots, and nested
+    ``<testsuite>`` elements (some CI tools emit suites inside suites).
+    Raises :class:`JUnitParseError` when the document cannot be parsed at all;
+    individual missing attributes are tolerated (name/classname fall back,
+    missing ``time`` counts as 0).
+    """
+    try:
+        root = ET.fromstring(content)  # noqa: S314
+    except ET.ParseError as exc:
+        raise JUnitParseError(str(exc)) from exc
+
+    results: list[TestResultData] = []
+    for suite_elem in root.iter("testsuite"):
+        suite_name = suite_elem.get("name", "unknown")
+        for tc_elem in suite_elem.findall("testcase"):
+            results.append(parse_junit_testcase(tc_elem, suite_name))
+    return results
+
+
+def parse_junit_testcase(elem: ET.Element, suite_name: str) -> TestResultData:
+    """Parse a single ``<testcase>`` element."""
+    name = elem.get("name", "unknown")
+    classname = elem.get("classname", suite_name)
+
+    # Duration: JUnit XML uses "time" attribute (seconds).
+    duration_ms = _parse_duration_ms(elem.get("time", "0"))
+
+    # Status determination
+    status = "passed"
+    error_message: str | None = None
+    stack_trace: str | None = None
+
+    failure = elem.find("failure")
+    error = elem.find("error")
+    skipped = elem.find("skipped")
+
+    if failure is not None:
+        status = "failed"
+        error_message = failure.get("message", "")
+        stack_trace = failure.text or ""
+    elif error is not None:
+        status = "error"
+        error_message = error.get("message", "")
+        stack_trace = error.text or ""
+    elif skipped is not None:
+        status = "xfail" if skipped.get("type") == "pytest.xfail" else "skipped"
+        error_message = skipped.get("message")
+
+    return TestResultData(
+        suite=classname,
+        name=name,
+        status=status,
+        duration_ms=duration_ms,
+        error_message=error_message,
+        stack_trace=stack_trace.strip() if stack_trace else None,
+    )
+
+
+def _parse_duration_ms(raw_time: str | None) -> int:
+    try:
+        time_sec = float(raw_time or "0")
+    except ValueError:
+        return 0
+    if not math.isfinite(time_sec) or time_sec < 0:
+        return 0
+    return int(time_sec * 1000)
+
+
 class JUnitCollector:
     """Built-in JUnit XML collector plugin implementing CollectorProtocol.
 
@@ -98,71 +173,12 @@ class JUnitCollector:
 
     def _parse_junit_xml(self, xml_path: Path) -> list[TestResultData]:
         """Parse a JUnit XML file into a list of TestResultData."""
-        results: list[TestResultData] = []
         try:
-            tree = ET.parse(xml_path)  # noqa: S314
-        except ET.ParseError:
+            return parse_junit_xml_content(xml_path.read_bytes())
+        except JUnitParseError:
             log.exception("failed to parse JUnit XML: %s", xml_path)
             return []
 
-        root = tree.getroot()
-        # Handle both <testsuites><testsuite>... and <testsuite>...
-        test_suites = root.findall("testsuite")
-        if not test_suites and root.tag == "testsuite":
-            test_suites = [root]
-
-        for suite_elem in test_suites:
-            suite_name = suite_elem.get("name", "unknown")
-            for tc_elem in suite_elem.findall("testcase"):
-                result = self._parse_testcase(tc_elem, suite_name)
-                results.append(result)
-
-        return results
-
     def _parse_testcase(self, elem: ET.Element, suite_name: str) -> TestResultData:
         """Parse a single <testcase> element."""
-        name = elem.get("name", "unknown")
-        classname = elem.get("classname", suite_name)
-
-        # Duration: JUnit XML uses "time" attribute (seconds).
-        duration_ms = self._parse_duration_ms(elem.get("time", "0"))
-
-        # Status determination
-        status = "passed"
-        error_message: str | None = None
-        stack_trace: str | None = None
-
-        failure = elem.find("failure")
-        error = elem.find("error")
-        skipped = elem.find("skipped")
-
-        if failure is not None:
-            status = "failed"
-            error_message = failure.get("message", "")
-            stack_trace = failure.text or ""
-        elif error is not None:
-            status = "error"
-            error_message = error.get("message", "")
-            stack_trace = error.text or ""
-        elif skipped is not None:
-            status = "xfail" if skipped.get("type") == "pytest.xfail" else "skipped"
-            error_message = skipped.get("message")
-
-        return TestResultData(
-            suite=classname,
-            name=name,
-            status=status,
-            duration_ms=duration_ms,
-            error_message=error_message,
-            stack_trace=stack_trace.strip() if stack_trace else None,
-        )
-
-    @staticmethod
-    def _parse_duration_ms(raw_time: str | None) -> int:
-        try:
-            time_sec = float(raw_time or "0")
-        except ValueError:
-            return 0
-        if not math.isfinite(time_sec) or time_sec < 0:
-            return 0
-        return int(time_sec * 1000)
+        return parse_junit_testcase(elem, suite_name)

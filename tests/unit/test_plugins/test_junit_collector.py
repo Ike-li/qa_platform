@@ -360,3 +360,91 @@ class TestRegistration:
         registry = PluginRegistry()
         registry.register_builtins()
         assert "junit" in registry.collector_names
+
+
+class TestParseJunitXmlContent:
+    """In-memory 纯函数 parse_junit_xml_content 的解析边界。"""
+
+    def _parse(self, xml: str | bytes):
+        from qaplatform.plugins.builtin.junit_collector import parse_junit_xml_content
+
+        return parse_junit_xml_content(xml)
+
+    def test_accepts_bytes_and_str_equally(self):
+        xml = '<testsuite name="s"><testcase classname="c" name="t" time="0.1"/></testsuite>'
+        assert self._parse(xml) == self._parse(xml.encode())
+
+    def test_multiple_testsuites_under_testsuites_root(self):
+        xml = """<testsuites>
+          <testsuite name="s1"><testcase classname="c1" name="a"/></testsuite>
+          <testsuite name="s2"><testcase classname="c2" name="b"/></testsuite>
+        </testsuites>"""
+        results = self._parse(xml)
+        assert [(r.suite, r.name) for r in results] == [("c1", "a"), ("c2", "b")]
+
+    def test_nested_testsuite_elements_are_parsed(self):
+        xml = """<testsuites>
+          <testsuite name="outer">
+            <testcase classname="c" name="top"/>
+            <testsuite name="inner">
+              <testcase classname="c" name="nested"/>
+            </testsuite>
+          </testsuite>
+        </testsuites>"""
+        results = self._parse(xml)
+        assert [r.name for r in results] == ["top", "nested"]
+
+    def test_bare_testsuite_root(self):
+        xml = '<testsuite name="s"><testcase classname="c" name="t"/></testsuite>'
+        assert [r.name for r in self._parse(xml)] == ["t"]
+
+    def test_parametrized_case_names_preserved_verbatim(self):
+        name = "test_calc[3+5-8,negative -1]"
+        xml = f'<testsuite name="s"><testcase classname="c" name="{name}"/></testsuite>'
+        assert self._parse(xml)[0].name == name
+
+    def test_missing_classname_falls_back_to_testsuite_name(self):
+        xml = '<testsuite name="fallback-suite"><testcase name="t"/></testsuite>'
+        assert self._parse(xml)[0].suite == "fallback-suite"
+
+    def test_missing_name_and_time_default(self):
+        xml = '<testsuite name="s"><testcase classname="c"/></testsuite>'
+        result = self._parse(xml)[0]
+        assert result.name == "unknown"
+        assert result.duration_ms == 0
+
+    def test_invalid_and_negative_time_count_as_zero(self):
+        xml = """<testsuite name="s">
+          <testcase classname="c" name="bad" time="abc"/>
+          <testcase classname="c" name="neg" time="-1"/>
+        </testsuite>"""
+        assert [r.duration_ms for r in self._parse(xml)] == [0, 0]
+
+    def test_failure_error_skipped_xfail_statuses(self):
+        xml = """<testsuite name="s">
+          <testcase classname="c" name="f"><failure message="m">tb</failure></testcase>
+          <testcase classname="c" name="e"><error message="m">tb</error></testcase>
+          <testcase classname="c" name="s1"><skipped message="m"/></testcase>
+          <testcase classname="c" name="x"><skipped type="pytest.xfail" message="m"/></testcase>
+        </testsuite>"""
+        assert [r.status for r in self._parse(xml)] == [
+            "failed",
+            "error",
+            "skipped",
+            "xfail",
+        ]
+
+    def test_unparseable_content_raises_junit_parse_error(self):
+        from qaplatform.plugins.builtin.junit_collector import JUnitParseError
+
+        with pytest.raises(JUnitParseError):
+            self._parse("<testsuite><unclosed")
+
+    def test_non_junit_root_yields_no_results(self):
+        assert self._parse("<report><item/></report>") == []
+
+    def test_file_path_wrapper_delegates_and_keeps_parse_error_contract(self, tmp_path):
+        bad = tmp_path / "junit.xml"
+        bad.write_text("not xml at all <")
+        collector = JUnitCollector()
+        assert collector._parse_junit_xml(bad) == []
