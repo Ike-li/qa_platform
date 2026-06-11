@@ -47,3 +47,6 @@ artifacts/
 test-results/
 playwright-report/
 smoke-results/
+
+# T14 dogfooding 导入状态（本地）
+.qap-import-state.json
