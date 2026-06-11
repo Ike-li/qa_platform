@@ -251,9 +251,17 @@
    - 前端同步：TypeScript 类型定义更新
    - 测试：7 个新测试用例（3 个 analytics + 4 个通知），123 个 T15 相关测试全通过
    - **Commits**: 5b21e2b (置信度), 8fe957b (通知降噪)
+11. ✅ T16 TestCase 身份规范化 (2026-06-11 完成)
+   - 规范化函数：`normalize_case_name(name)` 剥离尾部 `[...]` 和 `(...)` 参数段，使用配对计数处理嵌套括号
+   - Analytics flaky 端点：新增 `collapse_params: bool = False` 参数，true 时按规范化名聚合（Python 层）
+   - Analytics test-history 端点：新增 `collapse_params` 参数（暂无特殊逻辑）
+   - 前端开关：Analytics 页面 Flaky tests 区域添加"折叠参数化用例"checkbox，默认关闭
+   - 测试：10 个规范化边界测试 + 2 个 API 折叠测试 + 155 个前端测试全通过
+   - **保守方案**：不改表结构，取回后聚合；用例改名履历合并留待后续
+   - **Commits**: ecfe24c (后端), 35a7da7 (前端)
 
 **下周预计**:
-1. 前端单元测试框架
+1. 启动 7 天 v0 gate（PRD §8）- 用平台判断 main 状态
 2. OpenTelemetry 配置验证
 
 ---
