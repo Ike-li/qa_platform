@@ -324,7 +324,7 @@ async def test_list_rules_marks_historical_invalid_conditions_without_500(
                         "invalid": True,
                         "reason": (
                             "conditions[0].field must be one of: "
-                            "consecutive_failures, failed, pass_rate, status"
+                            "consecutive_failures, failed, new_failed, pass_rate, recovered, status"
                         ),
                         "raw_field": "statuz",
                         "raw_operator": "eq",
@@ -579,7 +579,7 @@ async def test_create_rule_rejects_invalid_conditions(app, mock_repos, project_i
         field="conditions",
         expected_msg=(
             "Value error, conditions[0].field must be one of: "
-            "consecutive_failures, failed, pass_rate, status"
+            "consecutive_failures, failed, new_failed, pass_rate, recovered, status"
         ),
         expected_input=conditions,
     )
@@ -607,7 +607,7 @@ async def test_create_rule_rejects_undocumented_condition_alias(app, mock_repos,
         field="conditions",
         expected_msg=(
             "Value error, conditions[0].field must be one of: "
-            "consecutive_failures, failed, pass_rate, status"
+            "consecutive_failures, failed, new_failed, pass_rate, recovered, status"
         ),
         expected_input=conditions,
     )

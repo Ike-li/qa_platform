@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 _TEMPLATE_VAR_RE = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
 _CONSECUTIVE_FAILURE_FIELDS = frozenset({"consecutive_failures", "consecutive_failed_runs"})
+_NEW_FAILED_RECOVERED_FIELDS = frozenset({"new_failed", "recovered"})
 _NOTIFICATION_LOG_UNIQUE_CONSTRAINT = "uq_notification_log_run_rule_channel"
 
 
@@ -116,6 +117,20 @@ def _evaluate_condition(
             expected = int(expected)
         except (TypeError, ValueError):
             pass
+    elif field == "new_failed":
+        actual = condition_context.get("new_failed", 0)
+        try:
+            actual = int(actual)
+            expected = int(expected)
+        except (TypeError, ValueError):
+            pass
+    elif field == "recovered":
+        actual = condition_context.get("recovered", 0)
+        try:
+            actual = int(actual)
+            expected = int(expected)
+        except (TypeError, ValueError):
+            pass
     return _compare(actual, op, expected)
 
 
@@ -137,6 +152,89 @@ async def _load_consecutive_failures(run_repo: Any, project_id: UUID, run_id: UU
         project_id=project_id,
         run_id=run_id,
     )
+
+
+async def _load_new_failed_and_recovered(
+    *,
+    run_repo: Any,
+    test_result_repo: Any,
+    project_id: UUID,
+    run_id: UUID,
+    pipeline_id: UUID,
+) -> tuple[int, int]:
+    """计算 new_failed 和 recovered 数量。
+
+    new_failed: 本次相对同 project + 同 pipeline 上一终态 run 的新增失败数（已知 flaky 不计入）
+    recovered: 上次失败本次通过的用例数
+    """
+    from qaplatform.infra.database.models import Run, RunStatusEnum, TestResult, TestResultStatusEnum
+    from datetime import timedelta
+    from sqlalchemy import select
+
+    current_stmt = select(Run).where(
+        Run.id == run_id,
+        Run.project_id == project_id,
+        Run.deleted_at.is_(None),
+    )
+    current_result = await run_repo.session.execute(current_stmt)
+    current = current_result.scalar_one_or_none()
+    if current is None:
+        return 0, 0
+
+    terminal_statuses = (
+        RunStatusEnum.DONE,
+        RunStatusEnum.FAILED,
+        RunStatusEnum.CANCELLED,
+        RunStatusEnum.TIMEOUT,
+    )
+    prior_stmt = (
+        select(Run.id)
+        .where(
+            Run.project_id == project_id,
+            Run.pipeline_id == pipeline_id,
+            Run.deleted_at.is_(None),
+            Run.status.in_(terminal_statuses),
+            Run.created_at < current.created_at,
+        )
+        .order_by(Run.created_at.desc(), Run.id.desc())
+        .limit(1)
+    )
+    prior_result = await run_repo.session.execute(prior_stmt)
+    prior_run_id = prior_result.scalar_one_or_none()
+    if prior_run_id is None:
+        return 0, 0
+
+    failed_statuses = (TestResultStatusEnum.FAILED, TestResultStatusEnum.ERROR)
+    current_failed_stmt = select(TestResult.suite, TestResult.name).where(
+        TestResult.run_id == run_id,
+        TestResult.status.in_(failed_statuses),
+    )
+    current_failed_result = await test_result_repo.session.execute(current_failed_stmt)
+    current_failed_set = set(current_failed_result.all())
+
+    prior_failed_stmt = select(TestResult.suite, TestResult.name).where(
+        TestResult.run_id == prior_run_id,
+        TestResult.status.in_(failed_statuses),
+    )
+    prior_failed_result = await test_result_repo.session.execute(prior_failed_stmt)
+    prior_failed_set = set(prior_failed_result.all())
+
+    cutoff = current.created_at - timedelta(days=30)
+    flaky_rows, _ = await test_result_repo.list_flaky_tests(
+        project_id=project_id,
+        cutoff=cutoff,
+        min_runs=3,
+        offset=0,
+        limit=100_000,
+    )
+    flaky_keys = {(row.suite, row.name) for row in flaky_rows}
+
+    new_failed_raw = current_failed_set - prior_failed_set
+    new_failed = len(new_failed_raw - flaky_keys)
+
+    recovered = len(prior_failed_set - current_failed_set)
+
+    return new_failed, recovered
 
 
 def _compare(actual: Any, op: str, expected: Any) -> bool:
@@ -287,12 +385,14 @@ async def evaluate_and_notify(
         ProjectRepository,
     )
     from qaplatform.infra.database.repositories.run_repo import RunRepository
+    from qaplatform.infra.database.repositories.test_result_repo import TestResultRepository
 
     async with session_factory() as session:
         rule_repo = NotificationRuleRepository(session)
         log_repo = NotificationLogRepository(session)
         project_repo = ProjectRepository(session)
         run_repo = RunRepository(session)
+        test_result_repo = TestResultRepository(session)
         project_loaded = False
         project_name = ""
 
@@ -309,6 +409,27 @@ async def evaluate_and_notify(
             )
             condition_context["consecutive_failures"] = consecutive_failures
             condition_context["consecutive_failed_runs"] = consecutive_failures
+
+        if any(
+            _conditions_include_fields(rule.conditions, _NEW_FAILED_RECOVERED_FIELDS)
+            for rule in rules
+        ):
+            from qaplatform.infra.database.models import Run
+            from sqlalchemy import select
+
+            run_stmt = select(Run.pipeline_id).where(Run.id == run_id)
+            run_result = await session.execute(run_stmt)
+            pipeline_id = run_result.scalar_one_or_none()
+            if pipeline_id is not None:
+                new_failed, recovered = await _load_new_failed_and_recovered(
+                    run_repo=run_repo,
+                    test_result_repo=test_result_repo,
+                    project_id=project_id,
+                    run_id=run_id,
+                    pipeline_id=pipeline_id,
+                )
+                condition_context["new_failed"] = new_failed
+                condition_context["recovered"] = recovered
 
         async def load_project_name() -> str:
             nonlocal project_loaded, project_name

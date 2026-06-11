@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 NOTIFICATION_CHANNEL_TYPES = frozenset({"email", "webhook", "dingtalk", "wecom"})
 NOTIFICATION_CANONICAL_CONDITION_FIELDS = frozenset(
-    {"status", "pass_rate", "failed", "consecutive_failures"}
+    {"status", "pass_rate", "failed", "consecutive_failures", "new_failed", "recovered"}
 )
 NOTIFICATION_CONDITION_FIELDS = frozenset(
     {*NOTIFICATION_CANONICAL_CONDITION_FIELDS, "consecutive_failed_runs"}

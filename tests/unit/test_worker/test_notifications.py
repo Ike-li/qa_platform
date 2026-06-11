@@ -1109,3 +1109,43 @@ class TestEvaluateAndNotify:
             },
         ]
         session.commit.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------- #
+# T15: new_failed and recovered condition fields
+# --------------------------------------------------------------------------- #
+
+
+class TestNewFailedAndRecoveredConditions:
+    """T15: 测试 new_failed 和 recovered 通知条件字段。"""
+
+    def test_new_failed_condition_evaluation(self):
+        """new_failed 条件评估正确。"""
+        conditions = [{"field": "new_failed", "operator": "gt", "value": 0}]
+        context = {"new_failed": 3}
+        assert _evaluate_conditions(conditions, {}, "failed", context) is True
+
+        context = {"new_failed": 0}
+        assert _evaluate_conditions(conditions, {}, "failed", context) is False
+
+    def test_recovered_condition_evaluation(self):
+        """recovered 条件评估正确。"""
+        conditions = [{"field": "recovered", "operator": "gt", "value": 0}]
+        context = {"recovered": 2}
+        assert _evaluate_conditions(conditions, {}, "done", context) is True
+
+        context = {"recovered": 0}
+        assert _evaluate_conditions(conditions, {}, "done", context) is False
+
+    def test_new_failed_zero_does_not_notify(self):
+        """连续两次相同失败集合，new_failed=0 不触发通知。"""
+        conditions = [{"field": "new_failed", "operator": "gt", "value": 0}]
+        context = {"new_failed": 0}
+        assert _evaluate_conditions(conditions, {"failed": 5}, "failed", context) is False
+
+    def test_new_failed_with_legacy_failed_condition(self):
+        """new_failed 与旧 failed 条件共存时向后兼容。"""
+        conditions = [{"field": "failed", "operator": "gt", "value": 0}]
+        # 旧条件只看 summary.failed，不依赖 context
+        assert _evaluate_conditions(conditions, {"failed": 5}, "failed", {}) is True
+        assert _evaluate_conditions(conditions, {"failed": 0}, "failed", {}) is False
