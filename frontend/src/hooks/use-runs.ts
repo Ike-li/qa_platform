@@ -6,6 +6,7 @@ import type {
   RunStatus,
   BackendRunStatus,
   RunResponse,
+  RunTriageResponse,
   PaginatedResponse,
   TestResult,
   Artifact,
@@ -161,6 +162,17 @@ export function useRunResults(id: string, params?: { page?: number; per_page?: n
       return data;
     },
     enabled: !!id,
+  });
+}
+
+export function useRunTriage(id: string, enabled = true) {
+  return useQuery({
+    queryKey: ["runs", id, "triage"],
+    queryFn: async () => {
+      const { data } = await api.get<RunTriageResponse>(`/runs/${id}/triage`);
+      return data;
+    },
+    enabled: !!id && enabled,
   });
 }
 

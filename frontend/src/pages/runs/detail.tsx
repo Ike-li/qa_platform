@@ -26,6 +26,7 @@ import { BranchBadge } from "../../components/branch-badge";
 import { DurationDisplay } from "../../components/duration-display";
 import { RelativeTime } from "../../components/relative-time";
 import { LogViewer } from "../../components/runs/log-viewer";
+import { FailureTriagePanel } from "../../components/runs/failure-triage-panel";
 import { TestResultsTable } from "../../components/test-results-table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Button } from "../../components/ui/button";
@@ -341,6 +342,8 @@ export default function RunDetail() {
             <SummaryCard label={t('runs.results.failed')} value={run.failed_tests} color="failed" />
             <SummaryCard label={t('runs.results.skipped')} value={run.skipped_tests} color="tertiary" />
           </div>
+
+          <FailureTriagePanel runId={run.id} />
 
           <TestResultsTable
             results={orderedResults}

@@ -273,6 +273,43 @@ export interface TestResult {
 
 export type TestResultStatus = "passed" | "failed" | "skipped" | "error" | "xfail";
 
+export type TriageCategory = "new" | "known_flaky" | "persistent";
+
+export type TriageConfidence = "observing" | "established";
+
+export interface TriageObservation {
+  run_id: string;
+  run_created_at: string;
+  status: TestResultStatus;
+}
+
+export interface TriageItem {
+  suite: string;
+  name: string;
+  status: TestResultStatus;
+  duration_ms: number;
+  error_message: string | null;
+  stack_trace: string | null;
+  category: TriageCategory;
+  confidence: TriageConfidence;
+  observation_count: number;
+  recent_history: TriageObservation[];
+}
+
+export interface TriageCluster {
+  signature: string;
+  count: number;
+  items: TriageItem[];
+}
+
+export interface RunTriageResponse {
+  run_id: string;
+  total_failed: number;
+  new: TriageCluster[];
+  known_flaky: TriageCluster[];
+  persistent: TriageCluster[];
+}
+
 export interface Artifact {
   id: string;
   run_id: string;
