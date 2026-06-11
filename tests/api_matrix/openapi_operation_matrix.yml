@@ -1,7 +1,7 @@
 version: 1
 metadata:
   source: openapi
-  operation_count: 72
+  operation_count: 73
   generated_from: create_app().openapi()["paths"]
   qa_owner: qa
 scope:
@@ -485,6 +485,16 @@ operations:
     auth_type: HTTPBearer
     request_schema: body
     declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: post_api_v1_projects_project_id_runs_import
+    method: POST
+    path: "/api/v1/projects/{project_id}/runs/import"
+    tag: runs
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "403", "404", "409", "413", "422"]
     coverage_status: covered
     test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
     gap_notes: []
