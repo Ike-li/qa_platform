@@ -22,14 +22,20 @@ export function useTrends(projectId: string, days: number = 30, gitRef?: string)
   });
 }
 
-export function useFlakyTests(projectId: string, days: number = 30, minRuns: number = 3, gitRef?: string) {
+export function useFlakyTests(
+  projectId: string,
+  days: number = 30,
+  minRuns: number = 3,
+  gitRef?: string,
+  collapseParams: boolean = false,
+) {
   const trimmedGitRef = gitRef?.trim() || undefined;
   return useQuery({
-    queryKey: ["projects", projectId, "flaky", days, minRuns, trimmedGitRef],
+    queryKey: ["projects", projectId, "flaky", days, minRuns, trimmedGitRef, collapseParams],
     queryFn: async () => {
       const { data } = await api.get<PaginatedAnalytics<FlakyTest>>(
         `/projects/${projectId}/analytics/flaky`,
-        { params: { days, min_runs: minRuns, git_ref: trimmedGitRef } },
+        { params: { days, min_runs: minRuns, git_ref: trimmedGitRef, collapse_params: collapseParams } },
       );
       return data.data;
     },

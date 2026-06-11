@@ -379,6 +379,7 @@
   "analytics.trendsDescription": "选定时间段内的每日通过率和运行量",
   "analytics.flakyTitle": "不稳定测试",
   "analytics.flakyDescription": "在通过和失败之间交替的测试 — 按失败次数排序",
+  "analytics.collapseParams": "折叠参数化用例",
   "analytics.noTrends": "该时间段暂无趋势数据。",
   "analytics.noFlaky": "未检测到不稳定测试。所有测试表现一致。",
   "analytics.daysPeriod": "时间范围",

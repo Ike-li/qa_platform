@@ -25,6 +25,7 @@ export function AnalyticsPanel({
   const [selectedTestKey, setSelectedTestKey] = useState<string | null>(null);
   const [gitRefInput, setGitRefInput] = useState("");
   const [baselineRefInput, setBaselineRefInput] = useState("");
+  const [collapseParams, setCollapseParams] = useState(false);
   const selectedGitRef = gitRefInput.trim() || defaultBranch;
   const baselineGitRef = baselineRefInput.trim() || defaultBranch;
   const initialHistoryTest = initialSuite && initialTest
@@ -33,7 +34,13 @@ export function AnalyticsPanel({
   const initialHistoryKey = initialHistoryTest ? testKey(initialHistoryTest) : null;
 
   const { data: trends, isLoading: trendsLoading, isError: trendsError } = useTrends(projectId, days, selectedGitRef);
-  const { data: flaky, isLoading: flakyLoading, isError: flakyError } = useFlakyTests(projectId, days, 3, selectedGitRef);
+  const { data: flaky, isLoading: flakyLoading, isError: flakyError } = useFlakyTests(
+    projectId,
+    days,
+    3,
+    selectedGitRef,
+    collapseParams,
+  );
   const {
     data: releaseSummary,
     isLoading: releaseLoading,
@@ -117,9 +124,20 @@ export function AnalyticsPanel({
 
       {/* Flaky tests */}
       <div className="rounded-xl border border-hairline bg-surface-1 p-6">
-        <div className="mb-4">
-          <h3 className="text-lg font-medium text-ink">{t("analytics.flakyTitle")}</h3>
-          <p className="text-sm text-ink-muted">{t("analytics.flakyDescription")}</p>
+        <div className="mb-4 flex items-start justify-between">
+          <div>
+            <h3 className="text-lg font-medium text-ink">{t("analytics.flakyTitle")}</h3>
+            <p className="text-sm text-ink-muted">{t("analytics.flakyDescription")}</p>
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-muted">
+            <input
+              type="checkbox"
+              checked={collapseParams}
+              onChange={(e) => setCollapseParams(e.target.checked)}
+              className="h-4 w-4 rounded border-hairline text-primary-600 focus:ring-2 focus:ring-primary-500"
+            />
+            <span>{t("analytics.collapseParams")}</span>
+          </label>
         </div>
         {flakyLoading ? (
           <div className="space-y-3">

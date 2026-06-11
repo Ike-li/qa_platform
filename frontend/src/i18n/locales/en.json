@@ -402,6 +402,7 @@
   "analytics.trendsDescription": "Daily pass rate and run volume over the selected period",
   "analytics.flakyTitle": "Flaky Tests",
   "analytics.flakyDescription": "Tests that alternated between passing and failing — sorted by failure count",
+  "analytics.collapseParams": "Collapse parametrized tests",
   "analytics.noTrends": "No trend data available for this period.",
   "analytics.noFlaky": "No flaky tests detected. All tests are consistent.",
   "analytics.daysPeriod": "Period",
