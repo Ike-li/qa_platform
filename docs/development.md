@@ -115,3 +115,88 @@ RUN_INTEGRATION_TESTS=1 .venv/bin/python -m pytest tests/integration/ -v -s
 # 5. 完成后清理后台进程 (可用 jobs 命令查看然后 kill，或关闭终端)
 kill %1 %2
 ```
+
+## Dogfooding：导入本仓库 CI 测试结果（T14）
+
+让本仓库自己的 CI 测试结果每天进入本地平台实例，平台从此有第一个真实数据流。
+原理：`scripts/import_ci_results.sh`（pull 模式）用 `gh` 拉取 main 分支最近完成的
+CI run 的 JUnit artifact，逐份调用 T11 导入接口
+`POST /api/v1/projects/{project_id}/runs/import`。
+
+### 1. 起本地实例
+
+```bash
+make infra-up
+.venv/bin/python -m alembic upgrade head
+.venv/bin/python -m uvicorn qaplatform.main:create_app --factory --port 8000 --app-dir src &
+```
+
+不需要 Worker——导入的 Run 直接以终态落库，不经过执行管线。
+
+### 2. 建项目和 API token（一次性）
+
+```bash
+# 注册账号（已有账号跳过；登录需要 username + password + tenant_id）
+curl -s -X POST http://localhost:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"dogfood","email":"dogfood@qaplatform.dev","password":"<密码>"}'
+# 响应里的 access_token 用于下面两步，user.tenant_id 留作以后登录用
+
+# 建项目（记下响应里的 id → QAP_IMPORT_PROJECT_ID）
+curl -s -X POST http://localhost:8000/api/v1/projects \
+  -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
+  -d '{"name":"qa-platform-ci","slug":"qa-platform-ci","git_url":"https://github.com/Ike-li/qa_platform.git","default_branch":"main"}'
+
+# 签发 API token（记下响应里的 token → QAP_IMPORT_TOKEN；只需 run.trigger scope）
+curl -s -X POST http://localhost:8000/api/v1/auth/tokens \
+  -H "Authorization: Bearer <access_token>" -H "Content-Type: application/json" \
+  -d '{"name":"ci-import","scopes":["run.trigger"]}'
+```
+
+### 3. 运行导入脚本
+
+```bash
+# 预览（不写入、不更新状态文件）
+QAP_IMPORT_TOKEN=qap_xxx QAP_IMPORT_PROJECT_ID=<uuid> \
+  ./scripts/import_ci_results.sh --dry-run --limit 5
+
+# 真实导入
+QAP_IMPORT_TOKEN=qap_xxx QAP_IMPORT_PROJECT_ID=<uuid> \
+  ./scripts/import_ci_results.sh --limit 5
+```
+
+行为说明：
+
+- 已处理的 CI run id 记录在 `.qap-import-state.json`（已 gitignore），重复运行不重复导入
+- artifact 缺失或不含 JUnit XML 的 run 打印原因后跳过，不中断
+- 每份 JUnit XML 生成一条独立 import Run；pipeline 按 artifact 区分：
+  `ci-backend-unit` / `ci-backend-integration` / `ci-e2e` / `ci-frontend-unit`
+- `QAP_IMPORT_URL` 可覆盖平台地址（默认 `http://localhost:8000`）
+
+### 4. 每日定时（可选）
+
+手动方式：每天跑一次第 3 步即可。
+
+macOS launchd 方式——写入 `~/Library/LaunchAgents/dev.qaplatform.ci-import.plist`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.qaplatform.ci-import</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>cd <仓库绝对路径> && QAP_IMPORT_TOKEN=qap_xxx QAP_IMPORT_PROJECT_ID=<uuid> ./scripts/import_ci_results.sh --limit 10</string>
+  </array>
+  <key>StartCalendarInterval</key><dict>
+    <key>Hour</key><integer>9</integer><key>Minute</key><integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key><string>/tmp/qap-ci-import.log</string>
+  <key>StandardErrorPath</key><string>/tmp/qap-ci-import.log</string>
+</dict></plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/dev.qaplatform.ci-import.plist
+# 验证：launchctl list | grep qaplatform；日志在 /tmp/qap-ci-import.log
+```

@@ -106,6 +106,7 @@
 | SSE Ticket 鉴权 | P0 | ✅ | `api/v1/sse.py` · ticket 短期凭证防 EventSource 跨域 |
 | 报告分享（公开链接） | P2 | ✅ | `api/v1/report_shares.py` + `services/report_share_service.py` · 生成时间限制/访问次数限制的分享令牌，支持列表/撤销，公开访问无需登录 |
 | 外部结果导入（入口 B，T11 / 新 PRD D2+D3） | P0 | ✅ | `api/v1/run_imports.py` · `POST /api/v1/projects/{project_id}/runs/import`：原始 JUnit XML body（≤10MB，超限 413；不可解析 422）+ query 元数据（`git_ref` 必填，`git_sha`/`branch`/`pipeline_name`/`environment_name`/`started_at`/`finished_at` 可选）；get-or-create 占位 Pipeline（`enabled=false`）/Environment（`base_image=import/none`）；Run 以终态（done/failed）直接落库并复用 `build_results_summary`，落库后补偿调用 `evaluate_and_notify` 进入通知管线；同一 `(suite,name)` 重复保留最后一条；解析复用 `plugins/builtin/junit_collector.py::parse_junit_xml_content`（支持嵌套 testsuite）；**导入不去重：重复上传同一文件生成两条独立 Run，幂等性由调用方负责**；权限 Developer+（同 run.trigger），审计 `run.import`；跨租户 404 |
+| Dogfooding 数据流（T14，依赖 T11） | P0 | ✅ | `scripts/import_ci_results.sh`（pull 模式）+ `frontend/vite.config.ts` vitest junit reporter + CI `frontend-unit-junit` artifact（`if: always()` 上传）· `gh` 拉取 main 分支最近完成 CI run 的 4 类 JUnit artifact 逐份导入；状态文件 `.qap-import-state.json`（gitignore）防重复导入；`--dry-run` 预览；缺失 artifact 跳过不中断；内容嗅探 `<testsuite` 过滤 coverage XML；操作手册见 `docs/development.md` Dogfooding 一节 |
 | 冒烟测试框架 | P2 | ✅ | `scripts/smoke/run-all.sh` 聚合 `00-setup.sh`、`01-browser-bridge.sh` 和 6 个页面脚本；默认 skip 计失败，探索性运行才允许 `SMOKE_ALLOW_SKIPS=1`；父级 `RESULTS_DIR` 下保留汇总 report，子脚本证据落在 `${RESULTS_DIR}/<script-name>/`，具体检查点以脚本内 `log_step` 为准 |
 
 ---

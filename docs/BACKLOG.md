@@ -223,6 +223,11 @@
    - 注意：导入不去重，重复上传同一文件生成两条独立 Run（幂等性由调用方负责）
    - 测试：30 个 API 单测 + 12 个解析单测 + 7 个集成测试（含 API token、跨租户 404、analytics 四端点可见性）
    - 后续：T14 dogfooding 数据流依赖本接口
+7. ✅ T14 Dogfooding 数据流 (2026-06-10 完成)
+   - `scripts/import_ci_results.sh`：gh 拉取 main 最近 CI run 的 JUnit artifact → T11 接口导入；状态文件防重复；--dry-run；缺失 artifact 跳过
+   - vitest 输出 JUnit（`frontend/test-results/vitest-junit.xml`），CI 新增 `frontend-unit-junit` artifact（if: always()）
+   - 本地端到端验证：3 个 CI run 导入 16 条 Run（ci-backend-unit/integration/e2e），trends 有数据，重复运行 0 重复
+   - **下一步：开始 7 天 dogfooding（PRD §8 v0 gate）——连续 7 天用平台而非 GitHub Actions 页面判断 main 状态**
 
 **下周预计**:
 1. 前端单元测试框架
