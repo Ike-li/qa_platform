@@ -74,3 +74,34 @@ async def test_find_due_schedules_uses_skip_locked_schedule_row_lock():
         due_at_param: now,
         limit_param: 23,
     }
+
+
+@pytest.mark.asyncio
+async def test_pipeline_get_by_name_scopes_project_and_excludes_soft_deleted():
+    from uuid import uuid4
+
+    from qaplatform.infra.database.repositories.pipeline_repo import (
+        PipelineRepository,
+    )
+
+    found = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = found
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    repo = PipelineRepository(session)
+    project_id = uuid4()
+
+    assert await repo.get_by_name(project_id, "external-import") is found
+
+    statement = session.execute.await_args.args[0]
+    sql = _postgres_sql(statement)
+    params = statement.compile(dialect=postgresql.dialect()).params
+
+    assert "pipeline.project_id = " in sql
+    assert "pipeline.name = " in sql
+    assert "pipeline.deleted_at IS NULL" in sql
+    project_param = _bound_param_name(sql, "pipeline.project_id =")
+    name_param = _bound_param_name(sql, "pipeline.name =")
+    assert params[project_param] == project_id
+    assert params[name_param] == "external-import"

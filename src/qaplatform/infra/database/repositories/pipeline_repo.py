@@ -26,6 +26,15 @@ class PipelineRepository(BaseRepository[Pipeline]):
             filters=[Pipeline.project_id == project_id],
         )
 
+    async def get_by_name(self, project_id: UUID, name: str) -> Pipeline | None:
+        stmt = select(Pipeline).where(
+            Pipeline.project_id == project_id,
+            Pipeline.name == name,
+            Pipeline.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def list_active_by_project(self, project_id: UUID) -> list[Pipeline]:
         stmt = select(Pipeline).where(
             Pipeline.project_id == project_id,
