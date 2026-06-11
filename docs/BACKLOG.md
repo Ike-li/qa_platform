@@ -235,6 +235,14 @@
    - 前端 `failure-triage-panel.tsx` 三组折叠面板（新增失败默认展开、堆栈展开、10 格履历迷你条、观察中徽标），无失败不渲染
    - 测试：13 签名单测 + 16 组装/端点单测 + 2 repo 契约单测 + 5 集成测试（三类归类/聚类/空态/跨租户 404/性能：5000 用例中位约 300ms < 500ms）
    - 矩阵同步：74 operations / 444 cases
+9. ✅ T13 失败子集重跑 (2026-06-11 完成)
+   - `POST /api/v1/runs/{run_id}/retry-failed`：创建只重跑失败用例的新 Run（v1 仅支持 pytest runner）
+   - nodeid 重构：`(suite, name)` → pytest nodeid（dotted path → 文件路径，末段大写开头视为类名，参数化原样拼接）
+   - executor 注入：run.metadata.retry_failed_cases → 追加 nodeids 到 stage.config["args"]（pytest 位置参数）
+   - 前置校验：终态 + 存在 failed/error + pytest runner；失败 > 200 个拒绝（命令行长度风险）
+   - metadata.retry_failed_cases 记录 `[(suite, name), ...]`；trigger_type='retry_failed'；审计 run.retry_failed
+   - 测试：8 nodeid 单测 + 6 命令单测（非终态/无失败/过多失败/非 pytest/成功路径）+ 4 集成测试（跨租户 404/无失败 409/非终态 409/非 pytest skip）
+   - 矩阵同步：75 operations / 449 cases
 
 **下周预计**:
 1. 前端单元测试框架

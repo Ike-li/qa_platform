@@ -100,6 +100,7 @@
 | Flaky test 检测 | P1 | ✅ | `api/v1/analytics.py` · 同一 suite/name 在时间窗口内既有 passed 又有 failed/error 的聚合判定 |
 | 多 Runner 插件（pytest / Jest / Playwright / Go test） | P2 | ✅ | `plugins/builtin/pytest_runner.py` · `plugins/builtin/jest_runner.py` · `plugins/builtin/playwright_runner.py` · `plugins/builtin/go_test_runner.py` |
 | 批量操作（批量取消/重试） | P1 | ✅ | `api/v1/runs.py` batch_cancel / batch_retry |
+| 失败子集重跑（T13，入口 A 高频动作） | P1 | ✅ | `api/v1/runs.py` retry-failed + `engine/executor.py` 过滤注入 + `domain/services/pytest_nodeid.py` 重构 · `POST /api/v1/runs/{run_id}/retry-failed`：创建只重跑失败用例的新 Run；前置校验终态 + 存在 failed/error 用例；v1 仅支持 pytest runner（非 pytest 返回 409）；失败用例 > 200 个时拒绝（命令行长度风险）；从 `(suite, name)` 重构 pytest nodeid（dotted path → 文件路径，末段大写开头视为类名，参数化 `[param]` 原样拼接）并追加到 `stage.config["args"]`；`trigger_type='retry_failed'`，`metadata.retry_failed_cases` 记录选中的 `(suite, name)` 清单；权限 Developer+（同 run.trigger），审计 `run.retry_failed`；跨租户 404；nodeid 重构有损时 pytest collect error 正常落 failed 并保留日志 |
 | 系统状态页 | P2 | ✅ | `api/v1/admin.py` + `pages/admin/status.tsx` |
 | 项目成员管理 | P1 | ✅ | `api/v1/project_members.py` · 双层 RBAC 配套 |
 | 通知规则 CRUD | P1 | ✅ | `api/v1/notifications.py` |
