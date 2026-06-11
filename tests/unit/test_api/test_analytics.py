@@ -737,3 +737,110 @@ async def test_release_summary_returns_observation_count_and_window_days(
     data = resp.json()
     assert data["observation_count"] == 12
     assert data["window_days"] == 60
+
+
+@pytest.mark.asyncio
+async def test_flaky_collapse_params_aggregates_parametrized_tests(
+    client,
+    mock_repos,
+    project_id,
+):
+    """T16: flaky 端点 collapse_params=true 时折叠参数化用例。"""
+    from qaplatform.api.v1 import analytics
+
+    project = SimpleNamespace(id=project_id)
+    mock_repos.project.get_for_tenant.return_value = project
+    # 模拟两个参数化变体
+    mock_repos.test_result.list_flaky_tests.return_value = (
+        [
+            SimpleNamespace(
+                suite="tests.unit.test_x",
+                name="test_foo[param1]",
+                total_runs=5,
+                passed_count=3,
+                failed_count=2,
+            ),
+            SimpleNamespace(
+                suite="tests.unit.test_x",
+                name="test_foo[param2]",
+                total_runs=4,
+                passed_count=2,
+                failed_count=2,
+            ),
+        ],
+        2,
+    )
+    enforce_project_action = AsyncMock()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            analytics,
+            "enforce_project_action",
+            enforce_project_action,
+        )
+        resp = await client.get(
+            f"/api/v1/projects/{project_id}/analytics/flaky",
+            params={"collapse_params": "true"},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert len(data["data"]) == 1  # 两个参数化变体折叠成一个
+    item = data["data"][0]
+    assert item["suite"] == "tests.unit.test_x"
+    assert item["name"] == "test_foo"  # 参数段被剥离
+    assert item["total_runs"] == 9  # 5 + 4
+    assert item["passed_count"] == 5  # 3 + 2
+    assert item["failed_count"] == 4  # 2 + 2
+    assert item["flaky_rate"] == round(4 / 9, 4)
+
+
+@pytest.mark.asyncio
+async def test_flaky_collapse_params_false_keeps_original_behavior(
+    client,
+    mock_repos,
+    project_id,
+):
+    """T16: flaky 端点 collapse_params=false（默认）保持原行为。"""
+    from qaplatform.api.v1 import analytics
+
+    project = SimpleNamespace(id=project_id)
+    mock_repos.project.get_for_tenant.return_value = project
+    mock_repos.test_result.list_flaky_tests.return_value = (
+        [
+            SimpleNamespace(
+                suite="tests.unit.test_x",
+                name="test_foo[param1]",
+                total_runs=5,
+                passed_count=3,
+                failed_count=2,
+            ),
+            SimpleNamespace(
+                suite="tests.unit.test_x",
+                name="test_foo[param2]",
+                total_runs=4,
+                passed_count=2,
+                failed_count=2,
+            ),
+        ],
+        2,
+    )
+    enforce_project_action = AsyncMock()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            analytics,
+            "enforce_project_action",
+            enforce_project_action,
+        )
+        resp = await client.get(
+            f"/api/v1/projects/{project_id}/analytics/flaky",
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert len(data["data"]) == 2  # 保持独立
+    assert data["data"][0]["name"] == "test_foo[param1]"
+    assert data["data"][1]["name"] == "test_foo[param2]"

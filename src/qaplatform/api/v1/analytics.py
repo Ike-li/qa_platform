@@ -102,6 +102,7 @@ async def get_flaky_tests(
     days: int = Query(30, ge=1, le=365),
     min_runs: int = Query(3, ge=2, le=100),
     git_ref: str | None = Query(None, min_length=1, max_length=200),
+    collapse_params: bool = Query(False),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(_get_db_session),
@@ -124,8 +125,41 @@ async def get_flaky_tests(
         flaky_kwargs["git_ref"] = git_ref
     rows, total = await repos.test_result.list_flaky_tests(**flaky_kwargs)
 
-    return FlakyResponse(
-        data=[
+    # 折叠参数化用例
+    if collapse_params:
+        from qaplatform.domain.services.test_case_normalizer import normalize_case_name
+        from collections import defaultdict
+
+        collapsed: dict[tuple[str, str], dict] = defaultdict(
+            lambda: {"total_runs": 0, "passed_count": 0, "failed_count": 0}
+        )
+        for row in rows:
+            normalized_name = normalize_case_name(row.name)
+            key = (row.suite, normalized_name)
+            collapsed[key]["total_runs"] += row.total_runs
+            collapsed[key]["passed_count"] += row.passed_count
+            collapsed[key]["failed_count"] += row.failed_count
+
+        flaky_data = [
+            FlakyTest(
+                suite=suite,
+                name=name,
+                total_runs=stats["total_runs"],
+                passed_count=stats["passed_count"],
+                failed_count=stats["failed_count"],
+                flaky_rate=round(stats["failed_count"] / stats["total_runs"], 4),
+                observation_count=stats["total_runs"],
+                window_days=days,
+            )
+            for (suite, name), stats in collapsed.items()
+        ]
+        # 按 flaky_rate 降序排序
+        flaky_data.sort(key=lambda x: x.flaky_rate, reverse=True)
+        # 应用分页
+        paginated_data = flaky_data[offset : offset + limit]
+        total = len(flaky_data)
+    else:
+        flaky_data = [
             FlakyTest(
                 suite=row.suite,
                 name=row.name,
@@ -137,7 +171,12 @@ async def get_flaky_tests(
                 window_days=days,
             )
             for row in rows
-        ],
+        ]
+        paginated_data = flaky_data
+        # total 已经从 list_flaky_tests 返回
+
+    return FlakyResponse(
+        data=paginated_data,
         pagination=AnalyticsPaginationMeta(offset=offset, limit=limit, total=total),
     )
 
@@ -196,6 +235,7 @@ async def get_test_history(
     suite: str = Query(..., min_length=1, max_length=255),
     name: str = Query(..., min_length=1, max_length=500),
     days: int = Query(30, ge=1, le=365),
+    collapse_params: bool = Query(False),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(_get_db_session),
