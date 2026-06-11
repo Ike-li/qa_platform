@@ -133,6 +133,8 @@ async def get_flaky_tests(
                 passed_count=row.passed_count,
                 failed_count=row.failed_count,
                 flaky_rate=round(row.failed_count / row.total_runs, 4),
+                observation_count=row.total_runs,
+                window_days=days,
             )
             for row in rows
         ],
@@ -174,7 +176,11 @@ async def get_release_summary(
         git_ref=target_ref,
         baseline_git_ref=baseline_ref,
     )
-    return ReleaseSummaryResponse(**summary)
+    return ReleaseSummaryResponse(
+        **summary,
+        observation_count=summary["total_runs"],
+        window_days=days,
+    )
 
 
 @router.get(
@@ -222,6 +228,7 @@ async def get_test_history(
                 duration_ms=row.duration_ms,
                 error_message=row.error_message,
                 git_ref=row.git_ref,
+                observation_count=total,
             )
             for row in rows
         ],

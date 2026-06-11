@@ -442,6 +442,8 @@ export interface FlakyTest {
   failed_count: number;
   passed_count: number;
   flaky_rate: number;
+  observation_count: number;
+  window_days: number;
 }
 
 export interface TestHistoryPoint {
@@ -452,6 +454,7 @@ export interface TestHistoryPoint {
   duration_ms: number | null;
   error_message: string | null;
   git_ref: string | null;
+  observation_count: number | null;
 }
 
 export interface ReleaseTestDelta {
@@ -470,4 +473,6 @@ export interface ReleaseSummary {
   flaky_adjusted_pass_rate: number | null;
   new_failing_tests: ReleaseTestDelta[];
   recovered_tests: ReleaseTestDelta[];
+  observation_count: number;
+  window_days: number;
 }

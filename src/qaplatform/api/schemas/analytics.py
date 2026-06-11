@@ -27,6 +27,8 @@ class FlakyTest(BaseModel):
     failed_count: int
     passed_count: int
     flaky_rate: float
+    observation_count: int
+    window_days: int
 
 
 class TestHistoryPoint(BaseModel):
@@ -39,6 +41,7 @@ class TestHistoryPoint(BaseModel):
     duration_ms: int | None = None
     error_message: str | None = None
     git_ref: str | None = None
+    observation_count: int | None = None
 
 
 class ReleaseTestDelta(BaseModel):
@@ -61,6 +64,8 @@ class ReleaseSummaryResponse(BaseModel):
     flaky_adjusted_pass_rate: float | None = None
     new_failing_tests: list[ReleaseTestDelta] = Field(default_factory=list)
     recovered_tests: list[ReleaseTestDelta] = Field(default_factory=list)
+    observation_count: int
+    window_days: int
 
 
 class AnalyticsPaginationMeta(BaseModel):

@@ -1853,6 +1853,8 @@ class TestAnalytics:
                     "failed_count": 3,
                     "passed_count": 7,
                     "flaky_rate": 0.3,
+                    "observation_count": 10,
+                    "window_days": 30,
                 }
             ],
             "pagination": {"total": 1, "offset": 0, "limit": 50},
@@ -1997,6 +1999,7 @@ class TestAnalytics:
                     "duration_ms": 123,
                     "error_message": "boom",
                     "git_ref": "main",
+                    "observation_count": 1,
                 }
             ],
             "pagination": {"offset": 0, "limit": 50, "total": 1},

@@ -261,6 +261,8 @@ async def test_flaky_success_uses_project_rbac_and_repository_filters(
                 "passed_count": 6,
                 "failed_count": 2,
                 "flaky_rate": 0.25,
+                "observation_count": 8,
+                "window_days": 21,
             }
         ],
         "pagination": {"offset": 10, "limit": 20, "total": 1},
@@ -384,6 +386,8 @@ async def test_release_summary_success_uses_project_rbac_and_repository_filters(
         "recovered_tests": [
             {"suite": "checkout", "name": "test_cart", "failed_count": 1}
         ],
+        "observation_count": 4,
+        "window_days": 14,
     }
     mock_repos.project.get_for_tenant.assert_awaited_once_with(
         project_id,
@@ -486,6 +490,7 @@ async def test_test_history_success_uses_project_rbac_and_repository_filters(
                 "duration_ms": 1234,
                 "error_message": "assertion failed",
                 "git_ref": "main",
+                "observation_count": 1,
             }
         ],
         "pagination": {"offset": 20, "limit": 10, "total": 1},
@@ -607,3 +612,128 @@ def test_test_history_422_uses_error_response_schema(app):
     schema = responses["422"]["content"]["application/json"]["schema"]
 
     assert schema == {"$ref": "#/components/schemas/ErrorResponse"}
+
+
+@pytest.mark.asyncio
+async def test_flaky_returns_observation_count_and_window_days(
+    client,
+    mock_repos,
+    project_id,
+):
+    """T15: flaky 端点返回 observation_count 和 window_days。"""
+    from qaplatform.api.v1 import analytics
+
+    project = SimpleNamespace(id=project_id, default_branch="main")
+    row = SimpleNamespace(
+        suite="tests.unit.test_x",
+        name="test_flaky",
+        total_runs=15,
+        passed_count=10,
+        failed_count=5,
+    )
+    mock_repos.project.get_for_tenant.return_value = project
+    mock_repos.test_result.list_flaky_tests.return_value = ([row], 1)
+    enforce_project_action = AsyncMock()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            analytics,
+            "enforce_project_action",
+            enforce_project_action,
+        )
+        resp = await client.get(
+            f"/api/v1/projects/{project_id}/analytics/flaky",
+            params={"days": "45", "min_runs": "5"},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert len(data["data"]) == 1
+    item = data["data"][0]
+    assert item["observation_count"] == 15
+    assert item["window_days"] == 45
+
+
+@pytest.mark.asyncio
+async def test_test_history_returns_observation_count(
+    client,
+    mock_repos,
+    project_id,
+):
+    """T15: test-history 端点返回 observation_count。"""
+    from qaplatform.api.v1 import analytics
+
+    project = SimpleNamespace(id=project_id, default_branch="main")
+    row = SimpleNamespace(
+        run_id=uuid.uuid4(),
+        run_created_at=datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc),
+        run_status="done",
+        status="passed",
+        duration_ms=100,
+        error_message=None,
+        git_ref="main",
+    )
+    mock_repos.project.get_for_tenant.return_value = project
+    mock_repos.test_result.list_test_history.return_value = ([row], 8)
+    enforce_project_action = AsyncMock()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            analytics,
+            "enforce_project_action",
+            enforce_project_action,
+        )
+        resp = await client.get(
+            f"/api/v1/projects/{project_id}/analytics/test-history",
+            params={"suite": "tests.unit.test_x", "name": "test_case", "days": "30"},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert len(data["data"]) == 1
+    item = data["data"][0]
+    assert item["observation_count"] == 8
+
+
+@pytest.mark.asyncio
+async def test_release_summary_returns_observation_count_and_window_days(
+    client,
+    mock_repos,
+    project_id,
+):
+    """T15: release-summary 端点返回 observation_count 和 window_days。"""
+    from qaplatform.api.v1 import analytics
+
+    project = SimpleNamespace(id=project_id, default_branch="main")
+    mock_repos.project.get_for_tenant.return_value = project
+    mock_repos.run.get_release_summary.return_value = {
+        "git_ref": "feature",
+        "baseline_git_ref": "main",
+        "total_runs": 12,
+        "passed_runs": 10,
+        "failed_runs": 2,
+        "raw_pass_rate": 0.8333,
+        "flaky_adjusted_pass_rate": 0.9,
+        "new_failing_tests": [],
+        "recovered_tests": [],
+    }
+    enforce_project_action = AsyncMock()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            analytics,
+            "enforce_project_action",
+            enforce_project_action,
+        )
+        resp = await client.get(
+            f"/api/v1/projects/{project_id}/analytics/release-summary",
+            params={"git_ref": "feature", "days": "60"},
+            headers={"Authorization": "Bearer fake"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["observation_count"] == 12
+    assert data["window_days"] == 60
