@@ -242,7 +242,15 @@
    - 前置校验：终态 + 存在 failed/error + pytest runner；失败 > 200 个拒绝（命令行长度风险）
    - metadata.retry_failed_cases 记录 `[(suite, name), ...]`；trigger_type='retry_failed'；审计 run.retry_failed
    - 测试：8 nodeid 单测 + 6 命令单测（非终态/无失败/过多失败/非 pytest/成功路径）+ 4 集成测试（跨租户 404/无失败 409/非终态 409/非 pytest skip）
-   - 矩阵同步：75 operations / 449 cases
+   - 矩阵同步：75 operations / 450 cases
+   - **后续修复** (2026-06-11)：nodeid 嵌套类解析 bug、审计契约、API 矩阵同步、retry_failed 测试 Mock 问题 (commit: d23fc08)
+10. ✅ T15 置信度展示 + 通知降噪 (2026-06-11 完成)
+   - Analytics 置信度字段：FlakyTest/TestHistoryPoint/ReleaseSummaryResponse 增加 `observation_count`（观测次数）和 `window_days`（窗口天数）
+   - 通知降噪条件：新增 `new_failed`（相对上一终态 run 新增失败数，排除 flaky）和 `recovered`（上次失败本次通过数）字段
+   - 实现 `_load_new_failed_and_recovered`：查询上一终态 run，计算差集并过滤 flaky 用例
+   - 前端同步：TypeScript 类型定义更新
+   - 测试：7 个新测试用例（3 个 analytics + 4 个通知），123 个 T15 相关测试全通过
+   - **Commits**: 5b21e2b (置信度), 8fe957b (通知降噪)
 
 **下周预计**:
 1. 前端单元测试框架
