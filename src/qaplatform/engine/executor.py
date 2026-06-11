@@ -510,7 +510,30 @@ class RunExecutor:
             await self.log_stream.write_log(str(run.id), f"Starting stage: {stage.name}")
 
             runner = self.plugin_registry.get_runner(stage.plugin)
-            cmd = runner.build_command(stage.config)
+
+            # 注入失败子集过滤（retry_failed）
+            stage_config = dict(stage.config)
+            retry_failed_cases = run.metadata.get("retry_failed_cases")
+            if retry_failed_cases and stage.plugin == "pytest":
+                from qaplatform.domain.services.pytest_nodeid import reconstruct_nodeid
+
+                nodeids = [
+                    reconstruct_nodeid(case["suite"], case["name"])
+                    for case in retry_failed_cases
+                ]
+                # 追加到 args（pytest 位置参数）
+                existing_args = stage_config.get("args", [])
+                if isinstance(existing_args, str):
+                    import shlex
+                    existing_args = shlex.split(existing_args)
+                stage_config["args"] = list(existing_args) + nodeids
+
+                await self.log_stream.write_log(
+                    str(run.id),
+                    f"Retry-failed: filtering to {len(nodeids)} test case(s)",
+                )
+
+            cmd = runner.build_command(stage_config)
 
             spec = _build_stage_execution_spec(
                 run_id=str(run.id),

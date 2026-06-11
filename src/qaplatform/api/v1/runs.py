@@ -31,6 +31,10 @@ from qaplatform.api.run_presenters import (
     to_result_response,
     to_run_response,
 )
+from qaplatform.api.run_retry_failed_command import (
+    RetryFailedError,
+    retry_failed_run_command,
+)
 from qaplatform.api.run_triage import (
     TRIAGE_FLAKY_MIN_RUNS,
     TRIAGE_FLAKY_SCAN_LIMIT,
@@ -480,6 +484,48 @@ async def get_run_triage(
         prior_history=prior_history,
         prior_counts=prior_counts,
     )
+
+
+@router.post(
+    "/{run_id}/retry-failed",
+    response_model=RunResponse,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    summary="重跑失败用例",
+    description=(
+        "创建只重跑失败用例的新 Run。v1 仅支持 pytest runner。"
+        "失败用例 > 200 个时拒绝（命令行长度风险）。"
+        "要求原 Run 为终态且存在 failed/error 测试结果。"
+    ),
+)
+async def retry_failed_run(
+    run_id: UUID,
+    request: Request,
+    repos: Repos,
+    user: CurrentUser,
+    session: AsyncSession = Depends(_get_db_session),
+):
+    # 权限检查：需要 PIPELINE_EXECUTE（Developer+）
+    await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.PIPELINE_EXECUTE,
+        enforce_action=enforce_project_action,
+    )
+
+    container = request.app.state.container
+    try:
+        return await retry_failed_run_command(
+            run_id=run_id,
+            repos=repos,
+            user=user,
+            session=session,
+            arq_pool=getattr(container, "arq_pool", None),
+            settings=container.settings,
+        )
+    except RetryFailedError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
 
 
 @router.get(
