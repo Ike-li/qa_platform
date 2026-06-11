@@ -228,6 +228,13 @@
    - vitest 输出 JUnit（`frontend/test-results/vitest-junit.xml`），CI 新增 `frontend-unit-junit` artifact（if: always()）
    - 本地端到端验证：3 个 CI run 导入 16 条 Run（ci-backend-unit/integration/e2e），trends 有数据，重复运行 0 重复
    - **下一步：开始 7 天 dogfooding（PRD §8 v0 gate）——连续 7 天用平台而非 GitHub Actions 页面判断 main 状态**
+8. ✅ T12 失败分诊 (2026-06-11 完成)
+   - `GET /api/v1/runs/{run_id}/triage`：failed/error 用例归入 新增失败/已知 flaky/持续失败（优先级 known_flaky > persistent > new）
+   - flaky 复用 `list_flaky_tests`（30 天/min_runs=3 与 analytics 默认一致）；persistent/new 历史口径 project 级 `(suite,name)` 聚合（analytics_run_filters），窗口锚定 run.created_at
+   - 错误签名聚类（首行截 200、数字/UUID/路径归一）；批量历史查询（窗口函数，无 N+1）；confidence 两态（<10 次观测 observing）
+   - 前端 `failure-triage-panel.tsx` 三组折叠面板（新增失败默认展开、堆栈展开、10 格履历迷你条、观察中徽标），无失败不渲染
+   - 测试：13 签名单测 + 16 组装/端点单测 + 2 repo 契约单测 + 5 集成测试（三类归类/聚类/空态/跨租户 404/性能：5000 用例中位约 300ms < 500ms）
+   - 矩阵同步：74 operations / 444 cases
 
 **下周预计**:
 1. 前端单元测试框架
