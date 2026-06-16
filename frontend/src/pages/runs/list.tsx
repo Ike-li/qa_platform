@@ -120,9 +120,14 @@ export default function Runs() {
                     <BranchBadge branch={run.branch} />
                   </td>
                   <td className="px-6 py-4 text-ink-muted">
-                    <div className="flex items-center gap-1.5">
-                      <User className="h-3.5 w-3.5" />
-                      <span>{run.triggered_by}</span>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-1.5">
+                        <User className="h-3.5 w-3.5" />
+                        <span>{run.triggered_by || "-"}</span>
+                      </div>
+                      <span className="text-xs text-ink-tertiary">
+                        {t(`runs.triggerType.${run.trigger_type}`, { defaultValue: run.trigger_type })}
+                      </span>
                     </div>
                   </td>
                   <td className="px-6 py-4 text-ink-muted">

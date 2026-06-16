@@ -19,6 +19,18 @@
 
 ---
 
+## 🔧 端到端体验打磨进度（2026-06-16 起）
+
+端到端走查「跑回归/导入 → 看失败分诊 → 一键重跑失败 → 判断能不能发版」发现 4 个断点：
+
+- [x] **卡点 A**：前端接入「重跑失败用例」(2026-06-16) — 后端 retry-failed API 早已就绪，但前端从未接线（detail.tsx「重跑」实为整跑）。已加 `useRetryFailedRun` hook + `RetryFailedButton` 组件 + 分诊区按钮 + i18n + vitest（3 例）；lint / 全量 158 测试绿。
+- [x] **卡点 B**：打通 run 详情 → 能不能发版 (2026-06-16) — 已在 run 详情页添加「Release Verdict」跳转链接，直达项目 analytics 并自动携带 git_ref/baseline_git_ref 过滤。
+- [x] **卡点 C**：分诊信息前置 + 消除 `runs.triage.*` / `runs.failureTriage.*` 命名重叠 (2026-06-16) — FailureTriagePanel 已移至详情页主区域前置展示，重命名顶栏 runs.triage 键为 runs.summary 并清理了命名冲突。
+- [x] **卡点 D**：import run 标识 (2026-06-16) — 各个运行列表及详情页均增加了 trigger_type 字段及 import 专属徽标，以直观区分导入运行与平台内执行运行。
+
+
+---
+
 ## 🚨 高优先级 (本周完成)
 
 ### 文档管理改进 ⭐ 新增

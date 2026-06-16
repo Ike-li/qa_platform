@@ -139,6 +139,23 @@ def test_build_otlp_exporter_skips_when_endpoint_missing(monkeypatch):
     import_attempted.assert_not_called()
 
 
+def test_build_otlp_exporter_succeeds_when_endpoint_configured(monkeypatch):
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+        OTLPSpanExporter,
+    )
+
+    from qaplatform.observability import tracing
+
+    settings = _settings(
+        otel_enabled=True,
+        otel_exporter_endpoint="http://localhost:4318/v1/traces",
+    )
+    exporter = tracing._build_otlp_exporter(settings)
+
+    assert isinstance(exporter, OTLPSpanExporter)
+    assert exporter._endpoint == "http://localhost:4318/v1/traces"
+
+
 def test_instrument_fastapi_app_once(monkeypatch):
     from qaplatform.observability import tracing
 

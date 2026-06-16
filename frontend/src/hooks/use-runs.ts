@@ -154,6 +154,22 @@ export function useCancelRun(id: string) {
   });
 }
 
+// 只重跑失败用例，生成一条新 Run（后端 POST /runs/{id}/retry-failed）。
+// 非 pytest runner / 失败用例 > 200 / 无失败用例时后端返回 409，由调用方 toast 提示。
+export function useRetryFailedRun(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data } = await api.post<RunResponse>(`/runs/${id}/retry-failed`);
+      return normalizeRun(data);
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+      queryClient.invalidateQueries({ queryKey: ["projects", data.project_id, "runs"] });
+    },
+  });
+}
+
 export function useRunResults(id: string, params?: { page?: number; per_page?: number }) {
   return useQuery({
     queryKey: ["runs", id, "results", params],

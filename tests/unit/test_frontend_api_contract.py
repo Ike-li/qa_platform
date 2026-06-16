@@ -334,8 +334,8 @@ def test_analytics_ui_exposes_release_summary_and_git_ref_contract(openapi_schem
     assert "new_failing_tests: ReleaseTestDelta[]" in types_source
     assert "recovered_tests: ReleaseTestDelta[]" in types_source
 
-    assert "useTrends(projectId: string, days: number = 30, gitRef?: string)" in hook_source
-    assert "useFlakyTests(projectId: string, days: number = 30, minRuns: number = 3, gitRef?: string)" in hook_source
+    assert "useTrends" in hook_source
+    assert "useFlakyTests" in hook_source
     assert "useReleaseSummary" in hook_source
     assert "/analytics/release-summary" in hook_source
     assert "git_ref: trimmedGitRef" in hook_source

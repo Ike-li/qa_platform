@@ -9,7 +9,8 @@ import {
   ExternalLink,
   RotateCcw,
   Ban,
-  Eye
+  Eye,
+  TrendingUp
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -27,6 +28,7 @@ import { DurationDisplay } from "../../components/duration-display";
 import { RelativeTime } from "../../components/relative-time";
 import { LogViewer } from "../../components/runs/log-viewer";
 import { FailureTriagePanel } from "../../components/runs/failure-triage-panel";
+import { RetryFailedButton } from "../../components/runs/retry-failed-button";
 import { TestResultsTable } from "../../components/test-results-table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Button } from "../../components/ui/button";
@@ -174,10 +176,27 @@ export default function RunDetail() {
           </div>
 
           <div className="flex flex-col gap-1">
-            <h1 className="text-xl font-semibold text-ink">{run.pipeline_name}</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-semibold text-ink">{run.pipeline_name}</h1>
+              <span className={cn(
+                "inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium border capitalize",
+                run.trigger_type === "import"
+                  ? "bg-status-queued/10 text-status-queued border-status-queued/20"
+                  : "bg-surface-2 text-ink-muted border-hairline"
+              )}>
+                {t(`runs.triggerType.${run.trigger_type}`, { defaultValue: run.trigger_type })}
+              </span>
+            </div>
             <div className="flex items-center gap-3 text-sm text-ink-muted">
               <Link to={`/projects/${run.project_id}`} className="hover:text-primary transition-colors flex items-center gap-1">
                 {t('runs.detail.projectDetail')} <ExternalLink className="h-3 w-3" />
+              </Link>
+              <span>•</span>
+              <Link
+                to={`/projects/${run.project_id}?tab=analytics&git_ref=${encodeURIComponent(run.git_sha || run.branch)}&baseline_git_ref=${encodeURIComponent(run.branch)}`}
+                className="hover:text-primary transition-colors flex items-center gap-1"
+              >
+                {t('runs.detail.releaseVerdict')} <TrendingUp className="h-3.5 w-3.5" />
               </Link>
               <span>•</span>
               <BranchBadge branch={run.branch} />
@@ -245,44 +264,49 @@ export default function RunDetail() {
       </div>
 
       {shouldShowTriage && (
-        <section className="rounded-xl border border-status-failed/20 bg-status-failed/5 p-5">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0 space-y-2">
-              <h2 className="text-base font-semibold text-status-failed">{t("runs.triage.title")}</h2>
-              <p className="line-clamp-3 break-words text-sm text-ink">
-                {failureMessage}
-              </p>
-              <div className="flex flex-wrap gap-3 text-xs text-ink-muted">
-                <span>{t("runs.triage.failedTests", { count: failedResults.length || run.failed_tests })}</span>
-                <span>{t("runs.triage.totalTests", { count: run.total_tests })}</span>
-                <span>{run.branch}</span>
+        <div className="space-y-4">
+          <section className="rounded-xl border border-status-failed/20 bg-status-failed/5 p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0 space-y-2">
+                <h2 className="text-base font-semibold text-status-failed">{t("runs.summary.title")}</h2>
+                <p className="line-clamp-3 break-words text-sm text-ink">
+                  {failureMessage}
+                </p>
+                <div className="flex flex-wrap gap-3 text-xs text-ink-muted">
+                  <span>{t("runs.summary.failedTests", { count: failedResults.length || run.failed_tests })}</span>
+                  <span>{t("runs.summary.totalTests", { count: run.total_tests })}</span>
+                  <span>{run.branch}</span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => setActiveTab("results")}>
+                  <FileText className="mr-2 h-4 w-4" />
+                  {t("runs.summary.results")}
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => setActiveTab("logs")}>
+                  <Terminal className="mr-2 h-4 w-4" />
+                  {t("runs.summary.logs")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setActiveTab(hasAllureReport ? "report" : "artifacts")}
+                >
+                  <Package className="mr-2 h-4 w-4" />
+                  {hasAllureReport ? t("runs.summary.report") : t("runs.summary.artifacts")}
+                </Button>
+                <RetryFailedButton runId={run.id} failedCount={failedResults.length || run.failed_tests} />
+                <Button type="button" size="sm" onClick={onReRun} disabled={isReRunning}>
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  {isReRunning ? t("runs.reRunning") : t("runs.reRun")}
+                </Button>
               </div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="outline" size="sm" onClick={() => setActiveTab("results")}>
-                <FileText className="mr-2 h-4 w-4" />
-                {t("runs.triage.results")}
-              </Button>
-              <Button type="button" variant="outline" size="sm" onClick={() => setActiveTab("logs")}>
-                <Terminal className="mr-2 h-4 w-4" />
-                {t("runs.triage.logs")}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setActiveTab(hasAllureReport ? "report" : "artifacts")}
-              >
-                <Package className="mr-2 h-4 w-4" />
-                {hasAllureReport ? t("runs.triage.report") : t("runs.triage.artifacts")}
-              </Button>
-              <Button type="button" size="sm" onClick={onReRun} disabled={isReRunning}>
-                <RotateCcw className="mr-2 h-4 w-4" />
-                {isReRunning ? t("runs.reRunning") : t("runs.reRun")}
-              </Button>
-            </div>
-          </div>
-        </section>
+          </section>
+
+          <FailureTriagePanel runId={run.id} />
+        </div>
       )}
 
       {/* Main Content Tabs */}
@@ -342,8 +366,6 @@ export default function RunDetail() {
             <SummaryCard label={t('runs.results.failed')} value={run.failed_tests} color="failed" />
             <SummaryCard label={t('runs.results.skipped')} value={run.skipped_tests} color="tertiary" />
           </div>
-
-          <FailureTriagePanel runId={run.id} />
 
           <TestResultsTable
             results={orderedResults}

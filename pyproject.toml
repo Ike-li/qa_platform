@@ -25,6 +25,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi",
     "opentelemetry-instrumentation-sqlalchemy",
     "opentelemetry-instrumentation-redis",
+    "opentelemetry-exporter-otlp-proto-http",
     "argon2-cffi>=23.0",
     "PyJWT>=2.8",
     "alembic>=1.13",

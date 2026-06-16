@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 import { useFlakyTests, useReleaseSummary, useTestHistory, useTrends } from "../../hooks/use-analytics";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -21,10 +22,14 @@ export function AnalyticsPanel({
   initialTest?: string;
 }) {
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
+  const queryGitRef = searchParams.get("git_ref") ?? "";
+  const queryBaselineGitRef = searchParams.get("baseline_git_ref") ?? "";
+
   const [days, setDays] = useState(30);
   const [selectedTestKey, setSelectedTestKey] = useState<string | null>(null);
-  const [gitRefInput, setGitRefInput] = useState("");
-  const [baselineRefInput, setBaselineRefInput] = useState("");
+  const [gitRefInput, setGitRefInput] = useState(queryGitRef);
+  const [baselineRefInput, setBaselineRefInput] = useState(queryBaselineGitRef);
   const [collapseParams, setCollapseParams] = useState(false);
   const selectedGitRef = gitRefInput.trim() || defaultBranch;
   const baselineGitRef = baselineRefInput.trim() || defaultBranch;

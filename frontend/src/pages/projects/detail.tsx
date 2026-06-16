@@ -376,6 +376,11 @@ export default function ProjectDetail() {
                           <GitBranch className="h-3.5 w-3.5" />
                           {run.branch}
                         </span>
+                        <span>•</span>
+                        <span>
+                          {t(`runs.triggerType.${run.trigger_type}`, { defaultValue: run.trigger_type })}
+                        </span>
+                        <span>•</span>
                         <span>{t("runs.testsSummary", {
                           total: run.total_tests,
                           passed: run.passed_tests,

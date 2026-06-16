@@ -220,3 +220,51 @@ docker compose config | grep -n "docker.sock"
 ```
 
 如果仍看到 `/var/run/docker.sock:/var/run/docker.sock`，应在部署 checklist 中显式记录风险接受人和补偿措施。
+
+---
+
+## 10. OpenTelemetry 监控部署验证
+
+**介绍**：QA Platform 集成了 OpenTelemetry 追踪 (Tracing) 功能，支持将 Span 数据导出到兼容 OTLP 协议的后端（如 Jaeger）。
+
+**1. 相关环境变量**：
+- `QAP_OTEL_ENABLED` (bool, 默认: `false`)：是否启用 OpenTelemetry Tracing。
+- `QAP_OTEL_EXPORTER_ENDPOINT` (str, 默认: `None`)：OTLP 导出端点地址（例如 `http://localhost:4318/v1/traces`，使用 HTTP/JSON 协议）。
+- `QAP_OTEL_SERVICE_NAME` (str, 默认: `qaplatform`)：在链路追踪中显示的服务名称。
+- `QAP_OTEL_SAMPLE_RATE` (float, 默认: `1.0`)：采样率（0.0 至 1.0），在高并发环境下建议调低。
+
+**2. 本地 Jaeger 部署 (Docker)**：
+Jaeger 的 `all-in-one` 镜像内置了 OTLP HTTP 接收器，可以使用以下命令在本地快速拉起：
+```bash
+docker run -d --name jaeger \
+  -e COLLECTOR_OTLP_ENABLED=true \
+  -p 16686:16686 \
+  -p 4318:4318 \
+  jaegertracing/all-in-one:latest
+```
+- `16686`：Jaeger UI 网页控制台端口。
+- `4318`：OTLP over HTTP 接收端口。
+
+**3. 运行本地验证**：
+启用 Tracing 并指定导出端点启动 FastAPI：
+```bash
+QAP_OTEL_ENABLED=true \
+QAP_OTEL_EXPORTER_ENDPOINT=http://localhost:4318/v1/traces \
+.venv/bin/uvicorn qaplatform.main:create_app --factory --reload --host 127.0.0.1 --port 8000
+```
+发出一些请求来生成 Span 数据（例如获取项目列表）：
+```bash
+curl http://127.0.0.1:8000/api/v1/projects
+```
+打开浏览器访问 Jaeger UI：`http://localhost:16686`，在 "Service" 下拉框选择 `qaplatform`，点击 "Find Traces" 即可看到捕获的 trace 及数据库/Redis 查询的 span 详情。
+
+**4. 安全与保障风险**：
+- **安全过滤**：平台会自动拦截并剥离敏感请求头（如 `Authorization`、`Cookie` 和 `X-API-Token`），防止将敏感憑据或 PII 数据传输至链路追踪后端。
+- **无感熔断**：即使配置了 `QAP_OTEL_EXPORTER_ENDPOINT`，如果系统中未安装 `opentelemetry-exporter-otlp-proto-http` 库，系统也会记录警告日志 `otel_otlp_http_exporter_missing` 并平滑退回到“仅在内存中执行、不向外导出数据”的无感模式，保证核心业务绝对不因链路监控故障而中断。
+- **特定路径排除**：平台会自动排除运维路径（如 `/health`、`/ready`、`/metrics` 等）的请求追踪，避免 Jaeger 中充斥大量无价值的健康检查 spans。
+
+**5. 验证清理**：
+验证完毕后，可删除临时启动的 Jaeger 容器：
+```bash
+docker rm -f jaeger
+```

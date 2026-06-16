@@ -87,7 +87,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8001:8000"
     env_file: .env
     environment:
       QAP_DATABASE_URL: postgresql+asyncpg://${QAP_DB_USER:-qaplatform}:${QAP_DB_PASSWORD:-qaplatform}@postgres:5432/${QAP_DB_NAME:-qaplatform}
@@ -123,7 +123,7 @@ services:
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "3001:80"
     logging:
       driver: "json-file"
       options:
