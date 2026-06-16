@@ -52,6 +52,13 @@ class ReleaseTestDelta(BaseModel):
     failed_count: int
 
 
+class QuarantinedExcludedTest(BaseModel):
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    suite: str
+    name: str
+
+
 class ReleaseSummaryResponse(BaseModel):
     model_config = ConfigDict(frozen=True, from_attributes=True)
 
@@ -64,6 +71,7 @@ class ReleaseSummaryResponse(BaseModel):
     flaky_adjusted_pass_rate: float | None = None
     new_failing_tests: list[ReleaseTestDelta] = Field(default_factory=list)
     recovered_tests: list[ReleaseTestDelta] = Field(default_factory=list)
+    quarantined_excluded: list[QuarantinedExcludedTest] = Field(default_factory=list)
     observation_count: int
     window_days: int
 
@@ -101,6 +109,7 @@ __all__ = [
     "AnalyticsPaginationMeta",
     "FlakyResponse",
     "FlakyTest",
+    "QuarantinedExcludedTest",
     "ReleaseSummaryResponse",
     "ReleaseTestDelta",
     "TestHistoryPoint",

@@ -193,6 +193,7 @@ def create_app(
     from qaplatform.api.v1.project_members import router as project_member_router
     from qaplatform.api.v1.projects import router as project_router
     from qaplatform.api.v1.public_reports import router as public_reports_router
+    from qaplatform.api.v1.quarantine import router as quarantine_router
     from qaplatform.api.v1.report_shares import router as report_shares_router
     from qaplatform.api.v1.run_imports import router as run_import_router
     from qaplatform.api.v1.runs import router as run_router
@@ -207,6 +208,7 @@ def create_app(
     app.include_router(audit_event_router, prefix=api_prefix)
     app.include_router(analytics_router, prefix=api_prefix)
     app.include_router(project_router, prefix=api_prefix)
+    app.include_router(quarantine_router, prefix=api_prefix)
     app.include_router(project_member_router, prefix=api_prefix)
     app.include_router(credential_router, prefix=api_prefix)
     app.include_router(env_router, prefix=api_prefix)

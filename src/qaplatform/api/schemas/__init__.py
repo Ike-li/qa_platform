@@ -4,6 +4,7 @@ from qaplatform.api.schemas.analytics import (
     AnalyticsPaginationMeta,
     FlakyResponse,
     FlakyTest,
+    QuarantinedExcludedTest,
     ReleaseSummaryResponse,
     ReleaseTestDelta,
     TestHistoryPoint,
@@ -111,6 +112,10 @@ from qaplatform.api.schemas.runs import (
     TriageObservation,
     WebhookTriggerRequest,
 )
+from qaplatform.api.schemas.quarantine import (
+    QuarantineAddRequest,
+    QuarantineResponse,
+)
 
 __all__ = [
     "AnalyticsPaginationMeta",
@@ -158,6 +163,9 @@ __all__ = [
     "ProjectResponse",
     "ProjectStatusValue",
     "ProjectUpdate",
+    "QuarantinedExcludedTest",
+    "QuarantineAddRequest",
+    "QuarantineResponse",
     "ReleaseSummaryResponse",
     "ReleaseTestDelta",
     "RetryPolicyInput",

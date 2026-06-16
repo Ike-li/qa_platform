@@ -125,11 +125,9 @@
 
 ### 可观测性
 
-- [ ] 完成 OpenTelemetry OTLP 部署验证
-  - 基础已就绪，见 TODO.md #25
-  - 配置 QAP_OTEL_EXPORTER_ENDPOINT
-  - 验证 traces 数据导出
-  - **估时**: 半天
+- [x] 完成 OpenTelemetry OTLP 部署验证 (2026-06-16)
+  - 通过 opentelemetry-exporter-otlp-proto-http 导出链路追踪
+  - 验证接口和 Redis spans 导出，成功完成 Jaeger 本地端到端部署验证
 
 ---
 

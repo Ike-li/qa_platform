@@ -177,6 +177,7 @@ class TriageItem(BaseModel):
     category: TriageCategoryValue
     confidence: TriageConfidenceValue
     observation_count: int
+    quarantined: bool = False
     # 最近最多 10 次观测（含本次），按时间升序（旧 → 新）。
     recent_history: list[TriageObservation] = Field(default_factory=list)
 

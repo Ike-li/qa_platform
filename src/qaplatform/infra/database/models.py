@@ -732,3 +732,37 @@ class ReportShareToken(Base):
 
     run: Mapped[Run] = relationship("Run", back_populates="share_tokens")
     creator: Mapped[AppUser] = relationship("AppUser")
+
+
+class TestQuarantine(Base):
+    """Stores information about quarantined (muted) tests for a project."""
+
+    __tablename__ = "test_quarantine"
+    __soft_deletable__ = False
+    __table_args__ = (
+        UniqueConstraint("project_id", "suite", "name", name="uq_test_quarantine_project_suite_name"),
+        Index("idx_test_quarantine_project", "project_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text(_gen_uuid())
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("project.id", ondelete="CASCADE"), nullable=False
+    )
+    suite: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    project: Mapped[Project] = relationship("Project", lazy="noload")
+    creator: Mapped[AppUser | None] = relationship("AppUser", lazy="noload")
+

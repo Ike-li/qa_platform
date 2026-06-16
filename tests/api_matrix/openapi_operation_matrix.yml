@@ -1,7 +1,7 @@
 version: 1
 metadata:
   source: openapi
-  operation_count: 75
+  operation_count: 78
   generated_from: create_app().openapi()["paths"]
   qa_owner: qa
 scope:
@@ -765,6 +765,36 @@ operations:
     auth_type: public
     request_schema: none
     declared_responses: ["200"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: list_quarantine_api_v1_projects__project_id__quarantine_get
+    method: GET
+    path: "/api/v1/projects/{project_id}/quarantine"
+    tag: quarantine
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["200", "404", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: add_to_quarantine_api_v1_projects__project_id__quarantine_post
+    method: POST
+    path: "/api/v1/projects/{project_id}/quarantine"
+    tag: quarantine
+    auth_type: HTTPBearer
+    request_schema: body
+    declared_responses: ["201", "404", "409", "422"]
+    coverage_status: covered
+    test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
+    gap_notes: []
+  - operation_id: remove_from_quarantine_api_v1_projects__project_id__quarantine_delete
+    method: DELETE
+    path: "/api/v1/projects/{project_id}/quarantine"
+    tag: quarantine
+    auth_type: HTTPBearer
+    request_schema: none
+    declared_responses: ["204", "404", "409", "422"]
     coverage_status: covered
     test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
     gap_notes: []

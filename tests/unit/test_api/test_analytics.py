@@ -82,6 +82,8 @@ def mock_repos():
     repos.test_result = AsyncMock()
     repos.test_result.list_flaky_tests = AsyncMock(return_value=([], 0))
     repos.test_result.list_test_history = AsyncMock(return_value=([], 0))
+    repos.quarantine = AsyncMock()
+    repos.quarantine.list_keys = AsyncMock(return_value=set())
     return repos
 
 
@@ -350,6 +352,7 @@ async def test_release_summary_success_uses_project_rbac_and_repository_filters(
         "recovered_tests": [
             {"suite": "checkout", "name": "test_cart", "failed_count": 1}
         ],
+        "quarantined_excluded": [],
     }
     enforce_project_action = AsyncMock()
 
@@ -386,6 +389,7 @@ async def test_release_summary_success_uses_project_rbac_and_repository_filters(
         "recovered_tests": [
             {"suite": "checkout", "name": "test_cart", "failed_count": 1}
         ],
+        "quarantined_excluded": [],
         "observation_count": 4,
         "window_days": 14,
     }
@@ -406,6 +410,7 @@ async def test_release_summary_success_uses_project_rbac_and_repository_filters(
         "project_id": project_id,
         "git_ref": "release/2026.06",
         "baseline_git_ref": "main",
+        "quarantined": set(),
     }
     _assert_cutoff_window(
         summary_cutoff,

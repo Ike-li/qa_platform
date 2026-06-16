@@ -76,9 +76,8 @@ a91ff0d Add critical security warning to .env.example
 ### ⏳ 进行中
 - [ ] 报告分享功能发布 (预计本周)
 
-### 📅 计划中
-- [ ] 前端单元测试覆盖 50%+ (本月)
-- [ ] OpenTelemetry 生产环境验证 (本月)
+- [x] 前端单元测试覆盖 50%+ (2026-06-10)
+- [x] OpenTelemetry 监控部署验证 (2026-06-16)
 
 ---
 

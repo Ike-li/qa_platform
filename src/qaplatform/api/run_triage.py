@@ -76,6 +76,7 @@ def build_run_triage(
     flaky_keys: set[tuple[str, str]],
     prior_history: dict[tuple[str, str], list[Any]],
     prior_counts: dict[tuple[str, str], int],
+    quarantined: set[tuple[str, str]] | None = None,
 ) -> RunTriageResponse:
     """组装 triage 响应：归类 → 同签名聚类 → 附履历与置信度。"""
     items_by_category: dict[str, list[TriageItem]] = {
@@ -83,6 +84,7 @@ def build_run_triage(
         "known_flaky": [],
         "persistent": [],
     }
+    quarantine_set = quarantined or set()
     for result in failed_results:
         key = (result.suite, result.name)
         prior_rows = prior_history.get(key, [])
@@ -122,6 +124,7 @@ def build_run_triage(
                     else "established"
                 ),
                 observation_count=observation_count,
+                quarantined=key in quarantine_set,
                 recent_history=history,
             )
         )

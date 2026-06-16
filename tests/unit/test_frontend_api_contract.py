@@ -326,6 +326,7 @@ def test_analytics_ui_exposes_release_summary_and_git_ref_contract(openapi_schem
         "flaky_adjusted_pass_rate",
         "new_failing_tests",
         "recovered_tests",
+        "quarantined_excluded",
         "observation_count",
         "window_days",
     }

@@ -477,12 +477,14 @@ async def get_run_triage(
         )
     )
 
+    quarantined = await repos.quarantine.list_keys(run.project_id)
     return build_run_triage(
         run=run,
         failed_results=failed_results,
         flaky_keys=flaky_keys,
         prior_history=prior_history,
         prior_counts=prior_counts,
+        quarantined=quarantined,
     )
 
 

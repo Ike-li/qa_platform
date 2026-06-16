@@ -20,6 +20,8 @@ def mock_repos():
     """
     repos = MagicMock()
     repos.artifact = AsyncMock()
+    repos.quarantine = AsyncMock()
+    repos.quarantine.list_keys = AsyncMock(return_value=set())
     return repos
 
 

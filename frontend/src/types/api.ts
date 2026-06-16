@@ -293,6 +293,7 @@ export interface TriageItem {
   category: TriageCategory;
   confidence: TriageConfidence;
   observation_count: number;
+  quarantined: boolean;
   recent_history: TriageObservation[];
 }
 
@@ -463,6 +464,11 @@ export interface ReleaseTestDelta {
   failed_count: number;
 }
 
+export interface QuarantinedExcludedTest {
+  suite: string;
+  name: string;
+}
+
 export interface ReleaseSummary {
   git_ref: string;
   baseline_git_ref: string;
@@ -473,6 +479,25 @@ export interface ReleaseSummary {
   flaky_adjusted_pass_rate: number | null;
   new_failing_tests: ReleaseTestDelta[];
   recovered_tests: ReleaseTestDelta[];
+  quarantined_excluded: QuarantinedExcludedTest[];
   observation_count: number;
   window_days: number;
+}
+
+export interface QuarantineAddRequest {
+  suite: string;
+  name: string;
+  reason: string;
+  expires_at: string | null;
+}
+
+export interface QuarantineResponse {
+  id: string;
+  project_id: string;
+  suite: string;
+  name: string;
+  reason: string;
+  created_by: string | null;
+  created_at: string;
+  expires_at: string | null;
 }

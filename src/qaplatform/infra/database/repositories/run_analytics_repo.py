@@ -116,6 +116,7 @@ class RunAnalyticsRepositoryMixin:
         git_ref: str,
         baseline_git_ref: str,
         delta_limit: int = 20,
+        quarantined: set[tuple[str, str]] | None = None,
     ) -> dict[str, Any]:
         target_filters = analytics_run_filters(
             project_id=project_id,
@@ -173,13 +174,17 @@ class RunAnalyticsRepositoryMixin:
 
         target_results = await grouped_results(target_filters)
         baseline_results = await grouped_results(baseline_filters)
+        quarantine_set = quarantined or set()
         flaky_keys = {
             (row.suite, row.name)
             for row in target_results
             if int(row.passed_count or 0) > 0 and int(row.failed_count or 0) > 0
         }
         stable_results = [
-            row for row in target_results if (row.suite, row.name) not in flaky_keys
+            row
+            for row in target_results
+            if (row.suite, row.name) not in flaky_keys
+            and (row.suite, row.name) not in quarantine_set
         ]
         stable_total = sum(int(row.total_count or 0) for row in stable_results)
         stable_passed = sum(int(row.passed_count or 0) for row in stable_results)
@@ -187,15 +192,27 @@ class RunAnalyticsRepositoryMixin:
             round(stable_passed / stable_total, 4) if stable_total > 0 else None
         )
 
-        target_failed = {
+        target_failed_all = {
             (row.suite, row.name): int(row.failed_count or 0)
             for row in target_results
             if int(row.failed_count or 0) > 0
         }
+        quarantined_excluded = sorted(
+            [
+                {"suite": s, "name": n}
+                for (s, n) in quarantine_set
+                if (s, n) in target_failed_all
+            ],
+            key=lambda x: (x["suite"], x["name"]),
+        )
+
+        target_failed = {
+            k: v for k, v in target_failed_all.items() if k not in quarantine_set
+        }
         baseline_failed = {
             (row.suite, row.name): int(row.failed_count or 0)
             for row in baseline_results
-            if int(row.failed_count or 0) > 0
+            if int(row.failed_count or 0) > 0 and (row.suite, row.name) not in quarantine_set
         }
 
         def deltas(source: dict[tuple[str, str], int], other: dict[tuple[str, str], int]):
@@ -221,4 +238,5 @@ class RunAnalyticsRepositoryMixin:
             "flaky_adjusted_pass_rate": flaky_adjusted_pass_rate,
             "new_failing_tests": deltas(target_failed, baseline_failed),
             "recovered_tests": deltas(baseline_failed, target_failed),
+            "quarantined_excluded": quarantined_excluded,
         }

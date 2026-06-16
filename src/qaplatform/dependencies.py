@@ -151,6 +151,9 @@ class DependencyContainer:
             ApiTokenRepository,
             UserRepository,
         )
+        from qaplatform.infra.database.repositories.quarantine_repo import (
+            QuarantineRepository,
+        )
 
         return RepositoryBundle(
             user=UserRepository(session),
@@ -167,6 +170,7 @@ class DependencyContainer:
             test_result=TestResultRepository(session),
             artifact=ArtifactRepository(session),
             audit=AuditEventRepository(session),
+            quarantine=QuarantineRepository(session),
         )
 
     async def close(self) -> None:
@@ -198,6 +202,7 @@ class RepositoryBundle:
         "test_result",
         "artifact",
         "audit",
+        "quarantine",
     )
 
     def __init__(
@@ -217,6 +222,7 @@ class RepositoryBundle:
         test_result,
         artifact,
         audit,
+        quarantine,
     ) -> None:
         self.user = user
         self.api_token = api_token
@@ -232,6 +238,7 @@ class RepositoryBundle:
         self.test_result = test_result
         self.artifact = artifact
         self.audit = audit
+        self.quarantine = quarantine
 
 
 # --- Global container management ---

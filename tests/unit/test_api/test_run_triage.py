@@ -252,6 +252,8 @@ def mock_repos():
     repos.project = AsyncMock()
     repos.test_result = AsyncMock()
     repos.audit = AsyncMock()
+    repos.quarantine = AsyncMock()
+    repos.quarantine.list_keys = AsyncMock(return_value=set())
     return repos
 
 

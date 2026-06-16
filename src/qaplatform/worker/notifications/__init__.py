@@ -229,8 +229,12 @@ async def _load_new_failed_and_recovered(
     )
     flaky_keys = {(row.suite, row.name) for row in flaky_rows}
 
+    from qaplatform.infra.database.repositories.quarantine_repo import QuarantineRepository
+    quarantine_repo = QuarantineRepository(run_repo.session)
+    quarantined = await quarantine_repo.list_keys(project_id)
+
     new_failed_raw = current_failed_set - prior_failed_set
-    new_failed = len(new_failed_raw - flaky_keys)
+    new_failed = len(new_failed_raw - flaky_keys - quarantined)
 
     recovered = len(prior_failed_set - current_failed_set)
 

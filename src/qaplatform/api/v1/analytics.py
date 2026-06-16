@@ -209,11 +209,13 @@ async def get_release_summary(
     target_ref = git_ref or project.default_branch
     baseline_ref = baseline_git_ref or project.default_branch
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    quarantined = await repos.quarantine.list_keys(project_id)
     summary = await repos.run.get_release_summary(
         project_id=project_id,
         cutoff=cutoff,
         git_ref=target_ref,
         baseline_git_ref=baseline_ref,
+        quarantined=quarantined,
     )
     return ReleaseSummaryResponse(
         **summary,

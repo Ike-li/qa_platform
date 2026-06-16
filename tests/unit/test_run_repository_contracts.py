@@ -402,4 +402,5 @@ async def test_release_summary_calculates_flaky_adjusted_and_test_deltas():
                 "failed_count": 1,
             }
         ],
+        "quarantined_excluded": [],
     }
