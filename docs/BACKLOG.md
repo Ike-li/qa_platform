@@ -9,6 +9,16 @@
 
 ---
 
+## 🎯 当前目标（2026-06）
+
+**打磨「执行 + 回归」端到端体验** —— 顺核心用户旅程找出并补齐卡点与粗糙处，不新增大功能：
+
+> 跑回归 / 导入结果 → 看失败分诊 → 一键重跑失败 → 判断能不能发版
+
+优先级高于一切新功能投入；T17（flaky 隔离）等新功能在本目标达成前不启动。
+
+---
+
 ## 🚨 高优先级 (本周完成)
 
 ### 文档管理改进 ⭐ 新增
@@ -27,10 +37,10 @@
   - 添加 CHANGELOG.md 链接
 - [x] 调研文档管理最佳实践 (2026-06-09)
   - 分析 10+ 个业界工具
-  - 创建调研报告 docs/DOC_MANAGEMENT_RESEARCH.md
+  - 创建调研报告 docs/archive/DOC_MANAGEMENT_RESEARCH.md
 - [x] 设计 Doc Health Skill (2026-06-09)
   - 完成技术架构设计
-  - 创建设计文档 docs/DOC_HEALTH_SKILL_DESIGN.md
+  - 创建设计文档 docs/archive/DOC_HEALTH_SKILL_DESIGN.md
 
 ### CI 修复
 
@@ -135,7 +145,7 @@
   - 实现新鲜度检查
   - 实现日期标记自动修复
   - **估时**: 1 周
-  - **设计文档**: docs/DOC_HEALTH_SKILL_DESIGN.md
+  - **设计文档**: docs/archive/DOC_HEALTH_SKILL_DESIGN.md
 
 - [ ] 添加 markdownlint 配置
   - 统一 Markdown 格式规范
