@@ -1,10 +1,15 @@
 import * as React from "react";
-import { AlertCircle, ChevronRight, Flame, Repeat } from "lucide-react";
+import { AlertCircle, ChevronRight, Flame, Repeat, Ban } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { TestStatusIcon } from "../test-status-icon";
 import { useRunTriage } from "../../hooks/use-runs";
 import type { TriageCluster, TriageItem, TriageObservation } from "../../types/api";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import api from "../../lib/api";
+import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 
 const HISTORY_SLOTS = 10;
 
@@ -16,7 +21,7 @@ interface TriageGroupConfig {
   defaultOpen: boolean;
 }
 
-export function FailureTriagePanel({ runId }: { runId: string }) {
+export function FailureTriagePanel({ runId, projectId }: { runId: string; projectId?: string }) {
   const { t } = useTranslation();
   const { data, isLoading } = useRunTriage(runId);
 
@@ -64,13 +69,13 @@ export function FailureTriagePanel({ runId }: { runId: string }) {
       {groups
         .filter((group) => group.clusters.length > 0)
         .map((group) => (
-          <TriageGroup key={group.key} group={group} />
+          <TriageGroup key={group.key} group={group} projectId={projectId} runId={runId} />
         ))}
     </section>
   );
 }
 
-function TriageGroup({ group }: { group: TriageGroupConfig }) {
+function TriageGroup({ group, projectId, runId }: { group: TriageGroupConfig; projectId?: string; runId: string }) {
   const { t } = useTranslation();
   const [open, setOpen] = React.useState(group.defaultOpen);
   const Icon = group.icon;
@@ -98,7 +103,7 @@ function TriageGroup({ group }: { group: TriageGroupConfig }) {
       {open && (
         <div className="divide-y divide-hairline border-t border-hairline">
           {group.clusters.map((cluster) => (
-            <TriageClusterBlock key={cluster.signature} cluster={cluster} />
+            <TriageClusterBlock key={cluster.signature} cluster={cluster} projectId={projectId} runId={runId} />
           ))}
         </div>
       )}
@@ -106,7 +111,7 @@ function TriageGroup({ group }: { group: TriageGroupConfig }) {
   );
 }
 
-function TriageClusterBlock({ cluster }: { cluster: TriageCluster }) {
+function TriageClusterBlock({ cluster, projectId, runId }: { cluster: TriageCluster; projectId?: string; runId: string }) {
   const { t } = useTranslation();
 
   return (
@@ -123,16 +128,66 @@ function TriageClusterBlock({ cluster }: { cluster: TriageCluster }) {
       </div>
       <div className="divide-y divide-hairline/60">
         {cluster.items.map((item) => (
-          <TriageItemRow key={`${item.suite}::${item.name}`} item={item} />
+          <TriageItemRow key={`${item.suite}::${item.name}`} item={item} projectId={projectId} runId={runId} />
         ))}
       </div>
     </div>
   );
 }
 
-function TriageItemRow({ item }: { item: TriageItem }) {
+function TriageItemRow({ item, projectId, runId }: { item: TriageItem; projectId?: string; runId: string }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
+  const [reason, setReason] = React.useState("");
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const queryClient = useQueryClient();
+
+  const handleAddQuarantine = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId) return;
+    setIsSubmitting(true);
+    try {
+      await api.post(`/projects/${projectId}/quarantine`, {
+        suite: item.suite,
+        name: item.name,
+        reason: reason.trim() || "Manual quarantine from FailureTriagePanel",
+      });
+      toast.success(t("runs.failureTriage.quarantineSuccess", "隔离用例成功"));
+      setReason("");
+      queryClient.invalidateQueries({ queryKey: ["runs", runId, "triage"] });
+    } catch (err: unknown) {
+      const error = err as { response?: { status?: number; data?: { detail?: string } } };
+      if (error.response?.status === 403) {
+        toast.error(t("runs.failureTriage.noPermission", "无权限：仅项目管理员可操作"));
+      } else {
+        toast.error(error.response?.data?.detail || t("runs.failureTriage.quarantineFailed", "隔离用例失败"));
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRemoveQuarantine = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!projectId) return;
+    try {
+      await api.delete(`/projects/${projectId}/quarantine`, {
+        params: {
+          suite: item.suite,
+          name: item.name,
+        },
+      });
+      toast.success(t("runs.failureTriage.unquarantineSuccess", "解除隔离成功"));
+      queryClient.invalidateQueries({ queryKey: ["runs", runId, "triage"] });
+    } catch (err: unknown) {
+      const error = err as { response?: { status?: number; data?: { detail?: string } } };
+      if (error.response?.status === 403) {
+        toast.error(t("runs.failureTriage.noPermission", "无权限：仅项目管理员可操作"));
+      } else {
+        toast.error(error.response?.data?.detail || t("runs.failureTriage.unquarantineFailed", "解除隔离失败"));
+      }
+    }
+  };
 
   return (
     <div className="py-2">
@@ -152,20 +207,72 @@ function TriageItemRow({ item }: { item: TriageItem }) {
             {t("runs.failureTriage.observing", { count: item.observation_count })}
           </span>
         )}
+        {item.quarantined && (
+          <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+            <Ban className="h-3 w-3" />
+            {t("runs.failureTriage.quarantined", "已隔离")}
+          </span>
+        )}
         <span className="ml-auto">
           <HistoryStrip history={item.recent_history} />
         </span>
       </div>
       {expanded && (
-        <div className="mt-2 rounded-md border border-status-failed/20 bg-status-failed/5 p-3">
-          <p className="text-xs font-semibold text-status-failed">
-            {item.error_message || t("runs.failureTriage.noMessage")}
-          </p>
-          {item.stack_trace && (
-            <pre className="mt-2 max-h-[300px] overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-ink-muted">
-              {item.stack_trace}
-            </pre>
-          )}
+        <div className="mt-2 rounded-md border border-status-failed/20 bg-status-failed/5 p-3 space-y-3">
+          {/* Quarantine Control Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-status-failed/10 pb-3">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
+              <span>
+                {item.quarantined
+                  ? t("runs.failureTriage.statusQuarantined", "当前状态：已隔离 (不会计入轻量发布指标)")
+                  : t("runs.failureTriage.statusNormal", "当前状态：正常 (会影响发布门禁)")}
+              </span>
+            </div>
+            {item.quarantined ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs border-amber-500/30 text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
+                onClick={handleRemoveQuarantine}
+              >
+                {t("runs.failureTriage.unquarantine", "解除隔离")}
+              </Button>
+            ) : (
+              projectId && (
+                <form onSubmit={handleAddQuarantine} className="flex items-center gap-2 flex-1 max-w-md">
+                  <Input
+                    type="text"
+                    placeholder={t("runs.failureTriage.reasonPlaceholder", "输入隔离原因 (选填)")}
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    className="h-7 text-xs bg-canvas flex-1"
+                    disabled={isSubmitting}
+                  />
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs border-status-failed/30 text-status-failed hover:bg-status-failed/10 shrink-0"
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? t("runs.failureTriage.quarantining", "隔离中...") : t("runs.failureTriage.quarantine", "隔离用例")}
+                  </Button>
+                </form>
+              )
+            )}
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-status-failed">
+              {item.error_message || t("runs.failureTriage.noMessage")}
+            </p>
+            {item.stack_trace && (
+              <pre className="mt-2 max-h-[300px] overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-ink-muted">
+                {item.stack_trace}
+              </pre>
+            )}
+          </div>
         </div>
       )}
     </div>

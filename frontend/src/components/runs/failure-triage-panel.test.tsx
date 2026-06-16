@@ -19,6 +19,7 @@ function makeItem(overrides: Partial<TriageItem> = {}): TriageItem {
     category: "new",
     confidence: "established",
     observation_count: 12,
+    quarantined: false,
     recent_history: [
       {
         run_id: RUN_ID,

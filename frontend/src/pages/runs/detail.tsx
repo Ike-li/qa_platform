@@ -305,7 +305,7 @@ export default function RunDetail() {
             </div>
           </section>
 
-          <FailureTriagePanel runId={run.id} />
+          <FailureTriagePanel runId={run.id} projectId={run.project_id} />
         </div>
       )}
 
