@@ -257,7 +257,7 @@ export default function RunDetail() {
             </AlertDialog>
           ) : (
             <Button variant="outline" size="sm" onClick={onReRun} disabled={isReRunning}>
-              <RotateCcw className="mr-2 h-4 w-4" /> {isReRunning ? t('runs.reRunning') : t('runs.reRun')}
+              <RotateCcw className={cn("mr-2 h-4 w-4", isReRunning && "animate-spin")} /> {isReRunning ? t('runs.reRunning') : t('runs.reRun')}
             </Button>
           )}
         </div>
@@ -298,7 +298,7 @@ export default function RunDetail() {
                 </Button>
                 <RetryFailedButton runId={run.id} failedCount={failedResults.length || run.failed_tests} />
                 <Button type="button" size="sm" onClick={onReRun} disabled={isReRunning}>
-                  <RotateCcw className="mr-2 h-4 w-4" />
+                  <RotateCcw className={cn("mr-2 h-4 w-4", isReRunning && "animate-spin")} />
                   {isReRunning ? t("runs.reRunning") : t("runs.reRun")}
                 </Button>
               </div>

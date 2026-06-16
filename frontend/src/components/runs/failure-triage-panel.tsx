@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AlertCircle, ChevronDown, ChevronRight, Flame, Repeat } from "lucide-react";
+import { AlertCircle, ChevronRight, Flame, Repeat } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { TestStatusIcon } from "../test-status-icon";
@@ -85,9 +85,7 @@ function TriageGroup({ group }: { group: TriageGroupConfig }) {
         onClick={() => setOpen(!open)}
         aria-expanded={open}
       >
-        {open
-          ? <ChevronDown className="h-4 w-4 text-ink-tertiary" />
-          : <ChevronRight className="h-4 w-4 text-ink-tertiary" />}
+        <ChevronRight className={cn("h-4 w-4 text-ink-tertiary transition-transform duration-200", open && "rotate-90")} />
         <Icon className={cn("h-4 w-4", group.tone)} />
         <span className="text-sm font-medium text-ink">{groupLabel}</span>
         <span className={cn(

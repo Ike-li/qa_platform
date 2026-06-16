@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
 import { useRetryFailedRun } from "../../hooks/use-runs";
+import { cn } from "../../lib/utils";
 
 interface RetryFailedButtonProps {
   runId: string;
@@ -42,7 +43,7 @@ export function RetryFailedButton({ runId, failedCount }: RetryFailedButtonProps
       disabled={isPending}
       data-testid="retry-failed-button"
     >
-      <RotateCcw className="mr-2 h-4 w-4" />
+      <RotateCcw className={cn("mr-2 h-4 w-4", isPending && "animate-spin")} />
       {isPending
         ? t("runs.summary.retryingFailed")
         : t("runs.summary.retryFailed", { count: failedCount })}
