@@ -16,6 +16,7 @@
 | [T07_test_results_filter.md](T07_test_results_filter.md) | P0 / 已完成 | 测试结果 `status` / `suite` / `q` 组合过滤验收档案 | 不需要 |
 | [T10_opentelemetry.md](T10_opentelemetry.md) | P2 | 收口既有 OpenTelemetry 基础装配：OTLP HTTP exporter 依赖决策、接收端部署验证和 trace-log 关联后续优化 | 不需要 |
 | [T11_T16_regression_platform_plan.md](T11_T16_regression_platform_plan.md) | P0 / 已完成 | 持续回归平台改造总纲（6 个自包含 WP）：T11 结果导入 API ✅、T12 失败分诊 ✅、T13 失败子集重跑 ✅、T14 dogfooding 数据流 ✅、T15 置信度+通知降噪 ✅、T16 用例身份规范化 ✅ | T16 不需要迁移（Python 层聚合） |
+| [T17_quarantine.md](T17_quarantine.md) | P0 / 待执行 | Flaky 隔离闭环（回归解读线收尾）：新表 `test_quarantine` + `api/v1/quarantine.py` + release-summary/通知/triage 排除接入 + 前端分诊面板按钮 | 需要：migration `010` 新增 `test_quarantine` 表 |
 
 ## 执行约定（所有任务通用）
 
