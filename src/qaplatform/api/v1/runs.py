@@ -506,13 +506,13 @@ async def retry_failed_run(
     user: CurrentUser,
     session: AsyncSession = Depends(_get_db_session),
 ):
-    # 权限检查：需要 PIPELINE_EXECUTE（Developer+）
+    # 权限检查：需要 RUN_TRIGGER（Developer+）
     await get_run_for_action(
         repos=repos,
         session=session,
         user=user,
         run_id=run_id,
-        action=Action.PIPELINE_EXECUTE,
+        action=Action.RUN_TRIGGER,
         enforce_action=enforce_project_action,
     )
 
@@ -530,7 +530,7 @@ async def retry_failed_run(
             repos, user,
             action="run.retry_failed",
             resource_type="run",
-            resource_id=result["new_run_id"],
+            resource_id=result.id,
             after=result,
         )
         return result

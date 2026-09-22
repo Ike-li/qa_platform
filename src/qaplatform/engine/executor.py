@@ -513,7 +513,7 @@ class RunExecutor:
 
             # 注入失败子集过滤（retry_failed）
             stage_config = dict(stage.config)
-            retry_failed_cases = run.metadata.get("retry_failed_cases")
+            retry_failed_cases = _run_metadata(run).get("retry_failed_cases")
             if retry_failed_cases and stage.plugin == "pytest":
                 from qaplatform.domain.services.pytest_nodeid import reconstruct_nodeid
 
@@ -521,12 +521,10 @@ class RunExecutor:
                     reconstruct_nodeid(case["suite"], case["name"])
                     for case in retry_failed_cases
                 ]
-                # 追加到 args（pytest 位置参数）
-                existing_args = stage_config.get("args", [])
-                if isinstance(existing_args, str):
-                    import shlex
-                    existing_args = shlex.split(existing_args)
-                stage_config["args"] = list(existing_args) + nodeids
+                # nodeid 取代 test_path：两者都是 pytest 位置参数，
+                # 同时传会让 pytest 重新收集整个目录，过滤就失效了
+                stage_config["test_paths"] = nodeids
+                stage_config.pop("test_path", None)
 
                 await self.log_stream.write_log(
                     str(run.id),

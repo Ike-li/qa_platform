@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1825,3 +1826,124 @@ class TestMarkRunningSkippedLog:
             log_call.args[1] for log_call in mock_log_stream.write_log.await_args_list
         ]
         assert "Collecting test results..." not in logged_messages
+
+
+# --------------------------------------------------------------------------- #
+# T13 retry-failed subset filtering
+# --------------------------------------------------------------------------- #
+
+
+class TestRetryFailedSubsetFiltering:
+    """A retry-failed run must execute only the failed cases.
+
+    The reconstructed nodeids and the stage's configured ``test_path`` are
+    both pytest positional arguments, so passing them together makes pytest
+    re-collect the whole directory and the subset filter silently degrades
+    into a full re-run. These tests drive the real PytestRunner so the
+    assertion is on the actual command line, not on a re-derived shape.
+    """
+
+    def _make_executor(self, captured):
+        from qaplatform.plugins.builtin.pytest_runner import PytestRunner
+
+        backend = AsyncMock()
+        backend.create_execution = AsyncMock(return_value="exec-1")
+        backend.start = AsyncMock()
+        backend.wait = AsyncMock(
+            return_value=ExitResult(
+                exit_code=0,
+                started_at=datetime.now(timezone.utc),
+                finished_at=datetime.now(timezone.utc),
+            )
+        )
+        backend.cleanup = AsyncMock()
+
+        async def _empty_logs(_id):
+            if False:
+                yield
+        backend.stream_logs = _empty_logs
+
+        registry = MagicMock(spec=PluginRegistry)
+        real_runner = PytestRunner()
+
+        class _CapturingRunner:
+            def build_command(self, config):
+                cmd = real_runner.build_command(config)
+                captured.append(cmd)
+                return cmd
+
+        registry.get_runner.return_value = _CapturingRunner()
+
+        run_repo = AsyncMock()
+        run_repo.is_cancel_requested.return_value = False
+
+        return RunExecutor(
+            backend=backend,
+            log_stream=AsyncMock(),
+            run_repo=run_repo,
+            plugin_registry=registry,
+        )
+
+    def _make_pipeline(self):
+        from qaplatform.engine.executor import StageDefinition
+        return PipelineConfig(
+            image="python:3.12-slim",
+            stages=[
+                StageDefinition(
+                    name="pytest",
+                    plugin="pytest",
+                    config={"test_path": "tests/", "args": ["-v"]},
+                )
+            ],
+            timeout_seconds=60,
+        )
+
+    def _make_run(self, metadata):
+        run = MagicMock(spec=Run)
+        run.id = uuid4()
+        run.project_id = uuid4()
+        run.git_ref = "main"
+        run.git_sha = None
+        run.metadata = metadata
+        return run
+
+    @pytest.mark.asyncio
+    async def test_nodeids_replace_test_path(self, tmp_path):
+        """Only the two failed nodeids may reach pytest; the broad
+        ``tests/`` path must be gone or pytest re-collects everything."""
+        captured: list[str] = []
+        executor = self._make_executor(captured)
+        run = self._make_run({
+            "git_url": "https://github.com/org/repo.git",
+            "retry_failed_cases": [
+                {"suite": "tests.test_mixed", "name": "test_beta_fails"},
+                {"suite": "tests.test_mixed", "name": "test_gamma_fails"},
+            ],
+        })
+
+        await executor._run_stages(run, self._make_pipeline(), tmp_path)
+
+        assert len(captured) == 1
+        cmd = captured[0]
+        for nodeid in (
+            "tests/test_mixed.py::test_beta_fails",
+            "tests/test_mixed.py::test_gamma_fails",
+        ):
+            assert nodeid in cmd, f"{nodeid} missing from: {cmd}"
+        tokens = shlex.split(cmd.replace("cd /workspace && ", ""))
+        assert "tests/" not in tokens, (
+            f"broad test path still passed to pytest, subset filter is a no-op: {cmd}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_normal_run_keeps_test_path(self, tmp_path):
+        """A run without retry_failed_cases must still run the whole path."""
+        captured: list[str] = []
+        executor = self._make_executor(captured)
+        run = self._make_run({"git_url": "https://github.com/org/repo.git"})
+
+        await executor._run_stages(run, self._make_pipeline(), tmp_path)
+
+        assert len(captured) == 1
+        tokens = shlex.split(captured[0].replace("cd /workspace && ", ""))
+        assert "tests/" in tokens
