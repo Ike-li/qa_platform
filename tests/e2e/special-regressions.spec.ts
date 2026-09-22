@@ -479,9 +479,15 @@ test.describe("special regression coverage against the real app", () => {
 
     await loginViaUi(page);
     await page.goto(`/runs/${run.id}`);
-    await expect(page.getByText(`test_checkout_ok_${suffix}`)).toBeVisible();
-    await expect(page.getByText(`test_checkout_timeout_${suffix}`)).toBeVisible();
-    await expect(page.getByText(`test_billing_skipped_${suffix}`)).toBeVisible();
+    // 定位到结果表格的单元格，而不是页面上任意文本：失败用例的名字同时出现在
+    // 结果表格和失败分诊面板里，getByText 会命中两个元素触发 strict mode 违规
+    for (const name of [
+      `test_checkout_ok_${suffix}`,
+      `test_checkout_timeout_${suffix}`,
+      `test_billing_skipped_${suffix}`,
+    ]) {
+      await expect(page.getByRole("cell", { name, exact: true })).toBeVisible();
+    }
   });
 
   test("run detail replays archived logs and previews stored artifacts", async ({ page, request }) => {

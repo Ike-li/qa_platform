@@ -617,6 +617,8 @@ jobs:
         env:
           RUN_INTEGRATION_TESTS: "1"
           QAP_EXTERNAL_STACK_REQUIRED: "1"
+          # 测试默认连 localhost:8000，而 compose 把 api 映射到宿主 8001
+          QAP_API_URL: http://localhost:8001
           QAP_EXTERNAL_STACK_GIT_URL: https://github.com/octocat/Hello-World.git
           QAP_EXTERNAL_STACK_GIT_REF: master
         shell: bash
@@ -648,6 +650,8 @@ jobs:
           RUN_INTEGRATION_TESTS: "1"
           RUN_PERFORMANCE_TESTS: "1"
           QAP_EXTERNAL_STACK_REQUIRED: "1"
+          # 测试默认连 localhost:8000，而 compose 把 api 映射到宿主 8001
+          QAP_API_URL: http://localhost:8001
           QAP_EXTERNAL_STACK_GIT_URL: https://github.com/octocat/Hello-World.git
           QAP_EXTERNAL_STACK_GIT_REF: master
           QAP_PERFORMANCE_SUMMARY_JSONL: artifacts/backend-integration/performance-smoke-summary.jsonl
