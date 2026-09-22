@@ -1,0 +1,23 @@
+# gitleaks 误报豁免清单
+#
+# 格式：每行一个 Fingerprint（由 `gitleaks detect` / `gitleaks protect` 输出）。
+# 只登记经过人工确认的误报，任何真实凭据一律不得写进这里。
+#
+# ---------------------------------------------------------------------------
+# CI 的固定测试密钥（2026-09-22 确认）
+#
+# .github/workflows/ci.yml 中 5 处 QAP_ENCRYPTION_KEY，值为
+# "0123456789abcdef" 重复四次的 64 字符占位串。AES-GCM 要求 32 字节 key，
+# 测试环境需要一个确定值才能让加密用例可复现，因此写死在 workflow 里。
+#
+# 佐证：同一段 env 里的 QAP_JWT_SECRET 分别是
+#   test-secret-at-least-32bytes-long!
+#   ci-test-jwt-secret-not-for-production-use
+# 均自我标注为测试专用。这些值只作用于 CI 容器内的一次性数据库，
+# 不对应任何真实环境。
+# ---------------------------------------------------------------------------
+.github/workflows/ci.yml:generic-api-key:134
+.github/workflows/ci.yml:generic-api-key:340
+.github/workflows/ci.yml:generic-api-key:379
+.github/workflows/ci.yml:generic-api-key:1093
+.github/workflows/ci.yml:generic-api-key:1134
