@@ -80,6 +80,50 @@ def _is_sensitive_project_settings_key(key: Any) -> bool:
     return isinstance(key, str) and _SENSITIVE_PROJECT_SETTINGS_RE.search(key) is not None
 
 
+def _public(response: ProjectResponse) -> ProjectResponse:
+    """对外响应：省略 settings 中的敏感键。
+
+    刻意用省略而不是替换成哨兵对象——settings 是自由 dict，缺键是它本来就
+    合法的状态，而把字符串位置换成 {"redacted": true} 会让按 schema 生成的
+    客户端拿到意外类型。
+
+    只作用于 HTTP 响应。审计走 _to_audit_state 自己的脱敏，那里需要保留
+    「这个键曾经存在」的信号，两者不能共用同一个函数。
+    """
+    settings = response.settings or {}
+    if not any(_is_sensitive_project_settings_key(key) for key in settings):
+        return response
+    return response.model_copy(
+        update={
+            "settings": {
+                key: value
+                for key, value in settings.items()
+                if not _is_sensitive_project_settings_key(key)
+            }
+        }
+    )
+
+
+def _carry_over_sensitive_settings(incoming: Any, existing: Any) -> Any:
+    """把存量 settings 里未被本次请求提及的敏感键带到新 settings。
+
+    PUT 的 settings 是整体替换，而响应里又看不到敏感键，于是「GET 改一处
+    再 PUT」的客户端必然不会带上它们。没有这层携带，一次无关的设置修改
+    就会静默清掉 webhook_secret。
+
+    请求里显式出现该键（包括传 null）仍以请求为准，这是清除的唯一方式。
+    """
+    if not isinstance(incoming, dict):
+        return incoming
+    if not isinstance(existing, dict):
+        return incoming
+    merged = dict(incoming)
+    for key, value in existing.items():
+        if _is_sensitive_project_settings_key(key) and key not in merged:
+            merged[key] = value
+    return merged
+
+
 def _serialize_silent_windows(windows: list[SilentWindow]) -> list[dict]:
     return [window.model_dump(mode="json") for window in windows]
 
@@ -183,7 +227,7 @@ async def list_projects(
         query=q,
     )
     return PaginatedResponse(
-        data=[_to_response(i) for i in items],
+        data=[_public(_to_response(i)) for i in items],
         page=page,
         per_page=per_page,
         total=total,
@@ -246,7 +290,7 @@ async def create_project(
         resource_id=orm.id,
         after=_to_audit_state(response),
     )
-    return response
+    return _public(response)
 
 
 @router.post(
@@ -310,7 +354,7 @@ async def get_project(
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return _to_response(project)
+    return _public(_to_response(project))
 
 
 @router.put(
@@ -337,6 +381,10 @@ async def update_project(
         settings = dict(update_data.pop("settings", None) or project.settings or {})
         settings["silent_windows"] = _serialize_silent_windows(body.silent_windows)
         update_data["settings"] = settings
+    if "settings" in update_data:
+        update_data["settings"] = _carry_over_sensitive_settings(
+            update_data["settings"], project.settings
+        )
     effective_git_url = update_data.get("git_url", project.git_url)
     effective_auth_method = update_data.get("git_auth_method", project.git_auth_method)
     effective_credential_id = (
@@ -362,7 +410,7 @@ async def update_project(
         before=_to_audit_state(before),
         after=_to_audit_state(after),
     )
-    return after
+    return _public(after)
 
 
 @router.delete(

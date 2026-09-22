@@ -204,9 +204,14 @@ async def test_project_update_api_persists_silent_windows_in_settings(
         "end_at": "2026-06-01T11:00:00+08:00",
         "reason": "Release freeze",
     }
-    expected_settings = {
+    # 库里应保留 webhook_secret（携带前移），但对外响应必须省略它
+    expected_stored_settings = {
         "allowed_branches": ["main"],
         "webhook_secret": "existing-webhook-secret",
+        "silent_windows": [window],
+    }
+    expected_response_settings = {
+        "allowed_branches": ["main"],
         "silent_windows": [window],
     }
 
@@ -231,7 +236,7 @@ async def test_project_update_api_persists_silent_windows_in_settings(
         "root_path": project.root_path,
         "shallow_clone": project.shallow_clone,
         "default_env_id": None,
-        "settings": expected_settings,
+        "settings": expected_response_settings,
         "silent_windows": [window],
         "status": project.status,
         "created_by": str(user.id),
@@ -244,7 +249,7 @@ async def test_project_update_api_persists_silent_windows_in_settings(
     assert end_at == datetime(2026, 6, 1, 11, 0, tzinfo=timezone(timedelta(hours=8)))
 
     await integration_db_session.refresh(project)
-    assert project.settings == expected_settings
+    assert project.settings == expected_stored_settings
     assert _json_datetime(project.updated_at) == body["updated_at"]
 
     result = await integration_db_session.execute(

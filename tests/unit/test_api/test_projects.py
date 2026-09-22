@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -51,8 +52,21 @@ def _json_datetime(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
+_SENSITIVE_SETTINGS_RE = re.compile(
+    r"(secret|token|password|passwd|pwd|credential|api[_-]?key|private[_-]?key|auth)",
+    re.IGNORECASE,
+)
+
+
 def _expected_project_response(project) -> dict:
     settings = project.settings or {}
+    # 对外响应省略 settings 里的敏感键（webhook_secret / token / password 等），
+    # 与 api.v1.projects._public 的行为一致。
+    settings = {
+        key: value
+        for key, value in settings.items()
+        if not _SENSITIVE_SETTINGS_RE.search(key)
+    }
     return {
         "id": str(project.id),
         "tenant_id": str(project.tenant_id),
@@ -79,7 +93,10 @@ def _expected_project_audit_state(project, *, git_url: str | None = None) -> dic
     state = _expected_project_response(project)
     if git_url is not None:
         state["git_url"] = git_url
-    state["settings"] = _expected_project_settings_audit_state(state["settings"])
+    # 审计从原始 settings 出发，而不是响应里已省略敏感键的那份：审计需要保留
+    # 「这个键曾经存在」的信号，把它记成 {"redacted": true}，而对外响应是直接
+    # 不返回该键。两者的脱敏目标不同，不能共用同一份数据。
+    state["settings"] = _expected_project_settings_audit_state(project.settings or {})
     return state
 
 

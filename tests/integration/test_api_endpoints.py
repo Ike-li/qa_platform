@@ -354,6 +354,59 @@ class TestProjectsCRUD:
         assert audit.before_state == before_body
         assert audit.after_state == expected_body
 
+    async def test_project_settings_never_echo_secrets_and_survive_partial_update(
+        self, integration_client, integration_db_session, seed_run
+    ):
+        """settings 里的敏感键不得出现在响应里，且不会被后续 PUT 意外抹掉。
+
+        webhook_secret 原样回显给任何有读权限的人，是明确的泄露面。而一旦在
+        响应里省略它，settings 的整体替换语义又会让「GET 改一处再 PUT」的
+        客户端把它清成空——两个问题必须一起解决。
+        """
+        project = seed_run["project"]
+        project_id = str(project.id)
+
+        resp = await integration_client.put(
+            f"/api/v1/projects/{project_id}",
+            json={"settings": {"webhook_secret": "s3cr3t", "allowed_branches": ["main"]}},
+        )
+        assert resp.status_code == 200, resp.text
+        assert "webhook_secret" not in resp.json()["settings"]
+        assert resp.json()["settings"]["allowed_branches"] == ["main"]
+
+        get_resp = await integration_client.get(f"/api/v1/projects/{project_id}")
+        assert get_resp.status_code == 200, get_resp.text
+        assert "webhook_secret" not in get_resp.json()["settings"]
+
+        list_resp = await integration_client.get("/api/v1/projects")
+        assert list_resp.status_code == 200, list_resp.text
+        for item in list_resp.json()["data"]:
+            assert "webhook_secret" not in item["settings"]
+
+        # 库里确实存着，只是不外泄
+        await integration_db_session.refresh(project)
+        assert project.settings["webhook_secret"] == "s3cr3t"
+
+        # 客户端拿不到 secret，改别的键时自然不会带上它——不能因此被清掉
+        resp2 = await integration_client.put(
+            f"/api/v1/projects/{project_id}",
+            json={"settings": {"allowed_branches": ["main", "release/*"]}},
+        )
+        assert resp2.status_code == 200, resp2.text
+        assert "webhook_secret" not in resp2.json()["settings"]
+        await integration_db_session.refresh(project)
+        assert project.settings["webhook_secret"] == "s3cr3t"
+        assert project.settings["allowed_branches"] == ["main", "release/*"]
+
+        # 显式传 null 才是清除
+        resp3 = await integration_client.put(
+            f"/api/v1/projects/{project_id}",
+            json={"settings": {"webhook_secret": None, "allowed_branches": ["main"]}},
+        )
+        assert resp3.status_code == 200, resp3.text
+        await integration_db_session.refresh(project)
+        assert project.settings.get("webhook_secret") is None
+
     async def test_delete_project(
         self, integration_client, integration_db_session, seed_run
     ):
