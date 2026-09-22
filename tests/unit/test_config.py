@@ -9,7 +9,6 @@ from pydantic import ValidationError
 
 from qaplatform.config import Settings
 
-
 # Minimal env vars to satisfy all required fields
 REQUIRED_ENV = {
     "QAP_DATABASE_URL": "postgresql+asyncpg://localhost/test",

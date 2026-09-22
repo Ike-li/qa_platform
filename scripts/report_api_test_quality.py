@@ -10,7 +10,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OPERATION_MATRIX = ROOT / "tests" / "api_matrix" / "openapi_operation_matrix.yml"
 DEFAULT_CASE_MATRIX = ROOT / "tests" / "api_matrix" / "openapi_test_case_matrix.yml"

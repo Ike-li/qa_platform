@@ -6,7 +6,6 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
-
 RESERVED_RUN_METADATA_KEYS = frozenset(
     {
         "git_url",

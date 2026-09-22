@@ -4,7 +4,6 @@ from typing import Annotated
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
 
-
 _HEX_CHARS = set("0123456789abcdefABCDEF")
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 _LOG_FORMATS = {"json", "console"}

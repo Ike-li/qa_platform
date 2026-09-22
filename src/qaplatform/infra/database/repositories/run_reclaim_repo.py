@@ -13,7 +13,6 @@ from qaplatform.infra.database.repositories.run_status_helpers import (
     run_status_enums,
 )
 
-
 _IN_FLIGHT_STATUS_ENUMS = run_status_enums(IN_FLIGHT_STATUSES)
 
 

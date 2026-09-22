@@ -7,7 +7,6 @@ from pathlib import Path
 from qaplatform.main import create_app
 from qaplatform.plugins.protocols import RunnerProtocol
 
-
 ROOT = Path(__file__).resolve().parents[2]
 README = ROOT / "README.md"
 

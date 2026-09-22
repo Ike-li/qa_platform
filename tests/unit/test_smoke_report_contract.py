@@ -4,7 +4,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 COMMON_SH = ROOT / "scripts" / "smoke" / "lib" / "common.sh"
 SMOKE_RUN_ALL = ROOT / "scripts" / "smoke" / "run-all.sh"

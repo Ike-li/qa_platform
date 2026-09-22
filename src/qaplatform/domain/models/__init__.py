@@ -24,12 +24,12 @@ from qaplatform.domain.models.report_share import (
     ReportShareTokenResponse,
 )
 from qaplatform.domain.models.run import (
+    TERMINAL_STATUSES,
     Artifact,
     Run,
     RunStatus,
     RunSummary,
     TestResult,
-    TERMINAL_STATUSES,
 )
 from qaplatform.domain.models.schedule import QuietWindow, Schedule
 from qaplatform.domain.models.user import ApiToken, Credential, User

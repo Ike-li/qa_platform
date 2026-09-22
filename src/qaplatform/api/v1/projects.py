@@ -10,7 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
-from qaplatform.api.deps import CurrentUser, Repos, _get_db_session, require_permission, require_project_permission
+from qaplatform.api.deps import (
+    CurrentUser,
+    Repos,
+    _get_db_session,
+    require_permission,
+    require_project_permission,
+)
 from qaplatform.api.schemas import (
     ErrorResponse,
     GitBranchDiscoveryRequest,

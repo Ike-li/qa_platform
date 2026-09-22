@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import Counter
 import re
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -10,7 +10,6 @@ import pytest
 from argon2 import Type, extract_parameters
 
 from qaplatform.api.auth.token_service import TokenService
-
 
 VALID_TOKEN_ID = "a" * 32
 VALID_SECRET = "b" * 64

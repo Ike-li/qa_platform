@@ -1,17 +1,18 @@
 """Tests for report share service and repository."""
 
-import pytest
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from qaplatform.services.report_share_service import (
-    generate_share_token,
-    verify_share_token,
-    list_share_tokens,
-    revoke_share_token,
-)
+import pytest
+
 from qaplatform.infra.database.repositories.report_share_token_repo import (
     ReportShareTokenRepository,
+)
+from qaplatform.services.report_share_service import (
+    generate_share_token,
+    list_share_tokens,
+    revoke_share_token,
+    verify_share_token,
 )
 
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
-from fastapi import Request, Response
 
 from qaplatform.config import Settings
 

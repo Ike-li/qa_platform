@@ -14,7 +14,6 @@ from qaplatform.api.schemas import RunResponse
 from qaplatform.domain.services.execution import is_retryable_status
 from qaplatform.domain.services.pytest_nodeid import reconstruct_nodeid
 
-
 MAX_FAILED_CASES_FOR_RETRY = 200
 
 

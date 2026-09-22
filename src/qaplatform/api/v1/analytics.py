@@ -127,8 +127,9 @@ async def get_flaky_tests(
 
     # 折叠参数化用例
     if collapse_params:
-        from qaplatform.domain.services.test_case_normalizer import normalize_case_name
         from collections import defaultdict
+
+        from qaplatform.domain.services.test_case_normalizer import normalize_case_name
 
         collapsed: dict[tuple[str, str], dict] = defaultdict(
             lambda: {"total_runs": 0, "passed_count": 0, "failed_count": 0}

@@ -12,7 +12,9 @@ from qaplatform.infra.database.models import (
     TestResult,
     TestResultStatusEnum,
 )
-from qaplatform.infra.database.repositories.run_query_helpers import analytics_run_filters
+from qaplatform.infra.database.repositories.run_query_helpers import (
+    analytics_run_filters,
+)
 
 
 class RunAnalyticsRepositoryMixin:

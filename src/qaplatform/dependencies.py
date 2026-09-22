@@ -131,7 +131,9 @@ class DependencyContainer:
 
     def get_repositories(self, session: AsyncSession) -> RepositoryBundle:
         """Create repository instances scoped to a session."""
-        from qaplatform.infra.database.repositories.audit_repo import AuditEventRepository
+        from qaplatform.infra.database.repositories.audit_repo import (
+            AuditEventRepository,
+        )
         from qaplatform.infra.database.repositories.project_repo import (
             CredentialRepository,
             EnvironmentRepository,
@@ -142,6 +144,9 @@ class DependencyContainer:
             ProjectRepository,
             ScheduleRepository,
         )
+        from qaplatform.infra.database.repositories.quarantine_repo import (
+            QuarantineRepository,
+        )
         from qaplatform.infra.database.repositories.run_repo import (
             ArtifactRepository,
             RunRepository,
@@ -150,9 +155,6 @@ class DependencyContainer:
         from qaplatform.infra.database.repositories.user_repo import (
             ApiTokenRepository,
             UserRepository,
-        )
-        from qaplatform.infra.database.repositories.quarantine_repo import (
-            QuarantineRepository,
         )
 
         return RepositoryBundle(

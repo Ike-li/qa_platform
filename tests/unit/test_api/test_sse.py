@@ -371,8 +371,9 @@ async def test_stream_logs_same_tenant_no_project_perm_returns_403(
     mock_redis.hget = AsyncMock()
 
     # Patch the project-role resolver to simulate "no membership".
-    import qaplatform.api.deps as deps_mod
     from unittest.mock import patch
+
+    import qaplatform.api.deps as deps_mod
 
     async def _no_project_role(session, user, project_id):
         return None
@@ -431,8 +432,9 @@ async def test_stream_events_same_tenant_no_project_perm_returns_403(
     mock_redis.xread = AsyncMock()
     mock_redis.hget = AsyncMock()
 
-    import qaplatform.api.deps as deps_mod
     from unittest.mock import patch
+
+    import qaplatform.api.deps as deps_mod
 
     async def _no_project_role(session, user, project_id):
         return None
@@ -566,9 +568,11 @@ async def test_authenticate_sse_ticket_consumes_atomically():
     and not the racy get+delete pattern.
     """
     import asyncio
-    from qaplatform.api.v1.sse import _authenticate_sse_ticket
-    from qaplatform.api.deps import UserIdentity
+
     from fastapi import HTTPException
+
+    from qaplatform.api.deps import UserIdentity
+    from qaplatform.api.v1.sse import _authenticate_sse_ticket
 
     ticket = "test-ticket-atomic"
     user_id = uuid.uuid4()

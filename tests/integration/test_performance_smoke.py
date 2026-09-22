@@ -949,7 +949,12 @@ async def test_schedule_tick_enqueue_slo_smoke(
 ):
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    from qaplatform.infra.database.models import AuditEvent, Run, RunStatusEnum, Schedule
+    from qaplatform.infra.database.models import (
+        AuditEvent,
+        Run,
+        RunStatusEnum,
+        Schedule,
+    )
     from qaplatform.worker.settings import check_schedules
 
     arq = _FakeArq()

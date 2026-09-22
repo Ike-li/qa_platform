@@ -8,7 +8,6 @@ These tests verify that:
 """
 from __future__ import annotations
 
-
 import pytest
 from sqlalchemy import select
 
@@ -19,7 +18,6 @@ from qaplatform.infra.database.models import (
 )
 from qaplatform.infra.database.repositories.base import BaseRepository
 from qaplatform.infra.database.repositories.project_repo import ProjectRepository
-
 
 # --------------------------------------------------------------------------- #
 # Helpers

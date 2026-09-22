@@ -17,7 +17,6 @@ from httpx import AsyncClient, Response
 
 from tests.support.openapi_response_schema import assert_current_openapi_response
 
-
 Headers = Mapping[str, str]
 
 

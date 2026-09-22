@@ -5,9 +5,8 @@ from enum import Enum
 from typing import Iterable
 from uuid import UUID
 
-from qaplatform.domain.models.run import Run, RunStatus, TERMINAL_STATUSES
+from qaplatform.domain.models.run import TERMINAL_STATUSES, Run, RunStatus
 from qaplatform.domain.ports import RunRepositoryProtocol
-
 
 # Valid status transitions
 _TRANSITIONS: dict[RunStatus, set[RunStatus]] = {

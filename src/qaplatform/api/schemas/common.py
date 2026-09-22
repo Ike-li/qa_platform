@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from qaplatform.domain.models.common import (
     PaginatedResponse as PaginatedResponse,
+)
+from qaplatform.domain.models.common import (
     PaginationParams as PaginationParams,
 )
 

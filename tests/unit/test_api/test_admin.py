@@ -10,7 +10,6 @@ from httpx import ASGITransport, AsyncClient
 
 from qaplatform.infra.database.models import RunStatusEnum
 
-
 _QUEUE_STATUSES = [RunStatusEnum.QUEUED, RunStatusEnum.PREPARING]
 _IN_FLIGHT_STATUSES = [RunStatusEnum.RUNNING, RunStatusEnum.COLLECTING]
 _TERMINAL_STATUSES = [

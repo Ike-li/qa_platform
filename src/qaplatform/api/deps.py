@@ -26,7 +26,6 @@ from qaplatform.infra.database.repositories.project_repo import (
     ProjectRepository,
 )
 
-
 # ── Database session (request-scoped with commit/rollback) ───────────────────
 
 async def _get_db_session(request: Request):

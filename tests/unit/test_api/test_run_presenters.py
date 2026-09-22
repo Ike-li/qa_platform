@@ -13,6 +13,8 @@ from qaplatform.api.run_presenters import (
 )
 from qaplatform.infra.database.models import (
     RunStatusEnum,
+)
+from qaplatform.infra.database.models import (
     TestResultStatusEnum as ResultStatusEnum,
 )
 

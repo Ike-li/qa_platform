@@ -189,14 +189,14 @@ async def _execute_run(ctx: dict, run_id: str) -> None:
     3. On exception: fail_if_current
     4. Finally: archive logs, release worker
     """
+    from qaplatform.engine.events import publish_status_event
+    from qaplatform.engine.executor import RunExecutor
+    from qaplatform.infra.database.repositories.project_repo import ProjectRepository
     from qaplatform.infra.database.repositories.run_repo import (
         ArtifactRepository,
         RunRepository,
         TestResultRepository,
     )
-    from qaplatform.infra.database.repositories.project_repo import ProjectRepository
-    from qaplatform.engine.events import publish_status_event
-    from qaplatform.engine.executor import RunExecutor
 
     log_stream = ctx["log_stream"]
     worker_id = ctx["worker_id"]

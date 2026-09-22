@@ -1,13 +1,14 @@
 """Tests for user repositories."""
 
-import pytest
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
+
 from qaplatform.infra.database.repositories.user_repo import (
-    UserRepository,
-    TenantRepository,
     ApiTokenRepository,
+    TenantRepository,
+    UserRepository,
 )
 
 

@@ -1347,7 +1347,11 @@ class TestExecutorCommitsAfterStateTransitions:
     async def test_execute_uses_configured_collector_plugin_and_config(
         self, happy_executor, sample_run
     ):
-        from qaplatform.engine.executor import CollectorDefinition, PipelineConfig, StageDefinition
+        from qaplatform.engine.executor import (
+            CollectorDefinition,
+            PipelineConfig,
+            StageDefinition,
+        )
 
         sample_run.metadata = {}
         pipeline = PipelineConfig(
@@ -1610,8 +1614,8 @@ class TestMarkRunningSkippedLog:
     missing transition."""
 
     def _make_pipeline(self):
-        from qaplatform.engine.executor import PipelineConfig, StageDefinition
         from qaplatform.engine.docker_backend import ResourceLimits
+        from qaplatform.engine.executor import PipelineConfig, StageDefinition
 
         return PipelineConfig(
             image="alpine:3.19",

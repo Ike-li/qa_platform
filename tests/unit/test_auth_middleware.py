@@ -19,7 +19,6 @@ from qaplatform.api.auth.middleware import (
 )
 from qaplatform.config import Settings
 
-
 API_TOKEN_ID = 'a' * 32
 API_TOKEN_SECRET = 'b' * 64
 API_BEARER_TOKEN = f'qap_{API_TOKEN_ID}_{API_TOKEN_SECRET}'

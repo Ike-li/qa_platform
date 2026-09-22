@@ -1,8 +1,8 @@
 """Pure redaction helpers shared across runtime layers."""
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
 import re
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 # Capture: scheme://, optional userinfo (user[:pass]@), host+rest.

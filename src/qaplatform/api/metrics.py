@@ -17,7 +17,6 @@ from qaplatform.observability.metrics import (
     runs_in_flight,
 )
 
-
 # ── /metrics endpoint ─────────────────────────────────────────────────────────
 
 

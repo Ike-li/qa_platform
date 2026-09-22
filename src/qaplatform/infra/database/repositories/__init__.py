@@ -1,18 +1,22 @@
 from qaplatform.infra.database.repositories.artifact_repo import ArtifactRepository
 from qaplatform.infra.database.repositories.credential_repo import CredentialRepository
-from qaplatform.infra.database.repositories.environment_repo import EnvironmentRepository
+from qaplatform.infra.database.repositories.environment_repo import (
+    EnvironmentRepository,
+)
 from qaplatform.infra.database.repositories.notification_repo import (
     NotificationLogRepository,
     NotificationRuleRepository,
 )
 from qaplatform.infra.database.repositories.pipeline_repo import PipelineRepository
-from qaplatform.infra.database.repositories.project_member_repo import ProjectMemberRepository
-from qaplatform.infra.database.repositories.project_repo import ProjectRepository
-from qaplatform.infra.database.repositories.run_execution_metadata_repo import (
-    RunExecutionMetadataRepositoryMixin,
+from qaplatform.infra.database.repositories.project_member_repo import (
+    ProjectMemberRepository,
 )
+from qaplatform.infra.database.repositories.project_repo import ProjectRepository
 from qaplatform.infra.database.repositories.run_analytics_repo import (
     RunAnalyticsRepositoryMixin,
+)
+from qaplatform.infra.database.repositories.run_execution_metadata_repo import (
+    RunExecutionMetadataRepositoryMixin,
 )
 from qaplatform.infra.database.repositories.run_maintenance_repo import (
     RunMaintenanceRepositoryMixin,

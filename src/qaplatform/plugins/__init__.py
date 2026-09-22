@@ -1,4 +1,8 @@
-from qaplatform.plugins.protocols import CollectorProtocol, RunnerProtocol, SourceProtocol
+from qaplatform.plugins.protocols import (
+    CollectorProtocol,
+    RunnerProtocol,
+    SourceProtocol,
+)
 from qaplatform.plugins.registry import PluginRegistry
 
 __all__ = [

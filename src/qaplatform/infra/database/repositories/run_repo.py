@@ -17,11 +17,11 @@ from qaplatform.infra.database.models import (
 )
 from qaplatform.infra.database.repositories.artifact_repo import ArtifactRepository
 from qaplatform.infra.database.repositories.base import BaseRepository
-from qaplatform.infra.database.repositories.run_execution_metadata_repo import (
-    RunExecutionMetadataRepositoryMixin,
-)
 from qaplatform.infra.database.repositories.run_analytics_repo import (
     RunAnalyticsRepositoryMixin,
+)
+from qaplatform.infra.database.repositories.run_execution_metadata_repo import (
+    RunExecutionMetadataRepositoryMixin,
 )
 from qaplatform.infra.database.repositories.run_maintenance_repo import (
     RunMaintenanceRepositoryMixin,

@@ -10,7 +10,6 @@ import yaml
 from qaplatform.config import Settings
 from qaplatform.main import create_app
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = ROOT / "tests" / "api_matrix" / "openapi_operation_matrix.yml"
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}

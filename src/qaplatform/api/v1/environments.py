@@ -18,7 +18,10 @@ from qaplatform.api.schemas import (
     PaginatedResponse,
 )
 from qaplatform.dependencies import CryptoService
-from qaplatform.domain.services.env_vars_crypto import decrypt_env_vars, encrypt_env_vars
+from qaplatform.domain.services.env_vars_crypto import (
+    decrypt_env_vars,
+    encrypt_env_vars,
+)
 
 log = logging.getLogger(__name__)
 

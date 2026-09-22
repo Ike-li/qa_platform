@@ -18,10 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 
-from aiobotocore.session import get_session
-from botocore.exceptions import ClientError
 import httpx
 import pytest
+from aiobotocore.session import get_session
+from botocore.exceptions import ClientError
 
 pytestmark = [
     pytest.mark.skipif(

@@ -10,12 +10,12 @@ from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
-from qaplatform.domain.services.redact import redact_sensitive_text
 from qaplatform.domain.models.notification import (
     NOTIFICATION_CONDITION_FIELDS,
     NOTIFICATION_CONDITION_OPERATORS,
     normalize_notification_channel,
 )
+from qaplatform.domain.services.redact import redact_sensitive_text
 from qaplatform.infra.database.models import NotificationStatusEnum
 
 log = logging.getLogger(__name__)
@@ -167,9 +167,16 @@ async def _load_new_failed_and_recovered(
     new_failed: 本次相对同 project + 同 pipeline 上一终态 run 的新增失败数（已知 flaky 不计入）
     recovered: 上次失败本次通过的用例数
     """
-    from qaplatform.infra.database.models import Run, RunStatusEnum, TestResult, TestResultStatusEnum
     from datetime import timedelta
+
     from sqlalchemy import select
+
+    from qaplatform.infra.database.models import (
+        Run,
+        RunStatusEnum,
+        TestResult,
+        TestResultStatusEnum,
+    )
 
     current_stmt = select(Run).where(
         Run.id == run_id,
@@ -229,7 +236,9 @@ async def _load_new_failed_and_recovered(
     )
     flaky_keys = {(row.suite, row.name) for row in flaky_rows}
 
-    from qaplatform.infra.database.repositories.quarantine_repo import QuarantineRepository
+    from qaplatform.infra.database.repositories.quarantine_repo import (
+        QuarantineRepository,
+    )
     quarantine_repo = QuarantineRepository(run_repo.session)
     quarantined = await quarantine_repo.list_keys(project_id)
 
@@ -389,7 +398,9 @@ async def evaluate_and_notify(
         ProjectRepository,
     )
     from qaplatform.infra.database.repositories.run_repo import RunRepository
-    from qaplatform.infra.database.repositories.test_result_repo import TestResultRepository
+    from qaplatform.infra.database.repositories.test_result_repo import (
+        TestResultRepository,
+    )
 
     async with session_factory() as session:
         rule_repo = NotificationRuleRepository(session)
@@ -418,8 +429,9 @@ async def evaluate_and_notify(
             _conditions_include_fields(rule.conditions, _NEW_FAILED_RECOVERED_FIELDS)
             for rule in rules
         ):
-            from qaplatform.infra.database.models import Run
             from sqlalchemy import select
+
+            from qaplatform.infra.database.models import Run
 
             run_stmt = select(Run.pipeline_id).where(Run.id == run_id)
             run_result = await session.execute(run_stmt)

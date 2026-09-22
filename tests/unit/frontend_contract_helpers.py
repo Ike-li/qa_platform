@@ -5,7 +5,6 @@ from pathlib import Path
 
 from qaplatform.config import Settings
 
-
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_TYPES = ROOT / "frontend" / "src" / "types" / "api.ts"
 RUN_HOOK = ROOT / "frontend" / "src" / "hooks" / "use-runs.ts"

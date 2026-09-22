@@ -6,7 +6,6 @@ import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
 
-
 ARTIFACT_TYPE_BY_EXT = {
     ".xml": "junit",
     ".html": "report",

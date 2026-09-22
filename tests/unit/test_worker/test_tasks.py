@@ -614,8 +614,8 @@ class TestArchiveBlocking:
     @pytest.mark.asyncio
     async def test_worker_executes_active_project(self, ctx, mock_session, fake_run):
         """When project is active, worker proceeds with execution."""
-        from qaplatform.worker import tasks as worker_tasks
         from qaplatform.domain.models.run import RunStatus
+        from qaplatform.worker import tasks as worker_tasks
 
         run_repo = AsyncMock()
         run_repo.claim_for_worker = AsyncMock(return_value=fake_run)

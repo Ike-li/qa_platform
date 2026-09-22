@@ -8,7 +8,6 @@ import pytest
 
 from qaplatform.api.middleware.security_headers import SecurityHeadersMiddleware
 
-
 EXPECTED_SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",

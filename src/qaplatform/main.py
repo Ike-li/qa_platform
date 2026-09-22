@@ -10,6 +10,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from qaplatform.api.metrics import metrics_route
+from qaplatform.api.middleware.cors import setup_cors
+from qaplatform.api.middleware.rate_limit import RateLimitMiddleware
+from qaplatform.api.middleware.request_id import RequestIdMiddleware
+from qaplatform.api.middleware.security_headers import SecurityHeadersMiddleware
 from qaplatform.api.schemas import ErrorDetail, ErrorResponse
 from qaplatform.config import Settings
 from qaplatform.logging import configure_logging
@@ -19,11 +24,6 @@ from qaplatform.observability.tracing import (
     instrument_infra,
     setup_tracing,
 )
-from qaplatform.api.middleware.request_id import RequestIdMiddleware
-from qaplatform.api.middleware.rate_limit import RateLimitMiddleware
-from qaplatform.api.middleware.security_headers import SecurityHeadersMiddleware
-from qaplatform.api.middleware.cors import setup_cors
-from qaplatform.api.metrics import metrics_route
 
 logger = structlog.get_logger(__name__)
 

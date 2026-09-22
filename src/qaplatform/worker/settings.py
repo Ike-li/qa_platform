@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import logging
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import aiodocker
 from arq import cron, func
@@ -12,7 +12,11 @@ from arq.connections import RedisSettings
 from qaplatform.observability.tracing import instrument_infra, setup_tracing
 from qaplatform.worker.schedule_firing import (
     _schedule_run_audit_state as _schedule_run_audit_state,
+)
+from qaplatform.worker.schedule_firing import (
     _schedule_skip_audit_state as _schedule_skip_audit_state,
+)
+from qaplatform.worker.schedule_firing import (
     fire_due_schedules,
 )
 from qaplatform.worker.tasks import execute_run
@@ -80,11 +84,11 @@ async def on_shutdown(ctx: dict) -> None:
 
 async def reclaim_resources(ctx: dict) -> None:
     """Periodic task: reclaim orphan containers and timeout stale runs."""
-    from qaplatform.engine.reclaim import reclaim_worker_lost
     from qaplatform.engine.events import publish_status_event
-    from qaplatform.observability.metrics import run_queue_depth, runs_in_flight
+    from qaplatform.engine.reclaim import reclaim_worker_lost
     from qaplatform.infra.database.models import RunStatusEnum
     from qaplatform.infra.database.repositories.run_repo import RunRepository
+    from qaplatform.observability.metrics import run_queue_depth, runs_in_flight
     from qaplatform.worker.tasks import _schedule_retry_for_run
 
     session_factory = ctx.get("db_session_factory")

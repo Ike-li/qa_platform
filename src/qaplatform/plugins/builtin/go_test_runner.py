@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
-from dataclasses import dataclass
 import json
 import logging
 import math
@@ -10,11 +8,15 @@ import os
 import shlex
 import time
 import xml.etree.ElementTree as ET
-from pathlib import Path
-from pathlib import PurePosixPath
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from qaplatform.plugins.builtin._paths import safe_workspace_output_path, safe_workspace_paths
+from qaplatform.plugins.builtin._paths import (
+    safe_workspace_output_path,
+    safe_workspace_paths,
+)
 from qaplatform.plugins.protocols import TestRunResult
 
 log = logging.getLogger(__name__)

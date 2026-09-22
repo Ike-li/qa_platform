@@ -15,7 +15,6 @@ from qaplatform.api.auth.jwt_service import JWTService
 from qaplatform.api.auth.middleware import CurrentUser, get_current_user
 from qaplatform.api.v1.auth import _refresh_cookie_secure, _resolve_tenant_id, router
 
-
 # --- Helpers ---
 
 

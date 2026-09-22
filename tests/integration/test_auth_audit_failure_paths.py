@@ -27,7 +27,6 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
-
 # --------------------------------------------------------------------------- #
 # Fixtures: bare app (no auth override) + seeded user
 # --------------------------------------------------------------------------- #
@@ -83,8 +82,9 @@ async def seeded_user(integration_db_engine):
     Used by the contrast test that verifies audit is written with a real
     tenant_id when the user *is* found but the password is wrong.
     """
-    from argon2 import PasswordHasher
     from uuid import uuid4
+
+    from argon2 import PasswordHasher
     ph = PasswordHasher()
     password = "correct-horse-battery"
     sfx = uuid4().hex[:8]

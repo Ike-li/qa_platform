@@ -8,10 +8,10 @@ chain without depending on a third-party repository's test layout.
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 import json
 import os
 import sys
+from contextlib import suppress
 from time import monotonic
 
 import httpx

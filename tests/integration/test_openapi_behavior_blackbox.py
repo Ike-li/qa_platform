@@ -34,7 +34,6 @@ from tests.support.openapi_response_schema import (
     set_current_openapi,
 )
 
-
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_INTEGRATION_TESTS") != "1",
     reason="set RUN_INTEGRATION_TESTS=1 to run integration tests",

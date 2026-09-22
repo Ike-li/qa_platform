@@ -1100,6 +1100,7 @@ async def test_batch_cancel_preserves_batch_contract_without_project_permission(
     tenant_id,
 ):
     from fastapi import HTTPException
+
     from qaplatform.infra.database.models import RunStatusEnum
 
     run_id = uuid.uuid4()
@@ -1199,6 +1200,7 @@ async def test_batch_retry_preserves_batch_contract_without_project_permission(
     app,
 ):
     from fastapi import HTTPException
+
     from qaplatform.api.deps import _get_db_session
     from qaplatform.infra.database.models import RunStatusEnum
 

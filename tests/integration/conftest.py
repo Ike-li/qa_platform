@@ -285,6 +285,8 @@ async def integration_app(test_settings, integration_db_schema, seed_run):
     from qaplatform.api import create_app
     from qaplatform.api.auth.middleware import (
         CurrentUser as MiddlewareCurrentUser,
+    )
+    from qaplatform.api.auth.middleware import (
         get_current_user as mw_get_current_user,
     )
     from qaplatform.dependencies import init_container
@@ -534,6 +536,8 @@ def integration_client_as(integration_app):
     """
     from qaplatform.api.auth.middleware import (
         CurrentUser as MiddlewareCurrentUser,
+    )
+    from qaplatform.api.auth.middleware import (
         get_current_user as mw_get_current_user,
     )
 

@@ -7,7 +7,12 @@ from uuid import uuid4
 
 import pytest
 
-from qaplatform.worker.scheduler import FairScheduler, PRIORITY_QUEUES, Priority, enqueue_run
+from qaplatform.worker.scheduler import (
+    PRIORITY_QUEUES,
+    FairScheduler,
+    Priority,
+    enqueue_run,
+)
 
 
 @asynccontextmanager

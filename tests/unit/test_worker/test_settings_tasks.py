@@ -10,12 +10,12 @@ import pytest
 
 from qaplatform.infra.database.models import RunStatusEnum
 from qaplatform.worker.settings import (
+    _get_worker_max_jobs,
     after_job_end,
     check_schedules,
     cleanup_old_audit_events,
     cleanup_old_runs,
     dequeue_waiting,
-    _get_worker_max_jobs,
     on_shutdown,
     reclaim_resources,
     retry_failed_archives,

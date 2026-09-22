@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shutil
 import shlex
+import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from qaplatform.plugins.builtin.go_test_runner import GoTestRunner, _GO_JUNIT_HELPER_SOURCE
+from qaplatform.plugins.builtin.go_test_runner import (
+    _GO_JUNIT_HELPER_SOURCE,
+    GoTestRunner,
+)
 from qaplatform.plugins.protocols import RunnerProtocol, TestRunResult
 
 

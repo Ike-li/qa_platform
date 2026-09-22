@@ -11,9 +11,9 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
-    Float,
     Index,
     Integer,
     PrimaryKeyConstraint,
@@ -22,8 +22,15 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import BYTEA, INET, JSONB, UUID as PG_UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import BYTEA, INET, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    declared_attr,
+    mapped_column,
+    relationship,
+)
 
 
 def _utcnow() -> datetime:

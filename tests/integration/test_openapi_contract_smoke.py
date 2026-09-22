@@ -15,7 +15,6 @@ import pytest
 
 from qaplatform.config import Settings
 
-
 pytestmark = [
     pytest.mark.openapi_contract,
     pytest.mark.skipif(

@@ -8,9 +8,17 @@ from qaplatform.api.schemas import (
 )
 from qaplatform.infra.database.models import (
     Artifact as ArtifactORM,
+)
+from qaplatform.infra.database.models import (
     NotificationLog as NotificationLogORM,
+)
+from qaplatform.infra.database.models import (
     Run as RunORM,
+)
+from qaplatform.infra.database.models import (
     RunStatusEnum,
+)
+from qaplatform.infra.database.models import (
     TestResult as TestResultORM,
 )
 

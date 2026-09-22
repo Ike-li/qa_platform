@@ -20,7 +20,6 @@ from qaplatform.engine.executor import RunExecutor
 from qaplatform.engine.redact import redact_sensitive_text, redact_url_userinfo
 from qaplatform.plugins.registry import PluginRegistry
 
-
 # --------------------------------------------------------------------------- #
 # Shared constants
 # --------------------------------------------------------------------------- #

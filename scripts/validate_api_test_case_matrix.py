@@ -9,7 +9,6 @@ from typing import Any
 
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASE_MATRIX = ROOT / "tests" / "api_matrix" / "openapi_test_case_matrix.yml"
 DEFAULT_OPERATION_MATRIX = ROOT / "tests" / "api_matrix" / "openapi_operation_matrix.yml"

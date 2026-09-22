@@ -3,14 +3,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from pathlib import PurePosixPath
 import shlex
 import time
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from qaplatform.plugins.builtin._paths import safe_workspace_output_path, safe_workspace_paths
+from qaplatform.plugins.builtin._paths import (
+    safe_workspace_output_path,
+    safe_workspace_paths,
+)
 from qaplatform.plugins.protocols import TestRunResult
 
 log = logging.getLogger(__name__)

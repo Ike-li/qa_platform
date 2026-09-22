@@ -1,7 +1,6 @@
 import hashlib
 import ipaddress
 import re
-
 from typing import Callable, Union
 from uuid import uuid4
 

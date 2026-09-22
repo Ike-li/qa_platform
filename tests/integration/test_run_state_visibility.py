@@ -28,7 +28,8 @@ from qaplatform.engine.executor import (
     RunExecutor,
     StageDefinition,
 )
-from qaplatform.infra.database.models import Run as RunORM, RunStatusEnum
+from qaplatform.infra.database.models import Run as RunORM
+from qaplatform.infra.database.models import RunStatusEnum
 from qaplatform.infra.database.repositories.run_repo import (
     ArtifactRepository,
     RunRepository,

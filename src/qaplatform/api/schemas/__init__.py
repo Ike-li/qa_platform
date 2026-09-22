@@ -31,10 +31,10 @@ from qaplatform.api.schemas.common import (
 )
 from qaplatform.api.schemas.environments import (
     _BLOCKED_ENV_KEYS,
-    _validate_blocked_env_keys,
     EnvironmentCreate,
     EnvironmentResponse,
     EnvironmentUpdate,
+    _validate_blocked_env_keys,
 )
 from qaplatform.api.schemas.notifications import (
     NotificationChannelPayload,
@@ -71,7 +71,6 @@ from qaplatform.api.schemas.pipelines import (
 )
 from qaplatform.api.schemas.projects import (
     _HH_MM_RE,
-    _validate_project_settings,
     CredentialCreate,
     CredentialResponse,
     CredentialUpdate,
@@ -87,10 +86,15 @@ from qaplatform.api.schemas.projects import (
     ScheduleCreate,
     ScheduleResponse,
     ScheduleUpdate,
+    _validate_project_settings,
     validate_optional_schedule_cron_expr,
     validate_schedule_cron_expr,
     validate_schedule_quiet_windows,
     validate_timezone_name,
+)
+from qaplatform.api.schemas.quarantine import (
+    QuarantineAddRequest,
+    QuarantineResponse,
 )
 from qaplatform.api.schemas.runs import (
     ArtifactResponse,
@@ -111,10 +115,6 @@ from qaplatform.api.schemas.runs import (
     TriageItem,
     TriageObservation,
     WebhookTriggerRequest,
-)
-from qaplatform.api.schemas.quarantine import (
-    QuarantineAddRequest,
-    QuarantineResponse,
 )
 
 __all__ = [

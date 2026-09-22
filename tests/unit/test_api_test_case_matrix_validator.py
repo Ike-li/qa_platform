@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[2]
 CASE_MATRIX_PATH = ROOT / "tests" / "api_matrix" / "openapi_test_case_matrix.yml"
 OPERATION_MATRIX_PATH = ROOT / "tests" / "api_matrix" / "openapi_operation_matrix.yml"

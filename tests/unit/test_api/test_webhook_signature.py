@@ -12,7 +12,6 @@ from qaplatform.infra.webhook_signature import (
     verify_webhook_signature,
 )
 
-
 # ------------------------------------------------------------------
 # generate + verify round-trip
 # ------------------------------------------------------------------

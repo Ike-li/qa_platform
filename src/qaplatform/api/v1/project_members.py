@@ -13,10 +13,10 @@ from qaplatform.api.deps import (
 )
 from qaplatform.api.schemas import (
     ErrorResponse,
+    PaginatedResponse,
     ProjectMemberCreate,
     ProjectMemberResponse,
     ProjectMemberUpdate,
-    PaginatedResponse,
 )
 
 router = APIRouter(

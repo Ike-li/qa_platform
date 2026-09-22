@@ -822,11 +822,11 @@ async def test_result_and_artifact_repositories_query_paginate_and_recover(
     integration_db_session,
     seed_run,
 ):
+    from qaplatform.infra.database.models import TestResultStatusEnum
     from qaplatform.infra.database.repositories.run_repo import (
         ArtifactRepository,
         TestResultRepository,
     )
-    from qaplatform.infra.database.models import TestResultStatusEnum
 
     run_id = seed_run["run"].id
     result_repo = TestResultRepository(integration_db_session)

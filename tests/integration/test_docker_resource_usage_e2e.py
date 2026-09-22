@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 import os
 import subprocess
+from contextlib import suppress
 from uuid import uuid4
 
 import aiodocker

@@ -7,7 +7,6 @@ from typing import Any
 
 from httpx import Response
 
-
 _CURRENT_OPENAPI: ContextVar[dict[str, Any] | None] = ContextVar(
     "current_openapi",
     default=None,

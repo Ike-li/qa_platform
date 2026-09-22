@@ -19,7 +19,6 @@ from qaplatform.domain.services.execution import (
 from qaplatform.infra.database.models import Run as RunORM
 from qaplatform.infra.database.models import RunStatusEnum
 
-
 _BATCH_OPERATION_FAILED = "operation failed"
 _CANCELABLE = frozenset(RunStatusEnum(status.value) for status in CANCELABLE_STATUSES)
 

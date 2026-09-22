@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -256,6 +255,7 @@ class TestLifespanShutdownNoCancelAll:
     async def test_shutdown_does_not_cancel_concurrent_tasks(self):
         """A task running concurrently with lifespan shutdown must not be cancelled."""
         import asyncio
+
         from qaplatform.main import create_app
 
         container = _make_container_mock()

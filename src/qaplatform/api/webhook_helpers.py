@@ -13,7 +13,6 @@ from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
 from qaplatform.api.schemas import WebhookTriggerRequest
 
-
 _INTEGRITY_ERRORS = (SQLAlchemyIntegrityError,)
 _FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 

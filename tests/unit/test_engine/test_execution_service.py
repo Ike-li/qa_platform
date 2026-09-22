@@ -11,9 +11,9 @@ from qaplatform.domain.models.run import RunStatus
 from qaplatform.domain.services.execution import (
     ACTIVE_STATUSES,
     CANCELABLE_STATUSES,
-    ExecutionService,
     IN_FLIGHT_STATUSES,
     RETRYABLE_STATUSES,
+    ExecutionService,
     cancel_if_current,
     claim_for_worker,
     fail_if_current,
@@ -27,7 +27,6 @@ from qaplatform.domain.services.execution import (
     timeout_if_current,
 )
 from qaplatform.infra.database.models import RunStatusEnum
-
 
 # --------------------------------------------------------------------------- #
 # is_valid_transition

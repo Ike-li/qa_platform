@@ -11,7 +11,6 @@ from qaplatform.domain.models.run import TERMINAL_STATUSES
 from qaplatform.infra.database.models import Run, RunStatusEnum
 from qaplatform.infra.database.repositories.run_status_helpers import run_status_enums
 
-
 _TERMINAL_STATUS_ENUMS = run_status_enums(TERMINAL_STATUSES)
 
 

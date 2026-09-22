@@ -4,10 +4,10 @@ import asyncio
 import os
 import sys
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 from argon2 import PasswordHasher
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
 DATABASE_URL = os.environ.get(
     "QAP_DATABASE_URL",

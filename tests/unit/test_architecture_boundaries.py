@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "qaplatform"
 API_V1_ROUTE_MODULES = tuple(

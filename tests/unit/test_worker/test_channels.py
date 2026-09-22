@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from email import message_from_string
 import hashlib
 import hmac
+from email import message_from_string
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -17,11 +17,10 @@ from qaplatform.worker.notifications.channels import (
     ChannelRouter,
     DingtalkChannel,
     EmailChannel,
-    WecomChannel,
     WebhookChannel,
+    WecomChannel,
     route_channel,
 )
-
 
 # --------------------------------------------------------------------------- #
 # EmailChannel

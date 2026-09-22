@@ -62,8 +62,8 @@ from qaplatform.domain.services.execution import (
     CANCELABLE_STATUSES,
     is_cancelable_status,
 )
-from qaplatform.infra.log_stream import ArchivedLogsNotFound, LogStream
 from qaplatform.infra.database.models import RunStatusEnum
+from qaplatform.infra.log_stream import ArchivedLogsNotFound, LogStream
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 

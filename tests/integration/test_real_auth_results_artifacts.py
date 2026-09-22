@@ -9,11 +9,11 @@ These tests intentionally exercise production wiring where it matters:
 
 from __future__ import annotations
 
-from collections import Counter
-from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 

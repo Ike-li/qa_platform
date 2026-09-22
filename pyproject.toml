@@ -81,3 +81,15 @@ exclude_also = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
 ]
+
+[tool.ruff]
+# 显式固定 target-version，避免不同 Python 环境下推断出不同结果。
+target-version = "py312"
+
+[tool.ruff.lint]
+# 必须显式声明规则集：ruff 的默认集合会随版本变化（0.16 起把 isort 的 I
+# 加进了默认），此前本仓库没有 [tool.ruff] 配置，导致本地 0.15 通过而 CI 的
+# 0.16 报 115 处 I001，同一份代码在两处得到不同结论。
+#
+# E4/E7/E9 + F 是 ruff 历史默认值，I 是 0.16 起的新增默认，这里一并固定下来。
+select = ["E4", "E7", "E9", "F", "I"]

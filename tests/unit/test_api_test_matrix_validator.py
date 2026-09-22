@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX_PATH = ROOT / "tests" / "api_matrix" / "openapi_operation_matrix.yml"
 VALIDATOR_PATH = ROOT / "scripts" / "validate_api_test_matrix.py"

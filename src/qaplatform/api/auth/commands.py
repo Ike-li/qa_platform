@@ -12,10 +12,9 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from fastapi import HTTPException, Request, Response, status
-
 from argon2 import PasswordHasher as _PasswordHasher
 from argon2.exceptions import VerifyMismatchError as _VerifyMismatchError
+from fastapi import HTTPException, Request, Response, status
 
 from qaplatform.api.auth.permissions import Role
 from qaplatform.api.auth.refresh_cookie import (

@@ -9,7 +9,6 @@ import pytest
 
 from qaplatform.worker.tasks import _attempt_retry, _should_retry
 
-
 # --------------------------------------------------------------------------- #
 # _should_retry unit tests
 # --------------------------------------------------------------------------- #

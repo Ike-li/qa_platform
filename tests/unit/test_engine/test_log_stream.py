@@ -9,13 +9,13 @@ from uuid import uuid4
 import pytest
 
 from qaplatform.engine.log_stream import (
-    ArchivedLogsNotFound,
-    LogStream,
     _ARCHIVE_FAILURE_TTL,
     _MAX_LINE_BYTES,
     _MAXLEN,
     _STREAM_TTL,
     _TRUNCATION_MARKER,
+    ArchivedLogsNotFound,
+    LogStream,
     _next_stream_id,
 )
 

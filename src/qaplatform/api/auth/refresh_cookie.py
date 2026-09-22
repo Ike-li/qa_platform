@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request, Response, status
 
-
 REFRESH_TOKEN_COOKIE = "refresh_token"
 _LOCAL_HTTP_COOKIE_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
