@@ -33,7 +33,7 @@ cd qa_platform
 # 2. 后端设置
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 
 # 3. 前端设置
 cd frontend
@@ -53,6 +53,15 @@ npm run dev
 访问 http://localhost:5173 查看应用。
 
 ---
+
+> **依赖版本与 CI 保持一致**
+>
+> CI 从 `uv.lock` 安装精确版本（`uv export --frozen` + `pip install -r`），
+> 上面的 `pip install -e ".[dev]"` 装的是当前可得的最新版，两者可能不同。
+> 需要完全对齐时用 `uv sync --frozen`，或先 `uv pip install -e '.[dev]' --upgrade`。
+>
+> **改动 `pyproject.toml` 的依赖后必须运行 `uv lock` 并提交 `uv.lock`**，
+> 否则 CI 的 `uv lock --check` 会失败。
 
 ## 代码规范
 

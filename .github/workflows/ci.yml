@@ -163,8 +163,13 @@ jobs:
           set -e
           exit "$status"
 
-      - name: Install backend dependencies
-        run: python -m pip install -e '.[dev]'
+      - name: Install backend dependencies (from uv.lock)
+        run: |
+          python -m pip install uv
+          uv lock --check
+          uv export --frozen --extra dev --no-emit-project --no-hashes -o requirements.ci.txt
+          python -m pip install -r requirements.ci.txt
+          python -m pip install --no-deps -e .
 
       - name: Run backend lint
         run: ruff check src tests
@@ -351,8 +356,13 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install backend dependencies
-        run: python -m pip install -e '.[dev]'
+      - name: Install backend dependencies (from uv.lock)
+        run: |
+          python -m pip install uv
+          uv lock --check
+          uv export --frozen --extra dev --no-emit-project --no-hashes -o requirements.ci.txt
+          python -m pip install -r requirements.ci.txt
+          python -m pip install --no-deps -e .
 
       - name: Export OpenAPI contract
         run: python scripts/export_openapi.py
@@ -441,8 +451,13 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install backend dependencies
-        run: python -m pip install -e '.[dev]'
+      - name: Install backend dependencies (from uv.lock)
+        run: |
+          python -m pip install uv
+          uv lock --check
+          uv export --frozen --extra dev --no-emit-project --no-hashes -o requirements.ci.txt
+          python -m pip install -r requirements.ci.txt
+          python -m pip install --no-deps -e .
 
       - name: Validate OpenAPI API test matrix
         run: |
@@ -1057,10 +1072,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
 
-      - name: Install backend dependencies
+      - name: Install backend dependencies (from uv.lock)
         run: |
+          python -m pip install uv
+          uv lock --check
+          uv export --frozen --no-emit-project --no-hashes -o requirements.ci.txt
           python -m venv .venv
-          .venv/bin/python -m pip install -e .
+          .venv/bin/python -m pip install -r requirements.ci.txt
+          .venv/bin/python -m pip install --no-deps -e .
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium

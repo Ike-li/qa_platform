@@ -30,6 +30,15 @@ python3 -m venv .venv
 .venv/bin/uvicorn qaplatform.main:create_app --factory --reload
 ```
 
+> **依赖版本与 CI 保持一致**
+>
+> CI 从 `uv.lock` 安装精确版本（`uv export --frozen` + `pip install -r`），
+> 上面的 `pip install -e ".[dev]"` 装的是当前可得的最新版，两者可能不同。
+> 需要完全对齐时用 `uv sync --frozen`，或先 `uv pip install -e '.[dev]' --upgrade`。
+>
+> **改动 `pyproject.toml` 的依赖后必须运行 `uv lock` 并提交 `uv.lock`**，
+> 否则 CI 的 `uv lock --check` 会失败。
+
 ## 常用命令
 
 以下 Makefile 目标默认在已激活虚拟环境，或 `PATH` 已包含 `.venv/bin` 时运行。

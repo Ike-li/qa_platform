@@ -76,6 +76,15 @@ python3 -m venv .venv
 ADMIN_PASSWORD='<your-strong-password>' .venv/bin/python scripts/seed_admin.py
 ```
 
+> **依赖版本与 CI 保持一致**
+>
+> CI 从 `uv.lock` 安装精确版本（`uv export --frozen` + `pip install -r`），
+> 上面的 `pip install -e ".[dev]"` 装的是当前可得的最新版，两者可能不同。
+> 需要完全对齐时用 `uv sync --frozen`，或先 `uv pip install -e '.[dev]' --upgrade`。
+>
+> **改动 `pyproject.toml` 的依赖后必须运行 `uv lock` 并提交 `uv.lock`**，
+> 否则 CI 的 `uv lock --check` 会失败。
+
 > 登录账号为 `admin`，密码即上面设置的 `ADMIN_PASSWORD`。
 
 ### 4. 启动后端

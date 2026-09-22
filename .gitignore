@@ -50,3 +50,6 @@ smoke-results/
 
 # T14 dogfooding 导入状态（本地）
 .qap-import-state.json
+
+# CI 从 uv.lock 导出的依赖清单，构建产物不入库
+requirements.ci.txt
