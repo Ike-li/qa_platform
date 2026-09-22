@@ -14,6 +14,7 @@ from qaplatform.worker.settings import (
     after_job_end,
     check_schedules,
     cleanup_old_audit_events,
+    cleanup_expired_quarantine,
     cleanup_old_runs,
     dequeue_waiting,
     on_shutdown,
@@ -317,6 +318,41 @@ async def test_cleanup_old_runs_deletes_terminal_runs_and_commits():
     log.info.assert_called_once_with(
         "retention_cleanup_done deleted=%s cutoff=%s",
         3,
+        cutoff.isoformat(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_quarantine_exits_without_session():
+    await cleanup_expired_quarantine({"db_session_factory": None})
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_quarantine_deletes_with_seven_day_grace():
+    """过期后先留 7 天再物理删除，好让人看见「这条失效了」并决定是否续期。"""
+    ctx, session = _ctx_with_session()
+    repo = AsyncMock()
+    repo.delete_expired.return_value = 2
+    before_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+
+    with (
+        patch(
+            "qaplatform.infra.database.repositories.quarantine_repo.QuarantineRepository",
+            return_value=repo,
+        ),
+        patch("qaplatform.worker.settings.log") as log,
+    ):
+        await cleanup_expired_quarantine(ctx)
+
+    after_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    repo.delete_expired.assert_awaited_once_with(cutoff=ANY)
+    cutoff = repo.delete_expired.await_args.kwargs["cutoff"]
+    assert before_cutoff <= cutoff <= after_cutoff
+    assert cutoff.tzinfo is not None
+    session.commit.assert_awaited_once_with()
+    log.info.assert_called_once_with(
+        "quarantine_expiry_cleanup_done deleted=%s cutoff=%s",
+        2,
         cutoff.isoformat(),
     )
 

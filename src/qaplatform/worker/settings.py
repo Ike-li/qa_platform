@@ -192,6 +192,35 @@ async def dequeue_waiting(ctx: dict) -> None:
         await session.commit()
 
 
+async def cleanup_expired_quarantine(ctx: dict) -> None:
+    """Periodic task: 清扫早已过期的 test quarantine 行。
+
+    保留 7 天宽限期：过期后隔离立刻失效（由 list_keys 在查询层判定），但行
+    先留着，好让人在列表里看到它失效了、决定要不要续期。逐行写审计事件没有
+    意义——删除规则是确定的，日志行足够追溯。
+    """
+    from datetime import timedelta
+
+    from qaplatform.infra.database.repositories.quarantine_repo import (
+        QuarantineRepository,
+    )
+
+    session_factory = ctx.get("db_session_factory")
+    if session_factory is None:
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    async with session_factory() as session:
+        deleted = await QuarantineRepository(session).delete_expired(cutoff=cutoff)
+        await session.commit()
+    if deleted:
+        log.info(
+            "quarantine_expiry_cleanup_done deleted=%s cutoff=%s",
+            deleted,
+            cutoff.isoformat(),
+        )
+
+
 async def cleanup_old_runs(ctx: dict) -> None:
     """Periodic task: delete terminal runs older than retention_runs_days."""
     from datetime import timedelta
@@ -330,5 +359,8 @@ class WorkerSettings:
         cron(
             cleanup_old_audit_events, minute={5}, second={0}
         ),  # hourly audit retention sweep
+        cron(
+            cleanup_expired_quarantine, minute={10}, second={0}
+        ),  # hourly expired-quarantine sweep
     ]
     redis_settings = _get_redis_settings()

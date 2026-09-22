@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -274,3 +275,67 @@ async def test_quarantine_repeat_add_updates_reason_and_returns_200(
     rows = (await integration_db_session.execute(stmt)).scalars().all()
     assert len(rows) == 1
     assert rows[0].reason == "second reason"
+
+
+@pytest.mark.asyncio
+async def test_expired_quarantine_stops_excluding_but_stays_visible(
+    integration_client, integration_db_session, seed_run
+):
+    """过了 expires_at 的隔离必须立刻失效，但仍要在列表里看得见。
+
+    expires_at 此前是死字段：list_keys 不过滤它，也没有清理任务，过期的隔离
+    会一直压制 release 判断里的失败——这恰好是 quarantine 最不该造成的后果
+    （悄悄发布一个真实回归）。
+
+    失效放在查询层而不是靠清理 cron：三个消费方（triage 标记、release-summary、
+    通知的 new_failed 排除）问的都是「此刻是否被隔离」，这个答案不能取决于某个
+    定时任务是否恰好跑过。
+
+    而列表接口相反——运维需要看见「这条隔离已经失效了」才能决定要不要续期，
+    所以过期行不隐藏，只标记。
+    """
+    project = seed_run["project"]
+    now = datetime.now(timezone.utc)
+
+    expired = {
+        "suite": "tests.suite_expiry",
+        "name": "test_already_expired",
+        "reason": "短期隔离，已到期",
+        "expires_at": (now - timedelta(hours=1)).isoformat(),
+    }
+    live = {
+        "suite": "tests.suite_expiry",
+        "name": "test_still_quarantined",
+        "reason": "长期隔离",
+        "expires_at": (now + timedelta(days=7)).isoformat(),
+    }
+    forever = {
+        "suite": "tests.suite_expiry",
+        "name": "test_no_expiry",
+        "reason": "无到期时间",
+    }
+    for payload in (expired, live, forever):
+        resp = await integration_client.post(
+            f"/api/v1/projects/{project.id}/quarantine", json=payload, headers=_HEADERS
+        )
+        assert resp.status_code == 201, resp.text
+
+    # 生效判定：过期的那条不算数
+    from qaplatform.infra.database.repositories.quarantine_repo import (
+        QuarantineRepository,
+    )
+
+    keys = await QuarantineRepository(integration_db_session).list_keys(project.id)
+    assert ("tests.suite_expiry", "test_still_quarantined") in keys
+    assert ("tests.suite_expiry", "test_no_expiry") in keys
+    assert ("tests.suite_expiry", "test_already_expired") not in keys
+
+    # 列表：三条都在，过期的被标出来
+    list_resp = await integration_client.get(
+        f"/api/v1/projects/{project.id}/quarantine", headers=_HEADERS
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    by_name = {row["name"]: row for row in list_resp.json()["data"]}
+    assert by_name["test_already_expired"]["expired"] is True
+    assert by_name["test_still_quarantined"]["expired"] is False
+    assert by_name["test_no_expiry"]["expired"] is False
