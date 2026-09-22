@@ -49,10 +49,10 @@
   - 添加 CHANGELOG.md 链接
 - [x] 调研文档管理最佳实践 (2026-06-09)
   - 分析 10+ 个业界工具
-  - 创建调研报告 docs/archive/DOC_MANAGEMENT_RESEARCH.md
+  - 创建调研报告（已随自评类文档清理）
 - [x] 设计 Doc Health Skill (2026-06-09)
   - 完成技术架构设计
-  - 创建设计文档 docs/archive/DOC_HEALTH_SKILL_DESIGN.md
+  - 创建设计文档（已随自评类文档清理）
 
 ### CI 修复
 
@@ -155,7 +155,7 @@
   - 实现新鲜度检查
   - 实现日期标记自动修复
   - **估时**: 1 周
-  - **设计文档**: docs/archive/DOC_HEALTH_SKILL_DESIGN.md
+  - **设计文档**: 已随自评类文档清理，需要时重新设计
 
 - [ ] 添加 markdownlint 配置
   - 统一 Markdown 格式规范
@@ -309,7 +309,7 @@
 
 ---
 
-**最后更新**: 2026-06-09  
+**最后更新**: 2026-09-22  
 **维护者**: @raylee
 
 ### 前端测试覆盖 ⭐ 新完成

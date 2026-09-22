@@ -51,13 +51,16 @@ echo ""
 echo "2️⃣  检查关键文档更新日期标记..."
 echo "----------------------------------------"
 
+# 只检查是否带了形如 YYYY-MM-DD 的更新日期，不写死具体日期。
+# 原先这里硬编码的是 2026-06-09，意味着任何一次文档更新都会让检查报警，
+# 校验本身反而先失效了。
 check_date_marker() {
   local file=$1
   if [ -f "$file" ]; then
-    if grep -q "最后更新.*2026-06-09" "$file" 2>/dev/null; then
-      echo -e "${GREEN}✅ $file - 日期标记正确${NC}"
+    if grep -qE "最后更新.*[0-9]{4}-[0-9]{2}-[0-9]{2}" "$file" 2>/dev/null; then
+      echo -e "${GREEN}✅ $file - 带有更新日期标记${NC}"
     else
-      echo -e "${YELLOW}⚠️  $file - 缺少或过期的日期标记${NC}"
+      echo -e "${YELLOW}⚠️  $file - 缺少更新日期标记${NC}"
       warnings=$((warnings + 1))
     fi
   else
@@ -66,8 +69,6 @@ check_date_marker() {
   fi
 }
 
-check_date_marker "DASHBOARD.md"
-check_date_marker "STATUS.md"
 check_date_marker "docs/BACKLOG.md"
 
 echo ""
@@ -199,8 +200,6 @@ echo "----------------------------------------"
 
 critical_docs=(
   "README.md"
-  "DASHBOARD.md"
-  "STATUS.md"
   "docs/BACKLOG.md"
   "docs/TODO.md"
   "docs/architecture.md"

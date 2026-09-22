@@ -140,8 +140,6 @@ feat: add report sharing feature
 - Generate time-limited share tokens
 - Support access count limits
 - Add public report access endpoint
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ```
 
 ```bash
@@ -295,7 +293,6 @@ npm run test:coverage
 - `docs/architecture.md` - 架构文档
 - `docs/BACKLOG.md` - 技术改进待办
 - `docs/TODO.md` - 功能开发任务
-- `DASHBOARD.md` - 项目状态
 - `CHANGELOG.md` - 版本历史
 
 ### 文档规范
@@ -350,8 +347,8 @@ npm test -- --run tests/unit/utils.test.ts
 
 ## 获取帮助
 
-- 查看 [README.md](../README.md) 了解项目概述
-- 查看 [docs/architecture.md](architecture.md) 了解架构
+- 查看 [README.md](README.md) 了解项目概述
+- 查看 [docs/architecture.md](docs/architecture.md) 了解架构
 - 提交 Issue 报告 bug 或请求功能
 - 加入讨论区参与讨论
 

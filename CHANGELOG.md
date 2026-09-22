@@ -9,9 +9,40 @@ and this project follows calendar versioning (CalVer).
 
 ## [Unreleased]
 
-### 进行中
-- 报告分享功能待 CI 验证通过后发布
-- 前端单元测试框架规划中
+### Fixed
+- **恢复 GitHub Actions 并修到全绿**：`.github` 于 2026-07-05 被整体删除，此后远程无 CI。
+  从历史恢复后逐个修掉暴露出来的失败——ruff 规则集未显式声明导致本地与 CI 结论不同、
+  FastAPI 0.141 起 `include_router` 不再展开子路由使 README 路由契约失效、六处集成测试
+  期望未跟上 T15/T17 的 schema 演进、e2e 断言未跟上前端双行渲染。
+- **五个端点 100% 崩溃**：`Action` 枚举成员不存在、`get_run_for_action` 位置参数调用、
+  `user.id` 不存在、`write_audit` 签名不符、`RunResponse` 当 dict 下标访问。影响
+  retry-failed 与报告分享的全部管理端点。
+- **「一键重跑失败」实际重跑全部用例**：nodeid 与 `test_path` 同时传给 pytest，
+  末尾的目录参数让过滤形同虚设。
+- **通知条件 `new_failed` / `recovered` 无法配置**：领域层与 worker 早已实现，
+  API 层 Literal 未跟上，创建返回 422、读取返回 500，T15 的降噪能力对外不可用。
+- **项目 settings 明文回显 `webhook_secret`**；同时修掉脱敏后「读取—改一处—回写」
+  会静默清空密钥的问题。
+- **webhook 挑中被禁用的占位 pipeline**：选择逻辑不看 `enabled`，而外部结果导入会
+  创建 `enabled=False` 的占位 pipeline 并成为最新的那个。
+- **quarantine 重复隔离返回 201 且返回更新前的数据**：identity map 缓存使 RETURNING
+  结果被替换成旧实例，接口与审计都拿到旧的 reason。
+- **schedule 跨 worker 重复触发**：`FOR UPDATE SKIP LOCKED` 的锁被循环内的 commit
+  提前释放，而三个 worker 容器都在跑同一个 cron。改为条件 UPDATE 抢槽。
+
+### Added
+- **`missed_fire_policy` 三态语义**：`skip` / `run_once` / `run_all`，带 90 秒宽限窗口
+  与三道补跑上限。此前该字段落库但从不被读取。
+- **quarantine `expires_at` 生效**：过期判定放在查询层，附每小时清理任务（7 天宽限）。
+
+### Changed
+- **行为变更**：`missed_fire_policy` 默认值 `skip` 现在真的一个都不补跑。此前不论停机
+  多久、配的是哪种策略，恢复后都只补跑一次。丢弃会写 `schedule_skipped_missed_fire` 审计。
+- 显式固定 ruff 规则集（`E4/E7/E9/F/I`），消除本地与 CI 因版本差异得出不同结论。
+- 升级依赖：Python 侧修复 1 个 critical（anyio）与 2 个 high；前端 17 个漏洞降到 4 个
+  moderate，high/critical 清零。
+- 移除 `DASHBOARD.md`、`STATUS.md` 与 14 份 AI 自评快照。健康度评分与「可以上线」这类
+  结论必然腐败——2026-09 实测时它们标着「上线就绪」而五个端点全崩。
 
 ---
 
@@ -63,10 +94,11 @@ and this project follows calendar versioning (CalVer).
   - Commit: 5e2006b
 
 ### Changed
-- **上线质量审查**: 完成 10/10 验证项，确认上线就绪
-  - 测试覆盖率 100%
+- **上线质量审查**: 安全问题修复与 P1-2 漏洞验证
   - 所有安全问题已修复
   - P1-2 漏洞已验证修复
+  - （原文此处记有「10/10 验证项」与「测试覆盖率 100%」，两项均无数据支撑，
+    2026-09-22 核实后移除）
 
 ---
 
@@ -139,5 +171,4 @@ and this project follows calendar versioning (CalVer).
 
 ---
 
-**维护者**: @raylee  
-**最后更新**: 2026-06-09
+**维护者**: @raylee

@@ -2,8 +2,7 @@
 
 QA 自动化执行平台 —— 管理项目、配置流水线、执行测试、收集结果，一站式完成。
 
-> 📊 **项目状态**: 🟢 健康度 4.3/5.0 | ✅ 可上线  
-> 📈 [一页纸状态](DASHBOARD.md) · [完整状态](STATUS.md) · [技术改进](docs/BACKLOG.md) · [功能开发](docs/TODO.md)
+> 📖 [架构](docs/architecture.md) · [功能清单](docs/feature-catalog.md) · [开发指南](docs/development.md) · [技术改进](docs/BACKLOG.md)
 
 ## 架构概览
 
@@ -177,7 +176,7 @@ qa_platform/
 文档总目录见 [docs/README.md](docs/README.md)。维护时按用途分流：
 
 - 当前实现与边界：`architecture.md`、`feature-catalog.md`、`product.md`、`TODO.md`、`development.md`、`runbook.md`、`testing-strategy.md`
-- 任务包与历史归档：`docs/tasks/`、`docs/archive/`（归档含 backend-test-audit、release-quality-review-slices、doc-conflict-audit、fix-roadmap）
+- 任务包与历史归档：`docs/tasks/`、`docs/archive/`
 
 ## 常用命令
 

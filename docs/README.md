@@ -42,7 +42,7 @@ These files are retained as historical evidence. Do not use them as live impleme
 | [archive/fix-roadmap.md](archive/fix-roadmap.md) | Historical review consolidation and decisions. Do not use as active backlog without checking `TODO.md`. |
 | [archive/FRONTEND_PROMPT.md](archive/FRONTEND_PROMPT.md) | Initial frontend implementation brief; superseded by `../frontend/README.md` and `../DESIGN.md`. |
 
-> 2026-06 新归档：第一性原理分析（opus-4.8 / fable-5）、PRD 重审、文档治理与 CI 一次性快照等 13 份，完整清单见 [archive/README.md](archive/README.md)。
+> 归档清单见 [archive/README.md](archive/README.md)。
 
 ## Maintenance Rules
 
