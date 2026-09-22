@@ -2,6 +2,10 @@
 
 QA 自动化执行平台 —— 管理项目、配置流水线、执行测试、收集结果，一站式完成。
 
+[![CI](https://github.com/Ike-li/qa_platform/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ike-li/qa_platform/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](pyproject.toml)
+
 > 📖 [架构](docs/architecture.md) · [功能清单](docs/feature-catalog.md) · [开发指南](docs/development.md) · [技术改进](docs/BACKLOG.md)
 
 ## 架构概览

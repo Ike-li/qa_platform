@@ -1,0 +1,52 @@
+name: Bug report
+description: 报告一个缺陷
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。**请不要用这里报告安全漏洞** —— 走 Security 标签页的
+        「Report a vulnerability」，那条通道在修复前保持私密。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 实际发生了什么
+      description: 贴上完整的错误输出或截图。如果有 Run ID 或 request id 请一并给出。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你期望发生什么
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 能稳定复现的最小步骤。如果只偶发，说明出现频率。
+      placeholder: |
+        1. 创建一个 pipeline，配置 ...
+        2. 触发 run
+        3. 观察到 ...
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境
+      description: |
+        请贴上以下命令的输出：
+        ```
+        python -V && docker --version && git rev-parse --short HEAD
+        ```
+      render: shell
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 排查确认
+      options:
+        - label: 我已把本地依赖升到与 CI 一致（`uv pip install -e '.[dev]' --upgrade`）
+        - label: 我确认这不是安全漏洞（安全问题请走 Security 标签页）
