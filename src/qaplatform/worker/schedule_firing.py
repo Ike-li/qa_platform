@@ -10,6 +10,11 @@ from uuid import UUID
 
 log = logging.getLogger(__name__)
 
+# 单次 tick 内所有 schedule 合计最多创建多少 Run。find_due_schedules 一次取 50 条，
+# 每条最多补 10 个槽，最坏 500 个 Run 在一个滴答里涌出。预算耗尽时只停补跑并直接
+# 丢弃剩余的槽——留到下个 tick 只是把惊群推迟一分钟再制造一次。
+MAX_RUNS_PER_TICK = 50
+
 
 def _schedule_run_audit_state(
     run: Any, *, schedule_id: UUID, enqueued: bool
@@ -61,6 +66,7 @@ async def fire_due_schedules(ctx: dict) -> None:
     )
     from qaplatform.domain.services.scheduling import (
         compute_next_run_at,
+        plan_missed_fires,
         should_fire,
     )
     from qaplatform.infra.audit import write_audit
@@ -94,6 +100,7 @@ async def fire_due_schedules(ctx: dict) -> None:
         if not due:
             return
 
+        created_this_tick = 0
         for schedule in due:
             if not should_fire(schedule, now):
                 continue
@@ -168,6 +175,61 @@ async def fire_due_schedules(ctx: dict) -> None:
                     await session.commit()
                     continue
 
+                scheduled_at = schedule.next_run_at
+                plan = plan_missed_fires(
+                    cron_expr=schedule.cron_expr,
+                    timezone_name=schedule.timezone,
+                    scheduled_at=scheduled_at,
+                    now=now,
+                    policy=schedule.missed_fire_policy or "run_once",
+                )
+
+                # 先抢槽再建 Run：条件 UPDATE 只有在 next_run_at 仍是我们读到的
+                # 那个值时才成功。抢输说明另一个 worker 已经处理了这一槽。
+                # 顺序反过来（先建 Run 后推进）会在 enqueue 崩溃时重复触发；
+                # 对回归调度器来说，丢一个周期是比重复一个周期更好的失败模式。
+                claimed = await schedule_repo.update_after_fire(
+                    schedule.id,
+                    last_run_at=now,
+                    next_run_at=plan.next_run_at,
+                    last_error=None,
+                    expected_next_run_at=scheduled_at,
+                )
+                await session.commit()
+                if not claimed:
+                    continue
+
+                if not plan.fire_at:
+                    audit_repos = SimpleNamespace(audit=audit_repo)
+                    audit_user = SimpleNamespace(
+                        tenant_id=project.tenant_id, user_id=None
+                    )
+                    await write_audit(
+                        audit_repos,
+                        audit_user,
+                        action="schedule_skipped_missed_fire",
+                        resource_type="schedule",
+                        resource_id=schedule.id,
+                        after={
+                            "schedule_id": str(schedule.id),
+                            "reason": plan.reason,
+                            "missed_count": plan.missed_count,
+                            "dropped_count": plan.dropped_count,
+                            "scheduled_at": scheduled_at.isoformat(),
+                            "next_run_at": plan.next_run_at.isoformat(),
+                        },
+                    )
+                    await session.commit()
+                    log.info(
+                        "schedule_missed_fires_skipped",
+                        extra={
+                            "schedule_id": str(schedule.id),
+                            "missed_count": plan.missed_count,
+                            "policy": schedule.missed_fire_policy,
+                        },
+                    )
+                    continue
+
                 environment_id = project.default_env_id
                 if environment_id is None:
                     envs, _ = await env_repo.list_by_project(
@@ -188,52 +250,75 @@ async def fire_due_schedules(ctx: dict) -> None:
                 if project.default_branch:
                     metadata["default_branch"] = project.default_branch
 
-                run = await run_repo.create(
-                    tenant_id=project.tenant_id,
-                    project_id=schedule.project_id,
-                    pipeline_id=schedule.pipeline_id,
-                    environment_id=environment_id,
-                    git_ref=git_ref,
-                    trigger_type="schedule",
-                    metadata_=metadata,
-                )
-                await run_repo.set_retry_group_id(run.id, run.id)
-                await session.commit()
+                for index, slot in enumerate(plan.fire_at):
+                    if created_this_tick >= MAX_RUNS_PER_TICK:
+                        log.warning(
+                            "schedule_catchup_budget_exhausted",
+                            extra={
+                                "schedule_id": str(schedule.id),
+                                "remaining": len(plan.fire_at) - index,
+                            },
+                        )
+                        break
 
-                enqueued = await enqueue_run(arq, run_repo, run, "schedule", settings)
-                audit_repos = SimpleNamespace(audit=audit_repo)
-                audit_user = SimpleNamespace(tenant_id=project.tenant_id, user_id=None)
-                await write_audit(
-                    audit_repos,
-                    audit_user,
-                    action="run.trigger",
-                    resource_type="run",
-                    resource_id=run.id,
-                    after=_schedule_run_audit_state(
-                        run,
-                        schedule_id=schedule.id,
-                        enqueued=enqueued,
-                    ),
-                )
-                next_run = compute_next_run_at(
-                    schedule.cron_expr, schedule.timezone, now
-                )
-                await schedule_repo.update_after_fire(
-                    schedule.id,
-                    last_run_at=now,
-                    next_run_at=next_run,
-                    last_error=None if enqueued else "enqueue failed",
-                )
-                await session.commit()
+                    slot_metadata = dict(metadata)
+                    slot_metadata["scheduled_for"] = slot.isoformat()
+                    if plan.reason != "on_time":
+                        # 让「为什么突然冒出三个 Run」在 Run 详情页能看懂。
+                        # 宽限窗口内的正常抖动不算补跑，不打这个标。
+                        slot_metadata["missed_fire"] = True
 
-                log.info(
-                    "schedule_fired",
-                    extra={
-                        "schedule_id": str(schedule.id),
-                        "run_id": str(run.id),
-                        "enqueued": enqueued,
-                    },
-                )
+                    run = await run_repo.create(
+                        tenant_id=project.tenant_id,
+                        project_id=schedule.project_id,
+                        pipeline_id=schedule.pipeline_id,
+                        environment_id=environment_id,
+                        git_ref=git_ref,
+                        trigger_type="schedule",
+                        metadata_=slot_metadata,
+                    )
+                    await run_repo.set_retry_group_id(run.id, run.id)
+                    await session.commit()
+                    created_this_tick += 1
+
+                    enqueued = await enqueue_run(
+                        arq, run_repo, run, "schedule", settings
+                    )
+                    audit_repos = SimpleNamespace(audit=audit_repo)
+                    audit_user = SimpleNamespace(
+                        tenant_id=project.tenant_id, user_id=None
+                    )
+                    await write_audit(
+                        audit_repos,
+                        audit_user,
+                        action="run.trigger",
+                        resource_type="run",
+                        resource_id=run.id,
+                        after=_schedule_run_audit_state(
+                            run,
+                            schedule_id=schedule.id,
+                            enqueued=enqueued,
+                        ),
+                    )
+                    if not enqueued:
+                        await schedule_repo.update_after_fire(
+                            schedule.id,
+                            last_run_at=now,
+                            next_run_at=plan.next_run_at,
+                            last_error="enqueue failed",
+                        )
+                    await session.commit()
+
+                    log.info(
+                        "schedule_fired",
+                        extra={
+                            "schedule_id": str(schedule.id),
+                            "run_id": str(run.id),
+                            "enqueued": enqueued,
+                            "scheduled_for": slot.isoformat(),
+                            "missed_count": plan.missed_count,
+                        },
+                    )
             except Exception:
                 log.exception(
                     "schedule_fire_failed", extra={"schedule_id": str(schedule.id)}

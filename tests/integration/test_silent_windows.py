@@ -40,15 +40,22 @@ async def _save_silent_window(
     await session.refresh(project)
 
 
-async def _create_due_schedule(session, seed_run, *, next_run_at: datetime):
+async def _create_due_schedule(
+    session,
+    seed_run,
+    *,
+    next_run_at: datetime,
+    cron_expr: str = "* * * * *",
+    missed_fire_policy: str = "skip",
+):
     from qaplatform.infra.database.models import Schedule
 
     schedule = Schedule(
         project_id=seed_run["project"].id,
         pipeline_id=seed_run["pipeline"].id,
-        cron_expr="* * * * *",
+        cron_expr=cron_expr,
         timezone="UTC",
-        missed_fire_policy="skip",
+        missed_fire_policy=missed_fire_policy,
         quiet_windows=[],
         enabled=True,
         next_run_at=next_run_at,
@@ -142,11 +149,19 @@ async def _schedule_runs(session, project_id, schedule_id):
     ]
 
 
-def _expected_schedule_metadata(project, schedule) -> dict:
+def _expected_schedule_metadata(project, schedule, *, scheduled_for=None) -> dict:
+    """构造 schedule 触发出的 Run 应有的 metadata。
+
+    ``scheduled_for`` 记录这个 Run 对应哪个 cron 槽——补跑多个槽时，它是区分
+    各个 Run 的唯一线索。调用方通常不预先知道具体值（取决于宽限窗口内实际
+    落在哪一格），传 ANY 之外的值时才做精确比较。
+    """
     metadata = {
         "schedule_id": str(schedule.id),
         "git_url": project.git_url,
     }
+    if scheduled_for is not None:
+        metadata["scheduled_for"] = scheduled_for
     if project.git_auth_method != "none" and project.credential_id:
         metadata["git_auth_method"] = project.git_auth_method
         metadata["credential_id"] = str(project.credential_id)
@@ -385,9 +400,17 @@ async def test_cron_tick_outside_silent_window_creates_run(
     await integration_db_session.refresh(refreshed)
     assert refreshed.last_run_at is not None
 
-    expected_metadata = _expected_schedule_metadata(project, schedule)
     runs = await _schedule_runs(integration_db_session, project.id, schedule.id)
-    assert [run.metadata_ for run in runs] == [expected_metadata]
+    assert len(runs) == 1
+    # scheduled_for 取决于宽限窗口内实际落在哪个 cron 槽，只断言存在且可解析
+    actual_metadata = dict(runs[0].metadata_)
+    scheduled_for = actual_metadata.pop("scheduled_for", None)
+    assert scheduled_for is not None
+    assert datetime.fromisoformat(scheduled_for).tzinfo is not None
+    assert "missed_fire" not in actual_metadata  # 宽限内的抖动不算补跑
+    assert actual_metadata == _expected_schedule_metadata(project, schedule)
+    # 审计记录的是 Run 的完整 metadata，含 scheduled_for
+    expected_metadata = dict(runs[0].metadata_)
     run = runs[0]
     assert run.tenant_id == project.tenant_id
     assert run.project_id == project.id
@@ -469,9 +492,14 @@ async def test_cron_tick_enqueue_conflict_records_last_error_and_waiting_run(
     assert refreshed.last_run_at is not None
     assert refreshed.last_error == "enqueue failed"
 
-    expected_metadata = _expected_schedule_metadata(project, schedule)
     created = await _schedule_runs(integration_db_session, project.id, schedule.id)
-    assert [run.metadata_ for run in created] == [expected_metadata]
+    assert len(created) == 1
+    actual_metadata = dict(created[0].metadata_)
+    scheduled_for = actual_metadata.pop("scheduled_for", None)
+    assert scheduled_for is not None
+    assert "missed_fire" not in actual_metadata
+    assert actual_metadata == _expected_schedule_metadata(project, schedule)
+    expected_metadata = dict(created[0].metadata_)
     waiting_run = created[0]
     assert waiting_run.tenant_id == project.tenant_id
     assert waiting_run.project_id == project.id
@@ -718,3 +746,57 @@ async def test_webhook_trigger_ignores_silent_windows(
     assert audit.resource_type == "run"
     assert audit.before_state is None
     assert audit.after_state == body
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected_runs"),
+    # 落后三小时的整点 cron：到期槽本身 + 之后每小时一个，共四个
+    [("skip", 0), ("run_once", 1), ("run_all", 4)],
+)
+@pytest.mark.asyncio
+async def test_missed_fire_policy_decides_how_many_catchup_runs(
+    seed_run,
+    integration_db_engine,
+    integration_db_session,
+    policy,
+    expected_runs,
+):
+    """停机三小时后恢复，三种策略给出三种不同的补跑数量。
+
+    missed_fire_policy 此前落库却从不被读取：不论停机多久、配的是哪种策略，
+    恢复后都只补跑一次。这是本次唯一会改变存量 schedule 行为的改动——默认值
+    是 skip，而 skip 现在真的一个都不补。
+    """
+    from qaplatform.infra.database.models import Schedule
+    from qaplatform.worker.settings import check_schedules
+
+    now = datetime.now(timezone.utc)
+    # 整点 cron + 落后三小时：错过 12:00 / 13:00 / 14:00 三个槽
+    schedule = await _create_due_schedule(
+        integration_db_session,
+        seed_run,
+        cron_expr="0 * * * *",
+        missed_fire_policy=policy,
+        next_run_at=(now - timedelta(hours=3)).replace(minute=0, second=0, microsecond=0),
+    )
+
+    await check_schedules(_ctx(integration_db_engine))
+
+    runs = await _schedule_runs(
+        integration_db_session, seed_run["project"].id, schedule.id
+    )
+    assert len(runs) == expected_runs
+
+    # 无论补跑几个，next_run_at 都必须越过 now：只前进一格会让 schedule 一直
+    # 处于 due 状态，下个 tick 又捞到它，长停机下变成活锁
+    refreshed = await integration_db_session.get(Schedule, schedule.id)
+    await integration_db_session.refresh(refreshed)
+    assert refreshed.next_run_at > now
+
+    # 补跑出来的 Run 都要能看出是哪一次错过的
+    for run in runs:
+        assert run.metadata_["missed_fire"] is True
+        assert run.metadata_["scheduled_for"]
+    if expected_runs > 1:
+        slots = sorted(run.metadata_["scheduled_for"] for run in runs)
+        assert len(set(slots)) == expected_runs

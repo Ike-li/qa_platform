@@ -35,6 +35,7 @@ def sample_schedule():
         timezone="Asia/Shanghai",
         enabled=True,
         quiet_windows=[],
+        missed_fire_policy="run_once",
         next_run_at=datetime.now(timezone.utc),
         last_run_at=None,
         last_error=None,
@@ -83,7 +84,7 @@ class TestCheckSchedules:
         """A due schedule should create a run and enqueue it."""
         schedule_repo = AsyncMock()
         schedule_repo.find_due_schedules = AsyncMock(return_value=[sample_schedule])
-        schedule_repo.update_after_fire = AsyncMock()
+        schedule_repo.update_after_fire = AsyncMock(return_value=True)
 
         pipeline = MagicMock()
         pipeline.project = MagicMock()
@@ -135,6 +136,9 @@ class TestCheckSchedules:
 
         async def _update_after_fire(*args, **kwargs):
             operations.append(("update_after_fire", args, kwargs))
+            # 返回值表示是否抢到该触发槽；返回 None 等同于抢输，会让后续
+            # 的 Run 创建被跳过
+            return True
 
         async def _audit_create(**kwargs):
             operations.append(("audit_create", kwargs))
@@ -186,6 +190,8 @@ class TestCheckSchedules:
                 "git_url": "https://github.com/org/repo.git",
                 "shallow_clone": True,
                 "default_branch": "main",
+                # 记录这个 Run 对应哪个 cron 槽，补跑时才能看出是哪一次错过的
+                "scheduled_for": sample_schedule.next_run_at.isoformat(),
             },
         )
         run_kwargs = run_repo.create.await_args.kwargs
@@ -219,13 +225,17 @@ class TestCheckSchedules:
         assert audit_kwargs["after_state"]["trigger_type"] == "schedule"
         assert audit_kwargs["after_state"]["schedule_id"] == str(sample_schedule.id)
         assert audit_kwargs["after_state"]["enqueued"] is True
+        # 抢槽在建 Run 之前：条件 UPDATE 先把 next_run_at 推走，抢到了才创建。
+        # 反过来（先建 Run 后推进）会在 enqueue 崩溃时重复触发——对回归调度器
+        # 来说，丢一个周期是比重复一个周期更好的失败模式。
         assert [operation[0] for operation in operations] == [
+            "update_after_fire",
+            "commit",
             "create_run",
             "set_retry_group",
             "commit",
             "enqueue",
             "audit_create",
-            "update_after_fire",
             "commit",
         ]
 
@@ -238,7 +248,7 @@ class TestCheckSchedules:
         """Project default environment takes precedence over fallback lookup."""
         schedule_repo = AsyncMock()
         schedule_repo.find_due_schedules = AsyncMock(return_value=[sample_schedule])
-        schedule_repo.update_after_fire = AsyncMock()
+        schedule_repo.update_after_fire = AsyncMock(return_value=True)
 
         pipeline = MagicMock()
         pipeline.project = MagicMock()
@@ -337,7 +347,7 @@ class TestCheckSchedules:
         """When pipeline is missing, update schedule with error and continue."""
         schedule_repo = AsyncMock()
         schedule_repo.find_due_schedules = AsyncMock(return_value=[sample_schedule])
-        schedule_repo.update_after_fire = AsyncMock()
+        schedule_repo.update_after_fire = AsyncMock(return_value=True)
 
         pipeline_repo = AsyncMock()
         pipeline_repo.get_by_id = AsyncMock(return_value=None)
@@ -419,7 +429,7 @@ class TestCheckSchedules:
         """When project is missing, persist the schedule error and do not enqueue."""
         schedule_repo = AsyncMock()
         schedule_repo.find_due_schedules = AsyncMock(return_value=[sample_schedule])
-        schedule_repo.update_after_fire = AsyncMock()
+        schedule_repo.update_after_fire = AsyncMock(return_value=True)
 
         pipeline = MagicMock()
         pipeline_repo = AsyncMock()
@@ -470,7 +480,7 @@ class TestCheckSchedules:
         """Project silent windows should suppress schedule firing and leave an audit trail."""
         schedule_repo = AsyncMock()
         schedule_repo.find_due_schedules = AsyncMock(return_value=[sample_schedule])
-        schedule_repo.update_after_fire = AsyncMock()
+        schedule_repo.update_after_fire = AsyncMock(return_value=True)
 
         pipeline = MagicMock()
         pipeline.project = MagicMock()
@@ -544,7 +554,7 @@ class TestCheckSchedules:
         """When enqueue fails, record the error on the schedule."""
         schedule_repo = AsyncMock()
         schedule_repo.find_due_schedules = AsyncMock(return_value=[sample_schedule])
-        schedule_repo.update_after_fire = AsyncMock()
+        schedule_repo.update_after_fire = AsyncMock(return_value=True)
 
         pipeline = MagicMock()
         pipeline.project = MagicMock()
@@ -614,6 +624,7 @@ class TestCheckSchedules:
 
         async def update_after_fire(schedule_id, **kwargs):
             operations.append(("update_after_fire", schedule_id, kwargs["last_error"]))
+            return True
 
         ctx_session.commit.side_effect = commit_session
         schedule_repo.update_after_fire = AsyncMock(side_effect=update_after_fire)
@@ -649,6 +660,8 @@ class TestCheckSchedules:
                 "git_url": "https://github.com/org/repo.git",
                 "shallow_clone": True,
                 "default_branch": "main",
+                # 记录这个 Run 对应哪个 cron 槽，补跑时才能看出是哪一次错过的
+                "scheduled_for": sample_schedule.next_run_at.isoformat(),
             },
         )
         run_repo.set_retry_group_id.assert_awaited_once_with(run.id, run.id)
@@ -659,12 +672,17 @@ class TestCheckSchedules:
             "schedule",
             ctx["settings"],
         )
-        schedule_repo.update_after_fire.assert_awaited_once()
-        update_args = schedule_repo.update_after_fire.await_args
-        assert update_args.args == (sample_schedule.id,)
-        assert update_args.kwargs["last_run_at"].tzinfo is not None
-        assert update_args.kwargs["next_run_at"] == next_run_at
-        assert update_args.kwargs["last_error"] == "enqueue failed"
+        # 两次：第一次抢占触发槽（带 expected_next_run_at），enqueue 失败后
+        # 再写一次 last_error——抢槽时还不知道 enqueue 会不会成功
+        assert schedule_repo.update_after_fire.await_count == 2
+        claim_args, error_args = schedule_repo.update_after_fire.await_args_list
+        assert claim_args.args == (sample_schedule.id,)
+        assert claim_args.kwargs["expected_next_run_at"] == sample_schedule.next_run_at
+        assert claim_args.kwargs["last_error"] is None
+        assert error_args.args == (sample_schedule.id,)
+        assert error_args.kwargs["last_run_at"].tzinfo is not None
+        assert error_args.kwargs["next_run_at"] == next_run_at
+        assert error_args.kwargs["last_error"] == "enqueue failed"
         audit_repo.create.assert_awaited_once()
         audit_kwargs = audit_repo.create.await_args.kwargs
         assert audit_kwargs == {
@@ -694,6 +712,8 @@ class TestCheckSchedules:
         }
         ctx_session.commit.assert_has_awaits([call(), call()])
         assert operations == [
+            ("update_after_fire", sample_schedule.id, None),
+            ("commit", None, None),
             ("create", "schedule", str(sample_schedule.id)),
             ("set_retry_group", run.id, run.id),
             ("commit", None, None),

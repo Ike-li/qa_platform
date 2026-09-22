@@ -6,6 +6,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qaplatform.infra.database.models import Schedule
@@ -50,12 +51,34 @@ class ScheduleRepository(BaseRepository[Schedule]):
         last_run_at: datetime,
         next_run_at: datetime | None,
         last_error: str | None = None,
-    ) -> None:
-        """Update schedule timestamps after a fire event."""
-        schedule = await self.get_by_id(schedule_id)
-        if schedule is None:
-            return
-        schedule.last_run_at = last_run_at
-        schedule.next_run_at = next_run_at
-        schedule.last_error = last_error
+        expected_next_run_at: datetime | None = None,
+    ) -> bool:
+        """推进 schedule 的时间戳，返回是否写入成功。
+
+        传 ``expected_next_run_at`` 时变成条件 UPDATE，只有 next_run_at 仍等于
+        该值才写入——用它把「抢占这个触发槽」做成原子操作。
+
+        为什么需要：find_due_schedules 用了 FOR UPDATE SKIP LOCKED，但
+        fire_due_schedules 在循环体内部 commit，第一次 commit 就结束事务、
+        释放了这批里剩余所有行的锁。而 compose 里 worker / worker-high /
+        worker-low 三个服务加载同一份 WorkerSettings，都在跑
+        cron(check_schedules)，晚几百毫秒的那个会重新捞到并重复触发。
+
+        不传该参数时保持原来的无条件语义，供错误路径（pipeline 缺失、project
+        缺失、异常兜底）继续使用。
+        """
+        stmt = (
+            sa_update(Schedule)
+            .where(Schedule.id == schedule_id)
+            .values(
+                last_run_at=last_run_at,
+                next_run_at=next_run_at,
+                last_error=last_error,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if expected_next_run_at is not None:
+            stmt = stmt.where(Schedule.next_run_at == expected_next_run_at)
+        result = await self.session.execute(stmt)
         await self.session.flush()
+        return bool(result.rowcount)
