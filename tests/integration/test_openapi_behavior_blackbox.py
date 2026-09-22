@@ -2888,6 +2888,9 @@ async def test_resource_lifecycle_blackbox_crud_and_listing(
                     "flaky_adjusted_pass_rate": None,
                     "new_failing_tests": [],
                     "recovered_tests": [],
+                    "observation_count": 0,
+                    "window_days": 7,
+                    "quarantined_excluded": [],
                 }
             else:
                 assert analytics_body["data"] == []

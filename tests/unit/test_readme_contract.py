@@ -22,12 +22,16 @@ def test_readme_api_endpoint_table_matches_fastapi_routes():
     documented = re.findall(r"`(GET|POST|PUT|PATCH|DELETE) ([^`]+)`", api_section)
     assert documented, "README API endpoint table is empty"
 
-    app = create_app()
+    # 数据源取 OpenAPI 而非 app.routes：FastAPI 0.141 起 include_router 不再把
+    # 子路由展开进 app.routes，而是放一个 path 为 None 的 _IncludedRouter 包装
+    # 对象，遍历顶层拿不到任何业务路由。OpenAPI 既是对外 API 的权威契约，也不
+    # 依赖框架内部对象结构，不会再因升级而失效。
+    spec = create_app().openapi()
     actual_routes = {
-        (method, _normalize_route(route.path))
-        for route in app.routes
-        for method in getattr(route, "methods", set())
-        if method in {"GET", "POST", "PUT", "PATCH", "DELETE"}
+        (method.upper(), _normalize_route(path))
+        for path, operations in spec["paths"].items()
+        for method in operations
+        if method.upper() in {"GET", "POST", "PUT", "PATCH", "DELETE"}
     }
 
     missing = [

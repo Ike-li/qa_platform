@@ -1449,6 +1449,8 @@ class TestAnalytics:
                     "passed_count": 1,
                     "failed_count": 1,
                     "flaky_rate": 0.5,
+                    "observation_count": 2,
+                    "window_days": 30,
                 }
             ],
             "pagination": {"offset": 0, "limit": 50, "total": 1},
@@ -1628,6 +1630,8 @@ class TestAnalytics:
                     "passed_count": 1,
                     "failed_count": 1,
                     "flaky_rate": 0.5,
+                    "observation_count": 2,
+                    "window_days": 30,
                 }
             ],
             "pagination": {"offset": 0, "limit": 50, "total": 1},
@@ -1664,6 +1668,9 @@ class TestAnalytics:
                     "failed_count": 1,
                 }
             ],
+            "observation_count": 2,
+            "window_days": 30,
+            "quarantined_excluded": [],
         }
 
     async def test_get_test_history(
@@ -1805,6 +1812,7 @@ class TestAnalytics:
                     "duration_ms": 10,
                     "error_message": None,
                     "git_ref": "analytics-history-a",
+                    "observation_count": 2,
                 },
                 {
                     "run_id": str(failing_run.id),
@@ -1816,6 +1824,7 @@ class TestAnalytics:
                     "duration_ms": 12,
                     "error_message": "expected checkout to pass",
                     "git_ref": "analytics-history-b",
+                    "observation_count": 2,
                 },
             ],
             "pagination": {"offset": 0, "limit": 50, "total": 2},
