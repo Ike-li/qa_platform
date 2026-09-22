@@ -9,8 +9,8 @@ if [[ -z "$RUN_ID" ]]; then
 fi
 
 echo "=== Downloading logs for run $RUN_ID ==="
-gh run download "$RUN_ID" --name backend-integration-test-logs || true
-gh run download "$RUN_ID" --name e2e-test-logs || true
+gh run download "$RUN_ID" --name backend-integration-artifacts || true
+gh run download "$RUN_ID" --name e2e-artifacts || true
 gh run download "$RUN_ID" --name release-gate-evidence || true
 
 echo ""

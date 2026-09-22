@@ -20,15 +20,20 @@ PR/push 触发的 `pr_like` CI 档**只跑轻量集成测试和一个 E2E**（`a
 
 ## 前置条件
 
-- [ ] P1 修复已合并到 `main` 分支（commit `86b5bf8` 或更新）
+- [ ] 待发版的改动已合并到 `main`
+- [ ] 本地依赖已与 CI 对齐（CI 从 `uv.lock` 安装精确版本）：
+  ```bash
+  uv pip install -e '.[dev]' --upgrade
+  ```
 - [ ] 本地所有门禁已通过：
   ```bash
-  # 已在 P1 修复时验证通过
-  .venv/bin/python -m pytest tests/unit -q                    # 1526 passed
-  .venv/bin/ruff check src tests scripts                      # All checks passed
+  .venv/bin/python -m pytest tests/unit -q
+  .venv/bin/ruff check src tests scripts
   .venv/bin/python scripts/check_tenant_isolation.py --self-test
+  .venv/bin/python scripts/check_workflow_yaml.py
   .venv/bin/python scripts/export_openapi.py
   ```
+  不写死期望的用例数：这类数字每加一个测试就过期一次。
 - [ ] Git 工作区干净（无未提交改动）
 
 ---
@@ -37,7 +42,7 @@ PR/push 触发的 `pr_like` CI 档**只跑轻量集成测试和一个 E2E**（`a
 
 ### GitHub Actions 手动触发
 
-1. 访问：https://github.com/YOUR_ORG/qa_platform/actions/workflows/ci.yml
+1. 访问：https://github.com/Ike-li/qa_platform/actions/workflows/ci.yml
 2. 点击右上角 **"Run workflow"**
 3. 选择分支：`main`
 4. 选择 `gate` 参数：**`release_candidate`**
@@ -47,9 +52,10 @@ PR/push 触发的 `pr_like` CI 档**只跑轻量集成测试和一个 E2E**（`a
 
 - 总耗时：**~15-25 分钟**（取决于 Docker 镜像缓存、testcontainers 启动）
 - 关键阶段：
-  - `backend-integration-test` (heavy_docker + external_stack)：~10-15 分钟
-  - `e2e-test` (完整 Playwright)：~5-8 分钟
-  - `performance-slo`：~2-3 分钟
+  - `backend-integration-test`（heavy_docker + external_stack + performance）：~10-15 分钟
+  - `e2e-test`（完整 Playwright）：~5-8 分钟
+
+  性能 SLO 没有独立 job，它是 `backend-integration-test` 里 `-m "performance"` 的一档。
 
 ---
 
@@ -116,7 +122,7 @@ grep "ExitResult.*missing.*arguments" log  # 应无结果
 
 ## 步骤 3：evidence 汇总验证
 
-**Job**: `release-gate-summary`
+**Job**: `release-gate`（显示名 `Release Candidate Gate`）
 
 这个 job 汇总所有 evidence manifest 并生成 `release-evidence.md`。
 
@@ -210,7 +216,7 @@ grep -i "missing.*arguments" backend-integration-test.log
 
 ## 附录：快速验证脚本
 
-将以下脚本保存为 `scripts/verify_rc_gate.sh`，用于自动检查 Actions 日志（需 `gh` CLI）：
+仓库里已有 `scripts/verify_rc_gate.sh`（需 `gh` CLI）。它下载的 artifact 名必须与 `ci.yml` 里 `upload-artifact` 的 `name` 一致，当前实际为 `backend-integration-artifacts`、`e2e-artifacts`、`release-gate-evidence`：
 
 ```bash
 #!/usr/bin/env bash
@@ -250,9 +256,7 @@ echo "✅ Manual review complete. Check above for warnings."
 
 **用法**：
 ```bash
-chmod +x scripts/verify_rc_gate.sh
-gh run list --workflow=ci.yml --branch=main | grep release_candidate | head -1
-# 获取 run_id（第一列）
+gh run list --workflow=ci.yml --branch=main
 ./scripts/verify_rc_gate.sh <run_id>
 ```
 
@@ -260,5 +264,8 @@ gh run list --workflow=ci.yml --branch=main | grep release_candidate | head -1
 
 ## 更新记录
 
-- 2026-06-08: 初版，基于上线审查报告生成
-- 覆盖 P1 修复后的首次 RC gate 验证清单
+- 2026-06-08: 初版
+- 2026-09-22: 随 CI 恢复重新核对。修正四处与 `ci.yml` 不符之处（不存在的
+  `performance-slo` job、job 名 `release-gate-summary`、`YOUR_ORG` 占位符、
+  已失效的 commit hash 与写死的用例数），并订正 `verify_rc_gate.sh` 的
+  artifact 名
