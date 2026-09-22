@@ -147,6 +147,7 @@ def mock_repos(mock_project, mock_pipeline):
     repos.project.get_for_tenant = AsyncMock(return_value=mock_project)
     repos.project.list_by_git_urls = AsyncMock(return_value=[mock_project])
     repos.pipeline.list_by_project = AsyncMock(return_value=([mock_pipeline], 1))
+    repos.pipeline.get_latest_enabled = AsyncMock(return_value=mock_pipeline)
     repos.environment.list_by_project = AsyncMock(return_value=([MagicMock(id=uuid.uuid4())], 1))
     repos.run = AsyncMock()
     repos.run.create = AsyncMock()
@@ -573,7 +574,7 @@ class TestWebhookTrigger:
             project_id,
             mock_user.tenant_id,
         )
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -597,7 +598,7 @@ class TestWebhookTrigger:
 
         assert resp.status_code == 401
         assert resp.json() == {"detail": "Missing X-Webhook-Signature header"}
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -649,7 +650,7 @@ class TestWebhookTrigger:
 
         assert resp.status_code == 201
         assert resp.json() == _expected_run_response(run)
-        mock_repos.pipeline.list_by_project.assert_awaited_once_with(project_id, limit=1)
+        mock_repos.pipeline.get_latest_enabled.assert_awaited_once_with(project_id)
         expected_dedup_key = "webhook:https://github.com/org/repo.git:abc123:main"
         mock_repos.run.get_active_by_dedup.assert_awaited_once_with(
             project_id=project_id,
@@ -881,7 +882,7 @@ class TestWebhookTrigger:
             expected_error
         ]
         mock_repos.project.get_for_tenant.assert_not_awaited()
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -904,7 +905,7 @@ class TestWebhookTrigger:
         assert resp.json() == {
             "detail": "Project is archived; new runs cannot be triggered"
         }
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -937,7 +938,7 @@ class TestWebhookTrigger:
 
         assert resp.status_code == 200
         assert resp.json() == {"status": "filtered", "reason": "branch_not_allowed"}
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -985,7 +986,7 @@ class TestWebhookTrigger:
         assert resp.status_code == 401
         assert resp.json() == {"detail": "Invalid webhook signature"}
         enforce_action.assert_not_awaited()
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -1015,10 +1016,7 @@ class TestWebhookTrigger:
 
         assert resp.status_code == 200
         assert resp.json() == {"status": "duplicate"}
-        mock_repos.pipeline.list_by_project.assert_awaited_once_with(
-            project_id,
-            limit=1,
-        )
+        mock_repos.pipeline.get_latest_enabled.assert_awaited_once_with(project_id)
         mock_repos.run.get_active_by_dedup.assert_awaited_once_with(
             project_id=project_id,
             pipeline_id=mock_pipeline.id,
@@ -1088,7 +1086,7 @@ class TestProviderWebhookTrigger:
         assert resp.status_code == 400
         assert resp.json() == {"detail": "Invalid webhook JSON"}
         mock_repos.project.list_by_git_urls.assert_not_awaited()
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -1110,7 +1108,7 @@ class TestProviderWebhookTrigger:
         assert resp.status_code == 202
         assert resp.json() == {"detail": "Unsupported GitHub event: issues"}
         mock_repos.project.list_by_git_urls.assert_not_awaited()
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -1161,7 +1159,7 @@ class TestProviderWebhookTrigger:
         assert resp.status_code == 400
         assert resp.json() == {"detail": detail}
         mock_repos.project.list_by_git_urls.assert_not_awaited()
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -1199,7 +1197,7 @@ class TestProviderWebhookTrigger:
         assert resp.status_code == 401
         assert resp.json() == {"detail": "Invalid webhook signature"}
         mock_repos.project.list_by_git_urls.assert_awaited_once()
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -1248,7 +1246,7 @@ class TestProviderWebhookTrigger:
 
         assert resp.status_code == 409
         assert resp.json() == {"detail": "Ambiguous webhook repository match"}
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()
@@ -1383,7 +1381,7 @@ class TestProviderWebhookTrigger:
         mock_repos.project.list_by_git_urls.assert_awaited_once()
         repo_urls = mock_repos.project.list_by_git_urls.await_args.args[0]
         assert "https://github.com/acme/widget.git" in repo_urls
-        mock_repos.pipeline.list_by_project.assert_not_awaited()
+        mock_repos.pipeline.get_latest_enabled.assert_not_awaited()
         mock_repos.environment.list_by_project.assert_not_awaited()
         mock_repos.run.get_active_by_dedup.assert_not_awaited()
         mock_repos.run.create.assert_not_awaited()

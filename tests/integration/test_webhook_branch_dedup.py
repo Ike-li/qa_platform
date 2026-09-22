@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -416,6 +416,54 @@ async def test_webhook_without_pipeline_returns_409_and_creates_no_run(
     assert resp.status_code == 409, resp.text
     assert resp.json() == {"detail": "No pipeline configured for project"}
     assert await _webhook_run_count(integration_db_session, project.id) == before
+
+
+@pytest.mark.asyncio
+async def test_webhook_skips_disabled_pipeline_and_picks_the_enabled_one(
+    seed_run,
+    integration_app,
+    integration_client_as,
+    integration_db_session,
+):
+    """webhook 选 pipeline 时必须跳过 enabled=False 的。
+
+    选择逻辑取 created_at 最新的一个且不看 enabled，而外部结果导入会建一个
+    名为 external-import 的占位 pipeline 并显式置为 enabled=False。只要用过
+    一次导入，占位 pipeline 就成了最新的那个，此后所有 webhook 都会挂到它
+    身上——那条 pipeline 没有真正的执行阶段。
+    """
+    from qaplatform.infra.database.models import Pipeline
+
+    project = seed_run["project"]
+    user = seed_run["user"]
+    tenant = seed_run["tenant"]
+    enabled_pipeline = seed_run["pipeline"]
+
+    disabled = Pipeline(
+        project_id=project.id,
+        name="external-import",
+        stages=[{"name": "pytest", "plugin": "pytest", "phase": "execute", "config": {}}],
+        selector={},
+        trigger_config={"type": "manual"},
+        collectors=[],
+        timeout_seconds=600,
+        enabled=False,
+        created_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    integration_db_session.add(disabled)
+    await integration_db_session.commit()
+
+    async with integration_client_as(user.id, tenant.id, role="owner") as client:
+        resp = await client.post(
+            f"/api/v1/webhooks/{project.id}/trigger",
+            json={
+                "git_ref": "refs/heads/main",
+                "git_sha": "a" * 40,
+            },
+        )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["pipeline_id"] == str(enabled_pipeline.id)
 
 
 @pytest.mark.asyncio

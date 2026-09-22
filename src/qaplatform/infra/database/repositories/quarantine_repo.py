@@ -45,7 +45,13 @@ class QuarantineRepository(BaseRepository[TestQuarantine]):
             )
             .returning(TestQuarantine)
         )
-        res = await self.session.execute(stmt)
+        # populate_existing：调用方通常先 get_quarantine 查过一次（为了审计的
+        # before_state），那一行已进 identity map。没有这个选项时 RETURNING 的
+        # 结果会被换成缓存里的旧实例，接口和审计的 after_state 都会拿到更新前
+        # 的 reason，尽管库里已经改对了。
+        res = await self.session.execute(
+            stmt, execution_options={"populate_existing": True}
+        )
         return res.scalar_one()
 
     async def list_by_project(

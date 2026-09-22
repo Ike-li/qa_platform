@@ -90,7 +90,14 @@ prefix `/projects/{project_id}/quarantine`，参照 `run_imports.py` 在应用�
 |------|------|------|------|
 | `GET` | `/projects/{id}/quarantine` | `RUN_READ` | 分页列出（`PaginatedResponse`） |
 | `POST` | `/projects/{id}/quarantine` | **`PROJECT_EDIT`** | body `{suite, name, reason}`；幂等 upsert（已存在则更新 reason，返回 200；新建返回 201）；审计 `quarantine.add` |
-| `DELETE` | `/projects/{id}/quarantine/{quarantine_id}` | **`PROJECT_EDIT`** | 解除；不存在返回 404；审计 `quarantine.remove`（before_state 保留被删行可追溯字段） |
+| `DELETE` | `/projects/{id}/quarantine?suite=&name=` | **`PROJECT_EDIT`** | 解除；不存在返回 404；审计 `quarantine.remove`（before_state 保留被删行可追溯字段） |
+
+> **2026-09-22 修订**：DELETE 改用查询参数 `?suite=&name=` 而非路径上的 `quarantine_id`。
+> 消费方（失败分诊面板）手里拿到的是 `(suite, name)`，没有隔离记录的 id，用路径参数
+> 会逼它先查一次列表。实现早已按查询参数落地并被 API 矩阵基线化，此处以实现为准。
+>
+> POST 的 200/201 区分则相反，以本文档为准：实现原先对新建与更新都返回 201，
+> 已于同日修正。
 
 **权限决策（已定）**：写用 `PROJECT_EDIT`（项目 Admin），与 silent_windows 同级——隔离会改变"能不能发"的事实口径，属治理动作，不应 Developer 随手做；读用 `RUN_READ`。**不新增 Action 枚举**，复用现有 `PROJECT_EDIT`。归档项目（`status=="archived"`）拒绝写入（409），参照 `run_imports.py:265`。
 

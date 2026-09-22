@@ -226,3 +226,51 @@ async def test_quarantine_exclusion_in_release_summary(
     )
     assert remove_resp.status_code == 204
 
+
+
+@pytest.mark.asyncio
+async def test_quarantine_repeat_add_updates_reason_and_returns_200(
+    integration_client, integration_db_session, seed_run
+):
+    """重复隔离同一用例是更新而非新建，应返回 200。
+
+    T17 §2.2 规定「已存在则更新 reason，返回 200；新建返回 201」，实现却对
+    两种情况都返回 201。调用方无法从状态码区分自己是新建了一条还是覆盖了
+    别人写的隔离理由。
+    """
+    from qaplatform.infra.database.models import TestQuarantine
+
+    project = seed_run["project"]
+    payload = {
+        "suite": "tests.suite_repeat",
+        "name": "test_repeat_quarantine",
+        "reason": "first reason",
+    }
+
+    first = await integration_client.post(
+        f"/api/v1/projects/{project.id}/quarantine", json=payload, headers=_HEADERS
+    )
+    assert first.status_code == 201, first.text
+    first_body = first.json()
+
+    second = await integration_client.post(
+        f"/api/v1/projects/{project.id}/quarantine",
+        json={**payload, "reason": "second reason"},
+        headers=_HEADERS,
+    )
+    assert second.status_code == 200, second.text
+    second_body = second.json()
+
+    # upsert 语义：同一行被更新，id 与 created_at 不变，reason 已覆盖
+    assert second_body["id"] == first_body["id"]
+    assert second_body["created_at"] == first_body["created_at"]
+    assert second_body["reason"] == "second reason"
+
+    stmt = select(TestQuarantine).where(
+        TestQuarantine.project_id == project.id,
+        TestQuarantine.suite == "tests.suite_repeat",
+        TestQuarantine.name == "test_repeat_quarantine",
+    )
+    rows = (await integration_db_session.execute(stmt)).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].reason == "second reason"

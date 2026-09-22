@@ -784,7 +784,7 @@ operations:
     tag: quarantine
     auth_type: HTTPBearer
     request_schema: body
-    declared_responses: ["201", "404", "409", "422"]
+    declared_responses: ["200", "201", "404", "409", "422"]
     coverage_status: covered
     test_cases: [contract, auth, success, declared_responses, schema_negative, rbac_tenant]
     gap_notes: []

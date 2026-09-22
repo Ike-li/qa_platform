@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from qaplatform.api.audit import write_audit
 from qaplatform.api.auth.permissions import Action
@@ -61,6 +61,7 @@ async def list_quarantine(
     response_model=QuarantineResponse,
     status_code=201,
     responses={
+        200: {"model": QuarantineResponse, "description": "已存在，更新隔离理由"},
         404: {"model": ErrorResponse},
         409: {"model": ErrorResponse},
     },
@@ -69,6 +70,7 @@ async def list_quarantine(
 async def add_to_quarantine(
     project_id: UUID,
     body: QuarantineAddRequest,
+    response: Response,
     repos: Repos,
     user: CurrentUser,
     _perm=require_project_permission(Action.PROJECT_EDIT),
@@ -94,6 +96,10 @@ async def add_to_quarantine(
         created_by=user.user_id,
         expires_at=body.expires_at,
     )
+
+    # upsert：命中既有行时是更新而非新建，按 T17 §2.2 返回 200
+    if existing is not None:
+        response.status_code = 200
 
     after = QuarantineResponse.model_validate(record)
     await write_audit(

@@ -166,10 +166,9 @@ async def _create_webhook_run(
             content={"status": "filtered", "reason": "branch_not_allowed"},
         )
 
-    pipelines, _ = await repos.pipeline.list_by_project(project.id, limit=1)
-    if not pipelines:
+    pipeline = await repos.pipeline.get_latest_enabled(project.id)
+    if pipeline is None:
         raise HTTPException(status_code=409, detail="No pipeline configured for project")
-    pipeline = pipelines[0]
 
     environment_id = await resolve_project_run_environment_id(
         repos=repos,
