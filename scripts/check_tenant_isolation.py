@@ -63,6 +63,36 @@ ALLOWLIST = frozenset({
         "RunAnalyticsRepositoryMixin",
         "grouped_results",
     ),
+    # T12/T13 triage + retry-failed. Same two shapes as the entries above,
+    # re-verified by tracing every caller on 2026-09-22.
+    #
+    # Run-scoped: filtered by run_id only. Both production callers resolve the
+    # Run through the tenant first — v1/runs.py::get_run_triage via
+    # get_run_for_action, and run_retry_failed_command via
+    # repos.run.get_for_tenant (404 when it returns None).
+    (
+        "src/qaplatform/infra/database/repositories/test_result_repo.py",
+        "TestResultRepository",
+        "list_failed_by_run",
+    ),
+    # JOINs Run and carries a project_id filter, but it arrives through the
+    # *filters variable built by analytics_run_filters, which the AST checker
+    # cannot follow — identical to list_flaky_tests above.
+    (
+        "src/qaplatform/infra/database/repositories/test_result_repo.py",
+        "TestResultRepository",
+        "list_prior_observations_for_failed_cases",
+    ),
+    # Worker notification diffing. Both SELECTs are keyed on run ids that the
+    # same function already constrained to the project: current_stmt filters
+    # Run.id == run_id AND Run.project_id == project_id, and prior_run_id comes
+    # from prior_stmt which also filters Run.project_id == project_id. The
+    # tenant scope is established one statement earlier than the checker looks.
+    (
+        "src/qaplatform/worker/notifications/__init__.py",
+        "",
+        "_load_new_failed_and_recovered",
+    ),
 })
 
 
