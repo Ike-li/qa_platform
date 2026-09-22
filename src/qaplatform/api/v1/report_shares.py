@@ -65,13 +65,19 @@ async def create_share_token(
 ):
     """Generate a share token for a report."""
     # Check if user has access to this run
-    await get_run_for_action(run_id, user, repos, Action.READ)
+    await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.RUN_READ,
+    )
 
     # Generate share token
     result = await generate_share_token(
         session=session,
         run_id=run_id,
-        user_id=user.id,
+        user_id=user.user_id,
         tenant_id=user.tenant_id,
         expires_in_days=body.expires_in_days,
         max_access_count=body.max_access_count,
@@ -85,14 +91,12 @@ async def create_share_token(
 
     # Audit log
     await write_audit(
-        session=session,
-        user_id=user.id,
-        tenant_id=user.tenant_id,
+        repos,
+        user,
         action="report_share.create",
         resource_type="run",
         resource_id=run_id,
-        after_state={"token_id": str(result["id"]), "expires_in_days": body.expires_in_days},
-        request=request,
+        after={"token_id": str(result["id"]), "expires_in_days": body.expires_in_days},
     )
 
     return ShareTokenResponse(
@@ -119,7 +123,13 @@ async def get_share_tokens(
 ):
     """List all share tokens for a run."""
     # Check if user has access to this run
-    await get_run_for_action(run_id, user, repos, Action.READ)
+    await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.RUN_READ,
+    )
 
     # Get share tokens
     tokens = await list_share_tokens(session=session, run_id=run_id)
@@ -157,7 +167,13 @@ async def delete_share_token(
 ):
     """Revoke a share token."""
     # Check if user has access to this run
-    await get_run_for_action(run_id, user, repos, Action.READ)
+    await get_run_for_action(
+        repos=repos,
+        session=session,
+        user=user,
+        run_id=run_id,
+        action=Action.RUN_READ,
+    )
 
     # Revoke token
     success = await revoke_share_token(session=session, token_id=token_id)
@@ -167,14 +183,12 @@ async def delete_share_token(
 
     # Audit log
     await write_audit(
-        session=session,
-        user_id=user.id,
-        tenant_id=user.tenant_id,
+        repos,
+        user,
         action="report_share.revoke",
         resource_type="run",
         resource_id=run_id,
-        after_state={"token_id": str(token_id)},
-        request=request,
+        after={"token_id": str(token_id)},
     )
 
     return None
