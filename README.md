@@ -72,9 +72,11 @@ python3 -m venv .venv
 # 执行迁移
 .venv/bin/alembic upgrade head
 
-# (可选) 导入种子数据
-.venv/bin/python scripts/seed_admin.py
+# (可选) 导入种子数据。ADMIN_PASSWORD 是必填项，脚本不提供默认密码
+ADMIN_PASSWORD='<your-strong-password>' .venv/bin/python scripts/seed_admin.py
 ```
+
+> 登录账号为 `admin`，密码即上面设置的 `ADMIN_PASSWORD`。
 
 ### 4. 启动后端
 
