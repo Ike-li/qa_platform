@@ -54,11 +54,16 @@ class NotificationChannelPayload(BaseModel):
     template: str | None = None
 
 
+# 必须与 domain.models.notification.NOTIFICATION_CANONICAL_CONDITION_FIELDS 保持一致。
+# Literal 无法从 frozenset 派生，只能手写；漂移由
+# tests/unit/test_api/test_notifications.py 的一致性测试兜住。
 NotificationConditionField = Literal[
     "status",
     "pass_rate",
     "failed",
     "consecutive_failures",
+    "new_failed",
+    "recovered",
 ]
 NotificationConditionOperator = Literal["eq", "ne", "lt", "gt", "lte", "gte"]
 

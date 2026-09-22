@@ -332,7 +332,9 @@ export type NotificationConditionField =
   | "status"
   | "pass_rate"
   | "failed"
-  | "consecutive_failures";
+  | "consecutive_failures"
+  | "new_failed"
+  | "recovered";
 
 export interface NotificationCondition {
   field: NotificationConditionField;

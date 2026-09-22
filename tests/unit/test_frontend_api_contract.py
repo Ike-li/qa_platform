@@ -27,15 +27,35 @@ from tests.unit.frontend_contract_helpers import (
     SETTINGS_PAGE,
     TEST_RESULTS_TABLE,
     TEST_STATUS_ICON,
+)
+from tests.unit.frontend_contract_helpers import (
     assert_frontend_type_matches_schema as _assert_frontend_type_matches_schema,
+)
+from tests.unit.frontend_contract_helpers import (
     base_schema_name as _base_schema_name,
+)
+from tests.unit.frontend_contract_helpers import (
     combined_source as _combined_source,
+)
+from tests.unit.frontend_contract_helpers import (
     contract_settings as _settings,
+)
+from tests.unit.frontend_contract_helpers import (
     frontend_source as _frontend_source,
+)
+from tests.unit.frontend_contract_helpers import (
     interface_members as _interface_members,
+)
+from tests.unit.frontend_contract_helpers import (
     interface_properties as _interface_properties,
+)
+from tests.unit.frontend_contract_helpers import (
     non_null_schema as _non_null_schema,
+)
+from tests.unit.frontend_contract_helpers import (
     ref_schema_name as _ref_schema_name,
+)
+from tests.unit.frontend_contract_helpers import (
     type_aliases as _type_aliases,
 )
 
@@ -216,6 +236,8 @@ def test_notification_create_payload_matches_backend_required_field_contract(
         "pass_rate",
         "failed",
         "consecutive_failures",
+        "new_failed",
+        "recovered",
     }
     assert set(condition_schema["properties"]["operator"]["enum"]) == {
         "eq",

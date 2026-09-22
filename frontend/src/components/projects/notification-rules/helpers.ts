@@ -12,6 +12,8 @@ export const CONDITION_FIELDS: NotificationCondition["field"][] = [
   "pass_rate",
   "failed",
   "consecutive_failures",
+  "new_failed",
+  "recovered",
 ];
 
 export const CONDITION_OPS: NotificationCondition["operator"][] = [

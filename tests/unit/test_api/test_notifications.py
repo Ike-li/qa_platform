@@ -1159,3 +1159,28 @@ async def test_notification_rule_routes_hide_missing_project_without_side_effect
     mock_repos.notification_rule.update.assert_not_awaited()
     mock_repos.notification_rule.delete.assert_not_awaited()
     mock_repos.audit.create.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
+# API 层与领域层的条件字段一致性
+# --------------------------------------------------------------------------- #
+
+
+def test_api_condition_field_literal_matches_domain_canonical_fields():
+    """API 层的 Literal 必须覆盖领域层的全部 canonical 条件字段。
+
+    这两处曾经漂移过：T15 给领域层加了 new_failed / recovered 并在 worker 里
+    实现了求值，但 API 层的 Literal 没跟上，导致这两个条件无法通过接口配置，
+    直接写库后读取还会因响应模型校验失败而 500。Literal 无法从 frozenset
+    派生，只能靠这条测试兜住。
+    """
+    from typing import get_args
+
+    from qaplatform.api.schemas.notifications import NotificationConditionField
+    from qaplatform.domain.models.notification import (
+        NOTIFICATION_CANONICAL_CONDITION_FIELDS,
+    )
+
+    assert set(get_args(NotificationConditionField)) == set(
+        NOTIFICATION_CANONICAL_CONDITION_FIELDS
+    )

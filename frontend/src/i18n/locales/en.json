@@ -489,6 +489,8 @@
   "notifications.condition.field.pass_rate": "Pass rate",
   "notifications.condition.field.failed": "Failed tests",
   "notifications.condition.field.consecutive_failures": "Consecutive failures",
+  "notifications.condition.field.new_failed": "Newly failed tests",
+  "notifications.condition.field.recovered": "Recovered tests",
   "notifications.conditionsCount_one": "{{count}} condition",
   "notifications.conditionsCount_other": "{{count}} conditions",
   "notifications.toast.created": "Notification rule created",

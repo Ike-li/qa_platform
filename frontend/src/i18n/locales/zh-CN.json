@@ -466,6 +466,8 @@
   "notifications.condition.field.pass_rate": "通过率",
   "notifications.condition.field.failed": "失败用例数",
   "notifications.condition.field.consecutive_failures": "连续失败次数",
+  "notifications.condition.field.new_failed": "新增失败用例数",
+  "notifications.condition.field.recovered": "恢复用例数",
   "notifications.conditionsCount": "{{count}} 个条件",
   "notifications.toast.created": "通知规则创建成功",
   "notifications.toast.updated": "通知规则更新成功",

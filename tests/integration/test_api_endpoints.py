@@ -20,7 +20,11 @@ from qaplatform.infra.database.models import (
     Project,
     Run,
     RunStatusEnum,
+)
+from qaplatform.infra.database.models import (
     TestResult as DbTestResult,
+)
+from qaplatform.infra.database.models import (
     TestResultStatusEnum as DbTestResultStatusEnum,
 )
 
@@ -871,6 +875,42 @@ class TestNotificationRules:
         assert audit.before_state is None
         assert audit.after_state == _notification_rule_audit_state(expected_body)
 
+    @pytest.mark.parametrize("field", ["new_failed", "recovered"])
+    async def test_create_notification_rule_accepts_noise_reduction_fields(
+        self, integration_client, seed_run, field
+    ):
+        """T15 的降噪条件必须能创建并读回。
+
+        领域层的 NOTIFICATION_CANONICAL_CONDITION_FIELDS 一直包含 new_failed 与
+        recovered，worker 也实现了求值，但 API 层的 Literal 漏了它们：创建返回
+        422；即便直接写库，读取时响应模型校验也会失败而 500。
+        """
+        project_id = str(seed_run["project"].id)
+        payload = {
+            "name": f"noise-reduction-{field}-{uuid.uuid4().hex}",
+            "conditions": [{"field": field, "operator": "gt", "value": 0}],
+            "channels": [{"type": "webhook", "config": {"url": "https://h.example.com"}}],
+        }
+        resp = await integration_client.post(
+            f"/api/v1/projects/{project_id}/notification-rules", json=payload
+        )
+        assert resp.status_code == 201, resp.text
+        rule_id = resp.json()["id"]
+        assert resp.json()["conditions"] == payload["conditions"]
+
+        # 回读路径：修复前这里会 500
+        detail_resp = await integration_client.get(
+            f"/api/v1/projects/{project_id}/notification-rules/{rule_id}"
+        )
+        assert detail_resp.status_code == 200, detail_resp.text
+        assert detail_resp.json()["conditions"] == payload["conditions"]
+
+        list_resp = await integration_client.get(
+            f"/api/v1/projects/{project_id}/notification-rules"
+        )
+        assert list_resp.status_code == 200, list_resp.text
+        assert any(r["id"] == rule_id for r in list_resp.json()["data"])
+
     @pytest.mark.parametrize(
         "condition",
         [
@@ -900,7 +940,7 @@ class TestNotificationRules:
                 "loc": ["body", "conditions"],
                 "msg": (
                     "Value error, conditions[0].field must be one of: "
-                    "consecutive_failures, failed, pass_rate, status"
+                    "consecutive_failures, failed, new_failed, pass_rate, recovered, status"
                 ),
                 "input": [condition],
             }
@@ -1016,7 +1056,7 @@ class TestNotificationRules:
                             "invalid": True,
                             "reason": (
                                 "conditions[0].field must be one of: "
-                                "consecutive_failures, failed, pass_rate, status"
+                                "consecutive_failures, failed, new_failed, pass_rate, recovered, status"
                             ),
                             "raw_field": "statuz",
                             "raw_operator": "eq",
