@@ -127,8 +127,9 @@ RUN_INTEGRATION_TESTS=1 .venv/bin/python -m pytest tests/integration/test_openap
 .venv/bin/python -m pytest tests/unit/test_api_test_case_matrix_validator.py -q
 .venv/bin/python -m pytest tests/unit/test_api_test_quality_report.py -q
 .venv/bin/python -m pytest tests/unit/test_frontend_api_contract.py -q
-.venv/bin/python -m pytest tests/unit/test_release_gate_workflow.py -q
-.venv/bin/python -m ruff check scripts/export_openapi.py scripts/validate_api_test_matrix.py scripts/validate_api_test_case_matrix.py scripts/report_api_test_quality.py tests/support/api_data.py tests/support/api_seed.py tests/integration/test_openapi_contract_smoke.py tests/integration/test_openapi_behavior_blackbox.py tests/integration/test_openapi_real_stack_behavior.py tests/integration/conftest.py tests/unit/test_release_gate_workflow.py tests/unit/test_api_test_matrix_validator.py tests/unit/test_api_test_case_matrix_validator.py tests/unit/test_api_test_quality_report.py
+.venv/bin/python -m pytest tests/unit/test_deployment_contract.py -q
+.venv/bin/python scripts/check_workflow_yaml.py
+.venv/bin/python -m ruff check scripts/export_openapi.py scripts/validate_api_test_matrix.py scripts/validate_api_test_case_matrix.py scripts/report_api_test_quality.py tests/support/api_data.py tests/support/api_seed.py tests/integration/test_openapi_contract_smoke.py tests/integration/test_openapi_behavior_blackbox.py tests/integration/test_openapi_real_stack_behavior.py tests/integration/conftest.py tests/unit/test_deployment_contract.py tests/unit/test_api_test_matrix_validator.py tests/unit/test_api_test_case_matrix_validator.py tests/unit/test_api_test_quality_report.py
 ```
 
 测试数据工具：

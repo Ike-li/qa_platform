@@ -169,6 +169,9 @@ jobs:
       - name: Run backend lint
         run: ruff check src tests
 
+      - name: Check workflow YAML for duplicate keys
+        run: python scripts/check_workflow_yaml.py
+
       - name: Run backend tests
         shell: bash
         run: |
