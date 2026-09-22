@@ -24,7 +24,6 @@ echo "----------------------------------------"
 
 if command -v find >/dev/null 2>&1; then
   expired_docs=$(find . -name "*.md" -mtime +30 \
-    -not -path "*/archive/*" \
     -not -path "*/node_modules/*" \
     -not -path "*/.venv/*" \
     -not -path "*/.git/*" \
@@ -86,7 +85,6 @@ if command -v grep >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
 
   # 查找所有 .md 文件中的相对链接
   find . -name "*.md" \
-    -not -path "*/archive/*" \
     -not -path "*/node_modules/*" \
     -not -path "*/.venv/*" \
     -not -path "*/.git/*" \
@@ -173,8 +171,7 @@ echo "----------------------------------------"
 todo_count=0
 if command -v grep >/dev/null 2>&1; then
   todo_files=$(grep -r "TODO\|FIXME\|XXX" --include="*.md" docs/ . 2>/dev/null | \
-    grep -v "archive" | \
-    grep -v "node_modules" | \
+      grep -v "node_modules" | \
     grep -v ".venv" | \
     grep -v "检查文档中的待办标记" || true)
 
@@ -230,7 +227,6 @@ total_docs=$(find . -name "*.md" \
   2>/dev/null | wc -l | tr -d ' ')
 
 active_docs=$(find . -name "*.md" \
-  -not -path "*/archive/*" \
   -not -path "*/node_modules/*" \
   -not -path "*/.venv/*" \
   -not -path "*/.git/*" \
@@ -238,11 +234,7 @@ active_docs=$(find . -name "*.md" \
   -not -path "*/.omc/*" \
   2>/dev/null | wc -l | tr -d ' ')
 
-archived_docs=$((total_docs - active_docs))
-
 echo "总文档数: $total_docs"
-echo "活跃文档: $active_docs"
-echo "归档文档: $archived_docs"
 
 echo ""
 

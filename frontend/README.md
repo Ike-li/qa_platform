@@ -51,7 +51,6 @@ Use backend schemas and OpenAPI as the source of truth. In particular:
 - Backend Run statuses are `queued/preparing/running/collecting/done/failed/cancelled/timeout`; the current UI maps `done` to `passed` or `failed` from summary counts, and maps `timeout` to `timed_out`.
 - Backend TestResult statuses are `passed/failed/error/skipped/xfail`; `src/types/api.ts` includes the full set.
 
-The historical initial-implementation brief now lives at `../docs/archive/FRONTEND_PROMPT.md`; it is not the current API contract.
 
 ## TypeScript Gate
 

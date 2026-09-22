@@ -36,18 +36,11 @@ These files are retained as historical evidence. Do not use them as live impleme
 
 | Document | Purpose |
 |---|---|
-| [archive/backend-test-audit.md](archive/backend-test-audit.md) | Backend test coverage audit and strengthening notes (2026-05-30 snapshot). |
-| [archive/release-quality-review-slices.md](archive/release-quality-review-slices.md) | Release-quality evidence slices and sign-off checklist for the release-candidate gate branch. |
-| [archive/doc-conflict-audit.md](archive/doc-conflict-audit.md) | Historical document conflict audit and fix trail. |
-| [archive/fix-roadmap.md](archive/fix-roadmap.md) | Historical review consolidation and decisions. Do not use as active backlog without checking `TODO.md`. |
-| [archive/FRONTEND_PROMPT.md](archive/FRONTEND_PROMPT.md) | Initial frontend implementation brief; superseded by `../frontend/README.md` and `../DESIGN.md`. |
 
-> 归档清单见 [archive/README.md](archive/README.md)。
 
 ## Maintenance Rules
 
 - Current truth lives in `architecture.md`, `feature-catalog.md`, `product.md`, `TODO.md`, `development.md`, `runbook.md`, and `testing-strategy.md`.
-- Historical audit documents belong under `archive/`; they may explain old wording, but they must not be used as live status without checking the current sources.
 - New task packages go under `docs/tasks/` and must update [tasks/README.md](tasks/README.md).
 - Generated local artifacts stay out of docs unless they are linked from a repeatable command, CI artifact, or explicit release-evidence entry.
 - Tests verify product behavior, not documentation wording. Do not add meta-tests that pin doc strings or other test files' source text; see `AGENTS.md` and `testing-strategy.md`.

@@ -4,7 +4,7 @@
 > 试点产品边界、Beta/GA 准入和成功指标见 [`product.md`](product.md) §9
 > **首批可交付任务包见 [`tasks/`](tasks/README.md)**（codex-ready，含规格 + 起点 + 验收 + 约束）；本轮审计新增的待办若进入实施，需要后续补任务包。
 > 本文件按优先级排序验收状态、剩余缺口与不做范围，与 catalog §4 保持同步。
-> 更新于 2026-06-07（PRD / catalog / tasks 与代码的历史偏移审计见 [`archive/doc-conflict-audit.md`](archive/doc-conflict-audit.md)；旧 `feature/T*` 分支合并状态仅作为审计快照保留，当前实现与 backlog 以本文件、catalog 和现场 git 状态为准）
+> 当前实现与 backlog 以本文件、`feature-catalog.md` 和现场 git 状态为准。
 
 ---
 
@@ -49,7 +49,7 @@
 | 20 | F-RE-05 单用例历史趋势补齐 | PRD §3.4 验收 | 已完成：`/api/v1/projects/{project_id}/analytics/test-history` 按 suite/name 返回单用例历史点，包含 run id、run 创建时间、run 终态、用例状态、耗时、错误信息与 git ref；同时按 product.md §9 补齐轻量 release 判断，trends/flaky 支持可选 `git_ref`，`/analytics/release-summary` 返回目标 ref 与 baseline 的 run 数、raw pass rate、flaky-adjusted pass rate、新增失败和恢复用例；Analytics 面板可从 flaky 行或失败 Run 查看单用例历史。required integration 覆盖真实 DB 下 passed/failed 两次历史、pagination、run_status、git_ref 与 duration/error；前端契约、build 和 lint 已覆盖 DTO/hook/UI 入口 |
 | 21 | F-NT-01 条件通知验收补齐 | PRD §3.5 验收 | 已完成：通知条件支持 status/pass_rate/failed/consecutive_failures，支持默认 AND 与嵌套 `any`/`all` 条件组；前端规则表单可选择满足全部或任一条件，真实 DB integration 覆盖连续 3 次失败触发与 4 次门槛不触发 |
 | 22 | 非功能性能压测 | PRD §4 / PRD §3.4 验收 | 已补 nightly/manual performance smoke：覆盖读/写 API、手动/webhook/schedule 触发入队、waiting dequeue 恢复、取消 API p99、SSE 推送 < 2s、真实 API token 并发读、归档/artifact 读面副作用、audit-events 查询、执行摘要 < 3s 和 external-stack worker 单样本/10 容器并发 SLO；release_candidate 按 `.github/performance-slo-manifest.json`/`baseline.json` 校验并阻断基线退化。逐项 SLO 与拒绝路径断言见 `testing-strategy.md` Performance smoke 小节；完整容量压测和长期稳定性 SLO 仍需专项环境验证 |
-| 23 | E2E CI 覆盖扩展 | archive/fix-roadmap.md §4.3 | 已补三档 gate：PR/pr_like 跑轻量 `auth-flow`，nightly/schedule 跑固定真实 E2E（`real-login-flow`、`real-run-trigger`、`special-regressions`），release_candidate 跑全量 Playwright 且强制四个关键 spec 存在；nightly/release_candidate 设置 `QAP_E2E_WORKER=1` 启动受控 worker，`real-run-trigger` 经 UI modal 触发真实 run 并验证 worker 终态/归档日志/JUnit/artifact/页面；本地 `scripts/run-e2e.sh` 与 `global-setup.ts` 对齐 seed/登录口径。逐项 evidence validation 见 `testing-strategy.md` E2E 小节 |
+| 23 | E2E CI 覆盖扩展 | — | 已补三档 gate：PR/pr_like 跑轻量 `auth-flow`，nightly/schedule 跑固定真实 E2E（`real-login-flow`、`real-run-trigger`、`special-regressions`），release_candidate 跑全量 Playwright 且强制四个关键 spec 存在；nightly/release_candidate 设置 `QAP_E2E_WORKER=1` 启动受控 worker，`real-run-trigger` 经 UI modal 触发真实 run 并验证 worker 终态/归档日志/JUnit/artifact/页面；本地 `scripts/run-e2e.sh` 与 `global-setup.ts` 对齐 seed/登录口径。逐项 evidence validation 见 `testing-strategy.md` E2E 小节 |
 | 24 | 数据保留冷归档/读回增强 | architecture §8.4 / runbook §7 | 超期终态 Run 清理与级联删除、失败日志归档重试、归档日志读回 API 和前端终态 Run 回看主路径已闭环；当前仍缺 DB 行冷归档与对象存储生命周期运营报表 |
 
 ## 3. 低优先级 — 增强项
@@ -71,15 +71,10 @@
 
 ### 审计报告任务 ID 对照
 
-`archive/doc-conflict-audit.md` §15 使用 `T-*` 别名记录本轮审计拆出的后续任务；当前 TODO 的优先级与验收来源仍以上方表格为准。映射使用稳定标题，避免依赖会随排序变化的编号：
+历史审计曾用 `T-*` 别名记录拆出的后续任务，下表保留它们到当前落点的映射。优先级与验收来源以上方表格为准。
 
 | 审计任务 ID | TODO / catalog 落点 |
 |---|---|
-| `T-DOC-01` | 已完成第一轮文档修复，见 `archive/doc-conflict-audit.md` §15 |
-| `T-DOC-02` | 已完成第一轮文档修复，见 `archive/doc-conflict-audit.md` §15 |
-| `T-DOC-03` | 已完成第一轮文档修复，见 `archive/doc-conflict-audit.md` §15 |
-| `T-DOC-04` | 已完成第一轮文档修复，见 `archive/doc-conflict-audit.md` §15 |
-| `T-DOC-05` | 已完成第一轮文档修复，见 `archive/doc-conflict-audit.md` §15 |
 | `T-GIT-CREDENTIALS` | F-PM-01 / F-PM-02 Git 凭证执行闭环 |
 | `T-PIPELINE-COLLECTOR` | 已完成：F-PL-01 collector 配置补齐，见本文件 §1 与 catalog §1.2 |
 | `T-AUDIT-COVERAGE` | 审计写入覆盖补齐 |
@@ -99,7 +94,7 @@
 
 ### Maintainer 决策承接
 
-`archive/doc-conflict-audit.md` §17 汇总的是不能只靠文档修字完成的产品/架构决策。下表区分仍需确认的问题与已经落地的历史决策，避免把已关闭事项继续当成待办。
+下表是不能只靠改文档完成的产品/架构决策，区分仍需确认的问题与已落地的历史决策，避免把已关闭事项继续当成待办。
 
 #### 仍需确认
 

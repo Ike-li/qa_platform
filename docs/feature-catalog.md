@@ -1,7 +1,7 @@
 # 功能清单 · QA 自动化执行平台
 
 > **用途**：一页看全产品功能盘子。PRD 对照 / 发版门禁 / 新人 onboarding 都从这里出发。
-> **当前真源**：`docs/product.md` 提供产品目标、功能 ID 与试点产品化边界，`docs/architecture.md` 提供当前实现边界，`docs/TODO.md` 提供排期；`docs/archive/doc-conflict-audit.md` 仅作审计证据档案，不作为实时状态源。
+> **当前真源**：`docs/product.md` 提供产品目标、功能 ID 与试点产品化边界，`docs/architecture.md` 提供当前实现边界，`docs/TODO.md` 提供排期。
 > **最后更新**：2026-06-07
 > **路径约定**：未带仓库前缀的后端路径默认相对 `src/qaplatform/`；未带仓库前缀的前端路径默认相对 `frontend/src/`。
 
@@ -291,4 +291,4 @@ otel_sample_rate: float = 1.0  # 生产环境降到 0.1 节省后端成本
 
 ### 已知偏移
 
-- 详见 [`archive/doc-conflict-audit.md`](archive/doc-conflict-audit.md) 的审计证据。当前主要偏移包括：审计日志查询已实现但仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净；旧 `feature/T*` 分支合并状态仅作为历史快照保留，实时状态以现场 git 命令为准。
+- 当前主要偏移包括：审计日志查询已实现但仍未补入正式 PRD 章节、任务验收口径已从全量 lint/build 修订为改动文件干净；旧 `feature/T*` 分支合并状态仅作为历史快照保留，实时状态以现场 git 命令为准。
