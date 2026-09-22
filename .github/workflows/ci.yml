@@ -591,8 +591,10 @@ jobs:
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.gate == 'nightly' || inputs.gate == 'release_candidate'))
         run: |
           docker compose up -d --build postgres redis minio minio-init api worker worker-high worker-low
+          # docker-compose 把 api 映射到宿主 8001（容器内仍是 8000），
+          # 不是 8000——用错端口会让这个循环空转 36 次后必然失败
           for attempt in {1..36}; do
-            if curl -fsS http://localhost:8000/ready; then
+            if curl -fsS http://localhost:8001/ready; then
               docker compose exec -T api python -m alembic upgrade head
               docker compose exec -T \
                 -e ADMIN_USERNAME=admin \
@@ -1124,8 +1126,10 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.gate == 'release_candidate'
         run: |
           docker compose up -d --build postgres redis minio minio-init api worker
+          # docker-compose 把 api 映射到宿主 8001（容器内仍是 8000），
+          # 不是 8000——用错端口会让这个循环空转 36 次后必然失败
           for attempt in {1..36}; do
-            if curl -fsS http://localhost:8000/ready; then
+            if curl -fsS http://localhost:8001/ready; then
               docker compose exec -T api python -m alembic upgrade head
               docker compose exec -T \
                 -e ADMIN_USERNAME=admin \
