@@ -21,3 +21,32 @@
 .github/workflows/ci.yml:generic-api-key:379
 .github/workflows/ci.yml:generic-api-key:1093
 .github/workflows/ci.yml:generic-api-key:1134
+
+# ---------------------------------------------------------------------------
+# 历史提交里的同一批占位符（2026-09-22 确认）
+#
+# 上面那五条是工作区里的 ci.yml，这里是它们连同另外 12 处在 git 历史中的形态。
+# 逐条核对过明文：14 处是 "0123456789abcdef" 重复四次的 64 字符占位串
+# （QAP_ENCRYPTION_KEY 的示例值，AES-GCM 要求 32 字节，测试需要确定值才可复现），
+# 3 处是文档里的字面量 YOUR_TOKEN。均不对应任何真实环境。
+#
+# fingerprint 含 commit hash。2026-09-22 重写过一次历史（把作者邮箱统一为
+# GitHub noreply），下面是重写之后的 hash；若将来再次重写历史，这些需要重新生成。
+# ---------------------------------------------------------------------------
+0c80baf248ae35155b88408622fa746367233ba3:scripts/export_openapi.py:generic-api-key:18
+0c80baf248ae35155b88408622fa746367233ba3:tests/unit/test_frontend_api_contract.py:generic-api-key:25
+0e4526d012020536b4f62f237eb41901829a02ac:.github/workflows/ci.yml:generic-api-key:293
+2ee73c8e6d6e5e13f7812516c8bf5c74a1909477:tests/unit/frontend_contract_helpers.py:generic-api-key:97
+768b7c3cf47181e43f7202c8f70857c8cdb770ba:.env.example:generic-api-key:29
+768b7c3cf47181e43f7202c8f70857c8cdb770ba:tests/unit/test_auth/test_token_service.py:generic-api-key:39
+83bbc7be810019a1d57a519bc7c09e22b4341e85:.github/workflows/ci.yml:generic-api-key:69
+87a6091bce337f8e2999396f1526fd9b2438333e:docs/report-sharing.md:curl-auth-header:114
+87a6091bce337f8e2999396f1526fd9b2438333e:docs/report-sharing.md:curl-auth-header:123
+87a6091bce337f8e2999396f1526fd9b2438333e:docs/report-sharing.md:curl-auth-header:127
+944fcb108f0cfef7c10e4e9bd3a2203d9a58db1a:tests/e2e/qap-env.ts:generic-api-key:10
+d833fa5431dc1e448da74133cade1d9a7b1f28b4:.github/workflows/ci.yml:generic-api-key:183
+d833fa5431dc1e448da74133cade1d9a7b1f28b4:.github/workflows/ci.yml:generic-api-key:195
+f3d2ac85b426c0095ab72060080032a594470d96:.github/workflows/ci.yml:generic-api-key:323
+f3d2ac85b426c0095ab72060080032a594470d96:docs/CI_FAILURE_FIX.md:generic-api-key:177
+f3d2ac85b426c0095ab72060080032a594470d96:docs/CI_FAILURE_FIX.md:generic-api-key:207
+f3d2ac85b426c0095ab72060080032a594470d96:docs/CI_FAILURE_FIX.md:generic-api-key:80
