@@ -69,5 +69,8 @@
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12",
     "vitest": "^4.1.8"
+  },
+  "overrides": {
+    "linkify-it": "^5.0.2"
   }
 }
