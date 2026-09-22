@@ -27,7 +27,9 @@ Project maintainers have the right to remove, edit, or reject comments, commits,
 
 ## Reporting
 
-Report incidents to raylee (viktorl@163.com). All complaints will be reviewed and investigated.
+Report incidents to the project maintainers through GitHub — open a private security advisory
+via the repository's **Security** tab, or contact a maintainer directly on GitHub.
+All complaints will be reviewed and investigated.
 
 ## Attribution
 

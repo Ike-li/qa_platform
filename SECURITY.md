@@ -11,7 +11,9 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in qa-platform, please report it by emailing viktorl@163.com.
+If you discover a security vulnerability in qa-platform, please report it privately through
+GitHub's **Security** tab → **Report a vulnerability** (private vulnerability reporting).
+This keeps the report confidential until a fix is available.
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
