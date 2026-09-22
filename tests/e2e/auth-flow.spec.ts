@@ -82,7 +82,7 @@ async function fulfillJson(route: Route, body: unknown, status = 200) {
   });
 }
 
-async function expectTableCells(row: Locator, expectedCells: Array<[number, string]>) {
+async function expectTableCells(row: Locator, expectedCells: Array<[number, string | RegExp]>) {
   const cells = row.locator("td");
   for (const [index, expectedText] of expectedCells) {
     await expect(cells.nth(index)).toHaveText(expectedText);
@@ -221,7 +221,7 @@ test("login, open a project, view runs, then logout back to login", async ({ pag
     [1, "Medium"],
     [2, "CI Smoke"],
     [3, "main"],
-    [4, run.triggered_by],
+    [4, new RegExp(`${run.triggered_by}\\s*Manual`)],
     [5, "1m 0s"],
   ]);
   const emptyCollectorRow = page.getByRole("row", { name: /CI Empty Collector/ });
@@ -230,7 +230,7 @@ test("login, open a project, view runs, then logout back to login", async ({ pag
     [1, "Medium"],
     [2, "CI Empty Collector"],
     [3, "empty-results"],
-    [4, run.triggered_by],
+    [4, new RegExp(`${run.triggered_by}\\s*Manual`)],
     [5, "1m 0s"],
   ]);
   const legacySummaryRow = page.getByRole("row", { name: /CI Legacy Summary/ });
@@ -239,7 +239,7 @@ test("login, open a project, view runs, then logout back to login", async ({ pag
     [1, "Medium"],
     [2, "CI Legacy Summary"],
     [3, "legacy-summary"],
-    [4, run.triggered_by],
+    [4, new RegExp(`${run.triggered_by}\\s*Manual`)],
     [5, "1m 0s"],
   ]);
 
