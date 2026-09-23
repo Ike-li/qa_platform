@@ -94,6 +94,14 @@
 - [x] 更新前端依赖 (2026-06-09)
   - 运行 npm update 更新 26+ 个包
   - **Commit**: f044d81
+- [x] 处理开源后首批 Dependabot PR (2026-09-23)
+  - 合并 #19–#25：actions checkout/setup-node/setup-python/codecov v7、playwright 1.63、前端 37 个 minor/patch、jsdom 30
+  - vitest 三件套分拆的 #26–#28 互相 peer 冲突无法安装，关闭后由 #29 一起升到 5.0.1；`dependabot.yml` 加 `vitest` 分组防止再拆
+  - #29 同时修复 vitest / @vitest/mocker 的路径穿越告警（修复版本 4.1.11）
+  - **Commits**: 15559ec, 258c96b, a24c24d, e245dd0, b4572af, 0551cc6, e4ca535, f539824
+- [ ] jest-dom 适配 vitest 5 后删除 `frontend/src/test/jest-dom-vitest.d.ts`
+  - 该文件是临时补丁：jest-dom（截至 7.0.1）按单参数 `Assertion<T>` 扩展，与 vitest 5 的 `Assertion<R, T>` 合并不上
+  - 删除后在 `src/test/setup.ts` 改为 `import '@testing-library/jest-dom/vitest'`，跑 `npm run build` 确认无 TS2339
 
 ---
 
