@@ -3,13 +3,23 @@
 All notable changes to the QA Platform project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project follows calendar versioning (CalVer).
+and this project follows [Semantic Versioning](https://semver.org/) starting from 0.1.0.
+Entries before 0.1.0 are labelled by date.
 
 ---
 
 ## [Unreleased]
 
+---
+
+## [0.1.0] - 2026-09-23
+
+首个正式版本，也是仓库开源（MIT）后的第一个版本。
+
 ### Fixed
+- **请求级事务在响应发出之后才提交**：FastAPI yield 依赖默认 request scope，
+  客户端先收到 201、事务后提交。紧随其后的请求可能读不到刚写入的数据；commit 失败时
+  客户端也已拿到成功响应。42 处 session 依赖统一改为 `scope="function"`。
 - **恢复 GitHub Actions 并修到全绿**：`.github` 于 2026-07-05 被整体删除，此后远程无 CI。
   从历史恢复后逐个修掉暴露出来的失败——ruff 规则集未显式声明导致本地与 CI 结论不同、
   FastAPI 0.141 起 `include_router` 不再展开子路由使 README 路由契约失效、六处集成测试
@@ -41,6 +51,11 @@ and this project follows calendar versioning (CalVer).
 - 显式固定 ruff 规则集（`E4/E7/E9/F/I`），消除本地与 CI 因版本差异得出不同结论。
 - 升级依赖：Python 侧修复 1 个 critical（anyio）与 2 个 high；前端 17 个漏洞降到 4 个
   moderate，high/critical 清零。
+- 合并首批 Dependabot 升级：GitHub Actions checkout / setup-node / setup-python / codecov
+  v7、Playwright 1.63、jsdom 30、jest-dom 7、前端 37 个 minor/patch；vitest 三件套一起升到
+  5.0.1（同时修复 vitest 路径穿越告警），Dependabot 开放告警清零。
+- README 改为英文主版本，中文版移至 `README.zh-CN.md`；补充常见问题与回归闭环功能说明，
+  新增 `llms.txt`。前端页面与 API 响应声明 `noindex`，自托管实例不进入搜索引擎索引。
 - 移除 `DASHBOARD.md`、`STATUS.md` 与 14 份 AI 自评快照。健康度评分与「可以上线」这类
   结论必然腐败——2026-09 实测时它们标着「上线就绪」而五个端点全崩。
 
@@ -157,8 +172,8 @@ and this project follows calendar versioning (CalVer).
 ## 版本说明
 
 ### 版本号规则
-- 使用日期作为版本标识（CalVer: YYYY-MM-DD）
-- 重大里程碑使用 Phase 标识（Phase 1/2/3）
+- 自 0.1.0 起使用语义化版本（SemVer），版本号以 `pyproject.toml` 为准，发布时打 `vX.Y.Z` tag
+- 0.1.0 之前的条目以日期标识，保留原样
 
 ### 类型说明
 - **Added**: 新功能
