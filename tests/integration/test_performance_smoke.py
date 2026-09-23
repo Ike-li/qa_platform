@@ -977,6 +977,7 @@ async def test_schedule_tick_enqueue_slo_smoke(
     environment_id = seed_run["environment"].id
     samples: list[float] = []
     run_schedule_ids: dict[UUID, UUID] = {}
+    run_scheduled_for: dict[UUID, str] = {}
 
     for _ in range(10):
         schedule = Schedule(
@@ -989,6 +990,7 @@ async def test_schedule_tick_enqueue_slo_smoke(
             enabled=True,
             next_run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
         )
+        original_next_run_at = schedule.next_run_at
         integration_db_session.add(schedule)
         await integration_db_session.commit()
         await integration_db_session.refresh(schedule)
@@ -996,6 +998,7 @@ async def test_schedule_tick_enqueue_slo_smoke(
 
         started_at = datetime.now(timezone.utc)
         await check_schedules(ctx)
+        finished_at = datetime.now(timezone.utc)
 
         integration_db_session.expire_all()
         refreshed_schedule = await integration_db_session.get(Schedule, schedule_id)
@@ -1023,7 +1026,14 @@ async def test_schedule_tick_enqueue_slo_smoke(
         assert run.environment_id == environment_id
         assert run.git_ref == project_default_branch
         assert run.triggered_by is None
+        # 迟到 1 分钟仍在宽限窗口内，按准点触发：记下所属的 cron 槽，但不标
+        # missed_fire。槽取决于本次运行落在哪一秒，只能校验它的范围
+        assert "missed_fire" not in run.metadata_
+        scheduled_for = datetime.fromisoformat(run.metadata_["scheduled_for"])
+        assert scheduled_for.second == 0 and scheduled_for.microsecond == 0
+        assert original_next_run_at <= scheduled_for <= finished_at
         run_schedule_ids[run.id] = schedule_id
+        run_scheduled_for[run.id] = run.metadata_["scheduled_for"]
         samples.append((run.enqueued_at - started_at).total_seconds() * 1000)
 
     audit_result = await integration_db_session.execute(
@@ -1077,6 +1087,7 @@ async def test_schedule_tick_enqueue_slo_smoke(
             "metadata": {
                 **_project_run_metadata(project),
                 "schedule_id": str(schedule_id),
+                "scheduled_for": run_scheduled_for[run_id],
             },
         }
         for run_id, schedule_id in run_schedule_ids.items()
@@ -1116,6 +1127,7 @@ async def test_schedule_tick_enqueue_slo_smoke(
                 "metadata": {
                     **_project_run_metadata(project),
                     "schedule_id": str(schedule_id),
+                    "scheduled_for": run_scheduled_for[run_id],
                 },
                 "schedule_id": str(schedule_id),
                 "enqueued": True,
