@@ -110,7 +110,8 @@
   - 前端 `index.html` 与 API 响应声明 `noindex`，自托管实例不进索引
   - 补齐 README 中 Docker 部署缺失的迁移与建管理员步骤
   - **Commits**: e1b44c8, a0d5cfe, 59cce70, c7f7375
-- [ ] 在仓库 Settings → Social preview 上传 `docs/assets/social-preview.png`（GitHub 无 API，需手动）
+- [x] 在仓库 Settings → Social preview 上传 `docs/assets/social-preview.png` (2026-09-23)
+  - GitHub 无 API，经浏览器上传；GraphQL `usesCustomOpenGraphImage=true`，线上图与本地文件 SHA-256 一致
 - [ ] `docs/feature-catalog.md` 补记 flaky 隔离（quarantine）
   - 代码已实现（`api/v1/quarantine.py`、分诊面板、release-summary 与通知排除、`expires_at`），但功能清单这个真源里没有条目
 - [ ] typescript-eslint 支持 TS 7 后升级 TypeScript，并删除 `dependabot.yml` 中 typescript 的 ignore
