@@ -1,0 +1,34 @@
+# QA Platform
+
+> Self-hosted test automation and regression analysis platform. Runs pytest, Jest, Playwright and Go test in isolated Docker containers, or imports JUnit XML from an existing CI, then provides failure triage, rerun-only-failed-tests, flaky test detection and quarantine, release verdicts and conditional notifications. FastAPI + arq backend, React frontend, PostgreSQL / Redis / MinIO storage. MIT license.
+
+Key facts:
+
+- Two ways in: execute tests on the platform (`POST /api/v1/runs`) or import JUnit XML from any CI (`POST /api/v1/projects/{project_id}/runs/import`). Imports are not deduplicated.
+- Failure triage (`GET /api/v1/runs/{run_id}/triage`) classifies each failed test as known flaky (≥3 observations in 30 days with both passes and failures), persistent (3 most recent prior observations all failed) or new; precedence flaky > persistent > new.
+- Rerun only failed tests (`POST /api/v1/runs/{run_id}/retry-failed`) supports the pytest runner only; other runners return 409; more than 200 failed tests is rejected.
+- Quarantined tests still execute; they are excluded from release verdicts and "new failure" notifications, and a quarantine can expire.
+- Release verdict (`GET /api/v1/projects/{project_id}/analytics/release-summary`) compares a target git ref against a baseline: raw and flaky-adjusted pass rate, new failures, recovered tests.
+- Notification channels: Email (SMTP), Webhook, DingTalk, WeCom. Slack is out of scope.
+- Test containers run without network by default, as UID 1000, read-only rootfs, all capabilities dropped. The worker mounts the Docker socket, so it must be treated as host-root; use a docker-socket-proxy in production.
+- Most project documentation under `docs/` is written in Chinese; the README is available in English and Chinese.
+
+## Docs
+
+- [README (English)](https://github.com/Ike-li/qa_platform/blob/main/README.md): overview, quick start, API endpoints, FAQ
+- [README (简体中文)](https://github.com/Ike-li/qa_platform/blob/main/README.zh-CN.md): Chinese version of the README
+- [Feature catalog](https://github.com/Ike-li/qa_platform/blob/main/docs/feature-catalog.md): source of truth for which features exist and their status (Chinese)
+- [Architecture](https://github.com/Ike-li/qa_platform/blob/main/docs/architecture.md): system design (Chinese)
+- [Development guide](https://github.com/Ike-li/qa_platform/blob/main/docs/development.md): local setup and conventions (Chinese)
+- [Runbook](https://github.com/Ike-li/qa_platform/blob/main/docs/runbook.md): operations (Chinese)
+
+## Project
+
+- [Changelog](https://github.com/Ike-li/qa_platform/blob/main/CHANGELOG.md)
+- [Contributing](https://github.com/Ike-li/qa_platform/blob/main/CONTRIBUTING.md)
+- [Security policy](https://github.com/Ike-li/qa_platform/blob/main/SECURITY.md): report vulnerabilities through GitHub private vulnerability reporting
+
+## Optional
+
+- [Testing strategy](https://github.com/Ike-li/qa_platform/blob/main/docs/testing-strategy.md) (Chinese)
+- [Product requirements](https://github.com/Ike-li/qa_platform/blob/main/docs/product.md) (Chinese)

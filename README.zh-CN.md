@@ -1,6 +1,8 @@
 # QA Platform
 
-QA 自动化执行平台 —— 管理项目、配置流水线、执行测试、收集结果，一站式完成。
+[English](README.md) | 简体中文
+
+自托管的 QA 自动化执行与回归分析平台：在隔离的 Docker 容器里运行 pytest / Jest / Playwright / Go test，或从现有 CI 导入 JUnit XML，然后做失败分诊、只重跑失败用例、识别并隔离 flaky 测试，回答「这个版本能不能发」。
 
 [![CI](https://github.com/Ike-li/qa_platform/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ike-li/qa_platform/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -35,6 +37,17 @@ QA 自动化执行平台 —— 管理项目、配置流水线、执行测试、
 
 ## 核心功能
 
+回归闭环：
+
+- **外部结果导入** — 把任意 CI 产出的 JUnit XML 通过 API 导入为一次 Run，不必改造现有流水线
+- **失败分诊** — 每个失败用例自动归入「新增失败 / 已知 flaky / 持续失败」，并按错误签名聚类
+- **一键重跑失败** — 只重跑上次失败的用例（当前支持 pytest）
+- **Flaky 检测与隔离** — 识别时好时坏的用例；隔离后仍照常执行，但不再计入发版判断和「新增失败」通知，可设过期时间
+- **发版判断** — 对比目标分支与基线的通过率（含剔除 flaky 后的通过率）、新增失败与恢复用例
+- **条件通知** — 按状态、通过率、连续失败、新增失败、恢复等条件推送到 Email / Webhook / 钉钉 / 企业微信
+
+平台能力：
+
 - **多租户 RBAC** — 租户级 (Owner/Admin/Member/Viewer) + 项目级 (Admin/Developer/Viewer) 双层权限
 - **流水线管理** — 定义测试流水线，配置运行环境与凭据存储；私有 HTTPS token / SSH key 可在执行时安全注入 Git clone
 - **容器化执行** — 测试在隔离 Docker 容器中运行，支持超时、取消与 Docker OOMKilled 状态识别
@@ -50,12 +63,12 @@ QA 自动化执行平台 —— 管理项目、配置流水线、执行测试、
 
 - Docker & Docker Compose
 - Python >= 3.12
-- Node.js >= 22.13（或 20.19+；前端 Vite 8 / ESLint 10 需要）
+- Node.js >= 22.13（与 `frontend/package.json` 的 `engines` 一致）
 
 ### 1. 克隆与配置
 
 ```bash
-git clone <repo-url> && cd qa_platform
+git clone https://github.com/Ike-li/qa_platform.git && cd qa_platform
 cp .env.example .env
 # 按需修改 .env 中的配置
 ```
@@ -177,8 +190,12 @@ qa_platform/
 | `GET /api/v1/projects` | 项目列表 |
 | `POST /api/v1/projects/{project_id}/pipelines` | 创建流水线 |
 | `POST /api/v1/runs` | 触发测试运行 |
+| `POST /api/v1/projects/{project_id}/runs/import` | 导入 JUnit XML 为一次 Run |
 | `GET /api/v1/runs/{id}` | 运行详情 |
 | `GET /api/v1/runs/{id}/results` | 测试结果过滤查询 |
+| `GET /api/v1/runs/{run_id}/triage` | Run 的失败分诊 |
+| `POST /api/v1/runs/{run_id}/retry-failed` | 只重跑失败用例 |
+| `GET /api/v1/projects/{project_id}/analytics/release-summary` | 对比基线的发版判断 |
 | `GET /api/v1/runs/{id}/artifacts` | 产物列表 |
 | `GET /api/v1/artifacts/{id}/download` | 产物预签名下载 |
 | `GET /api/v1/runs/{id}/logs?ticket=...` | SSE 实时日志 |
@@ -275,6 +292,40 @@ class MyRunner:
         # 执行测试并返回结果
         return TestRunResult(passed=10, failed=0, skipped=0, error=0, duration_ms=5000, exit_code=0)
 ```
+
+## 常见问题
+
+### QA Platform 是什么？
+
+一个自托管的测试自动化执行与回归分析平台。它可以在隔离的 Docker 容器里运行 pytest、Jest、Playwright、Go test，也可以直接导入其他 CI 产出的 JUnit XML；在此基础上提供失败分诊、只重跑失败用例、flaky 检测与隔离、发版判断和条件通知。后端是 FastAPI + arq，前端是 React，MIT 许可证。
+
+### 必须替换现有 CI 吗？
+
+不必。现有 CI（如 GitHub Actions）继续跑测试，把 JUnit XML 通过 `POST /api/v1/projects/{project_id}/runs/import` 导入即可使用分诊、趋势、发版判断与通知。也可以让平台自己执行测试。注意导入不去重：同一文件上传两次会生成两条 Run。
+
+### 支持哪些测试框架？
+
+内置 Runner：pytest、Jest、Playwright、Go test；结果收集器：JUnit XML。任何能输出 JUnit XML 的框架都可以通过导入接入。「只重跑失败用例」目前只支持 pytest，其他 Runner 调用会返回 409。
+
+### 失败分诊怎么判断一个失败是「新增」「flaky」还是「持续失败」？
+
+对一次 Run 里每个失败或出错的用例：30 天窗口内至少 3 次观测、既有通过又有失败的，算已知 flaky；本次之前最近 3 次观测全部失败的，算持续失败；其余算新增失败。判定优先级是 flaky > 持续失败 > 新增。历史按项目内同一「套件 + 用例名」聚合，时间窗口以该 Run 的创建时间为锚点，所以结论不会随查看时间变化。
+
+### 怎么只重跑失败的用例？
+
+调用 `POST /api/v1/runs/{run_id}/retry-failed`，或在 Run 详情页点「重跑失败用例」。原 Run 必须已结束且有失败用例；失败用例超过 200 个时会拒绝，避免命令行过长。
+
+### 隔离（quarantine）一个 flaky 用例会发生什么？
+
+用例照常执行，但不再计入发版判断里的「新增失败」，也不会触发「新增失败」通知。隔离可以设置过期时间，到期后自动失效。
+
+### 怎么判断一个版本能不能发？
+
+`GET /api/v1/projects/{project_id}/analytics/release-summary` 对比目标 `git_ref` 与基线：原始通过率、剔除 flaky 后的通过率、新增失败、恢复的用例，以及因隔离被排除的用例。Run 详情页也有跳转入口。
+
+### 在容器里跑不受信任的测试代码安全吗？
+
+测试容器默认禁用网络，以非 root 用户（1000:1000）、只读根文件系统、去掉全部 capabilities 运行。但 Worker 需要挂载 `/var/run/docker.sock` 来创建测试容器，Worker 被攻破等同于拿到宿主 root。生产环境建议用 `tecnativa/docker-socket-proxy` 限制可用的 Docker API。
 
 ## License
 

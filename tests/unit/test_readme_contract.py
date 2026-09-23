@@ -4,11 +4,38 @@ import inspect
 import re
 from pathlib import Path
 
+import pytest
+
 from qaplatform.main import create_app
 from qaplatform.plugins.protocols import RunnerProtocol
 
 ROOT = Path(__file__).resolve().parents[2]
-README = ROOT / "README.md"
+
+# 英文 README 是 GitHub 首页，中文版是完整对照翻译。两份都要校验：
+# 只校验一份的话，另一份的端点表与示例会在下一次改动后悄悄过期。
+READMES = [
+    pytest.param(
+        ROOT / "README.md",
+        {
+            "endpoints": ("Key endpoints:", "## Common commands"),
+            "plugins": ("## Plugin development", "## FAQ"),
+        },
+        id="en",
+    ),
+    pytest.param(
+        ROOT / "README.zh-CN.md",
+        {
+            "endpoints": ("主要端点：", "## 常用命令"),
+            "plugins": ("## 插件开发", "## 常见问题"),
+        },
+        id="zh-CN",
+    ),
+]
+
+
+def _section(text: str, bounds: tuple[str, str]) -> str:
+    start, end = bounds
+    return text.split(start, 1)[1].split(end, 1)[0]
 
 
 def _normalize_route(path: str) -> str:
@@ -16,9 +43,10 @@ def _normalize_route(path: str) -> str:
     return re.sub(r"\{[^}]+\}", "{param}", path_without_query)
 
 
-def test_readme_api_endpoint_table_matches_fastapi_routes():
-    text = README.read_text(encoding="utf-8")
-    api_section = text.split("主要端点：", 1)[1].split("## 常用命令", 1)[0]
+@pytest.mark.parametrize(("readme", "sections"), READMES)
+def test_readme_api_endpoint_table_matches_fastapi_routes(readme, sections):
+    text = readme.read_text(encoding="utf-8")
+    api_section = _section(text, sections["endpoints"])
     documented = re.findall(r"`(GET|POST|PUT|PATCH|DELETE) ([^`]+)`", api_section)
     assert documented, "README API endpoint table is empty"
 
@@ -42,9 +70,10 @@ def test_readme_api_endpoint_table_matches_fastapi_routes():
     assert missing == []
 
 
-def test_readme_runner_example_keeps_container_shell_contract_visible():
-    text = README.read_text(encoding="utf-8")
-    plugin_section = text.split("## 插件开发", 1)[1].split("## License", 1)[0]
+@pytest.mark.parametrize(("readme", "sections"), READMES)
+def test_readme_runner_example_keeps_container_shell_contract_visible(readme, sections):
+    text = readme.read_text(encoding="utf-8")
+    plugin_section = _section(text, sections["plugins"])
 
     assert "import shlex" in plugin_section
     assert "cd /workspace && " in plugin_section
