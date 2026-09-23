@@ -99,6 +99,15 @@
   - vitest 三件套分拆的 #26–#28 互相 peer 冲突无法安装，关闭后由 #29 一起升到 5.0.1；`dependabot.yml` 加 `vitest` 分组防止再拆
   - #29 同时修复 vitest / @vitest/mocker 的路径穿越告警（修复版本 4.1.11）
   - **Commits**: 15559ec, 258c96b, a24c24d, e245dd0, b4572af, 0551cc6, e4ca535, f539824
+- [x] 第二批 Dependabot PR (2026-09-23)
+  - 合并 #30 jest-dom 7.0.1（仅要求 Node 22，项目已满足）
+  - 关闭 #32 TypeScript 7：typescript-eslint（截至 8.70.1，含 canary）peer 要求 `<6.1.0`，npm ERESOLVE
+  - 关闭 #31 @types/node 26：运行时是 Node 22，类型不应超前于运行时
+  - `dependabot.yml` 对 typescript 与 @types/node 忽略 major 升级，理由写在配置注释里
+- [ ] typescript-eslint 支持 TS 7 后升级 TypeScript，并删除 `dependabot.yml` 中 typescript 的 ignore
+  - 检查：`npm view typescript-eslint peerDependencies.typescript`
+- [ ] `@types/node` 从 ^24 降到 ^22，与运行时 Node 22 对齐
+  - 当前 24 已超前于运行时；降级后跑 `npm run build` 确认没有用到 Node 24 专有 API
 - [ ] jest-dom 适配 vitest 5 后删除 `frontend/src/test/jest-dom-vitest.d.ts`
   - 该文件是临时补丁：jest-dom（截至 7.0.1）按单参数 `Assertion<T>` 扩展，与 vitest 5 的 `Assertion<R, T>` 合并不上
   - 删除后在 `src/test/setup.ts` 改为 `import '@testing-library/jest-dom/vitest'`，跑 `npm run build` 确认无 TS2339

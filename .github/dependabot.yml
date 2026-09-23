@@ -23,6 +23,15 @@ updates:
         patterns: ["vitest", "@vitest/*"]
       npm-minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # typescript-eslint（截至 8.70.1，含 canary）要求 typescript <6.1.0，
+      # TS 7 装不上。typescript-eslint 放开 peer 范围后删除这条。
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # 运行时是 Node 22（engines、CI、Dockerfile），@types/node 的 major 应跟随
+      # 运行时而非最新版，否则只有新版 Node 才有的 API 也能通过类型检查。
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "npm"
     directory: "/"
