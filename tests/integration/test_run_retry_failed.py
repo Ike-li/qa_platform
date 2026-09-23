@@ -133,6 +133,46 @@ async def test_retry_failed_rejects_non_terminal_run(
 
 
 @pytest.mark.asyncio
+async def test_retry_failed_rejects_non_pytest_runner(
+    integration_client, integration_db_session, seed_run
+):
+    """失败子集靠 pytest nodeid 选择，别的 runner 没有等价机制，返回 409。
+
+    不拒绝的话会建出一个带 retry_failed_cases 的 run，而执行侧的 runner 并不
+    认识这个字段，最终整套重跑——用户以为只重跑了失败用例。
+    """
+    from uuid import UUID
+
+    from qaplatform.infra.database.models import Pipeline, Run
+
+    project = seed_run["project"]
+    original = await _import_run(integration_client, project.id, FAILING_JUNIT)
+
+    playwright_pipeline = Pipeline(
+        project_id=project.id,
+        name="e2e",
+        stages=[
+            {"name": "e2e", "plugin": "playwright", "phase": "execute", "config": {}}
+        ],
+        selector={},
+        trigger_config={"type": "manual"},
+        timeout_seconds=120,
+        enabled=True,
+    )
+    integration_db_session.add(playwright_pipeline)
+    await integration_db_session.flush()
+    run = await integration_db_session.get(Run, UUID(original["id"]))
+    run.pipeline_id = playwright_pipeline.id
+    await integration_db_session.commit()
+
+    resp = await integration_client.post(
+        f"/api/v1/runs/{original['id']}/retry-failed"
+    )
+    assert resp.status_code == 409, resp.text
+    assert "only supports pytest runner, found: playwright" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_retry_failed_on_unknown_run_is_404(integration_client, seed_run):
     """不存在的 run 返回 404。"""
     resp = await integration_client.post(f"/api/v1/runs/{uuid4()}/retry-failed")
