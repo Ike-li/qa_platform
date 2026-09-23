@@ -104,6 +104,15 @@
   - 关闭 #32 TypeScript 7：typescript-eslint（截至 8.70.1，含 canary）peer 要求 `<6.1.0`，npm ERESOLVE
   - 关闭 #31 @types/node 26：运行时是 Node 22，类型不应超前于运行时
   - `dependabot.yml` 对 typescript 与 @types/node 忽略 major 升级，理由写在配置注释里
+- [x] 仓库 SEO / AEO (2026-09-23)
+  - README 改英文主版本 + `README.zh-CN.md`，补 FAQ 与回归闭环功能；新增 `llms.txt`
+  - 仓库描述改双语，topics 补到 20 个；发布 v0.1.0（CHANGELOG 改用 SemVer）
+  - 前端 `index.html` 与 API 响应声明 `noindex`，自托管实例不进索引
+  - 补齐 README 中 Docker 部署缺失的迁移与建管理员步骤
+  - **Commits**: e1b44c8, a0d5cfe, 59cce70, c7f7375
+- [ ] 在仓库 Settings → Social preview 上传 `docs/assets/social-preview.png`（GitHub 无 API，需手动）
+- [ ] `docs/feature-catalog.md` 补记 flaky 隔离（quarantine）
+  - 代码已实现（`api/v1/quarantine.py`、分诊面板、release-summary 与通知排除、`expires_at`），但功能清单这个真源里没有条目
 - [ ] typescript-eslint 支持 TS 7 后升级 TypeScript，并删除 `dependabot.yml` 中 typescript 的 ignore
   - 检查：`npm view typescript-eslint peerDependencies.typescript`
 - [ ] `@types/node` 从 ^24 降到 ^22，与运行时 Node 22 对齐
