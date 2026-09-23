@@ -26,6 +26,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Permissions-Policy",
             "camera=(), microphone=(), geolocation=()",
         )
+        # 自托管实例不应进搜索引擎索引；报告分享链接免登录，最容易被爬到
+        response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; "

@@ -14,6 +14,7 @@ EXPECTED_SECURITY_HEADERS = {
     "X-XSS-Protection": "0",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "X-Robots-Tag": "noindex, nofollow",
     "Content-Security-Policy": (
         "default-src 'self'; "
         "script-src 'self'; "
@@ -70,3 +71,15 @@ class TestSecurityHeaders:
             **EXPECTED_SECURITY_HEADERS,
             "Strict-Transport-Security": EXPECTED_HSTS,
         }
+
+    @pytest.mark.asyncio
+    async def test_responses_tell_search_engines_not_to_index(self):
+        """自托管实例不应被搜索引擎收录。
+
+        报告分享链接无需登录即可访问，一旦被贴到公开页面，爬虫就能顺着链接
+        把测试结果收进索引。前端页面由 index.html 的 robots meta 覆盖，
+        API 响应（含 JSON）只能靠响应头。
+        """
+        headers = await _dispatch(_make_middleware())
+
+        assert headers["X-Robots-Tag"] == "noindex, nofollow"
