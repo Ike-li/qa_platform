@@ -67,6 +67,10 @@
   - 更新 operation_count: 70 → 72, case_count: 420 → 432
   - 更新相关单元测试和集成测试
   - **Commits**: 15a711d, caa4a70, e04b63d
+- [x] release_candidate gate 首次全绿 (2026-09-23)
+  - 修 retry-failed 集成测试、external-stack 端口 8001、e2e 重名定位
+  - 修真实缺陷：DB session 在响应发出后才提交（写后读竞态），42 处改 `scope="function"`
+  - **Commits**: b4aa039, da8dad0, 8a0764a, 4aaf9c0, efc6be6
 
 ### 代码质量
 
@@ -191,7 +195,7 @@
 
 ### CI/CD
 
-- [ ] 配置 Dependabot
+- [x] 配置 Dependabot (2026-09-22, 95eeb8a)
   - 自动依赖更新 PR
   - 安全漏洞告警
 
