@@ -68,9 +68,10 @@
   - 更新相关单元测试和集成测试
   - **Commits**: 15a711d, caa4a70, e04b63d
 - [x] release_candidate gate 首次全绿 (2026-09-23)
-  - 修 retry-failed 集成测试、external-stack 端口 8001、e2e 重名定位
+  - 修 retry-failed 集成测试、external-stack 端口 8001、e2e 重名定位、nightly 级测试补 `scheduled_for` 等新字段
   - 修真实缺陷：DB session 在响应发出后才提交（写后读竞态），42 处改 `scope="function"`
-  - **Commits**: b4aa039, da8dad0, 8a0764a, 4aaf9c0, efc6be6
+  - 验证：run 35821968471（6eeb95c）9/9 job success
+  - **Commits**: b4aa039, da8dad0, 8a0764a, 4aaf9c0, efc6be6, 6eeb95c
 
 ### 代码质量
 
