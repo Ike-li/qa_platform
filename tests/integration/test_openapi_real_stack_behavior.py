@@ -588,6 +588,8 @@ async def test_real_stack_analytics_success(
                 "passed_count": 1,
                 "failed_count": 1,
                 "flaky_rate": 0.5,
+                "observation_count": 2,
+                "window_days": 30,
             }
         ],
         "pagination": {"offset": 0, "limit": 50, "total": 1},
@@ -635,4 +637,7 @@ async def test_real_stack_analytics_success(
         "flaky_adjusted_pass_rate": None,
         "new_failing_tests": [],
         "recovered_tests": [],
+        "quarantined_excluded": [],
+        "observation_count": 2,
+        "window_days": 30,
     }
