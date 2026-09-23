@@ -127,8 +127,15 @@ npm run dev   # http://localhost:5173 by default
 ### Docker deployment
 
 ```bash
-make up   # starts all 6 services (postgres, redis, minio, api, frontend, worker)
+cp .env.example .env
+make up   # builds and starts the full stack (postgres, redis, minio, api, frontend, workers)
+
+# once the API container is running: create the schema and the admin user
+docker compose exec api python -m alembic upgrade head
+docker compose exec -e ADMIN_PASSWORD='<your-strong-password>' api python scripts/seed_admin.py
 ```
+
+Open http://localhost:3001 and log in as `admin`. The API is published on http://localhost:8001. `make up` does not run migrations or create users by itself.
 
 > **Security note**: the worker container mounts `/var/run/docker.sock` to launch test containers, so a compromised worker gets root on the host. In production, restrict the exposed Docker API with `tecnativa/docker-socket-proxy`, or move to a Kubernetes Job backend.
 

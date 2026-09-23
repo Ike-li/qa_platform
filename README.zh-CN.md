@@ -127,8 +127,15 @@ npm run dev   # 默认 http://localhost:5173
 ### Docker 一键部署
 
 ```bash
-make up   # 启动全部 6 个服务（postgres, redis, minio, api, frontend, worker）
+cp .env.example .env
+make up   # 构建并启动完整服务（postgres, redis, minio, api, frontend, workers）
+
+# API 容器起来后：建表并创建管理员
+docker compose exec api python -m alembic upgrade head
+docker compose exec -e ADMIN_PASSWORD='<your-strong-password>' api python scripts/seed_admin.py
 ```
+
+打开 http://localhost:3001，用 `admin` 登录。API 发布在 http://localhost:8001。`make up` 本身不会执行迁移，也不会创建用户。
 
 > **安全提示**: Worker 容器挂载 `/var/run/docker.sock` 以执行测试容器。这意味着 Worker 被攻陷可获取宿主 root 权限。生产环境建议使用 `tecnativa/docker-socket-proxy` 限制 API 暴露范围，或迁移到 K8s Job 后端。
 
