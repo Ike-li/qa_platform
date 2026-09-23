@@ -200,22 +200,22 @@
   - 自动依赖更新 PR
   - 安全漏洞告警
 
-- [ ] 添加自动代码质量检查
-  - PR 时自动运行 Ruff + ESLint
-  - 覆盖率回归检查
+- [x] 添加自动代码质量检查 (2026-09-23 核实已具备)
+  - PR 时自动运行 Ruff + ESLint：ci.yml `pull_request` 触发，`ruff check src tests`、`npm run lint -- --max-warnings=0`
+  - 覆盖率回归检查：pyproject `fail_under = 83`
 
-- [ ] 性能回归测试
+- [x] 性能回归测试 (2026-09-23 核实已具备)
   - 基于 performance-slo-manifest.json
-  - CI 中运行性能 smoke
+  - CI 中运行性能 smoke：nightly 与 release_candidate gate 执行，run 35821968471 中 31 passed
 
 ---
 
 ## 📋 技术债清单
 
 ### 已知问题
-- [ ] 修复不稳定测试 (xfail: OOM detection test)
-  - 见 commit b9433e9
-  - **优先级**: 中
+- [x] 修复不稳定测试 (xfail: OOM detection test) (2026-09-23 核实)
+  - ed1416e 标为 xfail，37a5317 修复竞态（对所有非零退出重试检查 OOMKilled）；xfail 标记已不存在
+  - heavy docker 档在 run 35821968471 中通过
 
 - [ ] services/ 目录结构审查
   - 当前只有 report_share_service.py
