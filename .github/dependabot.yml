@@ -17,6 +17,10 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
     groups:
+      # vitest 与 @vitest/* 互为精确 peer 依赖，分开升级哪个都装不上
+      # （npm ERESOLVE）。放在 npm-minor-patch 之前——依赖归入第一个匹配的组。
+      vitest:
+        patterns: ["vitest", "@vitest/*"]
       npm-minor-patch:
         update-types: ["minor", "patch"]
 
