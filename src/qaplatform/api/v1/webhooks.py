@@ -257,7 +257,7 @@ async def webhook_trigger(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
@@ -308,7 +308,7 @@ async def provider_webhook_trigger(
     provider: str,
     request: Request,
     repos: Repos,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     provider_key = provider.lower()
     if provider_key != "github":

@@ -61,7 +61,7 @@ async def create_share_token(
     request: Request,
     user: CurrentUser,
     repos: Repos,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     """Generate a share token for a report."""
     # Check if user has access to this run
@@ -119,7 +119,7 @@ async def get_share_tokens(
     run_id: UUID,
     user: CurrentUser,
     repos: Repos,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     """List all share tokens for a run."""
     # Check if user has access to this run
@@ -163,7 +163,7 @@ async def delete_share_token(
     request: Request,
     user: CurrentUser,
     repos: Repos,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     """Revoke a share token."""
     # Check if user has access to this run

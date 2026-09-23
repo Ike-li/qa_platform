@@ -101,7 +101,7 @@ async def list_notification_rules(
     user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
@@ -131,7 +131,7 @@ async def create_notification_rule(
     body: NotificationRuleCreate,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
@@ -169,7 +169,7 @@ async def get_notification_rule(
     rule_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
@@ -194,7 +194,7 @@ async def update_notification_rule(
     body: NotificationRuleUpdate,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
@@ -244,7 +244,7 @@ async def delete_notification_rule(
     rule_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:

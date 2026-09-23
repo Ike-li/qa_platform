@@ -42,7 +42,7 @@ async def _get_db_session(request: Request):
 
 # ── Repository bundle (scoped to request DB session) ─────────────────────────
 
-async def _get_repos(request: Request, session: AsyncSession = Depends(_get_db_session)):
+async def _get_repos(request: Request, session: AsyncSession = Depends(_get_db_session, scope="function")):
     """Create a RepositoryBundle scoped to the request's DB session."""
     container = request.app.state.container
     return container.get_repositories(session)
@@ -228,7 +228,7 @@ def require_project_permission(action: Action, *, project_id_param: str = "proje
     async def _check(
         request: Request,
         user: CurrentUser,
-        session: AsyncSession = Depends(_get_db_session),
+        session: AsyncSession = Depends(_get_db_session, scope="function"),
     ):
         raw_project_id = request.path_params.get(project_id_param)
         if raw_project_id is None:

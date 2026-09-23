@@ -245,7 +245,7 @@ async def create_project(
     body: ProjectCreate,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
     _perm=require_permission(Action.PROJECT_CREATE),
 ):
     existing = await repos.project.get_by_slug(user.tenant_id, body.slug)

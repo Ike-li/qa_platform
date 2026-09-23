@@ -278,7 +278,7 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
-def get_repos(session: AsyncSession = Depends(get_db_session)) -> RepositoryBundle:
+def get_repos(session: AsyncSession = Depends(get_db_session, scope="function")) -> RepositoryBundle:
     """FastAPI dependency: repositories scoped to a request's DB session."""
     return get_container().get_repositories(session)
 

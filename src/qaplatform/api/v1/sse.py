@@ -98,7 +98,7 @@ async def stream_logs(
     redis=Depends(get_redis),
     user: UserIdentity = Depends(_authenticate_sse_ticket),
     repos: RepositoryBundle = Depends(_get_repos),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
     last_event_id_query: str | None = Query(None, alias="last_event_id"),
 ):
@@ -165,7 +165,7 @@ async def stream_events(
     redis=Depends(get_redis),
     user: UserIdentity = Depends(_authenticate_sse_ticket),
     repos: RepositoryBundle = Depends(_get_repos),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
     last_event_id_query: str | None = Query(None, alias="last_event_id"),
 ):

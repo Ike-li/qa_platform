@@ -43,7 +43,7 @@ async def list_schedules(
     user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
@@ -73,7 +73,7 @@ async def create_schedule(
     body: ScheduleCreate,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
@@ -119,7 +119,7 @@ async def get_schedule(
     schedule_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
@@ -144,7 +144,7 @@ async def update_schedule(
     body: ScheduleUpdate,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:
@@ -189,7 +189,7 @@ async def delete_schedule(
     schedule_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
     if project is None:

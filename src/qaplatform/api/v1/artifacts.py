@@ -220,7 +220,7 @@ async def download_artifact(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     artifact, run = await _get_artifact_or_404(repos, artifact_id, user.tenant_id)
     await enforce_project_action(session, user, run.project_id, Action.RUN_READ)
@@ -255,7 +255,7 @@ async def get_artifact_preview_url(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     artifact, run = await _get_artifact_or_404(repos, artifact_id, user.tenant_id)
     await enforce_project_action(session, user, run.project_id, Action.RUN_READ)

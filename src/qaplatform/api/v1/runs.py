@@ -85,7 +85,7 @@ async def trigger_run(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     pipeline = await repos.pipeline.get_by_id(body.pipeline_id)
     if pipeline is None:
@@ -170,7 +170,7 @@ async def list_runs(
     git_ref: str | None = Query(None, description="按分支或 Git ref 筛选"),
     created_from: datetime | None = Query(None, description="按创建时间下限筛选"),
     created_to: datetime | None = Query(None, description="按创建时间上限筛选"),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     if sort not in _RUN_SORT_VALUES:
         raise HTTPException(status_code=422, detail=f"Invalid run sort: {sort}")
@@ -252,7 +252,7 @@ async def batch_cancel_runs(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    _session: AsyncSession = Depends(_get_db_session),
+    _session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     container = request.app.state.container
     return await batch_cancel_run_command(
@@ -273,7 +273,7 @@ async def batch_retry_runs(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     container = request.app.state.container
     return await batch_retry_run_command(
@@ -296,7 +296,7 @@ async def get_run(
     run_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     run = await get_run_for_action(
         repos=repos,
@@ -321,7 +321,7 @@ async def cancel_run(
     repos: Repos,
     user: CurrentUser,
     body: RunCancel | None = None,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     run = await get_run_for_action(
         repos=repos,
@@ -399,7 +399,7 @@ async def get_run_results(
         max_length=500,
         description="按用例名称/错误信息搜索",
     ),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     await get_run_for_action(
         repos=repos,
@@ -441,7 +441,7 @@ async def get_run_triage(
     run_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     run = await get_run_for_action(
         repos=repos,
@@ -504,7 +504,7 @@ async def retry_failed_run(
     request: Request,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     # 权限检查：需要 RUN_TRIGGER（Developer+）
     await get_run_for_action(
@@ -548,7 +548,7 @@ async def get_run_allure_report_artifact(
     run_id: UUID,
     repos: Repos,
     user: CurrentUser,
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     await get_run_for_action(
         repos=repos,
@@ -589,7 +589,7 @@ async def get_run_artifacts(
     user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     await get_run_for_action(
         repos=repos,
@@ -627,7 +627,7 @@ async def get_archived_run_logs(
     user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(100, ge=1, le=1000),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     await get_run_for_action(
         repos=repos,
@@ -677,7 +677,7 @@ async def get_run_notifications(
     user: CurrentUser,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     await get_run_for_action(
         repos=repos,

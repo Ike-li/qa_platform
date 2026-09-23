@@ -252,7 +252,7 @@ async def import_run_results(
     ),
     started_at: datetime | None = Query(None, description="ISO8601；缺省自动推导"),
     finished_at: datetime | None = Query(None, description="ISO8601；缺省自动推导"),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     if git_ref.strip() == "":
         raise HTTPException(status_code=422, detail="Invalid git_ref: empty")

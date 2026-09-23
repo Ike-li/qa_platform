@@ -56,7 +56,7 @@ async def get_run_trends(
     git_ref: str | None = Query(None, min_length=1, max_length=200),
     offset: int = Query(0, ge=0),
     limit: int = Query(365, ge=1, le=365),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     git_ref = _validate_optional_text_filter("git_ref", git_ref)
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
@@ -105,7 +105,7 @@ async def get_flaky_tests(
     collapse_params: bool = Query(False),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     git_ref = _validate_optional_text_filter("git_ref", git_ref)
     project = await repos.project.get_for_tenant(project_id, user.tenant_id)
@@ -195,7 +195,7 @@ async def get_release_summary(
     days: int = Query(30, ge=1, le=365),
     git_ref: str | None = Query(None, min_length=1, max_length=200),
     baseline_git_ref: str | None = Query(None, min_length=1, max_length=200),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     git_ref = _validate_optional_text_filter("git_ref", git_ref)
     baseline_git_ref = _validate_optional_text_filter(
@@ -241,7 +241,7 @@ async def get_test_history(
     collapse_params: bool = Query(False),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     _validate_history_text_filter("suite", suite)
     _validate_history_text_filter("name", name)

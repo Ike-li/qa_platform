@@ -30,7 +30,7 @@ async def view_shared_report(
     request: Request,
     repos: Repos,
     token: str = Query(..., description="分享token"),
-    session: AsyncSession = Depends(_get_db_session),
+    session: AsyncSession = Depends(_get_db_session, scope="function"),
 ):
     """View a shared report using a temporary token.
 
