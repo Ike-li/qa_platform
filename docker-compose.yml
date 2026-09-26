@@ -45,7 +45,9 @@ services:
       retries: 5
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: cgr.dev/chainguard/minio:latest@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
+    # 镜像默认以 65532 运行；旧 MinIO 镜像以 root 写入的数据卷需要 root 才能继续读写
+    user: "0:0"
     restart: unless-stopped
     ports:
       - "9000:9000"
@@ -53,6 +55,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MC_HOST_local: http://localhost:9000
     volumes:
       - miniodata:/data
     command: server /data --console-address ":9001"
@@ -62,13 +65,14 @@ services:
         max-size: "10m"
         max-file: "3"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 3s
       retries: 5
 
   minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    # minio-client 镜像不带 shell，复用 minio 镜像里的 mc 和 sh
+    image: cgr.dev/chainguard/minio:latest@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
     restart: "no"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}

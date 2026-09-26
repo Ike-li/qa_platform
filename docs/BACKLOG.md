@@ -121,6 +121,13 @@
 - [ ] jest-dom 适配 vitest 5 后删除 `frontend/src/test/jest-dom-vitest.d.ts`
   - 该文件是临时补丁：jest-dom（截至 7.0.1）按单参数 `Assertion<T>` 扩展，与 vitest 5 的 `Assertion<R, T>` 合并不上
   - 删除后在 `src/test/setup.ts` 改为 `import '@testing-library/jest-dom/vitest'`，跑 `npm run build` 确认无 TS2339
+- [ ] MinIO 镜像改用 Chainguard，恢复 nightly（本地已验证，nightly 或手动 `gate=nightly` 通过后勾掉）
+  - 9-23 起 nightly 连续失败：`quay.io/minio/*` 匿名不可拉（连 `latest` 都没有），Docker Hub 的 `minio/*`、`bitnami/minio` 也已下架；push 触发的 CI 不起外部栈，所以一直是绿的
+  - 改用 `cgr.dev/chainguard/minio`，按 digest 钉住；这是 Chainguard 维护的 MinIO fork，免费档只有 `latest` 这一个 tag
+  - `user: "0:0"`：镜像默认以 65532 运行，旧镜像以 root 写入的卷会报 `Unable to write to the backend`
+  - minio-init 复用 minio 镜像（`minio-client` 镜像没有 shell）；健康检查改为 `mc ready`（镜像里没有 curl）
+- [ ] 排查 `test_real_stack_analytics_success` 断言失败
+  - 9-22 nightly（run 35788498016）失败于此，之后三晚都卡在拉 MinIO，这个失败被盖住了，MinIO 修好后可能复现
 
 ---
 
